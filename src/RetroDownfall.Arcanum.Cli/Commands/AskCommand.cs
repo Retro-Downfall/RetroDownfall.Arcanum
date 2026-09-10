@@ -25,7 +25,6 @@ public sealed class AskCommand(
     ICliInferenceContextResolver contextResolver,
     IConsoleDispatcher dispatcher)
 {
-
     /// <summary>
     /// Ask the Mage (multi-word prompt: all words after ask, or after --; multi-turn via cli-session; --new for a fresh thread).
     /// </summary>
@@ -87,13 +86,11 @@ public sealed class AskCommand(
                 out List<Guid>? attachmentReferences,
                 out string? attachmentError))
         {
-
             CliErrorOutput.WriteMarkupLine(
                 palette.ErrorMarkup(
                     Markup.Escape(attachmentError!)));
 
             return 1;
-
         }
 
         InferenceFlagInputs flagInputs = new(temperature, topP, maxTokens, seed, stop, responseFormat, presencePenalty, frequencyPenalty);
@@ -218,22 +215,25 @@ public sealed class AskCommand(
 
         try
         {
-            _ = await serveLauncher.EnsureRunningAsync(linked.Token).ConfigureAwait(false);
+            ServeLaunchResult launch = await serveLauncher
+                .EnsureRunningAsync(linked.Token)
+                .ConfigureAwait(false);
+
+            if (!ServeOwnershipPolicy.CanProceed(launch))
+            {
+                return FailLaunch(launch);
+            }
 
             if (@new)
             {
-
                 if (!(await session
                         .ClearSessionAsync(
                             cancellationToken: linked.Token)
                         .ConfigureAwait(false))
                     .IsCompleted)
                 {
-
                     return 1;
-
                 }
-
             }
 
             string invocationDirectory = Environment.CurrentDirectory;
@@ -242,13 +242,10 @@ public sealed class AskCommand(
 
             if (preparedContext is not null)
             {
-
                 effectiveContext = preparedContext;
-
             }
             else
             {
-
                 CliInferenceContextResult contextResult = await contextResolver
                     .ResolveAsync(
                         new CliInferenceContextRequest(
@@ -264,12 +261,9 @@ public sealed class AskCommand(
 
                 if (!contextResult.IsSuccess)
                 {
-
                     if (contextResult.IsCancelled)
                     {
-
                         return 0;
-
                     }
 
                     stderrConsole.MarkupLine(
@@ -277,19 +271,15 @@ public sealed class AskCommand(
                             Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
 
                     return 1;
-
                 }
 
                 effectiveContext = contextResult.Context!;
 
                 foreach (string warning in contextResult.Warnings)
                 {
-
                     stderrConsole.MarkupLine(
                         palette.ErrorMarkup(Markup.Escape("Warning: " + warning)));
-
                 }
-
             }
 
             string cwd = effectiveContext.Workspace.Value
@@ -319,14 +309,12 @@ public sealed class AskCommand(
 
             if (synchronized.IsFailure)
             {
-
                 stderrConsole.MarkupLine(
                     palette.ErrorLabelMarkup(
                         Markup.Escape("Error:"),
                         Markup.Escape(synchronized.Error.Message)));
 
                 return 1;
-
             }
 
             ChronosyncReport chronosyncDelta = synchronized.Value;
@@ -454,7 +442,6 @@ public sealed class AskCommand(
 
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
-
                             _ = await session
                                 .SaveSessionIdAsync(
                                     boundId,
@@ -466,7 +453,6 @@ public sealed class AskCommand(
                                             cancellationToken: token),
                                     cancellationToken: linked.Token)
                                 .ConfigureAwait(false);
-
                         }
 
                         break;
@@ -518,7 +504,6 @@ public sealed class AskCommand(
         }
         catch (OperationCanceledException)
         {
-
             _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
             stderrConsole.MarkupLine(
                 palette.ErrorLabelMarkup(
@@ -526,11 +511,9 @@ public sealed class AskCommand(
                     Markup.Escape($"{ArcanumApiClient.StreamTimeoutMessage} {ArcanumApiClient.StreamDoctorHint}")));
 
             return 1;
-
         }
         catch (Exception ex)
         {
-
             _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
 
             CliFailure failure = CliFailureMapper.Map(ex);
@@ -541,7 +524,6 @@ public sealed class AskCommand(
                 palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(failure.SafeMessage)));
 
             return (int)failure.ExitCode;
-
         }
         finally
         {
@@ -550,16 +532,12 @@ public sealed class AskCommand(
 
         if (finalText is null)
         {
-
             string accumulated = streamContent.AnswerText;
 
             if (!string.IsNullOrEmpty(accumulated))
             {
-
                 finalText = accumulated;
-
             }
-
         }
 
         if (finalText is null)
@@ -584,6 +562,26 @@ public sealed class AskCommand(
         return 0;
     }
 
+    private int FailLaunch(ServeLaunchResult launch)
+    {
+        CliExitCode exitCode =
+            ServeOwnershipPolicy.FailureExitCode(launch);
+
+        string message = launch.Guidance
+            ?? "Arcanum could not start or authenticate its local server.";
+
+        dispatcher.WriteDiagnostic(message);
+
+        if (CliInvocationContext.Current.Json)
+        {
+            dispatcher.WriteJson(
+                new CliErrorPayload(message, (int)exitCode),
+                CliJsonContext.Default.CliErrorPayload);
+        }
+
+        return (int)exitCode;
+    }
+
     internal static string BuildPrompt(string[] promptWords)
     {
         List<string> parts = new(promptWords.Length);
@@ -606,7 +604,6 @@ public sealed class AskCommand(
         AnsiConsole.Create(
             new AnsiConsoleSettings
             {
-
                 Ansi = colorEnabled
                     ? AnsiSupport.Detect
                     : AnsiSupport.No,
@@ -620,7 +617,6 @@ public sealed class AskCommand(
                     : InteractionSupport.No,
 
                 Out = new AnsiConsoleOutput(output),
-
             });
 
     /// <summary>
@@ -639,5 +635,4 @@ public sealed class AskCommand(
     /// </summary>
     internal static string FormatStreamTransportError(string message) =>
         CliStreamTransportHint.Append(message);
-
 }

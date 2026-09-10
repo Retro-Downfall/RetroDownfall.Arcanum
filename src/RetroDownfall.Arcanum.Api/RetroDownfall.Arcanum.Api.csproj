@@ -8,6 +8,8 @@
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
+    <!-- API contains no EF query execution path. Keep the experimental publish-time query compiler
+         disabled; the Infrastructure compiled model owns tracked state. -->
     <EFOptimizeContext>false</EFOptimizeContext>
 
   </PropertyGroup>

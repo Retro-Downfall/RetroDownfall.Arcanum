@@ -360,7 +360,6 @@ public sealed partial class WizardIntelligenceProvider(
 
     private sealed class StreamingIntelligenceMapper
     {
-
         private IntelligenceEvent? _pendingToolError;
 
         private readonly StringBuilder _answer = new();
@@ -531,7 +530,6 @@ public sealed partial class WizardIntelligenceProvider(
 
             _reasoning.Add(new ReasoningContentRun(reasoning));
         }
-
     }
 
     private sealed class ReasoningContentRun
@@ -647,9 +645,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (preflight.IsFailure)
         {
-
             return Result<PromptTurnResult>.Failure(preflight.Error);
-
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
@@ -675,7 +671,6 @@ public sealed partial class WizardIntelligenceProvider(
 
         try
         {
-
             if (!resilienceEnabled)
             {
                 ChatClientLease singleLease;
@@ -695,15 +690,15 @@ public sealed partial class WizardIntelligenceProvider(
 
                 using (singleLease)
                 {
-                    Result reasoningValidation = ValidateReasoningForCandidate(
+                    Result capabilityValidation = ValidateModelCapabilitiesForCandidate(
                         request,
                         singleLease.Provider,
                         singleLease.ResolvedModel,
                         settings.Value.Features.Reasoning);
 
-                    if (reasoningValidation.IsFailure)
+                    if (capabilityValidation.IsFailure)
                     {
-                        return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
+                        return Result<PromptTurnResult>.Failure(capabilityValidation.Error);
                     }
 
                     InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(
@@ -730,13 +725,10 @@ public sealed partial class WizardIntelligenceProvider(
                     eventSink,
                     covenantScope)
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             await covenantScope.DisposeAsync().ConfigureAwait(false);
-
         }
     }
 
@@ -750,7 +742,6 @@ public sealed partial class WizardIntelligenceProvider(
             eventSink,
         CovenantTurnScope? covenantScope = null)
     {
-
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
             ProviderResolver.ResolveCandidates(settings.Value, request.Model, healthTracker);
 
@@ -775,15 +766,15 @@ public sealed partial class WizardIntelligenceProvider(
 
                 bool isLastAttempt = attemptIndex == candidates.Count - 1;
 
-                Result reasoningValidation = ValidateReasoningForCandidate(
+                Result capabilityValidation = ValidateModelCapabilitiesForCandidate(
                     request,
                     provider,
                     resolvedModel,
                     settings.Value.Features.Reasoning);
 
-                if (reasoningValidation.IsFailure)
+                if (capabilityValidation.IsFailure)
                 {
-                    return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
+                    return Result<PromptTurnResult>.Failure(capabilityValidation.Error);
                 }
 
                 ChatClientLease lease;
@@ -875,9 +866,7 @@ public sealed partial class WizardIntelligenceProvider(
                         provider.Name,
                         attemptIndex + 1,
                         candidates.Count);
-
                 }
-
             }
         }
         finally
@@ -886,7 +875,6 @@ public sealed partial class WizardIntelligenceProvider(
         }
 
         return lastFailure;
-
     }
 
     /// <summary>
@@ -894,7 +882,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// I/O. Both direct and resilience-enabled paths use this gate so unsupported explicit controls
     /// are rejected consistently with provider/model-specific diagnostics.
     /// </summary>
-    private static Result ValidateReasoningForCandidate(
+    private static Result ValidateModelCapabilitiesForCandidate(
         PingRequest request,
         ProviderSettings provider,
         string resolvedModel,
@@ -905,12 +893,20 @@ public sealed partial class WizardIntelligenceProvider(
                 ? entry
                 : null;
 
-        return ReasoningRequestValidator.ValidateForModel(
+        Result reasoning = ReasoningRequestValidator.ValidateForModel(
             request.Reasoning,
             modelEntry,
             featuresReasoningEnabled,
             resolvedModel,
             provider.Name);
+
+        return reasoning.IsFailure
+            ? reasoning
+            : ClientToolCapabilityValidator.ValidateForModel(
+                request,
+                modelEntry,
+                resolvedModel,
+                provider.Name);
     }
 
     private async Task<InferenceAttemptResult> DrainBufferedInferenceAttemptAsync(
@@ -926,7 +922,6 @@ public sealed partial class WizardIntelligenceProvider(
         bool canFallBack = false,
         CovenantTurnScope? covenantScope = null)
     {
-
         StreamFailureClassification classification = new();
 
         await foreach (IntelligenceEvent frame in RunInferenceAttemptAsync(
@@ -963,7 +958,6 @@ public sealed partial class WizardIntelligenceProvider(
                 new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage)),
             classification.IsConnectivityFailure,
             classification.ProviderCommitted);
-
     }
 
     private async IAsyncEnumerable<IntelligenceEvent> StreamPromptCoreAsync(
@@ -989,13 +983,12 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streamPreflight.IsFailure)
         {
-
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
-                streamPreflight.Error.Message);
+                streamPreflight.Error.Message,
+                streamPreflight.Error.Code);
 
             yield break;
-
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
@@ -1053,20 +1046,20 @@ public sealed partial class WizardIntelligenceProvider(
 
             ChatClientLease singleLease = leaseOrNull!;
 
-            Result reasoningValidation = ValidateReasoningForCandidate(
+            Result capabilityValidation = ValidateModelCapabilitiesForCandidate(
                 request,
                 singleLease.Provider,
                 singleLease.ResolvedModel,
                 settings.Value.Features.Reasoning);
 
-            if (reasoningValidation.IsFailure)
+            if (capabilityValidation.IsFailure)
             {
                 singleLease.Dispose();
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
-                    reasoningValidation.Error.Message,
-                    reasoningValidation.Error.Code);
+                    capabilityValidation.Error.Message,
+                    capabilityValidation.Error.Code);
 
                 yield break;
             }
@@ -1160,18 +1153,18 @@ public sealed partial class WizardIntelligenceProvider(
 
                 bool isLastAttempt = attemptIndex == streamCandidates.Count - 1;
 
-                Result reasoningValidation = ValidateReasoningForCandidate(
+                Result capabilityValidation = ValidateModelCapabilitiesForCandidate(
                     request,
                     candidateProvider,
                     candidateModel,
                     settings.Value.Features.Reasoning);
 
-                if (reasoningValidation.IsFailure)
+                if (capabilityValidation.IsFailure)
                 {
                     yield return new IntelligenceEvent(
                         IntelligenceEventType.Error,
-                        reasoningValidation.Error.Message,
-                        reasoningValidation.Error.Code);
+                        capabilityValidation.Error.Message,
+                        capabilityValidation.Error.Code);
 
                     yield break;
                 }
@@ -1527,17 +1520,13 @@ public sealed partial class WizardIntelligenceProvider(
 
         try
         {
-
             await grimoireTurnWriter
                 .TryResolveInterruptedOnStreamExitAsync(deferred, null)
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             grimoireTurnWriter.CompleteSagaExtractionHandoff(deferred);
-
         }
     }
 
@@ -1594,7 +1583,6 @@ public sealed partial class WizardIntelligenceProvider(
         CovenantTurnScope? covenantScope = null)
 #pragma warning restore CS8425
     {
-
         bool streaming = mode == TurnResponseMode.Streaming;
 
         GrimoireTurnWriter.TurnHandle grimoireTurn = new();
@@ -1641,9 +1629,50 @@ public sealed partial class WizardIntelligenceProvider(
                 settings.Value.Features.ReasoningSummaries,
                 streaming);
 
-            IChatClient chatClient = lease.ChatClient;
+        IChatClient chatClient = lease.ChatClient;
 
-            if (streaming)
+        bool humanInteractionAvailable = streaming && !request.UnattendedMode;
+
+        bool streamModelDeclaresToolsUnsupported =
+            ModelDeclaresToolsUnsupported(lease);
+
+        List<AITool>? prevalidatedClientToolSet = null;
+
+        if (request.ForwardClientTools)
+        {
+            prevalidatedClientToolSet = request.DisableAllTools
+                || streamModelDeclaresToolsUnsupported
+                ? []
+                : BuildClientForwardedToolSet(request);
+
+            IReadOnlyList<AITool> preflightClientTools = ApplyInferenceToolFilters(
+                request,
+                prevalidatedClientToolSet,
+                humanInteractionAvailable);
+
+            Result clientToolAvailability =
+                ClientToolCapabilityValidator.ValidateEffectiveToolSet(
+                    request,
+                    preflightClientTools);
+
+            if (clientToolAvailability.IsFailure)
+            {
+                if (!streaming)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                        clientToolAvailability.Error);
+                }
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    clientToolAvailability.Error.Message,
+                    clientToolAvailability.Error.Code);
+
+                yield break;
+            }
+        }
+
+        if (streaming)
             {
                 yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
             }
@@ -1806,10 +1835,8 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (!attachmentsEnabled && request.AttachedFiles is { Count: > 0 } directAttachedFiles)
         {
-
             for (int index = 0; index < directAttachedFiles.Count; index++)
             {
-
                 AttachedFileDto file = directAttachedFiles[index];
 
                 byte[] bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
@@ -1834,25 +1861,19 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (accepted.Accepted)
                 {
-
                     _ = streamMaterializationLedger.TryMarkInjected(
                         accepted.Identity,
                         providerRound: 0);
 
                     acceptedAttachedFileIndices.Add(index);
-
                 }
-
             }
-
         }
 
         if (!attachmentsEnabled && request.ScryingFoci is { Count: > 0 } directScryingFoci)
         {
-
             for (int index = 0; index < directScryingFoci.Count; index++)
             {
-
                 byte[] bytes = Convert.FromBase64String(directScryingFoci[index].Data);
 
                 string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -1875,23 +1896,18 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (accepted.Accepted)
                 {
-
                     _ = streamMaterializationLedger.TryMarkInjected(
                         accepted.Identity,
                         providerRound: 0);
 
                     acceptedScryingFocusIndices.Add(index);
-
                 }
-
             }
-
         }
 
         foreach (SessionAttachmentExplicitMaterialization materialization
                  in streamAttachmentPrep.ExplicitMaterializations ?? [])
         {
-
             SessionAttachmentRecord record = materialization.Record;
 
             ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
@@ -1915,32 +1931,24 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (!accepted.Accepted)
             {
-
                 continue;
-
             }
 
             if (record.Source is
                 {
-
                     Kind: AttachmentSourceKind.WorkspaceFile,
                     WorkspaceRelativePath: { Length: > 0 } workspaceRelativePath,
-
                 })
             {
-
                 streamMaterializationLedger.RegisterExplicitWorkspaceSource(
                     workspaceRelativePath);
-
             }
 
             if (materialization.RequiresMaterialization)
             {
-
                 deferredAttachmentMaterializations.Add((materialization, accepted.Identity));
 
                 continue;
-
             }
 
             _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
@@ -1949,25 +1957,19 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (materialization.AttachedFileIndex is { } attachedFileIndex)
             {
-
                 acceptedAttachedFileIndices.Add(attachedFileIndex);
-
             }
 
             if (materialization.ScryingFocusIndex is { } scryingFocusIndex)
             {
-
                 acceptedScryingFocusIndices.Add(scryingFocusIndex);
-
             }
-
         }
 
         int deferredAttachmentInsertionIndex = acceptedAppendedContext.Count;
 
         foreach (ContextPinMaterializedItem pin in streamPinMaterialization.Items ?? [])
         {
-
             ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
                 new ContextMaterializationCandidate(
                     grimoireTurn.SessionId ?? request.SessionId,
@@ -1989,20 +1991,15 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (accepted.Accepted)
             {
-
                 _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
 
                 acceptedAppendedContext.Add(pin.Content);
 
                 if (pin.Kind == SessionContextPinKind.File)
                 {
-
                     streamMaterializationLedger.RegisterExplicitWorkspaceSource(pin.SourceId);
-
                 }
-
             }
-
         }
 
         HashSet<AIContent> trackedPinContents = new(ReferenceEqualityComparer.Instance);
@@ -2023,13 +2020,11 @@ public sealed partial class WizardIntelligenceProvider(
 
         PingRequest streamContextRequest = request with
         {
-
             ScryingFoci = request.ScryingFoci is null
                 ? null
                 : request.ScryingFoci
                     .Where((_, index) => acceptedScryingFocusIndices.Contains(index))
                     .ToList(),
-
         };
 
         Result<TurnAccountingHandle> streamAccountingBegin;
@@ -2265,7 +2260,6 @@ public sealed partial class WizardIntelligenceProvider(
 
         void RebuildMaterializedSystemPrompt()
         {
-
             streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
                 request,
                 streamCodexContent,
@@ -2291,26 +2285,19 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (!streamContextUsesCompressedSummary)
             {
-
                 baseSystemPromptDocument = streamSystemPromptDocument;
-
             }
 
             if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
             {
-
                 chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
-
             }
-
         }
 
         bool RemoveSemanticMaterialization(ContextMaterializationEntry removed)
         {
-
             bool changed = removed.SourceKind switch
             {
-
                 ContextMaterializationSourceKind.AttachmentRag =>
                     RemoveAttachmentRagChunk(ref streamAttachmentContext, removed),
 
@@ -2324,25 +2311,20 @@ public sealed partial class WizardIntelligenceProvider(
                     RemoveTapestryNode(ref streamTapestryContext, removed),
 
                 _ => false,
-
             };
 
             if (!changed)
             {
-
                 return false;
-
             }
 
             RebuildMaterializedSystemPrompt();
 
             return true;
-
         }
 
         void ReconcileSuppressedSemanticContext()
         {
-
             bool changed = PruneSuppressedAttachmentRag(
                 ref streamAttachmentContext,
                 streamMaterializationLedger);
@@ -2353,13 +2335,10 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (!changed)
             {
-
                 return;
-
             }
 
             RebuildMaterializedSystemPrompt();
-
         }
 
         if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
@@ -2442,8 +2421,9 @@ public sealed partial class WizardIntelligenceProvider(
             }
         }
 
-        // Per-turn live HITL emitter — created before tool-set assembly so HumanInteractionAvailable
-        // can strip ask_human when no live response channel exists (buffered path never creates this).
+        // Per-turn live HITL emitter — created before server tool-set assembly. The availability bit
+        // was fixed before auxiliary inference so a required client ask_human can fail without a
+        // routing or Lexicon model call when this surface cannot provide a live response channel.
         // Also published via AsyncLocal for the tool-call site: in-process tools read it directly, and
         // SdkMcpClientWrapper.CallToolAsync hands it to the connection's McpElicitationSink so the MCP
         // ElicitationHandler, which runs on the SDK receive loop where the ambient is never visible,
@@ -2473,12 +2453,11 @@ public sealed partial class WizardIntelligenceProvider(
             // tool call's own ToolCall frame — see the comment there.
         }
 
-        bool humanInteractionAvailable = streaming && liveHumanPromptEmit is not null;
-
         List<AITool> streamToolSet = request.DisableAllTools
+            || streamModelDeclaresToolsUnsupported
             ? []
             : request.ForwardClientTools
-                ? BuildClientForwardedToolSet(request)
+                ? prevalidatedClientToolSet ?? []
                 : await BuildToolSetWithMcpAsync(
                     request,
                     streamResolvedSpell,
@@ -2496,11 +2475,37 @@ public sealed partial class WizardIntelligenceProvider(
             invocationContext,
             inferenceToken).ConfigureAwait(false);
 
+        Result effectiveClientTools = ClientToolCapabilityValidator.ValidateEffectiveToolSet(
+            request,
+            streamTurnContext.InferenceTools);
+
+        if (effectiveClientTools.IsFailure)
+        {
+            if (!streaming)
+            {
+                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                    effectiveClientTools.Error);
+            }
+
+            await grimoireTurnWriter
+                .ResolveInterruptedAndMarkFinalizedAsync(
+                    grimoireTurn,
+                    null,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                effectiveClientTools.Error.Message,
+                effectiveClientTools.Error.Code);
+
+            yield break;
+        }
+
         bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
 
         if (deferredAttachmentMaterializations.Count > 0)
         {
-
             ChatOptions attachmentAdmissionOptions = CreateInferenceChatOptions(
                 streamUsesTools,
                 streamTurnContext.InferenceTools,
@@ -2511,7 +2516,6 @@ public sealed partial class WizardIntelligenceProvider(
                      ContextMaterializationIdentity identity)
                      in deferredAttachmentMaterializations)
             {
-
                 SessionAttachmentReferenceMaterialization reference =
                     await SessionAttachmentTurnService.MaterializeReferenceAsync(
                         materialization.Record,
@@ -2522,26 +2526,21 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (reference.ErrorMessage is not null)
                 {
-
                     Error referenceError = new(
                         ErrorCodes.Validation.AttachedFiles,
                         reference.ErrorMessage);
 
                     if (!streaming)
                     {
-
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(referenceError);
-
                     }
 
                     if (streaming)
                     {
-
                         yield return new IntelligenceEvent(
                             IntelligenceEventType.Error,
                             referenceError.Message,
                             referenceError.Code);
-
                     }
 
                     await grimoireTurnWriter
@@ -2552,7 +2551,6 @@ public sealed partial class WizardIntelligenceProvider(
                         .ConfigureAwait(false);
 
                     yield break;
-
                 }
 
                 List<AIContent> candidateAppendedContext = [.. acceptedAppendedContext];
@@ -2566,9 +2564,7 @@ public sealed partial class WizardIntelligenceProvider(
                         message.Role,
                         [.. message.Contents])
                     {
-
                         AuthorName = message.AuthorName,
-
                     })
                     .ToList();
 
@@ -2582,7 +2578,6 @@ public sealed partial class WizardIntelligenceProvider(
                     inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
                         new ContextCompressionRequest
                         {
-
                             Request = request,
 
                             Messages = admissionMessages,
@@ -2624,19 +2619,15 @@ public sealed partial class WizardIntelligenceProvider(
                             MaxIndexBytes = streamMaxIndexBytes,
 
                             ScryingFoci = streamContextRequest.ScryingFoci,
-
                         });
 
                 bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
                 {
-
                     bool changed = RemoveSemanticMaterialization(removed);
 
                     if (!changed)
                     {
-
                         return false;
-
                     }
 
                     SystemPromptDocument admissionSystemPrompt = SystemPromptBuilder.BuildDocument(
@@ -2663,15 +2654,12 @@ public sealed partial class WizardIntelligenceProvider(
                     if (preparedAdmissionMessages.Count > 0
                         && preparedAdmissionMessages[0].Role == ChatRole.System)
                     {
-
                         preparedAdmissionMessages[0] = new MeAiChatMessage(
                             ChatRole.System,
                             admissionSystemPrompt.Render());
-
                     }
 
                     return true;
-
                 }
 
                 Result attachmentAdmission = EnsureContextBudgetWithMaterializations(
@@ -2685,15 +2673,12 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (attachmentAdmission.IsFailure)
                 {
-
                     string attachmentLabel = SystemPromptBuilder.HardenAttachmentIndexName(
                         materialization.Record.OriginalFileName);
 
                     if (attachmentLabel.Length == 0)
                     {
-
                         attachmentLabel = materialization.Record.Id.ToString();
-
                     }
 
                     Error boundaryError = new(
@@ -2704,19 +2689,15 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (!streaming)
                     {
-
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(boundaryError);
-
                     }
 
                     if (streaming)
                     {
-
                         yield return new IntelligenceEvent(
                             IntelligenceEventType.Error,
                             boundaryError.Message,
                             boundaryError.Code);
-
                     }
 
                     await grimoireTurnWriter
@@ -2727,7 +2708,6 @@ public sealed partial class WizardIntelligenceProvider(
                         .ConfigureAwait(false);
 
                     yield break;
-
                 }
 
                 acceptedAppendedContext.InsertRange(
@@ -2737,9 +2717,7 @@ public sealed partial class WizardIntelligenceProvider(
                 deferredAttachmentInsertionIndex += reference.Contents.Count;
 
                 _ = streamMaterializationLedger.TryMarkInjected(identity, providerRound: 0);
-
             }
-
         }
 
         string? inferenceError;
@@ -2819,7 +2797,6 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streamCovenantContent is not null)
             {
-
                 // Head-room is measured against the transcript as it stands, and only a Covenant-free
                 // transcript makes that measurement honest. A restart inheriting the previous attempt's
                 // Covenant bytes counts them as somebody else's context and admits less than fits, and
@@ -2828,7 +2805,6 @@ public sealed partial class WizardIntelligenceProvider(
                 streamCovenantContent = null;
 
                 RebuildMaterializedSystemPrompt();
-
             }
 
             streamCovenantDispatch = ResolveCovenantAdmission(
@@ -2840,34 +2816,28 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streamCovenantDispatch.HasAdmittedContent)
             {
-
                 streamCovenantContent = streamCovenantDispatch.Content;
 
                 RebuildMaterializedSystemPrompt();
-
             }
 
             if (streamCovenantDispatch.Admission is { ConfirmedAdmitted: true } streamCovenantAdmission)
             {
-
                 // Recorded whether or not anything was dropped: zero is a measurement here, and an
                 // operator asking why a preference was not honored needs to see that the answer is
                 // "nothing was pressured" rather than "nobody looked".
                 streamMaterializationLedger.RecordCovenantPressure(
                     streamCovenantAdmission.ProposedRemovals,
                     (int)Math.Min(int.MaxValue, streamCovenantAdmission.PressuredProposedTokens));
-
             }
             else if (streamCovenantDispatch.Admission is not null)
             {
-
                 // A refusal marks every candidate Pressured and counts every Proposed entry as a
                 // removal, but nothing was trimmed: Confirmed is all-or-fail, so the entire section
                 // was withheld. Reporting those counts as Proposed pressure would tell an operator
                 // their standing agreement was honored minus a few preferences, when none of it was
                 // sent at all -- the one outcome that must never be silent.
                 streamMaterializationLedger.RecordCovenantConfirmedNoFit();
-
             }
 
             lastInferenceChatOptions = streamChatOptions;
@@ -3040,7 +3010,6 @@ public sealed partial class WizardIntelligenceProvider(
                         && invocationContext.Campaign is { } stagingCampaign
                         && covenantToolCapabilities is not null)
                     {
-
                         streamCovenantStaging?.Dispose();
 
                         streamCovenantStaging = CovenantToolStagingAmbient.Push(new CovenantToolStagingContext(
@@ -3052,7 +3021,6 @@ public sealed partial class WizardIntelligenceProvider(
                             invocationContext.CanStageCovenantMutation,
                             covenantToolCapabilities,
                             inferenceToken));
-
                     }
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
@@ -3184,7 +3152,6 @@ public sealed partial class WizardIntelligenceProvider(
                         }
                         catch (OperationCanceledException)
                         {
-
                             // A client disconnect must not make a round that already
                             // streamed real provider bytes look like it spent nothing — that
                             // both loses the spend from budget accounting and returns the
@@ -3209,7 +3176,6 @@ public sealed partial class WizardIntelligenceProvider(
                             }
 
                             throw;
-
                         }
                         catch (Exception ex)
                         {
@@ -3329,25 +3295,34 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (inferenceError is not null)
                 {
-                    // The declared model entry is authoritative when it says anything at
-                    // all -- SupportsTools is a nullable bool specifically so "undeclared" (null,
-                    // the default for every model that predates this field) never reads the same
-                    // as an explicit "this model does not support tools" (false). Only a declared
-                    // false widens the gate; an undeclared entry falls back to the substring hint
-                    // exactly as before, so a provider that words the same failure differently is
-                    // no worse off than it was, and one with a declared capability no longer
-                    // depends on Ollama's exact English wording.
-                    bool declaredToolIncompatible =
-                        ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
-                        && modelEntry is { SupportsTools: false };
-
-                    bool allowNoToolsRestart = streamUsesTools
+                    // An explicit SupportsTools=false declaration is handled before tool discovery
+                    // and before the first provider call. This compatibility restart is only for an
+                    // undeclared model whose provider rejects the advertised tools at runtime.
+                    bool providerRejectedTools = streamUsesTools
                         && streamingMoveNextFailure is { Message: var moveMsg }
-                        && (declaredToolIncompatible || LooksLikeModelDoesNotSupportTools(moveMsg))
+                        && LooksLikeModelDoesNotSupportTools(moveMsg)
                         && !classification.ProviderCommitted
                         && (streaming ? streamAccumulator.Length == 0 : true);
 
-                    if (allowNoToolsRestart)
+                    bool requiredClientToolCall =
+                        ClientToolCapabilityValidator.RequiresToolCall(request);
+
+                    bool allowNoToolsRestart = providerRejectedTools
+                        && !requiredClientToolCall;
+
+                    if (providerRejectedTools && requiredClientToolCall)
+                    {
+                        Error modelUnsupportedError = ClientToolCapabilityValidator.CreateModelUnsupportedError(
+                            lease.ResolvedModel,
+                            lease.Provider.Name);
+
+                        inferenceTypedError = modelUnsupportedError;
+
+                        inferenceError = modelUnsupportedError.Message;
+
+                        classification.IsConnectivityFailure = false;
+                    }
+                    else if (allowNoToolsRestart)
                     {
                         logger.LogInformation(
                             "Model does not support tools; retrying without local tools (exception type {ExceptionType}).",
@@ -3817,7 +3792,6 @@ public sealed partial class WizardIntelligenceProvider(
                 if (toolLoopProgressDetector.ObserveCompletedRound(
                         toolLoopProgressEntries))
                 {
-
                     Error noProgressError = new(
                         ErrorCodes.Hub.NoProgressDetected,
                         "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.");
@@ -3833,7 +3807,6 @@ public sealed partial class WizardIntelligenceProvider(
                     streamAccountingStatus = InferenceRunStatus.Failed;
 
                     break;
-
                 }
             }
 
@@ -3959,9 +3932,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                             if (retryContextGate.IsFailure)
                             {
-
                                 throw new ModelCallAdmissionException(retryContextGate.Error);
-
                             }
 
                             Result retryReservation = await streamAccountingLocal
@@ -4235,7 +4206,6 @@ public sealed partial class WizardIntelligenceProvider(
 
         try
         {
-
             // This handoff is the final part of the Session turn's ordering boundary. It must happen
             // before any ancillary cancellable await, while the same-Session gate is still held, or a
             // later turn could enqueue a wider frontier first and classify these entries under its
@@ -4248,13 +4218,10 @@ public sealed partial class WizardIntelligenceProvider(
                 AttachmentMemoryGateAmbient.HasUnprovenancedAttachmentContent,
                 grimoireTurn.SagaExtractionAfterSequenceExclusive,
                 grimoireTurn.SagaExtractionThroughSequence);
-
         }
         finally
         {
-
             grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
-
         }
 
         await TryIncrementSessionTokensAsync(
@@ -4361,10 +4328,8 @@ public sealed partial class WizardIntelligenceProvider(
                     classification,
                     streamAccumulator.Length))
             {
-
                 try
                 {
-
                     // Reached after a failed finalize as well as after a genuine interrupt, and the
                     // handle is still unfinalized in both. Passing the staged batch is what stops this
                     // cleanup from committing the answer a moment after the atomic arm refused to.
@@ -4375,17 +4340,13 @@ public sealed partial class WizardIntelligenceProvider(
                             covenantScope?.DerivedSensitivity,
                             covenantScope?.StagedCommit())
                         .ConfigureAwait(false);
-
                 }
                 finally
                 {
-
                     // Idempotent after the successful handoff; a necessary backstop for every path
                     // that exits before reaching it.
                     grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
-
                 }
-
             }
         }
     }
@@ -4430,13 +4391,10 @@ public sealed partial class WizardIntelligenceProvider(
             }
         }
 
-        IReadOnlyList<AITool> inferenceTools = ApplyToolPolicyFilters(request, toolSet);
-
-        inferenceTools = request.UnattendedMode
-            ? FilterToolsForUnattended(inferenceTools)
-            : inferenceTools;
-
-        inferenceTools = FilterAskHumanUnlessAvailable(inferenceTools, humanInteractionAvailable);
+        IReadOnlyList<AITool> inferenceTools = ApplyInferenceToolFilters(
+            request,
+            toolSet,
+            humanInteractionAvailable);
 
         // W3.5: capture every spell-script root (active spell + resonant dependencies) so the Sanctum
         // preflight validates each candidate path the tool may resolve, not just the active spell's.
@@ -4460,6 +4418,20 @@ public sealed partial class WizardIntelligenceProvider(
             VisibleAttachmentIds = visibleAttachmentIds,
             SpellScriptRoots = spellScriptRoots,
         };
+    }
+
+    private IReadOnlyList<AITool> ApplyInferenceToolFilters(
+        PingRequest request,
+        IReadOnlyList<AITool> tools,
+        bool humanInteractionAvailable)
+    {
+        IReadOnlyList<AITool> filtered = ApplyToolPolicyFilters(request, tools);
+
+        filtered = request.UnattendedMode
+            ? FilterToolsForUnattended(filtered)
+            : filtered;
+
+        return FilterAskHumanUnlessAvailable(filtered, humanInteractionAvailable);
     }
 
     private static IReadOnlyList<AITool> FilterAskHumanUnlessAvailable(
@@ -5174,9 +5146,7 @@ public sealed partial class WizardIntelligenceProvider(
             EmbeddingSettings embeddingSettings = settings.Value.ResolveEmbeddings();
 
             PreviewAuxiliaryObserver.Value?.Invoke(
-
                 new ContextPreviewAuxiliaryCall(
-
                     "retrieval-embedding",
 
                     true,
@@ -5244,11 +5214,8 @@ public sealed partial class WizardIntelligenceProvider(
             return null;
         }
 
-        // Normalized once here (rather than relying solely on RegisterWorkspace's internal
-        // normalization) so this exact string is also used for the WorkspacePath filter below —
-        // WorkspaceIndexingService persists chunks keyed by its own Path.GetFullPath-normalized form,
-        // and a mismatch (trailing slash, relative segments, casing) would silently return zero rows
-        // even though the workspace was indexed successfully.
+        // Resolve once through the indexing boundary: scheduler aliases share the first persisted
+        // spelling, and both scoped ranking and every metadata join must use that exact key.
         string normalizedWorkingDirectory = request.WorkingDirectory;
 
         try
@@ -5256,6 +5223,8 @@ public sealed partial class WizardIntelligenceProvider(
             normalizedWorkingDirectory = Path.GetFullPath(request.WorkingDirectory.Trim());
 
             workspaceIndexingService.RegisterWorkspace(normalizedWorkingDirectory);
+
+            normalizedWorkingDirectory = workspaceIndexingService.ResolveIndexedWorkspacePath(normalizedWorkingDirectory);
         }
         catch (Exception ex)
         {
@@ -5432,19 +5401,15 @@ public sealed partial class WizardIntelligenceProvider(
         ProviderSettings provider,
         string model)
     {
-
         if (chunks is not { Length: > 0 })
         {
-
             return null;
-
         }
 
         List<SessionAttachmentRetrievedChunk> accepted = [];
 
         foreach (SessionAttachmentRetrievedChunk chunk in chunks)
         {
-
             int bytes = Encoding.UTF8.GetByteCount(chunk.Content);
 
             ContextMaterializationEntry entry = ledger.Accept(
@@ -5476,17 +5441,13 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (entry.Accepted)
             {
-
                 _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
 
                 accepted.Add(chunk);
-
             }
-
         }
 
         return accepted.Count == 0 ? null : [.. accepted];
-
     }
 
     private static AttachmentMemoryProvenance BuildAttachmentMemoryProvenance(
@@ -5826,19 +5787,15 @@ public sealed partial class WizardIntelligenceProvider(
         string model,
         Guid? sessionId)
     {
-
         if (nodes is not { Length: > 0 })
         {
-
             return null;
-
         }
 
         List<TapestryContextNode> accepted = [];
 
         foreach (TapestryRetrievedNode node in nodes)
         {
-
             ContextMaterializationEntry entry = ledger.Accept(
                 new ContextMaterializationCandidate(
                     // A workspace tree is installation-scoped rather than session-scoped, so only
@@ -5859,7 +5816,6 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (entry.Accepted)
             {
-
                 _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
 
                 accepted.Add(new TapestryContextNode(
@@ -5871,13 +5827,10 @@ public sealed partial class WizardIntelligenceProvider(
                     node.ContentHash,
                     node.Similarity,
                     node.Content));
-
             }
-
         }
 
         return accepted.Count == 0 ? null : [.. accepted];
-
     }
 
     /// <summary>
@@ -5920,19 +5873,15 @@ public sealed partial class WizardIntelligenceProvider(
         string model,
         Guid? sessionId)
     {
-
         if (chunks is not { Length: > 0 })
         {
-
             return null;
-
         }
 
         List<SemanticContextChunk> accepted = [];
 
         foreach (SemanticContextChunk chunk in chunks)
         {
-
             string hash = ComputeContentHash(chunk.Content);
 
             ContextMaterializationEntry entry = ledger.Accept(
@@ -5953,17 +5902,13 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (entry.Accepted)
             {
-
                 _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
 
                 accepted.Add(chunk);
-
             }
-
         }
 
         return accepted.Count == 0 ? null : [.. accepted];
-
     }
 
     private SagaMemory[]? AcceptSagaMaterializations(
@@ -5973,19 +5918,15 @@ public sealed partial class WizardIntelligenceProvider(
         string model,
         Guid? sessionId)
     {
-
         if (memories is not { Length: > 0 })
         {
-
             return null;
-
         }
 
         List<SagaMemory> accepted = [];
 
         foreach (SagaMemory memory in memories)
         {
-
             string hash = ComputeContentHash(memory.Content);
 
             ContextMaterializationEntry entry = ledger.Accept(
@@ -6006,17 +5947,13 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (entry.Accepted)
             {
-
                 _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
 
                 accepted.Add(memory);
-
             }
-
         }
 
         return accepted.Count == 0 ? null : [.. accepted];
-
     }
 
     private static string ComputeContentHash(string content) =>
@@ -6026,12 +5963,9 @@ public sealed partial class WizardIntelligenceProvider(
         ref SessionAttachmentRetrievedChunk[]? chunks,
         ContextMaterializationEntry removed)
     {
-
         if (chunks is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         int originalCount = chunks.Length;
@@ -6053,25 +5987,19 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (chunks.Length == 0)
         {
-
             chunks = null;
-
         }
 
         return chunks?.Length != originalCount;
-
     }
 
     private static bool PruneSuppressedAttachmentRag(
         ref SessionAttachmentRetrievedChunk[]? chunks,
         ContextMaterializationLedger ledger)
     {
-
         if (chunks is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         int originalCount = chunks.Length;
@@ -6090,25 +6018,19 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (chunks.Length == 0)
         {
-
             chunks = null;
-
         }
 
         return chunks?.Length != originalCount;
-
     }
 
     private static bool PruneSuppressedWorkspaceRag(
         ref SemanticContextChunk[]? chunks,
         ContextMaterializationLedger ledger)
     {
-
         if (chunks is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         int originalCount = chunks.Length;
@@ -6117,7 +6039,6 @@ public sealed partial class WizardIntelligenceProvider(
             .Where(
                 chunk =>
                 {
-
                     string hash = ComputeContentHash(chunk.Content);
 
                     return ledger.Contains(
@@ -6128,31 +6049,24 @@ public sealed partial class WizardIntelligenceProvider(
                             new ContextMaterializationRange(
                                 chunk.ChunkIndex,
                                 chunk.ChunkIndex)));
-
                 })
             .ToArray();
 
         if (chunks.Length == 0)
         {
-
             chunks = null;
-
         }
 
         return chunks?.Length != originalCount;
-
     }
 
     private static bool RemoveWorkspaceRagChunk(
         ref SemanticContextChunk[]? chunks,
         ContextMaterializationEntry removed)
     {
-
         if (chunks is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         int originalCount = chunks.Length;
@@ -6166,13 +6080,10 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (chunks.Length == 0)
         {
-
             chunks = null;
-
         }
 
         return chunks?.Length != originalCount;
-
     }
 
     /// <summary>
@@ -6184,12 +6095,9 @@ public sealed partial class WizardIntelligenceProvider(
         ref TapestryContextNode[]? nodes,
         ContextMaterializationEntry removed)
     {
-
         if (nodes is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         int originalCount = nodes.Length;
@@ -6201,25 +6109,19 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (nodes.Length == 0)
         {
-
             nodes = null;
-
         }
 
         return nodes?.Length != originalCount;
-
     }
 
     private static bool RemoveSagaMemory(
         ref SagaMemory[]? memories,
         ContextMaterializationEntry removed)
     {
-
         if (memories is not { Length: > 0 })
         {
-
             return false;
-
         }
 
         int originalCount = memories.Length;
@@ -6233,13 +6135,10 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (memories.Length == 0)
         {
-
             memories = null;
-
         }
 
         return memories?.Length != originalCount;
-
     }
 
     private async Task<SessionAttachmentRetrievedChunk[]?> RetrieveSessionAttachmentContextAsync(
@@ -6247,7 +6146,6 @@ public sealed partial class WizardIntelligenceProvider(
         Embedding<float>? queryEmbedding,
         CancellationToken cancellationToken)
     {
-
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
         if (!embeddings.Enabled
@@ -6256,14 +6154,11 @@ public sealed partial class WizardIntelligenceProvider(
             || queryEmbedding is null
             || sessionAttachmentRetrieval is null)
         {
-
             return null;
-
         }
 
         try
         {
-
             SessionAttachmentRetrievedChunk[] chunks = await sessionAttachmentRetrieval.SearchAsync(
                 sessionId,
                 queryEmbedding,
@@ -6271,25 +6166,19 @@ public sealed partial class WizardIntelligenceProvider(
                 cancellationToken).ConfigureAwait(false);
 
             return chunks.Length == 0 ? null : chunks;
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogDebug(
                 ex,
                 "Session attachment semantic retrieval failed; continuing without attachment context.");
 
             return null;
-
         }
-
     }
 
     /// <summary>
@@ -6654,13 +6543,9 @@ public sealed partial class WizardIntelligenceProvider(
             if (previewExclusions is not null)
 
             {
-
                 previewExclusions.AddRange(
-
                     attunement.Excluded.Select(
-
                         static name => new ContextPreviewTool(
-
                             name,
 
                             "mcp",
@@ -6668,7 +6553,6 @@ public sealed partial class WizardIntelligenceProvider(
                             false,
 
                             "Excluded by active Spell tool attunement.")));
-
             }
         }
 
@@ -6752,9 +6636,9 @@ public sealed partial class WizardIntelligenceProvider(
 
         var forwarded = new List<AITool>(tools.Length);
 
-        foreach (OpenAiToolDefinition tool in tools)
+        foreach (OpenAiToolDefinition? tool in tools)
         {
-            if (tool.Function is null)
+            if (tool?.Function is null)
             {
                 continue;
             }
@@ -6818,7 +6702,8 @@ public sealed partial class WizardIntelligenceProvider(
     private IReadOnlyList<AITool> ApplyToolPolicyFilters(PingRequest request, IReadOnlyList<AITool> tools) =>
         request.ToolPolicy switch
         {
-            null or ToolPolicy.AllTools or ToolPolicy.NoTools => tools,
+            null or ToolPolicy.AllTools => tools,
+            ToolPolicy.NoTools => [],
             ToolPolicy.ReadOnlyTools => FilterToolsToAllowlist(tools, ReadOnlyToolNames),
             ToolPolicy.NoForbiddenArts => FilterToolsExcludingNames(
                 tools,
@@ -6890,8 +6775,6 @@ public sealed partial class WizardIntelligenceProvider(
             request.Reasoning,
             ResolveReasoningWireDialect(lease));
 
-        ApplyClientToolMode(options, request);
-
         if (request.DisableAllTools)
         {
             options.ToolMode = ChatToolMode.None;
@@ -6904,6 +6787,8 @@ public sealed partial class WizardIntelligenceProvider(
             return options;
         }
 
+        ApplyClientToolMode(options, request);
+
         options.Tools = tools.ToList();
 
         return options;
@@ -6913,6 +6798,13 @@ public sealed partial class WizardIntelligenceProvider(
         ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
             ? modelEntry?.Reasoning?.WireDialect ?? ReasoningWireDialect.Standard
             : ReasoningWireDialect.Standard;
+
+    private static bool ModelDeclaresToolsUnsupported(ChatClientLease lease) =>
+        ProviderResolver.TryResolveModelEntry(
+            lease.Provider,
+            lease.ResolvedModel,
+            out ModelEntry? modelEntry)
+        && modelEntry is { SupportsTools: false };
 
     private static bool ResolveReasoningEnabled(ChatClientLease lease) =>
         ProviderResolver.TryResolveModelEntry(
@@ -7160,19 +7052,14 @@ public sealed partial class WizardIntelligenceProvider(
         ContextTokenBreakdown breakdown,
         CancellationToken cancellationToken)
     {
-
         if (covenantDispatch is null || covenantScope is not { } scope)
         {
-
             return Result<CovenantDispatchAdmission?>.Success(null);
-
         }
 
         if (!dispatch.HasAdmittedContent && !scope.HistoryTainted && !scope.MayStage)
         {
-
             return Result<CovenantDispatchAdmission?>.Success(null);
-
         }
 
         SystemPromptBuildResult built = systemPromptDocument.BuildResult();
@@ -7186,11 +7073,9 @@ public sealed partial class WizardIntelligenceProvider(
             && messages[0].Role == ChatRole.System
             && !string.Equals(messages[0].Text, built.Prompt, StringComparison.Ordinal))
         {
-
             return Result<CovenantDispatchAdmission?>.Failure(new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The frozen system prompt does not match the transcript this dispatch would send."));
-
         }
 
         ProviderCallSensitivity sensitivity = CovenantDispatchGate.ResolveSensitivity(scope, dispatch);
@@ -7212,9 +7097,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (frozen.IsFailure)
         {
-
             return Result<CovenantDispatchAdmission?>.Failure(frozen.Error);
-
         }
 
         Result<CovenantDispatchAdmission> admitted = await covenantDispatch
@@ -7224,7 +7107,6 @@ public sealed partial class WizardIntelligenceProvider(
         return admitted.IsFailure
             ? Result<CovenantDispatchAdmission?>.Failure(admitted.Error)
             : Result<CovenantDispatchAdmission?>.Success(admitted.Value);
-
     }
 
     /// <summary>
@@ -7249,12 +7131,9 @@ public sealed partial class WizardIntelligenceProvider(
         IReadOnlyList<MeAiChatMessage> messages,
         ChatOptions chatOptions)
     {
-
         if (covenantScope is not { HasPlan: true } scope)
         {
-
             return CovenantDispatchPlan.Empty;
-
         }
 
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
@@ -7303,7 +7182,6 @@ public sealed partial class WizardIntelligenceProvider(
             headroom,
             MeasureSections,
             Measure);
-
     }
 
     private Result EnsureContextBudgetWithMaterializations(
@@ -7466,46 +7344,28 @@ public sealed partial class WizardIntelligenceProvider(
 
     private static void ApplyClientToolMode(ChatOptions options, PingRequest request)
     {
-        if (!request.ForwardClientTools || request.ClientToolChoice is null)
+        if (!request.ForwardClientTools
+            || !ClientToolCapabilityValidator.TryParse(
+                request.ClientToolChoice,
+                out ClientToolCapabilityValidator.ParsedChoice choice))
         {
             return;
         }
 
-        JsonElement choice = request.ClientToolChoice.Value;
-
-        if (choice.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        switch (choice.Mode)
         {
-            return;
-        }
-
-        if (choice.ValueKind == JsonValueKind.String)
-        {
-            string? value = choice.GetString();
-
-            options.ToolMode = value?.Trim().ToLowerInvariant() switch
-            {
-                "auto" => ChatToolMode.Auto,
-                "none" => ChatToolMode.None,
-                "required" => ChatToolMode.RequireAny,
-                _ => options.ToolMode
-            };
-
-            return;
-        }
-
-        if (choice.ValueKind == JsonValueKind.Object
-            && choice.TryGetProperty("type", out JsonElement typeElement)
-            && string.Equals(typeElement.GetString(), "function", StringComparison.Ordinal)
-            && choice.TryGetProperty("function", out JsonElement functionElement)
-            && functionElement.TryGetProperty("name", out JsonElement nameElement)
-            && nameElement.ValueKind == JsonValueKind.String)
-        {
-            string? name = nameElement.GetString();
-
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                options.ToolMode = ChatToolMode.RequireSpecific(name);
-            }
+            case ClientToolCapabilityValidator.ChoiceMode.Auto:
+                options.ToolMode = ChatToolMode.Auto;
+                break;
+            case ClientToolCapabilityValidator.ChoiceMode.None:
+                options.ToolMode = ChatToolMode.None;
+                break;
+            case ClientToolCapabilityValidator.ChoiceMode.Required:
+                options.ToolMode = ChatToolMode.RequireAny;
+                break;
+            case ClientToolCapabilityValidator.ChoiceMode.Specific:
+                options.ToolMode = ChatToolMode.RequireSpecific(choice.FunctionName!);
+                break;
         }
     }
 
@@ -7627,12 +7487,10 @@ public sealed partial class WizardIntelligenceProvider(
 
     private static int ReadCachedTokens(UsageDetails usage)
     {
-
         // Microsoft.Extensions.AI.Abstractions (v10.6.0+) surfaces prompt-cache hits via the
         // dedicated CachedInputTokenCount member. Cached input tokens are already included in
         // InputTokenCount, so we record them separately here only for the cache-hit metric.
         return ClampUsageToInt(usage.CachedInputTokenCount ?? 0L);
-
     }
 
     private static int ClampUsageToInt(long value)
@@ -7697,7 +7555,6 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     private static void RecordInferenceMetrics(ProviderSettings provider, string model, TimeSpan elapsed, ChatCompletionUsage? usage)
     {
-
         string providerName = provider.Name;
 
         ArcanumMetrics.InferenceDuration.Record(
@@ -7707,31 +7564,25 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (usage is null)
         {
-
             return;
-
         }
 
         if (usage.PromptTokens > 0)
         {
-
             ArcanumMetrics.InferenceTokensTotal.Add(
                 usage.PromptTokens,
                 new KeyValuePair<string, object?>("provider", providerName),
                 new KeyValuePair<string, object?>("model", model),
                 new KeyValuePair<string, object?>("direction", "prompt"));
-
         }
 
         if (usage.CompletionTokens > 0)
         {
-
             ArcanumMetrics.InferenceTokensTotal.Add(
                 usage.CompletionTokens,
                 new KeyValuePair<string, object?>("provider", providerName),
                 new KeyValuePair<string, object?>("model", model),
                 new KeyValuePair<string, object?>("direction", "completion"));
-
         }
 
         if (usage.ReasoningTokens > 0)
@@ -7741,7 +7592,6 @@ public sealed partial class WizardIntelligenceProvider(
                 new KeyValuePair<string, object?>("provider", providerName),
                 new KeyValuePair<string, object?>("model", model));
         }
-
     }
 
     /// <summary>
@@ -7764,10 +7614,8 @@ public sealed partial class WizardIntelligenceProvider(
         List<ContextTokenBreakdown> contextBreakdowns,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             List<string>? toolArgumentsJson = settings.Value.Host.AuditLog.RedactToolArguments
                 ? null
                 : [.. auditContext.ToolArgumentsJson];
@@ -7793,25 +7641,19 @@ public sealed partial class WizardIntelligenceProvider(
                 ContextBreakdowns: contextBreakdowns);
 
             await inferenceAuditLogger.LogAsync(record, cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             // Defense-in-depth: IInferenceAuditLogger.LogAsync itself promises never to throw, but a
             // failure while building the record (should not happen) must still never fail the turn.
             logger.LogWarning(
                 "Failed to write inference audit record; continuing without it (exception type {ExceptionType}).",
                 ex.GetType().FullName);
-
         }
-
     }
 
     internal static (string Provider, string Model) ResolveAuxiliaryAccountingIdentity(
@@ -7877,9 +7719,7 @@ public sealed partial class WizardIntelligenceProvider(
         ChatCompletionUsage? mapped = MapUsageDetails(usage);
 
         PreviewAuxiliaryObserver.Value?.Invoke(
-
             new ContextPreviewAuxiliaryCall(
-
                 purpose,
 
                 true,
@@ -8037,36 +7877,28 @@ public sealed partial class WizardIntelligenceProvider(
         IReadOnlyList<AttachmentMemoryProvenance> provenance,
         CancellationToken cancellationToken)
     {
-
         if (attachmentMemoryProvenanceStore is null
             || sourceEntryId is null
             || provenance.Count == 0)
         {
-
             return;
-
         }
 
         try
         {
-
             await attachmentMemoryProvenanceStore
                 .RecordConsultationsAsync(
                     sourceEntryId.Value,
                     provenance,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(
                 ex,
                 "Attachment consultation provenance could not be persisted; durable attachment-derived promotion will remain fail-closed for this turn.");
-
         }
-
     }
 
     private static bool LooksLikeModelDoesNotSupportTools(string? message)
@@ -8078,44 +7910,32 @@ public sealed partial class WizardIntelligenceProvider(
 
     internal static string MapChatFinishReasonToOpenAi(ChatFinishReason? finishReason)
     {
-
         if (finishReason is null)
         {
-
             return "stop";
-
         }
 
         if (finishReason == ChatFinishReason.Stop)
         {
-
             return "stop";
-
         }
 
         if (finishReason == ChatFinishReason.Length)
         {
-
             return "length";
-
         }
 
         if (finishReason == ChatFinishReason.ToolCalls)
         {
-
             return "tool_calls";
-
         }
 
         if (finishReason == ChatFinishReason.ContentFilter)
         {
-
             return "content_filter";
-
         }
 
         return finishReason.Value.Value;
-
     }
 
     private static bool HasSessionAttachmentPayload(PingRequest request) =>
@@ -8135,7 +7955,6 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     private async Task<Result> FilterGuardrailsInputAsync(PingRequest request, CancellationToken cancellationToken)
     {
-
         if (guardrailsPipeline is null)
         {
             return Result.Success();
@@ -8157,7 +7976,6 @@ public sealed partial class WizardIntelligenceProvider(
             .ConfigureAwait(false);
 
         return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);
-
     }
 
     /// <summary>
@@ -8171,7 +7989,6 @@ public sealed partial class WizardIntelligenceProvider(
         string model,
         CancellationToken cancellationToken)
     {
-
         if (guardrailsPipeline is null)
         {
             return Result.Success();
@@ -8182,7 +7999,6 @@ public sealed partial class WizardIntelligenceProvider(
             .ConfigureAwait(false);
 
         return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);
-
     }
 
     private static string BuildInferenceFailureMessage(ChatClientLease lease, Exception? ex = null) =>
@@ -8227,7 +8043,6 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken)
     {
-
         if (ex is HttpRequestException or System.Net.Sockets.SocketException)
         {
             return true;
@@ -8270,7 +8085,6 @@ public sealed partial class WizardIntelligenceProvider(
         }
 
         return ex.InnerException is { } inner && IsConnectivityFailure(inner, callerToken);
-
     }
 
     private readonly record struct InferenceAttemptResult(
@@ -8288,7 +8102,6 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     private sealed class TurnContextSeed
     {
-
         /// <summary>
         /// The Grimoire turn opened by the first candidate that got far enough to begin one.
         /// <see langword="null"/> until then; a stateless request seeds an empty handle.
@@ -8298,12 +8111,10 @@ public sealed partial class WizardIntelligenceProvider(
         public bool QueryEmbeddingResolved { get; set; }
 
         public Embedding<float>? QueryEmbedding { get; set; }
-
     }
 
     private sealed class StreamFailureClassification
     {
-
         public bool IsConnectivityFailure { get; set; }
 
         /// <summary>
@@ -8316,7 +8127,6 @@ public sealed partial class WizardIntelligenceProvider(
         /// Buffered-mode terminal outcome (preserves <see cref="PromptTurnResult"/> / <see cref="Error"/> codes).
         /// </summary>
         public Result<PromptTurnResult>? BufferedTerminal { get; set; }
-
     }
 
     private sealed record TokenAccountingDependencies(
@@ -8344,5 +8154,4 @@ public sealed partial class WizardIntelligenceProvider(
     {
         public Error Error { get; } = error;
     }
-
 }

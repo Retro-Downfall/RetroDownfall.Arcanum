@@ -5,13 +5,16 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -24,6 +27,7 @@ public sealed class ApprenticeServiceReliabilityTests
     public async Task ExecuteStepStream_StructuredToolDenial_FailsRegardlessOfWording()
     {
         Guid apprenticeId = Guid.NewGuid();
+
         IntelligenceEvent denial = new(
             IntelligenceEventType.ToolResult,
             Message: "execute_command",
@@ -33,7 +37,9 @@ public sealed class ApprenticeServiceReliabilityTests
                 "execute_command",
                 "{}"),
             ToolDenied: true);
+
         ScriptedStreamIntelligence intelligence = new(denial);
+
         ApprenticeService service = CreateService(
             new InMemoryApprenticeRepository(),
             new ArcanumSettings(),
@@ -46,8 +52,11 @@ public sealed class ApprenticeServiceReliabilityTests
             TestApprentice(apprenticeId));
 
         Assert.True(outcome.StepFailed);
+
         Assert.True(outcome.ToolDenied);
+
         Assert.False(outcome.IsRetryable);
+
         Assert.Equal(denial.Data, outcome.ErrorMessage);
     }
 
@@ -55,6 +64,7 @@ public sealed class ApprenticeServiceReliabilityTests
     public async Task ExecuteStepStream_LegacyDeniedWardFollowedByResult_CompletesSuccessfully()
     {
         Guid apprenticeId = Guid.NewGuid();
+
         ScriptedStreamIntelligence intelligence = new(
             new IntelligenceEvent(
                 IntelligenceEventType.WardResolved,
@@ -65,6 +75,7 @@ public sealed class ApprenticeServiceReliabilityTests
             new IntelligenceEvent(
                 IntelligenceEventType.Result,
                 Message: "completed"));
+
         ApprenticeService service = CreateService(
             new InMemoryApprenticeRepository(),
             new ArcanumSettings(),
@@ -77,9 +88,13 @@ public sealed class ApprenticeServiceReliabilityTests
             TestApprentice(apprenticeId));
 
         Assert.False(outcome.StepFailed);
+
         Assert.False(outcome.ToolDenied);
+
         Assert.False(outcome.IsRetryable);
+
         Assert.Equal("completed", outcome.ResultText);
+
         Assert.Null(outcome.ErrorMessage);
     }
 
@@ -87,6 +102,7 @@ public sealed class ApprenticeServiceReliabilityTests
     public async Task ExecuteStepStream_DenialPhraseInSuccessfulToolData_DoesNotFailTheStep()
     {
         Guid apprenticeId = Guid.NewGuid();
+
         ScriptedStreamIntelligence intelligence = new(
             new IntelligenceEvent(
                 IntelligenceEventType.ToolResult,
@@ -100,6 +116,7 @@ public sealed class ApprenticeServiceReliabilityTests
             new IntelligenceEvent(
                 IntelligenceEventType.Result,
                 Message: "completed"));
+
         ApprenticeService service = CreateService(
             new InMemoryApprenticeRepository(),
             new ArcanumSettings(),
@@ -112,7 +129,9 @@ public sealed class ApprenticeServiceReliabilityTests
             TestApprentice(apprenticeId));
 
         Assert.False(outcome.StepFailed);
+
         Assert.False(outcome.ToolDenied);
+
         Assert.Equal("completed", outcome.ResultText);
     }
 
@@ -120,6 +139,7 @@ public sealed class ApprenticeServiceReliabilityTests
     public async Task ExecuteStepStream_ToolNameContainingDenialPhrase_DoesNotFailTheStep()
     {
         Guid apprenticeId = Guid.NewGuid();
+
         ScriptedStreamIntelligence intelligence = new(
             new IntelligenceEvent(
                 IntelligenceEventType.ToolResult,
@@ -132,6 +152,7 @@ public sealed class ApprenticeServiceReliabilityTests
             new IntelligenceEvent(
                 IntelligenceEventType.Result,
                 Message: "completed"));
+
         ApprenticeService service = CreateService(
             new InMemoryApprenticeRepository(),
             new ArcanumSettings(),
@@ -144,7 +165,9 @@ public sealed class ApprenticeServiceReliabilityTests
             TestApprentice(apprenticeId));
 
         Assert.False(outcome.StepFailed);
+
         Assert.False(outcome.ToolDenied);
+
         Assert.Equal("completed", outcome.ResultText);
     }
 
@@ -152,6 +175,7 @@ public sealed class ApprenticeServiceReliabilityTests
     public async Task ExecuteStepStream_ReasoningDenialText_IsIgnoredAndNotPublished()
     {
         Guid apprenticeId = Guid.NewGuid();
+
         ScriptedStreamIntelligence intelligence = new(
             new IntelligenceEvent(
                 IntelligenceEventType.Reasoning,
@@ -168,20 +192,26 @@ public sealed class ApprenticeServiceReliabilityTests
             new IntelligenceEvent(
                 IntelligenceEventType.Result,
                 Message: "completed"));
+
         ArcanumSettings settings = new();
+
         ChronicleHub hub = new();
+
         ApprenticeService service = CreateService(
             new InMemoryApprenticeRepository(),
             settings,
             new CapturingLogger<ApprenticeService>(),
             intelligence,
             hub: hub);
+
         using CancellationTokenSource chronicleCancellation = new();
+
         await using IAsyncEnumerator<ApprenticeEvent> chronicle =
             hub.SubscribeAsync(
                     apprenticeId,
                     chronicleCancellation.Token)
                 .GetAsyncEnumerator();
+
         Task<bool> firstEvent = chronicle.MoveNextAsync().AsTask();
 
         ApprenticeService.StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
@@ -190,26 +220,29 @@ public sealed class ApprenticeServiceReliabilityTests
             TestApprentice(apprenticeId));
 
         Assert.False(outcome.StepFailed);
+
         Assert.Equal("completed", outcome.ResultText);
+
         Assert.True(
             await firstEvent.WaitAsync(TimeSpan.FromSeconds(5)));
+
         Assert.Equal(
             IntelligenceEventType.ToolResult,
             chronicle.Current.WizardEvent?.Type);
 
         Task<bool> unexpectedEvent = chronicle.MoveNextAsync().AsTask();
+
         await chronicleCancellation.CancelAsync();
+
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => unexpectedEvent);
     }
-
     // P8: intervene-and-resume at full capacity must acquire the slot FIRST and
     // return MaxReached with NO state mutation (no plan/checkpoint/publish).
 
     [Fact]
     public async Task Intervene_ResumeAtCapacity_ReturnsCapacityFailureWithNoStateMutation()
     {
-
         Guid escalade = Guid.NewGuid();
 
         string originalPlan = ApprenticeRepository.SerializePlan(
@@ -219,27 +252,16 @@ public sealed class ApprenticeServiceReliabilityTests
 
         Apprentice apprentice = new()
         {
-
             Id = escalade,
-
             Name = "Reliability-1",
-
             Goal = "Survive a capacity-rejected resume.",
-
             WorkspacePath = "/tmp/arcanum-test",
-
             Status = ApprenticeStatus.Escalated.ToString(),
-
             Plan = originalPlan,
-
             CurrentStep = 0,
-
             CheckpointData = null,
-
             ErrorMessage = "Need Divine Intervention.",
-
         };
-
         InMemoryApprenticeRepository repo = new(apprentice);
 
         ArcanumSettings settings = CreateCapacitySettings();
@@ -269,13 +291,11 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.Null(persisted.CheckpointData);
 
         Assert.Equal("Need Divine Intervention.", persisted.ErrorMessage);
-
     }
 
     [Fact]
     public async Task StartAsync_QueuedBeyondFormerCapacity_IsDurableAndEventuallyRuns()
     {
-
         Apprentice first = TestApprentice(Guid.NewGuid());
 
         Apprentice second = TestApprentice(Guid.NewGuid());
@@ -314,9 +334,7 @@ public sealed class ApprenticeServiceReliabilityTests
         await repo.WaitForExecutionAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(5));
 
         await repo.WaitForExecutionAsync(second.Id).WaitAsync(TimeSpan.FromSeconds(5));
-
     }
-
     // W2.4 Fix 1 (P2): an apprentice queued in _pendingStarts (status Idle, which
     // IsCancellable excludes) must be cancellable. CancelAsync must drain it from
     // the pending queue and mark it Cancelled (was: not cancellable, stayed queued).
@@ -324,30 +342,19 @@ public sealed class ApprenticeServiceReliabilityTests
     [Fact]
     public async Task CancelAsync_ApprenticePendingInQueue_DrainsAndMarksCancelled()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new()
         {
-
             Id = apprenticeId,
-
             Name = "Reliability-Fix1",
-
             Goal = "Be cancellable while pending in the start queue.",
-
             WorkspacePath = "/tmp/arcanum-test",
-
             Status = ApprenticeStatus.Idle.ToString(),
-
             Plan = "[]",
-
             CurrentStep = 0,
-
             CheckpointData = null,
-
         };
-
         InMemoryApprenticeRepository repo = new(apprentice);
 
         ArcanumSettings settings = CreateCapacitySettings();
@@ -373,9 +380,7 @@ public sealed class ApprenticeServiceReliabilityTests
         Apprentice persisted = repo.Get(apprenticeId);
 
         Assert.Equal(ApprenticeStatus.Cancelled.ToString(), persisted.Status);
-
     }
-
     // W2.4 Fix 2 (P2): StartAsync at capacity with queue space must return SUCCESS
     // (the apprentice is queued) rather than Failure("Apprentice.MaxReached"). No
     // execution task is started yet; the id sits in _pendingStarts and not in
@@ -384,30 +389,19 @@ public sealed class ApprenticeServiceReliabilityTests
     [Fact]
     public async Task StartAsync_AtCapacity_WithQueueSpace_ReturnsSuccessAndQueues()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new()
         {
-
             Id = apprenticeId,
-
             Name = "Reliability-Fix2",
-
             Goal = "Survive being queued on capacity.",
-
             WorkspacePath = "/tmp/arcanum-test",
-
             Status = ApprenticeStatus.Idle.ToString(),
-
             Plan = "[]",
-
             CurrentStep = 0,
-
             CheckpointData = null,
-
         };
-
         InMemoryApprenticeRepository repo = new(apprentice);
 
         ArcanumSettings settings = CreateCapacitySettings();
@@ -425,9 +419,336 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.Contains(apprenticeId, GetPendingStarts(service));
 
         Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
-
     }
 
+    [Fact]
+    public async Task BeginExecutionTask_EarlyFaultPublishesOwnedTaskBeforeLoggingAndCleanup()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        RefusingScopeFactory scopes = new();
+
+        CapturingLogger<ApprenticeService> logger = new();
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            logger,
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        Task ownedTask;
+
+        using (GetExecutionLifecycleLock(service).EnterScope())
+        {
+            BeginExecutionTask(service, apprenticeId);
+
+            Assert.True(GetActiveTasks(service).TryGetValue(apprenticeId, out Task? publishedTask));
+
+            ownedTask = Assert.IsAssignableFrom<Task>(publishedTask);
+
+            Assert.NotSame(Task.CompletedTask, ownedTask);
+
+            Assert.False(
+                ownedTask.IsCompleted,
+                "The owned worker must not run before its exact Task is published.");
+
+            Assert.Equal(0, scopes.Created);
+        }
+
+        await ownedTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetPrivateCollectionCount(service, "_executionTokens"));
+
+        Assert.Equal(0, GetPrivateCollectionCount(service, "_executionLeases"));
+
+        Assert.Equal(0, GetPrivateCollectionCount(service, "_executionReservations"));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+
+        LogEntry terminalFailure = Assert.Single(
+            logger.Entries,
+            entry => entry.Message.Contains(
+                "Apprentice run task faulted",
+                StringComparison.Ordinal));
+
+        InvalidOperationException failure = Assert.IsType<InvalidOperationException>(
+            terminalFailure.Exception);
+
+        Assert.Equal("Admission must precede scope creation.", failure.Message);
+    }
+
+    [Fact]
+    public async Task PendingStart_CapacityLossPublicationRemainsInsideLifecycleCriticalSection()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Planning.ToString();
+
+        apprentice.Plan = "[]";
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        BlockingPlanIntelligence intelligence = new();
+
+        BlockingCapacityLossExecutionCapacity capacity = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            new NotImplementedGrimoireRepository(),
+            executionCapacity: capacity);
+
+        Guid holderId = Guid.NewGuid();
+
+        Assert.True(TryAcquireExecutionSlot(service, holderId));
+
+        Task<ExecutionSlotAttempt>? admission = null;
+
+        try
+        {
+            Task<bool> atomicPublicationProbe = Task.Factory.StartNew(
+                () =>
+                {
+                    using Lock.Scope pendingPublication =
+                        GetPendingStartsLock(service).EnterScope();
+
+                    admission = Task.Factory.StartNew(
+                        () => TryAcquireExecutionSlot(
+                            service,
+                            apprenticeId,
+                            queueOnCapacity: true),
+                        CancellationToken.None,
+                        TaskCreationOptions.LongRunning,
+                        TaskScheduler.Default);
+
+                    capacity.CapacityLossReached.Task
+                        .WaitAsync(TimeSpan.FromSeconds(10))
+                        .GetAwaiter()
+                        .GetResult();
+
+                    capacity.AllowCapacityLossReturn.TrySetResult();
+
+                    return SpinWait.SpinUntil(
+                        () => CanEnterAndReleaseExecutionLifecycleLock(service),
+                        TimeSpan.FromSeconds(1));
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+
+            bool publicationEscapedLifecycle = await atomicPublicationProbe;
+
+            Assert.False(
+                publicationEscapedLifecycle,
+                "The lifecycle lock must remain held until the exact pending identity is published.");
+
+            Assert.NotNull(admission);
+
+            ExecutionSlotAttempt queued = await admission!.WaitAsync(
+                TimeSpan.FromSeconds(10));
+
+            Assert.True(queued.Accepted, queued.Failure?.Error.Message);
+
+            Assert.True(queued.Queued);
+
+            Assert.Equal([apprenticeId], GetPendingStarts(service).ToArray());
+
+            ReleaseAcquiredExecutionSlot(service, holderId);
+
+            await WaitUntilAsync(() => intelligence.ExecuteCalls == 1);
+
+            Assert.DoesNotContain(apprenticeId, GetPendingStarts(service));
+
+            Assert.False(GetPendingStartIds(service).ContainsKey(apprenticeId));
+
+            Assert.True(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(1, GetConcurrencyGate(service).RunningCount);
+        }
+        finally
+        {
+            capacity.AllowCapacityLossReturn.TrySetResult();
+
+            ReleaseAcquiredExecutionSlot(service, holderId);
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task PendingStart_ConcurrentCapacityWinnerRetainsExactIdentityAndLaterRuns()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Idle.ToString();
+
+        apprentice.Plan = "[]";
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        BlockingPlanIntelligence intelligence = new();
+
+        ConcurrentWinnerExecutionCapacity capacity = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            new NotImplementedGrimoireRepository(),
+            executionCapacity: capacity);
+
+        Guid holderId = Guid.NewGuid();
+
+        Assert.True(TryAcquireExecutionSlot(service, holderId));
+
+        Result<string> queued = await service.StartAsync(
+            apprenticeId,
+            CancellationToken.None);
+
+        Assert.True(queued.IsSuccess, queued.Error.Message);
+
+        Assert.Equal([apprenticeId], GetPendingStarts(service).ToArray());
+
+        capacity.ArmConcurrentWinner();
+
+        try
+        {
+            ReleaseAcquiredExecutionSlot(service, holderId);
+
+            Assert.True(capacity.WinnerHeld);
+
+            Assert.Equal([apprenticeId], GetPendingStarts(service).ToArray());
+
+            Assert.True(GetPendingStartIds(service).ContainsKey(apprenticeId));
+
+            capacity.ReleaseConcurrentWinner();
+
+            InvokeTryDequeuePendingStart(service);
+
+            await WaitUntilAsync(() => intelligence.ExecuteCalls == 1);
+
+            Assert.DoesNotContain(apprenticeId, GetPendingStarts(service));
+
+            Assert.False(GetPendingStartIds(service).ContainsKey(apprenticeId));
+
+            Assert.True(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(1, GetConcurrencyGate(service).RunningCount);
+        }
+        finally
+        {
+            capacity.ReleaseConcurrentWinner();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task PendingStart_DequeueDuringStopRetainsExactIdentityWithoutStarting()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Idle.ToString();
+
+        apprentice.Plan = "[]";
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        BlockingPlanIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        Guid holderId = Guid.NewGuid();
+
+        Assert.True(TryAcquireExecutionSlot(service, holderId));
+
+        Result<string> queued = await service.StartAsync(
+            apprenticeId,
+            CancellationToken.None);
+
+        Assert.True(queued.IsSuccess, queued.Error.Message);
+
+        Task stop = service.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitUntilAsync(() => GetStopping(service));
+
+            InvokeTryDequeuePendingStart(service);
+
+            Assert.Equal([apprenticeId], GetPendingStarts(service).ToArray());
+
+            Assert.True(GetPendingStartIds(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(0, intelligence.ExecuteCalls);
+        }
+        finally
+        {
+            ReleaseAcquiredExecutionSlot(service, holderId);
+
+            await stop.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task PendingStart_AlreadyRunningEntryIsDroppedWhileCapacityEntryIsRetained()
+    {
+        Guid activeId = Guid.NewGuid();
+
+        Guid waitingId = Guid.NewGuid();
+
+        using ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>());
+
+        Assert.True(TryAcquireExecutionSlot(service, activeId));
+
+        Assert.True(GetPendingStartIds(service).TryAdd(activeId, 0));
+
+        GetPendingStarts(service).Enqueue(activeId);
+
+        Assert.True(GetPendingStartIds(service).TryAdd(waitingId, 0));
+
+        GetPendingStarts(service).Enqueue(waitingId);
+
+        InvokeTryDequeuePendingStart(service);
+
+        Assert.Equal([waitingId], GetPendingStarts(service).ToArray());
+
+        Assert.False(GetPendingStartIds(service).ContainsKey(activeId));
+
+        Assert.True(GetPendingStartIds(service).ContainsKey(waitingId));
+
+        ReleaseAcquiredExecutionSlot(service, activeId);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(waitingId));
+
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
     // W2.4 Fix 3 (P2): a non-cancel exception in ONE Simulacrum branch must NOT
     // fail the whole Task.WhenAll. RunSimulacrumBranchAsync must catch the
     // exception and return a Terminal SingleStepResult (was: exception escaped,
@@ -436,33 +757,22 @@ public sealed class ApprenticeServiceReliabilityTests
     [Fact]
     public async Task RunSimulacrumBranchAsync_NonCancelException_ReturnsTerminalNotThrows()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new()
         {
-
             Id = apprenticeId,
-
             Name = "Reliability-Fix3",
-
             Goal = "Isolate a single branch fault.",
-
             WorkspacePath = "/tmp/arcanum-test",
-
             Status = ApprenticeStatus.Running.ToString(),
-
             Plan = ApprenticeRepository.SerializePlan(
             [
                 new PlanStep { Index = 0, Description = "Faulty branch" },
             ]),
-
             CurrentStep = 0,
-
             SessionId = Guid.NewGuid(),
-
         };
-
         InMemoryApprenticeRepository repo = new(apprentice);
 
         ArcanumSettings settings = CreateCapacitySettings();
@@ -486,21 +796,13 @@ public sealed class ApprenticeServiceReliabilityTests
 
         Task task = (Task)method!.Invoke(service, new object[]
         {
-
             gate,
-
             apprentice,
-
             plan,
-
             0,
-
             settings.ResolveApprentices(),
-
             apprenticeId,
-
             linkedCts,
-
         })!;
 
         // RED: awaiting a faulted task throws InvalidOperationException.
@@ -517,51 +819,2643 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.NotNull(kind);
 
         Assert.Equal("Terminal", kind!.ToString());
-
     }
 
-    // A late OperationCanceledException handler from a prior generation must not
-    // persist Paused over a newer Resume that already incremented the execution generation.
+    [Fact]
+    public async Task Simulacrum_branch_startup_failure_joins_started_branches_and_preserves_both_failures()
+    {
+        TaskCompletionSource<int> firstBranch = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<int> secondBranch = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<int[]> startup = ApprenticeService.StartAndJoinBranchesAsync(
+            groupStart: 0,
+            groupEnd: 3,
+            branchIndex => branchIndex switch
+            {
+                0 => firstBranch.Task,
+                1 => secondBranch.Task,
+                _ => throw new InvalidOperationException("later branch setup failed"),
+            });
+
+        Assert.False(startup.IsCompleted);
+
+        firstBranch.TrySetException(new InvalidOperationException("first started branch failed"));
+
+        Assert.False(startup.IsCompleted);
+
+        secondBranch.TrySetException(new InvalidOperationException("second started branch failed"));
+
+        AggregateException failure = await Assert.ThrowsAsync<AggregateException>(() => startup);
+
+        Assert.Collection(
+            failure.InnerExceptions,
+            exception => Assert.Equal("later branch setup failed", exception.Message),
+            exception => Assert.Equal("first started branch failed", exception.Message),
+            exception => Assert.Equal("second started branch failed", exception.Message));
+    }
 
     [Fact]
-    public async Task RunApprenticeAsync_StaleGeneration_DoesNotPersistPausedOverNewerResume()
+    public async Task SimulacrumBranchStartupFailureConcludesChildrenDetectedByStartedBranches()
     {
+        Guid childId = Guid.NewGuid();
 
+        ApprenticeService.CastSendingSettlement castSendings = new();
+
+        IReadOnlyList<Guid> concluded = [];
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ApprenticeService.StartJoinAndConcludeSimulacrumBranchesAsync(
+                groupStart: 0,
+                groupEnd: 2,
+                branchIndex =>
+                {
+                    if (branchIndex == 0)
+                    {
+                        castSendings.Record(childId);
+
+                        return Task.FromResult(branchIndex);
+                    }
+
+                    throw new InvalidOperationException("later branch starter failed");
+                },
+                () =>
+                {
+                    concluded = castSendings.SnapshotUnsettled();
+
+                    return ValueTask.CompletedTask;
+                }));
+
+        Assert.Equal([childId], concluded);
+    }
+
+    [Fact]
+    public async Task SimulacrumPreservesBranchAndConclusionFailures()
+    {
+        AggregateException failure = await Assert.ThrowsAsync<AggregateException>(
+            () => ApprenticeService.StartJoinAndConcludeSimulacrumBranchesAsync(
+                groupStart: 0,
+                groupEnd: 1,
+                _ => Task.FromException<int>(new InvalidOperationException("branch failed")),
+                () => ValueTask.FromException(new IOException("conclusion failed"))));
+
+        Assert.Collection(
+            failure.InnerExceptions,
+            branch => Assert.Equal("branch failed", branch.Message),
+            conclusion => Assert.Equal("conclusion failed", conclusion.Message));
+    }
+
+    [Fact]
+    public void CastSendingSettlementRetainsFirstDetectionOrderWhileDeduplicating()
+    {
+        Guid first = Guid.NewGuid();
+
+        Guid second = Guid.NewGuid();
+
+        Guid third = Guid.NewGuid();
+
+        ApprenticeService.CastSendingSettlement settlement = new();
+
+        settlement.Record(first);
+
+        settlement.Record(second);
+
+        settlement.Record(first);
+
+        settlement.Record(third);
+
+        settlement.MarkSettled(second);
+
+        Assert.Equal([first, third], settlement.SnapshotUnsettled());
+    }
+
+    [Fact]
+    public async Task SimulacrumValidatesChildrenAndShiftsFateBeforeCheckpointAdvance()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        List<PlanStep> plan =
+        [
+            new PlanStep { Index = 0, Description = "First branch", IsParallel = true },
+            new PlanStep { Index = 1, Description = "Second branch", IsParallel = true },
+            new PlanStep { Index = 2, Description = "Original tail" },
+        ];
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Reliable Simulacrum",
+            Goal = "Commit only after every grouped effect is durable.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(plan),
+            CurrentStep = 0,
+            CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+            {
+                CurrentStep = 0,
+                ConversationSummary = "keep me",
+                CompletedToolCallIds = ["receipt-1"],
+            }),
+            SessionId = Guid.NewGuid(),
+        };
+        SimulacrumOrderingRepository repo = new(apprentice, childId);
+
+        SimulacrumOrderingIntelligence intelligence = new(childId);
+
+        ArcanumSettings settings = CreateCapacitySettings();
+
+        ApprenticeService service = CreateService(
+            repo,
+            settings,
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        using CancellationTokenSource linkedCts = new();
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("ExecuteSimulacrumGroupAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task<bool> execution = (Task<bool>)method!.Invoke(
+            service,
+            new object[]
+            {
+                repo,
+                intelligence,
+                apprentice,
+                plan,
+                0,
+                2,
+                settings.ResolveApprentices(),
+                apprenticeId,
+                linkedCts,
+            })!;
+
+        try
+        {
+            await repo.ChildSettlementReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            AssertUnadvanced(repo.Get(apprenticeId));
+
+            repo.AllowChildSettlement.TrySetResult();
+
+            await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            AssertUnadvanced(repo.Get(apprenticeId));
+
+            intelligence.AllowShiftingFate.TrySetResult();
+
+            Assert.True(await execution.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Apprentice completed = repo.Get(apprenticeId);
+
+            Assert.Equal(2, completed.CurrentStep);
+
+            ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
+                ApprenticeRepository.DeserializeCheckpoint(completed.CheckpointData));
+
+            Assert.Equal(2, checkpoint.CurrentStep);
+
+            Assert.Equal("keep me", checkpoint.ConversationSummary);
+
+            Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
+
+            List<PlanStep> completedPlan = ApprenticeRepository.DeserializePlan(completed.Plan);
+
+            Assert.Equal("completed", completedPlan[0].Status);
+
+            Assert.Equal("completed", completedPlan[1].Status);
+
+            Assert.Equal("Revised tail", completedPlan[2].Description);
+        }
+        finally
+        {
+            repo.AllowChildSettlement.TrySetResult();
+
+            intelligence.AllowShiftingFate.TrySetResult();
+
+            _ = await Record.ExceptionAsync(() => execution);
+        }
+        static void AssertUnadvanced(Apprentice persisted)
+        {
+            Assert.Equal(0, persisted.CurrentStep);
+
+            ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
+                ApprenticeRepository.DeserializeCheckpoint(persisted.CheckpointData));
+
+            Assert.Equal(0, checkpoint.CurrentStep);
+
+            Assert.Equal("keep me", checkpoint.ConversationSummary);
+
+            Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
+        }
+    }
+
+    [Fact]
+    public async Task SerialRetrySettlesCastChildrenFromEveryAttempt()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid firstChildId = Guid.NewGuid();
+
+        Guid secondChildId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        Apprentice firstChild = RunningChild(firstChildId, apprenticeId, apprentice.CampaignId);
+
+        Apprentice secondChild = RunningChild(secondChildId, apprenticeId, apprentice.CampaignId);
+
+        InMemoryApprenticeRepository repo = new(apprentice, firstChild, secondChild);
+
+        CastThenRetryIntelligence intelligence = new(firstChildId, secondChildId);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(apprenticeId, repo.Get(firstChildId).ParentApprenticeId);
+
+        Assert.Equal(apprenticeId, repo.Get(secondChildId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task SerialProviderFaultAfterCastStillSettlesDurableChild()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        InMemoryApprenticeRepository repo = new(
+            apprentice,
+            RunningChild(childId, apprenticeId, apprentice.CampaignId));
+
+        CastThenThrowIntelligence intelligence = new(childId);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task SerialCancellationAfterCastSettlesChildWithoutCallerToken()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        CancellationSensitiveRepository repo = new(
+            apprentice,
+            RunningChild(childId, apprenticeId, apprentice.CampaignId));
+
+        BlockingCastIntelligence intelligence = new(childId);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await intelligence.CastObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Result<string> cancelled = await service.CancelAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(cancelled.IsSuccess, cancelled.Error.Message);
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Cancelled.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task CastResultCannotReparentAnUnrelatedApprentice()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Guid unrelatedParentId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        InMemoryApprenticeRepository repo = new(
+            apprentice,
+            RunningChild(childId, unrelatedParentId));
+
+        ScriptedStreamIntelligence intelligence = new(
+            CastResult(childId),
+            new IntelligenceEvent(IntelligenceEventType.Result, "step complete"));
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(unrelatedParentId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task CastResultCannotClaimAChildFromAnotherCampaign()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        apprentice.CampaignId = campaignId;
+
+        InMemoryApprenticeRepository repo = new(
+            apprentice,
+            RunningChild(childId, apprenticeId, Guid.NewGuid()));
+
+        ScriptedStreamIntelligence intelligence = new(
+            CastResult(childId),
+            new IntelligenceEvent(IntelligenceEventType.Result, "step complete"));
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.NotEqual(campaignId, repo.Get(childId).CampaignId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task CastResultCannotClaimAChildWithAnotherDelegationChain()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        apprentice.CampaignId = campaignId;
+
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        {
+            DelegationChain = ["trusted-hop"],
+        });
+
+        InMemoryApprenticeRepository repo = new(
+            apprentice,
+            RunningChild(childId, apprenticeId, campaignId, ["different-hop"]));
+
+        ScriptedStreamIntelligence intelligence = new(
+            CastResult(childId),
+            new IntelligenceEvent(IntelligenceEventType.Result, "step complete"));
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        ApprenticeCheckpoint childCheckpoint = Assert.IsType<ApprenticeCheckpoint>(
+            ApprenticeRepository.DeserializeCheckpoint(repo.Get(childId).CheckpointData));
+
+        Assert.Equal(["different-hop"], childCheckpoint.DelegationChain);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task CastResultCannotLaunchManualSiblingWithoutDurableLaunchIntent()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        Apprentice manualChild = RunningChild(childId, apprenticeId, apprentice.CampaignId);
+
+        manualChild.Status = ApprenticeStatus.Idle.ToString();
+
+        ApprenticeCheckpoint childCheckpoint = Assert.IsType<ApprenticeCheckpoint>(
+            ApprenticeRepository.DeserializeCheckpoint(manualChild.CheckpointData));
+
+        manualChild.CheckpointData = ApprenticeRepository.SerializeCheckpoint(childCheckpoint with
+        {
+            LaunchRequested = false,
+        });
+
+        InMemoryApprenticeRepository repo = new(apprentice, manualChild);
+
+        ScriptedStreamIntelligence intelligence = new(
+            CastResult(childId),
+            new IntelligenceEvent(IntelligenceEventType.Result, "step complete"));
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task execution = (Task)method!.Invoke(service, [apprenticeId, 1L])!;
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(ApprenticeStatus.Idle.ToString(), repo.Get(childId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task SimulacrumRetrySettlesCastChildrenFromEveryAttempt()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid firstChildId = Guid.NewGuid();
+
+        Guid secondChildId = Guid.NewGuid();
+
+        List<PlanStep> plan =
+        [
+            new PlanStep { Index = 0, Description = "Retry branch", IsParallel = true },
+            new PlanStep { Index = 1, Description = "Stable branch", IsParallel = true },
+        ];
+
+        Apprentice apprentice = RunningSimulacrumApprentice(apprenticeId, plan);
+
+        CountingChildSettlementRepository repo = new(
+            apprenticeId,
+            apprentice,
+            RunningChild(firstChildId, apprenticeId, apprentice.CampaignId),
+            RunningChild(secondChildId, apprenticeId, apprentice.CampaignId));
+
+        SimulacrumRetryCastIntelligence intelligence = new(firstChildId, secondChildId);
+
+        ArcanumSettings settings = CreateCapacitySettings();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            settings,
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        using CancellationTokenSource linkedCts = new();
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("ExecuteSimulacrumGroupAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task<bool> execution = (Task<bool>)method!.Invoke(
+            service,
+            [
+                repo,
+                intelligence,
+                apprentice,
+                plan,
+                0,
+                2,
+                settings.ResolveApprentices(),
+                apprenticeId,
+                linkedCts,
+            ])!;
+
+        Assert.True(await execution.WaitAsync(TimeSpan.FromSeconds(15)));
+
+        Assert.Equal(apprenticeId, repo.Get(firstChildId).ParentApprenticeId);
+
+        Assert.Equal(apprenticeId, repo.Get(secondChildId).ParentApprenticeId);
+
+        Assert.Equal(1, repo.SettlementReadCount(firstChildId));
+
+        Assert.Equal(1, repo.SettlementReadCount(secondChildId));
+    }
+
+    [Fact]
+    public async Task SimulacrumProviderFaultAfterCastStillSettlesDurableChild()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        List<PlanStep> plan =
+        [
+            new PlanStep { Index = 0, Description = "Fault branch", IsParallel = true },
+            new PlanStep { Index = 1, Description = "Stable branch", IsParallel = true },
+        ];
+
+        Apprentice apprentice = RunningSimulacrumApprentice(apprenticeId, plan);
+
+        InMemoryApprenticeRepository repo = new(
+            apprentice,
+            RunningChild(childId, apprenticeId, apprentice.CampaignId));
+
+        SimulacrumFaultAfterCastIntelligence intelligence = new(childId);
+
+        ArcanumSettings settings = CreateCapacitySettings();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            settings,
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        using CancellationTokenSource linkedCts = new();
+
+        bool advanced = await InvokeSimulacrumGroupAsync(
+            service,
+            repo,
+            intelligence,
+            apprentice,
+            plan,
+            settings,
+            apprenticeId,
+            linkedCts);
+
+        Assert.False(advanced);
+
+        Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task SimulacrumCancellationAfterCastStillSettlesDurableChild()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        List<PlanStep> plan =
+        [
+            new PlanStep { Index = 0, Description = "Cancel branch", IsParallel = true },
+            new PlanStep { Index = 1, Description = "Stable branch", IsParallel = true },
+        ];
+
+        Apprentice apprentice = RunningSimulacrumApprentice(apprenticeId, plan);
+
+        CancellationSensitiveRepository repo = new(
+            apprentice,
+            RunningChild(childId, apprenticeId, apprentice.CampaignId));
+
+        using CancellationTokenSource linkedCts = new();
+
+        SimulacrumCancelAfterCastIntelligence intelligence = new(childId, linkedCts);
+
+        ArcanumSettings settings = CreateCapacitySettings();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            settings,
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        bool advanced = await InvokeSimulacrumGroupAsync(
+            service,
+            repo,
+            intelligence,
+            apprentice,
+            plan,
+            settings,
+            apprenticeId,
+            linkedCts);
+
+        Assert.False(advanced);
+
+        Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+    }
+
+    [Fact]
+    public async Task CrashRecoveryLaunchesIdleCastChildWithDurableLaunchIntent()
+    {
+        Guid parentId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        Apprentice child = RunningChild(childId, parentId);
+
+        child.Status = ApprenticeStatus.Idle.ToString();
+
+        child.SessionId = null;
+
+        child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(
+            ApprenticeRepository.DeserializeCheckpoint(child.CheckpointData)! with
+            {
+                LaunchRequested = true,
+            });
+
+        InMemoryApprenticeRepository repo = new(child);
+
+        BlockingPlanIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        await InvokeResumeCrashRecoveryAsync(service, CancellationToken.None);
+
+        try
+        {
+            await WaitUntilAsync(() => intelligence.ExecuteCalls == 1);
+
+            Assert.Equal(ApprenticeStatus.Planning.ToString(), repo.Get(childId).Status);
+
+            Assert.Equal(1, GetExecutionGeneration(service, childId));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task DeniedRecoveryCreatesNoScope()
+    {
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        CovenantExclusiveRecoveryOwner owner = new(
+            Guid.NewGuid(),
+            CovenantExclusiveOperation.CovenantReset,
+            new CovenantDigest(new byte[32]));
+
+        Assert.True(inner.BeginOrResumeExclusive(owner).IsSuccess);
+
+        RefusingScopeFactory scopes = new();
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireConnectionAdmissionGate>(gate);
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        using ApprenticeService service = ActivatorUtilities.CreateInstance<ApprenticeService>(
+            provider,
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>());
+
+        using CancellationTokenSource cancellation = new();
+
+        Task recovery = InvokeResumeCrashRecoveryAsync(service, cancellation.Token);
+
+        Assert.Equal(0, scopes.Created);
+
+        Assert.False(recovery.IsCompleted);
+
+        Assert.Equal([GrimoireWorkKind.ApprenticeExecution], gate.RequestedWorkKinds);
+
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => recovery);
+    }
+
+    [Fact]
+    public async Task DeniedPlanPreservesExecutionIdentityWithoutProviderOrScope()
+    {
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new()
         {
-
             Id = apprenticeId,
-
-            Name = "Reliability-P1-2",
-
-            Goal = "Stale cancel must not clobber resume.",
-
-            WorkspacePath = "/tmp/arcanum-test",
-
-            Status = ApprenticeStatus.Running.ToString(),
-
-            Plan = ApprenticeRepository.SerializePlan(
-            [
-                new PlanStep { Index = 1, Description = "Step cancelled by stale generation" },
-            ]),
-
+            Name = "Deferred planner",
+            Goal = "Keep the same execution while maintenance is closed.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Idle.ToString(),
+            Plan = "[]",
             CurrentStep = 0,
-
-            SessionId = Guid.NewGuid(),
-
         };
+        InMemoryApprenticeRepository repo = new(apprentice);
 
-        OceOnFirstGetApprenticeRepository repo = new(apprentice);
+        BlockingPlanIntelligence intelligence = new();
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        Assert.True(inner.BeginOrResumeExclusive(Owner()).IsSuccess);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        try
+        {
+            await WaitUntilAsync(
+                () => scopes.Created > 1 || gate.RequestedWorkKinds.Count > 0);
+
+            Assert.Equal(1, scopes.Created);
+
+            Assert.Equal(0, intelligence.ExecuteCalls);
+
+            Assert.Equal([GrimoireWorkKind.ApprenticeExecution], gate.RequestedWorkKinds);
+
+            Assert.True(GetActiveTasks(service).TryGetValue(apprenticeId, out Task? active));
+
+            Assert.False(active!.IsCompleted);
+
+            Assert.Equal(1, GetExecutionGeneration(service, apprenticeId));
+
+            Assert.Equal(1, GetConcurrencyGate(service).RunningCount);
+
+            Assert.Contains(apprenticeId, GetFreshStartIds(service));
+
+            Apprentice persisted = repo.Get(apprenticeId);
+
+            Assert.Equal(ApprenticeStatus.Planning.ToString(), persisted.Status);
+
+            Assert.Equal(0, persisted.CurrentStep);
+
+            Assert.Empty(ApprenticeRepository.DeserializePlan(persisted.Plan));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.Equal(ApprenticeStatus.Planning.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task DeniedPlanFrontierRetainsFreshIdentityUntilReopen()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Deferred plan frontier",
+            Goal = "Spend the fresh-start identity only after the frontier is won.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Planning.ToString(),
+            Plan = "[]",
+            CurrentStep = 0,
+        };
+        FrontierReadRepository repo = new(apprentice);
+
+        SuccessfulPlanIntelligence intelligence = new();
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            new SingleServiceScopeFactory(
+                repo,
+                intelligence,
+                new NotImplementedGrimoireRepository()),
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        GetFreshStartIds(service).TryAdd(apprenticeId, 0);
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await repo.ReadReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task retainedTask = GetActiveTasks(service)[apprenticeId];
+
+        long retainedGeneration = GetExecutionGeneration(service, apprenticeId);
+
+        await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        repo.AllowRead.TrySetResult();
+
+        await WaitUntilAsync(() => gate.EffectGroupAttempts > 0);
+
+        Assert.True((await inner.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None)).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease closed = (await inner
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
+
+        Assert.Equal(0, intelligence.ExecuteCalls);
+
+        Assert.Contains(apprenticeId, GetFreshStartIds(service));
+
+        Assert.Same(retainedTask, GetActiveTasks(service)[apprenticeId]);
+
+        Assert.Equal(retainedGeneration, GetExecutionGeneration(service, apprenticeId));
+
+        Assert.True((await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(1, intelligence.ExecuteCalls);
+
+        Assert.Equal(2, gate.EffectGroupAttempts);
+
+        Assert.DoesNotContain(apprenticeId, GetFreshStartIds(service));
+
+        Assert.Equal(retainedGeneration, GetExecutionGeneration(service, apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task FreshPlanReopensWithSameIdentityAndOneStartedEvent()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Fresh planner",
+            Goal = "Begin exactly once after maintenance.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Idle.ToString(),
+            Plan = "[]",
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        SuccessfulPlanIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        Assert.True((await inner.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None)).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease closed = (await inner
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
+
+        ChronicleHub hub = new();
 
         CapturingLogger<ApprenticeService> logger = new();
 
-        ApprenticeService service = CreateService(repo, settings, logger, new FailingPlanIntelligence(), new NotImplementedGrimoireRepository());
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            hub,
+            logger,
+            gate);
 
-        // Stale run owns generation 1; a newer resume already advanced to generation 2.
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        Task retainedTask = GetActiveTasks(service)[apprenticeId];
+
+        long retainedGeneration = GetExecutionGeneration(service, apprenticeId);
+
+        Assert.Contains(apprenticeId, GetFreshStartIds(service));
+
+        List<ApprenticeEvent> captured = [];
+
+        using CancellationTokenSource chronicleCancellation = new(TimeSpan.FromSeconds(10));
+
+        TaskCompletionSource primed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task collector = CollectChronicleAsync(
+            service.SubscribeChronicleAsync(apprenticeId, chronicleCancellation.Token),
+            captured,
+            primed,
+            chronicleCancellation.Token);
+
+        hub.Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.EventsDropped,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            Summary = "prime",
+        });
+
+        await primed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        lock (captured)
+        {
+            captured.Clear();
+        }
+        Assert.True((await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        await collector.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(retainedTask.IsCompletedSuccessfully);
+
+        Assert.Equal(retainedGeneration, GetExecutionGeneration(service, apprenticeId));
+
+        Assert.Equal(2, intelligence.ExecuteCalls);
+
+        Assert.Equal(1, intelligence.StreamCalls);
+
+        Assert.Equal(2, gate.EffectGroupAttempts);
+
+        Assert.DoesNotContain(apprenticeId, GetFreshStartIds(service));
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), persisted.Status);
+
+        Assert.Equal(1, persisted.CurrentStep);
+
+        Assert.Null(persisted.ErrorMessage);
+
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level >= LogLevel.Error);
+
+        lock (captured)
+        {
+            Assert.Single(captured, e => e.Type == ApprenticeEventType.ApprenticeStarted);
+
+            Assert.DoesNotContain(captured, e => e.Type == ApprenticeEventType.ApprenticeResumed);
+
+            Assert.DoesNotContain(captured, e => e.Type == ApprenticeEventType.ApprenticeFailed);
+
+            Assert.Single(captured, e => e.Type == ApprenticeEventType.ApprenticeCompleted);
+        }
+    }
+
+    [Fact]
+    public async Task WinningPlanDrainsInExactFrontierDisposalOrder()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        ConcurrentQueue<string> phases = new();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Winning planner",
+            Goal = "Conclude the durable plan before maintenance proceeds.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Planning.ToString(),
+            Plan = "[]",
+            CurrentStep = 0,
+        };
+        BlockingPlanPersistenceRepository repo = new(apprentice, phases);
+
+        BlockingOrderedPlanIntelligence intelligence = new(phases);
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        FrontierDisposalBarriers barriers = new(phases, gate);
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository(),
+            barriers.BeforeScopeDisposalAsync);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        GetFreshStartIds(service).TryAdd(apprenticeId, 0);
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await intelligence.ProviderReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(["provider"], phases);
+
+        await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        Task<Result> drain = inner
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await Task.Yield();
+
+        Assert.False(drain.IsCompleted);
+
+        intelligence.AllowProvider.TrySetResult();
+
+        await repo.PlanPersistenceReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(["provider", "durable-plan"], phases);
+
+        Assert.False(drain.IsCompleted);
+
+        repo.AllowPlanPersistence.TrySetResult();
+
+        await barriers.EffectGroupDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            ["provider", "durable-plan", "effect-group-disposal"],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        barriers.AllowEffectGroupDisposal.TrySetResult();
+
+        await barriers.ScopeDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "durable-plan",
+                "effect-group-disposal",
+                "scope-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        barriers.AllowScopeDisposal.TrySetResult();
+
+        await barriers.WorkLeaseDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "durable-plan",
+                "effect-group-disposal",
+                "scope-disposal",
+                "work-lease-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        barriers.AllowWorkLeaseDisposal.TrySetResult();
+
+        Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease closed = (await inner
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
+
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True((await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), persisted.Status);
+
+        Assert.Single(ApprenticeRepository.DeserializePlan(persisted.Plan));
+
+        Assert.Equal(1, gate.EffectGroupAttempts);
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task StopAsync_WaitsForRealStartPlanningHandoffAndParksPlanningRow()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Idle.ToString();
+
+        ParkedPlanningUpdateRepository repo = new(apprentice);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            new FailingPlanIntelligence(),
+            new NotImplementedGrimoireRepository());
+
+        Task<Result<string>> start = service.StartAsync(
+            apprenticeId,
+            CancellationToken.None);
+
+        await repo.PlanningUpdateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task stop = service.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitUntilAsync(() => GetStopping(service));
+
+            Assert.False(
+                stop.IsCompleted,
+                "Stop must wait for the real Start persistence-to-worker handoff.");
+        }
+        finally
+        {
+            repo.AllowPlanningUpdate.TrySetResult();
+        }
+        Result<string> started = await start.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task StopAsync_WaitsForCapacityBoundStartPlanningHandoffBeforeQueueing()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Idle.ToString();
+
+        ParkedPlanningUpdateRepository repo = new(apprentice);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            new FailingPlanIntelligence(),
+            new NotImplementedGrimoireRepository());
+
+        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out IDisposable? holder));
+
+        Assert.NotNull(holder);
+
+        Task<Result<string>> start = service.StartAsync(
+            apprenticeId,
+            CancellationToken.None);
+
+        await repo.PlanningUpdateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task stop = service.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitUntilAsync(() => GetStopping(service));
+
+            Assert.False(
+                stop.IsCompleted,
+                "Stop must observe a Start handoff even before concurrency capacity is available.");
+        }
+        finally
+        {
+            repo.AllowPlanningUpdate.TrySetResult();
+        }
+        Result<string> result = await start.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+
+        holder!.Dispose();
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Apprentice.Disabled, result.Error.Code);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.DoesNotContain(apprenticeId, GetPendingStarts(service));
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task StopAsync_WaitsForResumePersistenceHandoffAndParksRunningRow()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Paused.ToString();
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(
+        [
+            new PlanStep { Index = 0, Description = "Resume safely" },
+        ]);
+
+        ParkedRunningUpdateRepository repo = new(apprentice);
+
+        CapturingLogger<ApprenticeService> logger = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            logger,
+            new SuccessfulStepIntelligence(),
+            new NotImplementedGrimoireRepository());
+
+        Task<Result<string>> resume = service.ResumeAsync(
+            apprenticeId,
+            CancellationToken.None);
+
+        await repo.RunningUpdateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task stop = service.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitUntilAsync(() => GetStopping(service));
+
+            Assert.False(
+                stop.IsCompleted,
+                "Stop must wait until the reserved execution owns a task that can park the durable row.");
+        }
+        finally
+        {
+            repo.AllowRunningUpdate.TrySetResult();
+        }
+        Result<string> resumed = await resume.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(resumed.IsSuccess, resumed.Error.Message);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level >= LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task StopAsync_WaitsForInterventionPersistenceHandoffAndParksRunningRow()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Escalated.ToString();
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(
+        [
+            new PlanStep
+            {
+                Index = 0,
+                Description = "Accept guidance safely",
+                Status = "failed",
+                Attempts = 1,
+            },
+        ]);
+
+        apprentice.ErrorMessage = "Awaiting guidance.";
+
+        ParkedRunningUpdateRepository repo = new(apprentice);
+
+        CapturingLogger<ApprenticeService> logger = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            logger,
+            new SuccessfulStepIntelligence(),
+            new NotImplementedGrimoireRepository());
+
+        Task<Result<string>> intervention = service.InterveneAsync(
+            apprenticeId,
+            "Continue with the revised approach.",
+            resume: true,
+            CancellationToken.None);
+
+        await repo.RunningUpdateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task stop = service.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await WaitUntilAsync(() => GetStopping(service));
+
+            Assert.False(
+                stop.IsCompleted,
+                "Stop must wait until the reserved intervention owns a task that can park the durable row.");
+        }
+        finally
+        {
+            repo.AllowRunningUpdate.TrySetResult();
+        }
+        Result<string> intervened = await intervention.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(intervened.IsSuccess, intervened.Error.Message);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level >= LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task StopAsync_CancelledDrainDoesNotReportSuccessfulShutdown()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Paused.ToString();
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(
+        [
+            new PlanStep { Index = 0, Description = "Resume safely" },
+        ]);
+
+        ParkedRunningUpdateRepository repo = new(apprentice);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            new SuccessfulStepIntelligence(),
+            new NotImplementedGrimoireRepository());
+
+        Task<Result<string>> resume = service.ResumeAsync(
+            apprenticeId,
+            CancellationToken.None);
+
+        await repo.RunningUpdateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        using CancellationTokenSource shutdownCancellation = new();
+
+        Task stop = service.StopAsync(shutdownCancellation.Token);
+
+        await WaitUntilAsync(() => GetStopping(service));
+
+        await shutdownCancellation.CancelAsync();
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stop);
+        }
+        finally
+        {
+            repo.AllowRunningUpdate.TrySetResult();
+
+            _ = await resume.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task ResumeAsync_PersistenceFailureReleasesReservationAndCapacity()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = TestApprentice(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Paused.ToString();
+
+        ThrowingRunningUpdateRepository repo = new(apprentice);
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>());
+
+        try
+        {
+            InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.ResumeAsync(apprenticeId, CancellationToken.None));
+
+            Assert.Equal("Simulated Running persistence failure.", failure.Message);
+
+            Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            ReleaseAcquiredExecutionSlot(service, apprenticeId);
+        }
+    }
+
+    [Fact]
+    public async Task DeniedSerialStepRetainsSameTaskAndResumesOnce()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Deferred step",
+            Goal = "Resume one exact attempt after maintenance.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Run once" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        FrontierReadRepository repo = new(apprentice);
+
+        SuccessfulStepIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await repo.ReadReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task retainedTask = GetActiveTasks(service)[apprenticeId];
+
+        long retainedGeneration = GetExecutionGeneration(service, apprenticeId);
+
+        IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        IGrimoireExclusiveClosedLease? closed = null;
+
+        try
+        {
+            repo.AllowRead.TrySetResult();
+
+            await WaitUntilAsync(
+                () => gate.EffectGroupAttempts > 0 || intelligence.StreamCalls > 0);
+
+            Assert.True((await inner.DrainRequestAndWorkAsync(
+                closing,
+                CancellationToken.None)).IsSuccess);
+
+            closed = (await inner.CloseConnectionAdmissionAsync(
+                closing,
+                CancellationToken.None)).Value;
+
+            Assert.Equal(0, intelligence.StreamCalls);
+
+            Assert.Equal(0, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.Equal(1, GetConcurrencyGate(service).RunningCount);
+
+            Assert.Equal(retainedGeneration, GetExecutionGeneration(service, apprenticeId));
+
+            Assert.Same(retainedTask, GetActiveTasks(service)[apprenticeId]);
+
+            Assert.False(retainedTask.IsCompleted);
+
+            Assert.True((await closed.CompleteAsync(
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                CancellationToken.None)).IsSuccess);
+
+            await closed.DisposeAsync();
+
+            closed = null;
+
+            await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(1, intelligence.StreamCalls);
+
+            Assert.Equal(1, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+            Assert.Equal(2, gate.EffectGroupAttempts);
+
+            Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+        }
+        finally
+        {
+            repo.AllowRead.TrySetResult();
+
+            if (closed is not null)
+            {
+                _ = await closed.CompleteAsync(
+                    CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                    CancellationToken.None);
+
+                await closed.DisposeAsync();
+            }
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task KeepClosedWaitIsObservedByStop()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Closed stop",
+            Goal = "Stop without entering the closed Grimoire.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Remain durable" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        FrontierReadRepository repo = new(apprentice);
+
+        SuccessfulStepIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await repo.ReadReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        repo.AllowRead.TrySetResult();
+
+        await WaitUntilAsync(() => gate.EffectGroupAttempts > 0);
+
+        Assert.True((await inner.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None)).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease closed = (await inner
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
+
+        int admittedScopes = scopes.Created;
+
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(admittedScopes, scopes.Created);
+
+        Assert.Equal(0, intelligence.StreamCalls);
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+
+        Assert.True((await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+    }
+
+    [Fact]
+    public async Task ReclosedTurnstileRetainsExecutionUntilLaterGenerationOpens()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Reclosed step",
+            Goal = "Wait through every closed generation.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Run after the second reopen" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        SuccessfulStepIntelligence intelligence = new();
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        await using IGrimoireClosingOwner initialClosing = inner
+            .BeginOrResumeExclusive(Owner()).Value;
+
+        Assert.True((await inner.DrainRequestAndWorkAsync(
+            initialClosing,
+            CancellationToken.None)).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease initialClosed = (await inner
+            .CloseConnectionAdmissionAsync(
+                initialClosing,
+                CancellationToken.None)).Value;
+
+        ReclosingApprenticeAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            new SingleServiceScopeFactory(
+                repo,
+                intelligence,
+                new NotImplementedGrimoireRepository()),
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await gate.FirstWaitReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task retainedTask = GetActiveTasks(service)[apprenticeId];
+
+        long retainedGeneration = GetExecutionGeneration(service, apprenticeId);
+
+        Assert.True((await initialClosed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease reclosed = await gate
+            .Reclosed.Task
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        await WaitUntilAsync(() => gate.WaitCalls >= 2);
+
+        Assert.Equal(0, intelligence.StreamCalls);
+
+        Assert.Same(retainedTask, GetActiveTasks(service)[apprenticeId]);
+
+        Assert.Equal(retainedGeneration, GetExecutionGeneration(service, apprenticeId));
+
+        Assert.Equal(1, GetConcurrencyGate(service).RunningCount);
+
+        Assert.True((await reclosed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(1, intelligence.StreamCalls);
+
+        Assert.Equal(1, repo.Get(apprenticeId).CurrentStep);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.Equal(1, gate.EffectGroupAttempts);
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task DeniedSimulacrumRetainsSameTaskAndResumesWholeGroupOnce()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Deferred Simulacrum",
+            Goal = "Resume one whole parallel frontier after maintenance.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "First branch", IsParallel = true },
+                new PlanStep { Index = 1, Description = "Second branch", IsParallel = true },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        FrontierReadRepository repo = new(apprentice);
+
+        SuccessfulStepIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await repo.ReadReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task retainedTask = GetActiveTasks(service)[apprenticeId];
+
+        long retainedGeneration = GetExecutionGeneration(service, apprenticeId);
+
+        IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        IGrimoireExclusiveClosedLease? closed = null;
+
+        try
+        {
+            repo.AllowRead.TrySetResult();
+
+            await WaitUntilAsync(
+                () => gate.EffectGroupAttempts > 0 || intelligence.StreamCalls > 0);
+
+            Assert.True((await inner.DrainRequestAndWorkAsync(
+                closing,
+                CancellationToken.None)).IsSuccess);
+
+            closed = (await inner.CloseConnectionAdmissionAsync(
+                closing,
+                CancellationToken.None)).Value;
+
+            Assert.Equal(0, intelligence.StreamCalls);
+
+            Assert.Equal(0, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.Equal(1, GetConcurrencyGate(service).RunningCount);
+
+            Assert.Equal(retainedGeneration, GetExecutionGeneration(service, apprenticeId));
+
+            Assert.Same(retainedTask, GetActiveTasks(service)[apprenticeId]);
+
+            Assert.False(retainedTask.IsCompleted);
+
+            Assert.True((await closed.CompleteAsync(
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                CancellationToken.None)).IsSuccess);
+
+            await closed.DisposeAsync();
+
+            closed = null;
+
+            await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(2, intelligence.StreamCalls);
+
+            Assert.Equal(2, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+            Assert.Equal(2, gate.EffectGroupAttempts);
+
+            Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+        }
+        finally
+        {
+            repo.AllowRead.TrySetResult();
+
+            if (closed is not null)
+            {
+                _ = await closed.CompleteAsync(
+                    CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                    CancellationToken.None);
+
+                await closed.DisposeAsync();
+            }
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task WinningSimulacrumDrainsAfterWholeFrontierInExactDisposalOrder()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid childId = Guid.NewGuid();
+
+        ConcurrentQueue<string> phases = new();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Winning Simulacrum",
+            Goal = "Conclude every parallel effect before maintenance proceeds.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "First branch", IsParallel = true },
+                new PlanStep { Index = 1, Description = "Second branch", IsParallel = true },
+                new PlanStep { Index = 2, Description = "Original tail" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        Apprentice child = RunningChild(childId, apprenticeId, apprentice.CampaignId);
+        BlockingSimulacrumFrontierRepository repo = new(
+            apprentice,
+            child,
+            phases);
+
+        BlockingSimulacrumFrontierIntelligence intelligence = new(
+            childId,
+            phases);
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        FrontierDisposalBarriers barriers = new(phases, gate);
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository(),
+            barriers.BeforeScopeDisposalAsync);
+
+        CapturingLogger<ApprenticeService> logger = new();
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            logger,
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await intelligence.ProvidersReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(["provider"], phases);
+
+        await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        Task<Result> drain = inner
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await Task.Yield();
+
+        Assert.False(drain.IsCompleted);
+
+        intelligence.AllowProviders.TrySetResult();
+
+        await repo.ChildSettlementReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(["provider", "child-authority"], phases);
+
+        Assert.False(drain.IsCompleted);
+
+        repo.AllowChildSettlement.TrySetResult();
+
+        await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(["provider", "child-authority", "shifting-fate"], phases);
+
+        Assert.False(drain.IsCompleted);
+
+        intelligence.AllowShiftingFate.TrySetResult();
+
+        await repo.FinalCheckpointReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            ["provider", "child-authority", "shifting-fate", "final-checkpoint"],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        repo.AllowFinalCheckpoint.TrySetResult();
+
+        await barriers.EffectGroupDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "child-authority",
+                "shifting-fate",
+                "final-checkpoint",
+                "effect-group-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        barriers.AllowEffectGroupDisposal.TrySetResult();
+
+        await barriers.ScopeDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "child-authority",
+                "shifting-fate",
+                "final-checkpoint",
+                "effect-group-disposal",
+                "scope-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        barriers.AllowScopeDisposal.TrySetResult();
+
+        await barriers.WorkLeaseDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "child-authority",
+                "shifting-fate",
+                "final-checkpoint",
+                "effect-group-disposal",
+                "scope-disposal",
+                "work-lease-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        barriers.AllowWorkLeaseDisposal.TrySetResult();
+
+        Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease closed = (await inner
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
+
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True((await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        Assert.Equal(2, persisted.CurrentStep);
+
+        ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
+            ApprenticeRepository.DeserializeCheckpoint(persisted.CheckpointData));
+
+        Assert.Equal(2, checkpoint.CurrentStep);
+
+        Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(1, gate.EffectGroupAttempts);
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+
+        Assert.DoesNotContain(logger.Entries, entry => entry.Level >= LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task WinningStepDrainsThroughCheckpointAndScopeDisposal()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        ConcurrentQueue<string> phases = new();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Winning step",
+            Goal = "Finish the effect before maintenance owns the Grimoire.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Finish once" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        FinalCheckpointRecordingRepository repo = new(
+            apprentice,
+            targetStep: 1,
+            phases);
+
+        BlockingSuccessfulStepIntelligence intelligence = new(phases);
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        TaskCompletionSource groupDisposalReached = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource allowGroupDisposal = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource workLeaseDisposalReached = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource allowWorkLeaseDisposal = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        int groupDisposals = 0;
+
+        gate.BeforeEffectGroupDisposalAsync = async () =>
+        {
+            if (Interlocked.Increment(ref groupDisposals) != 1)
+            {
+                return;
+            }
+            phases.Enqueue("effect-group-disposal");
+
+            groupDisposalReached.TrySetResult();
+
+            await allowGroupDisposal.Task;
+        };
+        int workLeaseDisposals = 0;
+
+        gate.BeforeWorkLeaseDisposalAsync = async () =>
+        {
+            if (Interlocked.Increment(ref workLeaseDisposals) != 1)
+            {
+                return;
+            }
+            phases.Enqueue("work-lease-disposal");
+
+            workLeaseDisposalReached.TrySetResult();
+
+            await allowWorkLeaseDisposal.Task;
+        };
+        TaskCompletionSource scopeDisposalReached = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource allowScopeDisposal = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        int scopeDisposals = 0;
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository(),
+            async () =>
+            {
+                if (Interlocked.Increment(ref scopeDisposals) != 1)
+                {
+                    return;
+                }
+                phases.Enqueue("scope-disposal");
+
+                scopeDisposalReached.TrySetResult();
+
+                await allowScopeDisposal.Task;
+            });
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await intelligence.StreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, gate.EffectGroupAttempts);
+
+        Assert.Equal(["provider"], phases);
+
+        await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+        Task<Result> drain = inner
+            .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+            .AsTask();
+
+        await Task.Yield();
+
+        Assert.False(drain.IsCompleted);
+
+        intelligence.AllowStream.TrySetResult();
+
+        await groupDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            ["provider", "final-checkpoint", "effect-group-disposal"],
+            phases);
+
+        Assert.Equal(1, repo.Get(apprenticeId).CurrentStep);
+
+        Assert.False(drain.IsCompleted);
+
+        allowGroupDisposal.TrySetResult();
+
+        await scopeDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "final-checkpoint",
+                "effect-group-disposal",
+                "scope-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        allowScopeDisposal.TrySetResult();
+
+        await workLeaseDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            [
+                "provider",
+                "final-checkpoint",
+                "effect-group-disposal",
+                "scope-disposal",
+                "work-lease-disposal",
+            ],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        allowWorkLeaseDisposal.TrySetResult();
+
+        Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+
+        await using IGrimoireExclusiveClosedLease closed = (await inner
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
+
+        Assert.True((await closed.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    [Fact]
+    public async Task StopDuringAdmittedSerialFrontierPersistsPaused()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Admitted stop",
+            Goal = "Persist the owned cancellation before leaving the frontier.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Pause here" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        BlockingSuccessfulStepIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await intelligence.StreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Apprentice paused = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), paused.Status);
+
+        Assert.Equal(0, paused.CurrentStep);
+
+        Assert.False(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+    }
+
+    [Fact]
+    public async Task SerialRetriesUseOneFrontierPerAttemptAndRetainFailureEvidence()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Bounded retries",
+            Goal = "Stop when retry evidence makes no progress.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Retry carefully" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        RepeatedRetryableStepIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        RecordingGrimoireWorkAdmissionGate gate = new(
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice escalated = repo.Get(apprenticeId);
+
+        Assert.Equal(2, intelligence.StreamCalls);
+
+        Assert.Equal(2, gate.EffectGroupAttempts);
+
+        Assert.Equal(0, escalated.CurrentStep);
+
+        Assert.Equal(ApprenticeStatus.Escalated.ToString(), escalated.Status);
+
+        Assert.Equal(
+            "Step recovery stopped because the same failure evidence repeated.",
+            escalated.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Session_creation_carries_the_exact_canonical_binding_without_placeholder_entries()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid sessionId = Guid.NewGuid();
+
+        string workspace = Path.Combine(Path.GetTempPath(), $"apprentice-session-{Guid.NewGuid():N}");
+
+        Apprentice apprentice = SessionlessApprentice(apprenticeId, campaignId, workspace);
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        CanonicalCampaignContext canonical = CanonicalCampaignContext.Create(
+            SessionCampaignBinding.ForCampaign(campaignId),
+            campaignAvailabilityGeneration: 7,
+            pathIdentityPolicyVersion: 3,
+            pathIdentityRevision: null,
+            rootIdentityDigest: null);
+
+        RecordingCanonicalCampaignContextResolver resolver = new(canonical);
+
+        RecordingSessionTurnBeginStore turnStore = new(sessionId);
+
+        BlockingSessionStepIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            campaignResolver: resolver,
+            turnBeginStore: turnStore);
+
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        try
+        {
+            await intelligence.StreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            CanonicalCampaignResolutionRequest request = Assert.Single(resolver.Requests);
+
+            Assert.Null(request.SessionId);
+
+            Assert.Equal(campaignId, request.ExplicitCampaignId);
+
+            Assert.Equal(workspace, request.WorkingDirectory);
+
+            SessionCreationCall creation = Assert.Single(turnStore.Creations);
+
+            Assert.Equal(canonical, creation.Campaign);
+
+            Assert.Equal("Apprentice Bound apprentice begins their quest.", creation.Title);
+
+            Assert.Equal(sessionId, repo.Get(apprenticeId).SessionId);
+
+            Assert.Equal(0, turnStore.BeginCalls);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task Session_creation_does_not_fall_back_when_canonical_resolution_fails()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Apprentice apprentice = SessionlessApprentice(
+            apprenticeId,
+            campaignId,
+            Path.Combine(Path.GetTempPath(), $"apprentice-conflict-{Guid.NewGuid():N}"));
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        RecordingCanonicalCampaignContextResolver resolver = new(
+            new Error("Campaign.Conflict", "The Apprentice Campaign inputs disagree."));
+
+        RecordingSessionTurnBeginStore turnStore = new(Guid.NewGuid());
+
+        CountingSessionStepIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            campaignResolver: resolver,
+            turnBeginStore: turnStore);
+
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice failed = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), failed.Status);
+
+        Assert.Equal("The Apprentice Campaign inputs disagree.", failed.ErrorMessage);
+
+        Assert.Null(failed.SessionId);
+
+        _ = Assert.Single(resolver.Requests);
+
+        Assert.Empty(turnStore.Creations);
+
+        Assert.Equal(0, turnStore.BeginCalls);
+
+        Assert.Equal(0, intelligence.StreamCalls);
+    }
+
+    [Fact]
+    public async Task Session_creation_store_failure_is_persisted_without_starting_inference()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Apprentice apprentice = SessionlessApprentice(
+            apprenticeId,
+            campaignId,
+            Path.Combine(Path.GetTempPath(), $"apprentice-store-failure-{Guid.NewGuid():N}"));
+
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        CanonicalCampaignContext canonical = CanonicalCampaignContext.Create(
+            SessionCampaignBinding.ForCampaign(campaignId),
+            campaignAvailabilityGeneration: 11,
+            pathIdentityPolicyVersion: 5,
+            pathIdentityRevision: null,
+            rootIdentityDigest: null);
+
+        RecordingCanonicalCampaignContextResolver resolver = new(canonical);
+
+        RecordingSessionTurnBeginStore turnStore = new(
+            new Error("Session.CreateFailed", "The bound Apprentice Session could not be created."));
+
+        CountingSessionStepIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            campaignResolver: resolver,
+            turnBeginStore: turnStore);
+
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice failed = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), failed.Status);
+
+        Assert.Equal("The bound Apprentice Session could not be created.", failed.ErrorMessage);
+
+        Assert.Null(failed.SessionId);
+
+        SessionCreationCall creation = Assert.Single(turnStore.Creations);
+
+        Assert.Equal(canonical, creation.Campaign);
+
+        Assert.Equal(0, turnStore.BeginCalls);
+
+        Assert.Equal(0, intelligence.StreamCalls);
+    }
+    // A prior execution generation must never classify a foreign cancellation over a newer resume.
+    [Fact]
+    public async Task RunApprenticeAsync_StaleGeneration_DoesNotPersistFailureOverNewerResume()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "Stale failure",
+            Goal = "A stale run must not clobber its replacement.",
+            WorkspacePath = "/tmp/arcanum-test",
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 1, Description = "Foreign cancellation" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        OceOnFirstGetApprenticeRepository repo = new(apprentice);
+
+        ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            new FailingPlanIntelligence(),
+            new NotImplementedGrimoireRepository());
+
         SeedExecutionGeneration(service, apprenticeId, 2L);
 
         MethodInfo? method = typeof(ApprenticeService)
@@ -573,57 +3467,38 @@ public sealed class ApprenticeServiceReliabilityTests
 
         await runTask.WaitAsync(TimeSpan.FromSeconds(15));
 
-        Apprentice persisted = repo.Get(apprenticeId);
-
-        // OceOnFirstGet would normally drive Paused via the cancel handler; ownership mismatch
-        // must leave the status alone (still Running as left by the newer resume).
-        Assert.Equal(ApprenticeStatus.Running.ToString(), persisted.Status);
-
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(apprenticeId).Status);
     }
 
-    // W2.4 Fix 4 (P2): on linked-CTS cancellation (e.g. host StopAsync) the main
-    // execution loop's catch(OperationCanceledException) must persist an
-    // intermediate status so a later resume does not re-run the in-progress step.
-    // If the status is still Running/Planning, persist Paused (was: swallowed with
-    // no persist, apprentice left Running and re-ran the partial step on resume).
-
     [Fact]
-    public async Task RunApprenticeAsync_OperationCanceled_PersistsPausedNotRunning()
+    public async Task RunApprenticeAsync_ForeignOperationCanceledException_PersistsFailure()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new()
         {
-
             Id = apprenticeId,
-
-            Name = "Reliability-Fix4",
-
-            Goal = "Persist Paused on cancel.",
-
+            Name = "Foreign cancellation",
+            Goal = "Do not mistake another operation's cancellation for mine.",
             WorkspacePath = "/tmp/arcanum-test",
-
             Status = ApprenticeStatus.Running.ToString(),
-
             Plan = ApprenticeRepository.SerializePlan(
             [
-                new PlanStep { Index = 1, Description = "Step that will be cancelled mid-run" },
+                new PlanStep { Index = 1, Description = "Step interrupted by a foreign token" },
             ]),
-
             CurrentStep = 0,
-
             SessionId = Guid.NewGuid(),
-
         };
-
         OceOnFirstGetApprenticeRepository repo = new(apprentice);
-
-        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
-        ApprenticeService service = CreateService(repo, settings, logger, new FailingPlanIntelligence(), new NotImplementedGrimoireRepository());
+        ApprenticeService service = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            logger,
+            new FailingPlanIntelligence(),
+            new NotImplementedGrimoireRepository());
 
         SeedExecutionGeneration(service, apprenticeId, 1L);
 
@@ -638,10 +3513,10 @@ public sealed class ApprenticeServiceReliabilityTests
 
         Apprentice persisted = repo.Get(apprenticeId);
 
-        Assert.Equal(ApprenticeStatus.Paused.ToString(), persisted.Status);
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), persisted.Status);
 
+        Assert.Equal("Simulated foreign cancellation.", persisted.ErrorMessage);
     }
-
     // W2.4 Fix 5 (P2): a Planning apprentice resumed after a host restart must
     // emit ApprenticeResumed on the chronicle hub, not a duplicate
     // ApprenticeStarted (was: the recovery path always emitted ApprenticeStarted
@@ -650,30 +3525,19 @@ public sealed class ApprenticeServiceReliabilityTests
     [Fact]
     public async Task RunApprenticeAsync_PlanningResumeAfterRestart_EmitsApprenticeResumedNotStarted()
     {
-
         Guid apprenticeId = Guid.NewGuid();
 
         Apprentice apprentice = new()
         {
-
             Id = apprenticeId,
-
             Name = "Reliability-Fix5",
-
             Goal = "Emit ApprenticeResumed on restart resume.",
-
             WorkspacePath = "/tmp/arcanum-test",
-
             Status = ApprenticeStatus.Planning.ToString(),
-
             Plan = "[]",
-
             CurrentStep = 0,
-
             SessionId = null,
-
         };
-
         InMemoryApprenticeRepository repo = new(apprentice);
 
         ArcanumSettings settings = CreateCapacitySettings();
@@ -711,26 +3575,18 @@ public sealed class ApprenticeServiceReliabilityTests
 
         hub.Publish(apprenticeId, new ApprenticeEvent
         {
-
             Type = ApprenticeEventType.EventsDropped,
-
             ApprenticeId = apprenticeId,
-
             Timestamp = DateTimeOffset.UtcNow,
-
             Summary = "prime",
-
         });
 
         await primed.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         lock (captured)
         {
-
             captured.Clear();
-
         }
-
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -746,28 +3602,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         try
         {
-
             await collector.WaitAsync(TimeSpan.FromSeconds(5));
-
         }
         catch (OperationCanceledException)
         {
-
         }
 
         List<ApprenticeEvent> events;
 
         lock (captured)
         {
-
             events = captured.ToList();
-
         }
-
         Assert.DoesNotContain(events, e => e.Type == ApprenticeEventType.ApprenticeStarted);
 
         Assert.Contains(events, e => e.Type == ApprenticeEventType.ApprenticeResumed);
-
     }
 
     private static ArcanumSettings CreateCapacitySettings() => new()
@@ -778,6 +3627,21 @@ public sealed class ApprenticeServiceReliabilityTests
             MaxConcurrentApprentices = 1,
         },
     };
+    private static CovenantExclusiveRecoveryOwner Owner() =>
+        new(
+            Guid.NewGuid(),
+            CovenantExclusiveOperation.CovenantReset,
+            new CovenantDigest(new byte[32]));
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
+        }
+    }
 
     private static async Task<ApprenticeService.StepExecutionOutcome> ExecuteStepStreamAsync(
         ApprenticeService service,
@@ -796,6 +3660,38 @@ public sealed class ApprenticeServiceReliabilityTests
             .WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    private static async Task<bool> InvokeSimulacrumGroupAsync(
+        ApprenticeService service,
+        IApprenticeRepository repo,
+        IArcanumIntelligenceProvider intelligence,
+        Apprentice apprentice,
+        List<PlanStep> plan,
+        ArcanumSettings settings,
+        Guid apprenticeId,
+        CancellationTokenSource linkedCts)
+    {
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("ExecuteSimulacrumGroupAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task<bool> execution = (Task<bool>)method!.Invoke(
+            service,
+            [
+                repo,
+                intelligence,
+                apprentice,
+                plan,
+                0,
+                2,
+                settings.ResolveApprentices(),
+                apprenticeId,
+                linkedCts,
+            ])!;
+
+        return await execution.WaitAsync(TimeSpan.FromSeconds(15));
+    }
+
     private static Apprentice TestApprentice(Guid apprenticeId) =>
         new()
         {
@@ -806,42 +3702,144 @@ public sealed class ApprenticeServiceReliabilityTests
             WorkspacePath = Path.GetTempPath(),
         };
 
+    private static Apprentice RunningApprenticeWithOneStep(Guid apprenticeId) =>
+        new()
+        {
+            Id = apprenticeId,
+            Name = "Cast parent",
+            Goal = "Settle every durable child.",
+            SessionId = Guid.NewGuid(),
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Cast children across retries." },
+            ]),
+        };
+
+    private static Apprentice RunningChild(
+        Guid childId,
+        Guid? parentId = null,
+        Guid? campaignId = null,
+        IReadOnlyList<string>? delegationChain = null) =>
+        new()
+        {
+            Id = childId,
+            CampaignId = campaignId,
+            ParentApprenticeId = parentId,
+            Name = "Durable child",
+            Goal = "Remain linked to the parent.",
+            SessionId = Guid.NewGuid(),
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = "[]",
+            CheckpointData = parentId is null && delegationChain is not { Count: > 0 }
+                ? null
+                : ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+                {
+                    ParentApprenticeId = parentId,
+                    DelegationChain = delegationChain,
+                    LaunchRequested = true,
+                }),
+        };
+
+    private static Apprentice RunningSimulacrumApprentice(
+        Guid apprenticeId,
+        IReadOnlyList<PlanStep> plan) =>
+        new()
+        {
+            Id = apprenticeId,
+            Name = "Simulacrum parent",
+            Goal = "Settle every branch child.",
+            SessionId = Guid.NewGuid(),
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(plan),
+        };
+
+    private static IntelligenceEvent CastResult(Guid childId) =>
+        new(
+            IntelligenceEventType.ToolResult,
+            "cast_sending",
+            Data: "{\"childApprenticeId\":\"" + childId + "\"}",
+            ToolCall: new IntelligenceToolCallEvent(
+                "cast-" + childId.ToString("N"),
+                "cast_sending",
+                "{}"));
+
+    private static Apprentice SessionlessApprentice(
+        Guid apprenticeId,
+        Guid campaignId,
+        string workspace) =>
+        new()
+        {
+            Id = apprenticeId,
+            CampaignId = campaignId,
+            Name = "Bound apprentice",
+            Goal = "Create one correctly bound Session before inference.",
+            WorkspacePath = workspace,
+            Status = ApprenticeStatus.Idle.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 1, Description = "Perform one real step." },
+            ]),
+            CurrentStep = 0,
+            SessionId = null,
+        };
     private static ApprenticeService CreateService(
         InMemoryApprenticeRepository repo,
         ArcanumSettings settings,
         ILogger<ApprenticeService> logger,
         IArcanumIntelligenceProvider? intelligence = null,
         IGrimoireRepository? grimoire = null,
-        ChronicleHub? hub = null)
+        ChronicleHub? hub = null,
+        IApprenticeExecutionCapacity? executionCapacity = null,
+        ICanonicalCampaignContextResolver? campaignResolver = null,
+        ISessionTurnBeginStore? turnBeginStore = null)
     {
-
         TestOptionsMonitor<ArcanumSettings> options = new(settings);
 
         ChronicleHub resolvedHub = hub ?? new();
 
-        SingleServiceScopeFactory scopeFactory = new(repo, intelligence, grimoire);
+        SingleServiceScopeFactory scopeFactory = new(
+            repo,
+            intelligence,
+            grimoire,
+            campaignResolver: campaignResolver,
+            turnBeginStore: turnBeginStore);
 
-        return new ApprenticeService(scopeFactory, options, resolvedHub, logger);
-
+        return new ApprenticeService(
+            scopeFactory,
+            options,
+            resolvedHub,
+            logger,
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            executionCapacity);
     }
 
-    private static ApprenticeConcurrencyGate GetConcurrencyGate(ApprenticeService service)
+    private static IApprenticeExecutionCapacity GetConcurrencyGate(ApprenticeService service)
     {
-
         FieldInfo? field = typeof(ApprenticeService)
             .GetField("_concurrencyGate", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(field);
 
-        return (ApprenticeConcurrencyGate)field!.GetValue(service)!;
-
+        return (IApprenticeExecutionCapacity)field!.GetValue(service)!;
     }
 
     private static bool TryAcquireExecutionSlot(
         ApprenticeService service,
-        Guid apprenticeId)
-    {
+        Guid apprenticeId) =>
+        TryAcquireExecutionSlot(
+            service,
+            apprenticeId,
+            queueOnCapacity: false).Accepted;
 
+    private static ExecutionSlotAttempt TryAcquireExecutionSlot(
+        ApprenticeService service,
+        Guid apprenticeId,
+        bool queueOnCapacity)
+    {
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod(
                 "TryAcquireExecutionSlot",
@@ -849,17 +3847,24 @@ public sealed class ApprenticeServiceReliabilityTests
 
         Assert.NotNull(method);
 
-        object?[] arguments = [apprenticeId, false, false, null];
+        object?[] arguments = [apprenticeId, queueOnCapacity, false, null];
 
-        return Assert.IsType<bool>(method!.Invoke(service, arguments));
+        bool accepted = Assert.IsType<bool>(method!.Invoke(service, arguments));
 
+        return new ExecutionSlotAttempt(
+            accepted,
+            Assert.IsType<bool>(arguments[2]),
+            arguments[3] as Result<string>);
     }
 
+    private sealed record ExecutionSlotAttempt(
+        bool Accepted,
+        bool Queued,
+        Result<string>? Failure);
     private static void ReleaseAcquiredExecutionSlot(
         ApprenticeService service,
         Guid apprenticeId)
     {
-
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod(
                 "ReleaseAcquiredExecutionSlot",
@@ -868,36 +3873,67 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.NotNull(method);
 
         _ = method!.Invoke(service, [apprenticeId]);
+    }
 
+    private static void BeginExecutionTask(
+        ApprenticeService service,
+        Guid apprenticeId)
+    {
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod(
+                "BeginExecutionTask",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        _ = method!.Invoke(service, [apprenticeId]);
     }
 
     private static ConcurrentQueue<Guid> GetPendingStarts(ApprenticeService service)
     {
-
         FieldInfo? field = typeof(ApprenticeService)
             .GetField("_pendingStarts", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(field);
 
         return (ConcurrentQueue<Guid>)field!.GetValue(service)!;
+    }
 
+    private static ConcurrentDictionary<Guid, byte> GetPendingStartIds(
+        ApprenticeService service)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_pendingStartIds", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        return (ConcurrentDictionary<Guid, byte>)field!.GetValue(service)!;
+    }
+
+    private static void InvokeTryDequeuePendingStart(ApprenticeService service)
+    {
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod(
+                "TryDequeuePendingStart",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        _ = method!.Invoke(service, null);
     }
 
     private static ConcurrentDictionary<Guid, Task> GetActiveTasks(ApprenticeService service)
     {
-
         FieldInfo? field = typeof(ApprenticeService)
             .GetField("_activeTasks", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(field);
 
         return (ConcurrentDictionary<Guid, Task>)field!.GetValue(service)!;
-
     }
 
     private static void SeedExecutionGeneration(ApprenticeService service, Guid apprenticeId, long generation)
     {
-
         FieldInfo? field = typeof(ApprenticeService)
             .GetField("_executionGenerations", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -907,12 +3943,112 @@ public sealed class ApprenticeServiceReliabilityTests
             (ConcurrentDictionary<Guid, long>)field!.GetValue(service)!;
 
         generations[apprenticeId] = generation;
+    }
 
+    private static long GetExecutionGeneration(ApprenticeService service, Guid apprenticeId)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_executionGenerations", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        ConcurrentDictionary<Guid, long> generations =
+            (ConcurrentDictionary<Guid, long>)field!.GetValue(service)!;
+
+        return generations[apprenticeId];
+    }
+
+    private static bool HasExecutionGeneration(ApprenticeService service, Guid apprenticeId)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_executionGenerations", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        ConcurrentDictionary<Guid, long> generations =
+            (ConcurrentDictionary<Guid, long>)field!.GetValue(service)!;
+
+        return generations.ContainsKey(apprenticeId);
+    }
+
+    private static bool GetStopping(ApprenticeService service)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_stopping", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        return Assert.IsType<bool>(field!.GetValue(service));
+    }
+
+    private static Lock GetPendingStartsLock(ApprenticeService service)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_pendingStartsLock", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        return Assert.IsType<Lock>(field!.GetValue(service));
+    }
+
+    private static bool CanEnterAndReleaseExecutionLifecycleLock(ApprenticeService service)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_executionLifecycleLock", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        Lock lifecycle = Assert.IsType<Lock>(field!.GetValue(service));
+
+        if (!lifecycle.TryEnter())
+        {
+            return false;
+        }
+        lifecycle.Exit();
+
+        return true;
+    }
+
+    private static Lock GetExecutionLifecycleLock(ApprenticeService service)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_executionLifecycleLock", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        return Assert.IsType<Lock>(field!.GetValue(service));
+    }
+
+    private static int GetPrivateCollectionCount(
+        ApprenticeService service,
+        string fieldName)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        object collection = Assert.IsAssignableFrom<object>(field!.GetValue(service));
+
+        PropertyInfo? count = collection.GetType().GetProperty("Count");
+
+        Assert.NotNull(count);
+
+        return Assert.IsType<int>(count!.GetValue(collection));
+    }
+
+    private static ConcurrentDictionary<Guid, byte> GetFreshStartIds(ApprenticeService service)
+    {
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_freshStartIds", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        return (ConcurrentDictionary<Guid, byte>)field!.GetValue(service)!;
     }
 
     private static async Task InvokeResumeCrashRecoveryAsync(ApprenticeService service, CancellationToken cancellationToken)
     {
-
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod("ResumeCrashRecoveryAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -923,7 +4059,6 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.NotNull(task);
 
         await task!;
-
     }
 
     private static async Task CollectChronicleAsync(
@@ -932,186 +4067,571 @@ public sealed class ApprenticeServiceReliabilityTests
         TaskCompletionSource primed,
         CancellationToken cancellationToken)
     {
-
         await foreach (ApprenticeEvent e in events.ConfigureAwait(false))
         {
-
             lock (captured)
             {
-
                 captured.Add(e);
-
             }
-
             primed.TrySetResult();
 
-            if (e.Type == ApprenticeEventType.ApprenticeFailed)
+            if (e.Type is ApprenticeEventType.ApprenticeFailed
+                or ApprenticeEventType.ApprenticeCompleted)
             {
-
                 break;
-
             }
 
             if (cancellationToken.IsCancellationRequested)
             {
-
                 break;
+            }
+        }
+    }
 
+    private sealed class ReclosingApprenticeAdmissionGate(
+        GrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
+    {
+        private readonly RecordingGrimoireWorkAdmissionGate _recording = new(inner);
+
+        private int _waitCalls;
+
+        internal TaskCompletionSource FirstWaitReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource<IGrimoireExclusiveClosedLease> Reclosed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal int WaitCalls => Volatile.Read(ref _waitCalls);
+
+        internal int EffectGroupAttempts => _recording.EffectGroupAttempts;
+
+        public long CurrentGeneration => _recording.CurrentGeneration;
+
+        public bool TryAcquireRequestLease(
+            GrimoireRequestKind kind,
+            out IGrimoireRequestLease? lease) =>
+            _recording.TryAcquireRequestLease(kind, out lease);
+
+        public bool TryAcquireWorkLease(
+            GrimoireWorkKind kind,
+            out IGrimoireWorkLease? lease) =>
+            _recording.TryAcquireWorkLease(kind, out lease);
+
+        public IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(
+            System.Data.Common.DbConnection connection) =>
+            _recording.AcquireOrdinaryOpen(connection);
+
+        public Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
+            CovenantExclusiveRecoveryOwner owner,
+            IGrimoireRequestLease? initiatingRequest = null,
+            System.Data.Common.DbConnection? scopedConnection = null) =>
+            _recording.BeginOrResumeExclusive(
+                owner,
+                initiatingRequest,
+                scopedConnection);
+
+        public ValueTask<Result> DrainRequestAndWorkAsync(
+            IGrimoireClosingOwner closingOwner,
+            CancellationToken cancellationToken) =>
+            _recording.DrainRequestAndWorkAsync(
+                closingOwner,
+                cancellationToken);
+
+        public ValueTask<Result<IGrimoireExclusiveClosedLease>> CloseConnectionAdmissionAsync(
+            IGrimoireClosingOwner closingOwner,
+            CancellationToken cancellationToken) =>
+            _recording.CloseConnectionAdmissionAsync(
+                closingOwner,
+                cancellationToken);
+
+        public ValueTask<Result> AbortClosingAsync(
+            IGrimoireClosingOwner closingOwner,
+            Func<CancellationToken, ValueTask<bool>> proveNoDestructiveEffectAsync,
+            CancellationToken cancellationToken) =>
+            _recording.AbortClosingAsync(
+                closingOwner,
+                proveNoDestructiveEffectAsync,
+                cancellationToken);
+
+        public async Task<long> WaitForNextOpenGenerationAsync(
+            long observedGeneration,
+            CancellationToken cancellationToken)
+        {
+            int wait = Interlocked.Increment(ref _waitCalls);
+
+            if (wait == 1)
+            {
+                FirstWaitReached.TrySetResult();
             }
 
+            long generation = await _recording
+                .WaitForNextOpenGenerationAsync(
+                    observedGeneration,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (wait != 1)
+            {
+                return generation;
+            }
+
+            try
+            {
+                await using IGrimoireClosingOwner closing = inner
+                    .BeginOrResumeExclusive(Owner()).Value;
+
+                Result drained = await inner.DrainRequestAndWorkAsync(
+                    closing,
+                    cancellationToken);
+
+                if (drained.IsFailure)
+                {
+                    throw new InvalidOperationException(drained.Error.Message);
+                }
+                Result<IGrimoireExclusiveClosedLease> closed = await inner
+                    .CloseConnectionAdmissionAsync(
+                        closing,
+                        cancellationToken);
+
+                if (closed.IsFailure)
+                {
+                    throw new InvalidOperationException(closed.Error.Message);
+                }
+                Reclosed.TrySetResult(closed.Value);
+            }
+            catch (Exception ex)
+            {
+                Reclosed.TrySetException(ex);
+
+                throw;
+            }
+
+            return generation;
         }
 
+        public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
+            AcquireExpiredLeaseAdoptionInterlockAsync(
+                CovenantExclusiveRecoveryOwner candidateOwner,
+                Func<CovenantExclusiveRecoveryOwner, CancellationToken, ValueTask<bool>>
+                    revalidateDurableOwnerAsync,
+                CancellationToken cancellationToken) =>
+            _recording.AcquireExpiredLeaseAdoptionInterlockAsync(
+                candidateOwner,
+                revalidateDurableOwnerAsync,
+                cancellationToken);
+    }
+
+    private sealed class ConcurrentWinnerExecutionCapacity : IApprenticeExecutionCapacity
+    {
+        private readonly Lock _gate = new();
+
+        private int _running;
+
+        private bool _armConcurrentWinner;
+
+        private bool _winnerHeld;
+
+        internal bool WinnerHeld
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _winnerHeld;
+                }
+            }
+        }
+
+        public int RunningCount
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _running;
+                }
+            }
+        }
+
+        internal void ArmConcurrentWinner()
+        {
+            lock (_gate)
+            {
+                _armConcurrentWinner = true;
+            }
+        }
+
+        internal void ReleaseConcurrentWinner()
+        {
+            lock (_gate)
+            {
+                if (!_winnerHeld)
+                {
+                    return;
+                }
+                _winnerHeld = false;
+
+                _running--;
+            }
+        }
+
+        public bool TryAcquire(int maxConcurrent, out IDisposable? lease)
+        {
+            lock (_gate)
+            {
+                if (_armConcurrentWinner)
+                {
+                    _armConcurrentWinner = false;
+
+                    if (_running < maxConcurrent)
+                    {
+                        _running++;
+
+                        _winnerHeld = true;
+                    }
+                    lease = null;
+
+                    return false;
+                }
+
+                if (_running >= maxConcurrent)
+                {
+                    lease = null;
+
+                    return false;
+                }
+                _running++;
+
+                lease = new CapacityLease(this);
+
+                return true;
+            }
+        }
+
+        private sealed class CapacityLease(
+            ConcurrentWinnerExecutionCapacity owner) : IDisposable
+        {
+            private int _disposed;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                lock (owner._gate)
+                {
+                    owner._running--;
+                }
+            }
+        }
+    }
+
+    private sealed class BlockingCapacityLossExecutionCapacity : IApprenticeExecutionCapacity
+    {
+        private readonly ApprenticeConcurrencyGate _gate = new();
+
+        internal TaskCompletionSource CapacityLossReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowCapacityLossReturn { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int RunningCount => _gate.RunningCount;
+
+        public bool TryAcquire(int maxConcurrent, out IDisposable? lease)
+        {
+            if (_gate.TryAcquire(maxConcurrent, out lease))
+            {
+                return true;
+            }
+            CapacityLossReached.TrySetResult();
+
+            AllowCapacityLossReturn.Task.GetAwaiter().GetResult();
+
+            return false;
+        }
+    }
+
+    private sealed class FrontierDisposalBarriers
+    {
+        private readonly ConcurrentQueue<string> _phases;
+
+        private int _effectGroupDisposals;
+
+        private int _scopeDisposals;
+
+        private int _workLeaseDisposals;
+
+        internal FrontierDisposalBarriers(
+            ConcurrentQueue<string> phases,
+            RecordingGrimoireWorkAdmissionGate gate)
+        {
+            _phases = phases;
+
+            gate.BeforeEffectGroupDisposalAsync = BeforeEffectGroupDisposalAsync;
+
+            gate.BeforeWorkLeaseDisposalAsync = BeforeWorkLeaseDisposalAsync;
+        }
+
+        internal TaskCompletionSource EffectGroupDisposalReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowEffectGroupDisposal { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ScopeDisposalReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowScopeDisposal { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource WorkLeaseDisposalReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowWorkLeaseDisposal { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal async ValueTask BeforeScopeDisposalAsync()
+        {
+            if (Interlocked.Increment(ref _scopeDisposals) != 1)
+            {
+                return;
+            }
+            _phases.Enqueue("scope-disposal");
+
+            ScopeDisposalReached.TrySetResult();
+
+            await AllowScopeDisposal.Task;
+        }
+
+        private async ValueTask BeforeEffectGroupDisposalAsync()
+        {
+            if (Interlocked.Increment(ref _effectGroupDisposals) != 1)
+            {
+                return;
+            }
+            _phases.Enqueue("effect-group-disposal");
+
+            EffectGroupDisposalReached.TrySetResult();
+
+            await AllowEffectGroupDisposal.Task;
+        }
+
+        private async ValueTask BeforeWorkLeaseDisposalAsync()
+        {
+            if (Interlocked.Increment(ref _workLeaseDisposals) != 1)
+            {
+                return;
+            }
+            _phases.Enqueue("work-lease-disposal");
+
+            WorkLeaseDisposalReached.TrySetResult();
+
+            await AllowWorkLeaseDisposal.Task;
+        }
+    }
+
+    private sealed class RefusingScopeFactory : IServiceScopeFactory
+    {
+        internal int Created { get; private set; }
+
+        public IServiceScope CreateScope()
+        {
+            Created++;
+
+            throw new InvalidOperationException("Admission must precede scope creation.");
+        }
     }
 
     private sealed class SingleServiceScopeFactory : IServiceScopeFactory
     {
-
         private readonly IServiceProvider _provider;
+
+        private readonly Func<ValueTask> _beforeScopeDisposalAsync;
+
+        private int _created;
+
+        private int _active;
+
+        internal int Created => Volatile.Read(ref _created);
 
         public SingleServiceScopeFactory(
             IApprenticeRepository repo,
             IArcanumIntelligenceProvider? intelligence = null,
-            IGrimoireRepository? grimoire = null)
+            IGrimoireRepository? grimoire = null,
+            Func<ValueTask>? beforeScopeDisposalAsync = null,
+            ICanonicalCampaignContextResolver? campaignResolver = null,
+            ISessionTurnBeginStore? turnBeginStore = null)
         {
+            _provider = new SingleServiceProvider(
+                repo,
+                intelligence,
+                grimoire,
+                campaignResolver,
+                turnBeginStore);
 
-            _provider = new SingleServiceProvider(repo, intelligence, grimoire);
-
+            _beforeScopeDisposalAsync = beforeScopeDisposalAsync
+                ?? (static () => ValueTask.CompletedTask);
         }
 
-        public IServiceScope CreateScope() => new SingleScope(_provider);
-
-        private sealed class SingleScope : IServiceScope
+        public IServiceScope CreateScope()
         {
+            _ = Interlocked.Increment(ref _created);
 
-            public SingleScope(IServiceProvider provider)
-            {
+            _ = Interlocked.Increment(ref _active);
 
-                ServiceProvider = provider;
+            return new SingleScope(
+                _provider,
+                async () =>
+                {
+                    if (Interlocked.Decrement(ref _active) == 0)
+                    {
+                        await _beforeScopeDisposalAsync();
+                    }
+                });
+        }
 
-            }
+        private sealed class SingleScope(
+            IServiceProvider provider,
+            Func<ValueTask> beforeDisposalAsync) : IServiceScope, IAsyncDisposable
+        {
+            private int _disposed;
 
-            public IServiceProvider ServiceProvider { get; }
+            public IServiceProvider ServiceProvider { get; } = provider;
 
             public void Dispose()
             {
-
+                DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
 
+            public async ValueTask DisposeAsync()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    await beforeDisposalAsync();
+                }
+            }
         }
 
         private sealed class SingleServiceProvider : IServiceProvider
         {
-
             private readonly IApprenticeRepository _repo;
 
             private readonly IArcanumIntelligenceProvider? _intelligence;
 
             private readonly IGrimoireRepository? _grimoire;
 
+            private readonly ICanonicalCampaignContextResolver? _campaignResolver;
+
+            private readonly ISessionTurnBeginStore? _turnBeginStore;
+
             public SingleServiceProvider(
                 IApprenticeRepository repo,
                 IArcanumIntelligenceProvider? intelligence,
-                IGrimoireRepository? grimoire)
+                IGrimoireRepository? grimoire,
+                ICanonicalCampaignContextResolver? campaignResolver,
+                ISessionTurnBeginStore? turnBeginStore)
             {
-
                 _repo = repo;
 
                 _intelligence = intelligence;
 
                 _grimoire = grimoire;
 
+                _campaignResolver = campaignResolver;
+
+                _turnBeginStore = turnBeginStore;
             }
 
             public object? GetService(Type serviceType)
             {
-
                 if (serviceType == typeof(IApprenticeRepository))
                 {
-
                     return _repo;
-
                 }
 
                 if (serviceType == typeof(IArcanumIntelligenceProvider) && _intelligence is not null)
                 {
-
                     return _intelligence;
-
                 }
 
                 if (serviceType == typeof(IGrimoireRepository) && _grimoire is not null)
                 {
-
                     return _grimoire;
+                }
 
+                if (serviceType == typeof(ICanonicalCampaignContextResolver)
+                    && _campaignResolver is not null)
+                {
+                    return _campaignResolver;
+                }
+
+                if (serviceType == typeof(ISessionTurnBeginStore)
+                    && _turnBeginStore is not null)
+                {
+                    return _turnBeginStore;
                 }
 
                 return null;
-
             }
-
         }
-
     }
 
     private class InMemoryApprenticeRepository : IApprenticeRepository
     {
-
         private readonly Dictionary<Guid, Apprentice> _store = new();
 
         public InMemoryApprenticeRepository(params Apprentice[] apprentices)
         {
-
             foreach (Apprentice apprentice in apprentices)
             {
-
                 _store[apprentice.Id] = apprentice;
-
             }
-
         }
 
         public Apprentice Get(Guid id)
         {
-
             return _store[id];
-
         }
 
         public virtual Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-
             Apprentice? value = _store.TryGetValue(id, out Apprentice? found) ? found : null;
 
             return Task.FromResult(value);
-
         }
 
-        public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+        public virtual Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-
             _store[apprentice.Id] = apprentice;
 
             return Task.FromResult(apprentice);
-
         }
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default)
         {
-
             string running = ApprenticeStatus.Running.ToString();
 
+            string planning = ApprenticeStatus.Planning.ToString();
+
+            string idle = ApprenticeStatus.Idle.ToString();
+
             IReadOnlyList<Apprentice> values = _store.Values
-                .Where(a => string.Equals(a.Status, running, StringComparison.Ordinal))
+                .Where(a =>
+                    string.Equals(a.Status, running, StringComparison.Ordinal)
+                    || string.Equals(a.Status, planning, StringComparison.Ordinal)
+                    && ApprenticeRepository.DeserializePlan(a.Plan).Count == 0
+                    || string.Equals(a.Status, idle, StringComparison.Ordinal)
+                    && ApprenticeRepository.DeserializeCheckpoint(a.CheckpointData)?.LaunchRequested is true)
                 .ToList();
 
             return Task.FromResult(values);
-
         }
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
         {
-
             string planning = ApprenticeStatus.Planning.ToString();
 
             IReadOnlyList<Apprentice> values = _store.Values
@@ -1119,23 +4639,18 @@ public sealed class ApprenticeServiceReliabilityTests
                 .ToList();
 
             return Task.FromResult(values);
-
         }
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-
             _store[apprentice.Id] = apprentice;
 
             return Task.FromResult(apprentice);
-
         }
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
         {
-
             return Task.FromResult(_store.Remove(id));
-
         }
 
         public Task<ListPageResult<Apprentice>> ListAsync(
@@ -1145,18 +4660,58 @@ public sealed class ApprenticeServiceReliabilityTests
             DateTimeOffset? beforeUpdatedAt = null,
             CancellationToken cancellationToken = default)
         {
-
             throw new NotImplementedException();
+        }
+    }
 
+    private sealed class CancellationSensitiveRepository(params Apprentice[] apprentices)
+        : InMemoryApprenticeRepository(apprentices)
+    {
+        public override Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return base.GetByIdAsync(id, cancellationToken);
         }
 
+        public override Task<Apprentice> UpdateAsync(
+            Apprentice apprentice,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return base.UpdateAsync(apprentice, cancellationToken);
+        }
+    }
+
+    private sealed class CountingChildSettlementRepository(
+        Guid parentId,
+        params Apprentice[] apprentices) : InMemoryApprenticeRepository(apprentices)
+    {
+        private readonly ConcurrentDictionary<Guid, int> _settlementReadCounts = new();
+
+        internal int SettlementReadCount(Guid childId) =>
+            _settlementReadCounts.TryGetValue(childId, out int count) ? count : 0;
+
+        public override Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            if (id != parentId && !cancellationToken.CanBeCanceled)
+            {
+                _settlementReadCounts.AddOrUpdate(id, 1, static (_, count) => count + 1);
+            }
+
+            return base.GetByIdAsync(id, cancellationToken);
+        }
     }
 
     private sealed class StartSignalingApprenticeRepository(
         params Apprentice[] apprentices)
         : InMemoryApprenticeRepository(apprentices)
     {
-
         private readonly ConcurrentDictionary<Guid, int> _reads = new();
 
         private readonly ConcurrentDictionary<Guid, TaskCompletionSource> _executionReads = new();
@@ -1165,21 +4720,17 @@ public sealed class ApprenticeServiceReliabilityTests
             Guid id,
             CancellationToken cancellationToken = default)
         {
-
             if (_reads.AddOrUpdate(id, 1, static (_, current) => current + 1) >= 2)
             {
-
                 _executionReads
                     .GetOrAdd(
                         id,
                         static _ => new TaskCompletionSource(
                             TaskCreationOptions.RunContinuationsAsynchronously))
                     .TrySetResult();
-
             }
 
             return base.GetByIdAsync(id, cancellationToken);
-
         }
 
         public Task WaitForExecutionAsync(Guid id) =>
@@ -1189,29 +4740,584 @@ public sealed class ApprenticeServiceReliabilityTests
                     static _ => new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously))
                 .Task;
+    }
 
+    private sealed class FrontierReadRepository(
+        Apprentice apprentice) : InMemoryApprenticeRepository(apprentice)
+    {
+        private int _reads;
+
+        internal TaskCompletionSource ReadReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowRead { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _reads) == 1)
+            {
+                ReadReached.TrySetResult();
+
+                await AllowRead.Task.WaitAsync(cancellationToken);
+            }
+
+            return await base.GetByIdAsync(id, cancellationToken);
+        }
+    }
+
+    private sealed class BlockingPlanPersistenceRepository(
+        Apprentice apprentice,
+        ConcurrentQueue<string> phases) : InMemoryApprenticeRepository(apprentice)
+    {
+        private int _recorded;
+
+        internal TaskCompletionSource PlanPersistenceReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowPlanPersistence { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default)
+        {
+            if (!string.Equals(updated.Plan, "[]", StringComparison.Ordinal)
+                && string.Equals(
+                    updated.Status,
+                    ApprenticeStatus.Running.ToString(),
+                    StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _recorded, 1) == 0)
+            {
+                phases.Enqueue("durable-plan");
+
+                PlanPersistenceReached.TrySetResult();
+
+                await AllowPlanPersistence.Task.WaitAsync(cancellationToken);
+            }
+
+            return await base.UpdateAsync(updated, cancellationToken);
+        }
+    }
+
+    private sealed class FinalCheckpointRecordingRepository(
+        Apprentice apprentice,
+        int targetStep,
+        ConcurrentQueue<string> phases) : InMemoryApprenticeRepository(apprentice)
+    {
+        private int _recorded;
+
+        public override Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default)
+        {
+            ApprenticeCheckpoint? checkpoint = ApprenticeRepository
+                .DeserializeCheckpoint(updated.CheckpointData);
+
+            if (updated.CurrentStep == targetStep
+                && checkpoint?.CurrentStep == targetStep
+                && Interlocked.Exchange(ref _recorded, 1) == 0)
+            {
+                phases.Enqueue("final-checkpoint");
+            }
+
+            return base.UpdateAsync(updated, cancellationToken);
+        }
+    }
+
+    private sealed class ParkedPlanningUpdateRepository(
+        Apprentice apprentice) : InMemoryApprenticeRepository(apprentice)
+    {
+        private int _parked;
+
+        internal TaskCompletionSource PlanningUpdateReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowPlanningUpdate { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.Equals(
+                    updated.Status,
+                    ApprenticeStatus.Planning.ToString(),
+                    StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _parked, 1) == 0)
+            {
+                PlanningUpdateReached.TrySetResult();
+
+                await AllowPlanningUpdate.Task.WaitAsync(cancellationToken);
+            }
+
+            return await base.UpdateAsync(updated, cancellationToken);
+        }
+    }
+
+    private sealed class ParkedRunningUpdateRepository(
+        Apprentice apprentice) : InMemoryApprenticeRepository(Clone(apprentice))
+    {
+        private int _runningUpdates;
+
+        internal TaskCompletionSource RunningUpdateReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowRunningUpdate { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice? current = await base.GetByIdAsync(id, cancellationToken);
+
+            return current is null ? null : Clone(current);
+        }
+
+        public override async Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.Equals(
+                    updated.Status,
+                    ApprenticeStatus.Running.ToString(),
+                    StringComparison.Ordinal)
+                && Interlocked.Increment(ref _runningUpdates) == 1)
+            {
+                RunningUpdateReached.TrySetResult();
+
+                await AllowRunningUpdate.Task.WaitAsync(cancellationToken);
+            }
+
+            return await base.UpdateAsync(Clone(updated), cancellationToken);
+        }
+
+        public new Apprentice Get(Guid id) => Clone(base.Get(id));
+
+        private static Apprentice Clone(Apprentice source) => new()
+        {
+            Id = source.Id,
+            CampaignId = source.CampaignId,
+            Name = source.Name,
+            Goal = source.Goal,
+            Plan = source.Plan,
+            CurrentStep = source.CurrentStep,
+            Status = source.Status,
+            SessionId = source.SessionId,
+            WorkspacePath = source.WorkspacePath,
+            CheckpointData = source.CheckpointData,
+            ErrorMessage = source.ErrorMessage,
+            CreatedAt = source.CreatedAt,
+            UpdatedAt = source.UpdatedAt,
+            ParentApprenticeId = source.ParentApprenticeId,
+        };
+    }
+
+    private sealed class ThrowingRunningUpdateRepository(
+        Apprentice apprentice) : InMemoryApprenticeRepository(apprentice)
+    {
+        public override Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.Equals(
+                updated.Status,
+                ApprenticeStatus.Running.ToString(),
+                StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Simulated Running persistence failure.");
+            }
+
+            return base.UpdateAsync(updated, cancellationToken);
+        }
+    }
+
+    private sealed class SuccessfulStepIntelligence : IArcanumIntelligenceProvider
+    {
+        private int _streamCalls;
+
+        internal int StreamCalls => Volatile.Read(ref _streamCalls);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            Task.FromResult<Result<PromptTurnResult>>(
+                new PromptTurnResult("NO_CHANGE", Usage: null));
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            _ = Interlocked.Increment(ref _streamCalls);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "step complete");
+
+            await Task.Yield();
+        }
+    }
+
+    private sealed class BlockingSuccessfulStepIntelligence(
+        ConcurrentQueue<string>? phases = null) : IArcanumIntelligenceProvider
+    {
+        internal TaskCompletionSource StreamReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowStream { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            Task.FromResult<Result<PromptTurnResult>>(
+                new PromptTurnResult("NO_CHANGE", Usage: null));
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            phases?.Enqueue("provider");
+
+            StreamReached.TrySetResult();
+
+            await AllowStream.Task.WaitAsync(cancellationToken);
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "step complete");
+        }
+    }
+
+    private sealed class RepeatedRetryableStepIntelligence : IArcanumIntelligenceProvider
+    {
+        private int _streamCalls;
+
+        internal int StreamCalls => Volatile.Read(ref _streamCalls);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            _ = Interlocked.Increment(ref _streamCalls);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                "same retryable evidence");
+
+            await Task.Yield();
+        }
+    }
+
+    private sealed class SimulacrumOrderingRepository(
+        Apprentice apprentice,
+        Guid childId) : InMemoryApprenticeRepository(
+            Clone(apprentice),
+            RunningChild(
+                childId,
+                apprentice.Id,
+                apprentice.CampaignId,
+                ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain))
+    {
+        internal TaskCompletionSource ChildSettlementReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowChildSettlement { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            if (id == childId)
+            {
+                ChildSettlementReached.TrySetResult();
+
+                await AllowChildSettlement.Task.WaitAsync(cancellationToken);
+            }
+            Apprentice? current = await base.GetByIdAsync(id, cancellationToken);
+
+            return current is null ? null : Clone(current);
+        }
+
+        public override Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default) =>
+            base.UpdateAsync(Clone(updated), cancellationToken);
+
+        public new Apprentice Get(Guid id) => Clone(base.Get(id));
+
+        private static Apprentice Clone(Apprentice source) => new()
+        {
+            Id = source.Id,
+            CampaignId = source.CampaignId,
+            Name = source.Name,
+            Goal = source.Goal,
+            Plan = source.Plan,
+            CurrentStep = source.CurrentStep,
+            Status = source.Status,
+            SessionId = source.SessionId,
+            WorkspacePath = source.WorkspacePath,
+            CheckpointData = source.CheckpointData,
+            ErrorMessage = source.ErrorMessage,
+            CreatedAt = source.CreatedAt,
+            UpdatedAt = source.UpdatedAt,
+            ParentApprenticeId = source.ParentApprenticeId,
+        };
+    }
+
+    private sealed class SimulacrumOrderingIntelligence(Guid childId) : IArcanumIntelligenceProvider
+    {
+        private int _streams;
+
+        internal TaskCompletionSource ShiftingFateReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowShiftingFate { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            ShiftingFateReached.TrySetResult();
+
+            await AllowShiftingFate.Task.WaitAsync(cancellationToken);
+
+            return new PromptTurnResult(
+                """[{"index":2,"description":"Revised tail"}]""",
+                Usage: null);
+        }
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            int stream = Interlocked.Increment(ref _streams);
+
+            if (stream == 1)
+            {
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.ToolResult,
+                    "cast_sending",
+                    Data: "{\"childApprenticeId\":\"" + childId + "\"}",
+                    ToolCall: new IntelligenceToolCallEvent(
+                        "cast-1",
+                        "cast_sending",
+                        "{}"));
+            }
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "branch complete");
+
+            await Task.Yield();
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private sealed class BlockingSimulacrumFrontierRepository(
+        Apprentice apprentice,
+        Apprentice child,
+        ConcurrentQueue<string> phases)
+        : InMemoryApprenticeRepository(Clone(apprentice), Clone(child))
+    {
+        private readonly Guid _apprenticeId = apprentice.Id;
+
+        private readonly Guid _childId = child.Id;
+
+        private int _childSettlementRecorded;
+
+        private int _finalCheckpointRecorded;
+
+        internal TaskCompletionSource ChildSettlementReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowChildSettlement { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource FinalCheckpointReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowFinalCheckpoint { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            if (id == _childId
+                && !cancellationToken.CanBeCanceled
+                && Interlocked.Exchange(ref _childSettlementRecorded, 1) == 0)
+            {
+                phases.Enqueue("child-authority");
+
+                ChildSettlementReached.TrySetResult();
+
+                await AllowChildSettlement.Task;
+            }
+            Apprentice? current = await base.GetByIdAsync(id, cancellationToken);
+
+            return current is null ? null : Clone(current);
+        }
+
+        public override async Task<Apprentice> UpdateAsync(
+            Apprentice updated,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice persisted = await base.UpdateAsync(
+                Clone(updated),
+                cancellationToken);
+
+            ApprenticeCheckpoint? checkpoint = ApprenticeRepository
+                .DeserializeCheckpoint(updated.CheckpointData);
+
+            if (updated.Id == _apprenticeId
+                && updated.CurrentStep == 2
+                && checkpoint?.CurrentStep == 2
+                && Interlocked.Exchange(ref _finalCheckpointRecorded, 1) == 0)
+            {
+                phases.Enqueue("final-checkpoint");
+
+                FinalCheckpointReached.TrySetResult();
+
+                await AllowFinalCheckpoint.Task.WaitAsync(cancellationToken);
+            }
+
+            return Clone(persisted);
+        }
+
+        public new Apprentice Get(Guid id) => Clone(base.Get(id));
+
+        private static Apprentice Clone(Apprentice source) => new()
+        {
+            Id = source.Id,
+            CampaignId = source.CampaignId,
+            Name = source.Name,
+            Goal = source.Goal,
+            Plan = source.Plan,
+            CurrentStep = source.CurrentStep,
+            Status = source.Status,
+            SessionId = source.SessionId,
+            WorkspacePath = source.WorkspacePath,
+            CheckpointData = source.CheckpointData,
+            ErrorMessage = source.ErrorMessage,
+            CreatedAt = source.CreatedAt,
+            UpdatedAt = source.UpdatedAt,
+            ParentApprenticeId = source.ParentApprenticeId,
+        };
+    }
+
+    private sealed class BlockingSimulacrumFrontierIntelligence(
+        Guid childId,
+        ConcurrentQueue<string> phases) : IArcanumIntelligenceProvider
+    {
+        private int _streams;
+
+        internal TaskCompletionSource ProvidersReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowProviders { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ShiftingFateReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowShiftingFate { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            phases.Enqueue("shifting-fate");
+
+            ShiftingFateReached.TrySetResult();
+
+            await AllowShiftingFate.Task.WaitAsync(cancellationToken);
+
+            return new PromptTurnResult(
+                """[{"index":2,"description":"Revised tail"}]""",
+                Usage: null);
+        }
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            int stream = Interlocked.Increment(ref _streams);
+
+            if (stream == 2)
+            {
+                phases.Enqueue("provider");
+
+                ProvidersReached.TrySetResult();
+            }
+
+            await AllowProviders.Task.WaitAsync(cancellationToken);
+
+            if (stream == 1)
+            {
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.ToolResult,
+                    "cast_sending",
+                    Data: "{\"childApprenticeId\":\"" + childId + "\"}",
+                    ToolCall: new IntelligenceToolCallEvent(
+                        "cast-1",
+                        "cast_sending",
+                        "{}"));
+            }
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "branch complete");
+        }
     }
 
     private sealed class CapturingLogger<TCategory> : ILogger<TCategory>
     {
-
         private readonly List<LogEntry> _entries = new();
 
         public IReadOnlyList<LogEntry> Entries
         {
-
             get
             {
-
                 lock (_entries)
                 {
-
                     return _entries.ToList();
-
                 }
-
             }
-
         }
 
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NoopDisposable.Instance;
@@ -1225,64 +5331,47 @@ public sealed class ApprenticeServiceReliabilityTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-
             string message = formatter(state, exception);
 
             lock (_entries)
             {
-
                 _entries.Add(new LogEntry(logLevel, message, exception));
-
             }
-
         }
 
         private sealed class NoopDisposable : IDisposable
         {
-
             public static readonly NoopDisposable Instance = new();
 
             public void Dispose()
             {
-
             }
-
         }
-
     }
 
     private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
 
-    // Throws OperationCanceledException on the FIRST GetByIdAsync call (simulating
-    // a cancelled DB read during host shutdown), then delegates to the in-memory
-    // store for subsequent calls so the Fix 4 persistence path can read/update.
+    // Throws a foreign OperationCanceledException on the first read, then allows
+    // failure settlement to load the same durable Apprentice.
 
     private sealed class OceOnFirstGetApprenticeRepository : InMemoryApprenticeRepository
     {
-
         private int _calls;
 
         public OceOnFirstGetApprenticeRepository(params Apprentice[] apprentices) : base(apprentices)
         {
-
         }
 
         public override Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-
             if (Interlocked.Increment(ref _calls) == 1)
             {
-
-                throw new OperationCanceledException("Simulated host shutdown cancellation.");
-
+                throw new OperationCanceledException("Simulated foreign cancellation.");
             }
 
             return base.GetByIdAsync(id, cancellationToken);
-
         }
-
     }
-
     // StreamPromptAsync throws a non-cancel exception to inject a Simulacrum
     // branch fault (Fix 3). ExecutePromptAsync is unused by the Fix 3 test.
 
@@ -1314,9 +5403,219 @@ public sealed class ApprenticeServiceReliabilityTests
         }
     }
 
+    private sealed class CastThenRetryIntelligence(
+        Guid firstChildId,
+        Guid secondChildId) : IArcanumIntelligenceProvider
+    {
+        private int _streams;
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            int stream = Interlocked.Increment(ref _streams);
+
+            Guid childId = stream == 1 ? firstChildId : secondChildId;
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                "cast_sending",
+                Data: "{\"childApprenticeId\":\"" + childId + "\"}",
+                ToolCall: new IntelligenceToolCallEvent(
+                    $"cast-{stream}",
+                    "cast_sending",
+                    "{}"));
+
+            yield return stream == 1
+                ? new IntelligenceEvent(IntelligenceEventType.Error, "retry after durable cast")
+                : new IntelligenceEvent(IntelligenceEventType.Result, "step complete");
+
+            await Task.Yield();
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private sealed class CastThenThrowIntelligence(Guid childId) : IArcanumIntelligenceProvider
+    {
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                "cast_sending",
+                Data: "{\"childApprenticeId\":\"" + childId + "\"}",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "cast-before-fault",
+                    "cast_sending",
+                    "{}"));
+
+            await Task.Yield();
+
+            throw new InvalidOperationException("provider failed after durable cast");
+        }
+    }
+
+    private sealed class BlockingCastIntelligence(Guid childId) : IArcanumIntelligenceProvider
+    {
+        internal TaskCompletionSource CastObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                "cast_sending",
+                Data: "{\"childApprenticeId\":\"" + childId + "\"}",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "cast-before-cancel",
+                    "cast_sending",
+                    "{}"));
+
+            CastObserved.TrySetResult();
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
+    private sealed class SimulacrumRetryCastIntelligence(
+        Guid firstChildId,
+        Guid secondChildId) : IArcanumIntelligenceProvider
+    {
+        private int _retryBranchCalls;
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            Task.FromResult<Result<PromptTurnResult>>(
+                new PromptTurnResult("NO_CHANGE", Usage: null));
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            if (!request.Prompt.Contains("Retry branch", StringComparison.Ordinal))
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Result, "stable complete");
+
+                yield break;
+            }
+
+            int attempt = Interlocked.Increment(ref _retryBranchCalls);
+
+            if (attempt > 1)
+            {
+                yield return CastResult(firstChildId);
+            }
+            yield return CastResult(attempt == 1 ? firstChildId : secondChildId);
+
+            yield return attempt == 1
+                ? new IntelligenceEvent(IntelligenceEventType.Error, "retry branch once")
+                : new IntelligenceEvent(IntelligenceEventType.Result, "retry branch complete");
+
+            await Task.Yield();
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private sealed class SimulacrumFaultAfterCastIntelligence(Guid childId)
+        : IArcanumIntelligenceProvider
+    {
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            if (!request.Prompt.Contains("Fault branch", StringComparison.Ordinal))
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Result, "stable complete");
+
+                yield break;
+            }
+            yield return CastResult(childId);
+
+            await Task.Yield();
+
+            throw new InvalidOperationException("branch provider failed after durable cast");
+        }
+    }
+
+    private sealed class SimulacrumCancelAfterCastIntelligence(
+        Guid childId,
+        CancellationTokenSource linkedCts) : IArcanumIntelligenceProvider
+    {
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            if (!request.Prompt.Contains("Cancel branch", StringComparison.Ordinal))
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Result, "stable complete");
+
+                yield break;
+            }
+            yield return CastResult(childId);
+
+            await linkedCts.CancelAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
     private sealed class ThrowingIntelligenceProvider : IArcanumIntelligenceProvider
     {
-
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
             ArcanumInvocationContext invocationContext,
@@ -1330,26 +5629,21 @@ public sealed class ApprenticeServiceReliabilityTests
             CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new InvalidOperationException("Branch fault injection.");
-
     }
-
     // ExecutePromptAsync returns Failure so RunApprenticeAsync's plan-generation
     // path fails fast and exits via FailApprenticeAsync (Fix 5). StreamPromptAsync
     // is unused by the Fix 5 test.
 
     private sealed class FailingPlanIntelligence : IArcanumIntelligenceProvider
     {
-
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
             ArcanumInvocationContext invocationContext,
             CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-
             return Task.FromResult(
                 Result<PromptTurnResult>.Failure(new Error("Plan.Failed", "Plan generation failed.")));
-
         }
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
@@ -1358,9 +5652,261 @@ public sealed class ApprenticeServiceReliabilityTests
             CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotImplementedException();
-
     }
 
+    private sealed class BlockingPlanIntelligence : IArcanumIntelligenceProvider
+    {
+        private int _executeCalls;
+
+        internal int ExecuteCalls => Volatile.Read(ref _executeCalls);
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            _ = Interlocked.Increment(ref _executeCalls);
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+            return new PromptTurnResult("unreachable", Usage: null);
+        }
+
+        public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+    }
+
+    private sealed class SuccessfulPlanIntelligence : IArcanumIntelligenceProvider
+    {
+        private int _executeCalls;
+
+        private int _streamCalls;
+
+        internal int ExecuteCalls => Volatile.Read(ref _executeCalls);
+
+        internal int StreamCalls => Volatile.Read(ref _streamCalls);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            int call = Interlocked.Increment(ref _executeCalls);
+
+            if (call > 1)
+            {
+                return Task.FromResult<Result<PromptTurnResult>>(
+                    new PromptTurnResult("NO_CHANGE", Usage: null));
+            }
+
+            return Task.FromResult<Result<PromptTurnResult>>(
+                new PromptTurnResult(
+                    """[{"index":1,"description":"One durable step"}]""",
+                    Usage: null));
+        }
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            _ = Interlocked.Increment(ref _streamCalls);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "step complete");
+
+            await Task.Yield();
+        }
+    }
+
+    private sealed class BlockingOrderedPlanIntelligence(
+        ConcurrentQueue<string> phases) : IArcanumIntelligenceProvider
+    {
+        internal TaskCompletionSource ProviderReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowProvider { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            phases.Enqueue("provider");
+
+            ProviderReached.TrySetResult();
+
+            await AllowProvider.Task.WaitAsync(cancellationToken);
+
+            return new PromptTurnResult(
+                """[{"index":1,"description":"One durable step"}]""",
+                Usage: null);
+        }
+
+        public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+    }
+
+    private sealed class RecordingCanonicalCampaignContextResolver : ICanonicalCampaignContextResolver
+    {
+        private readonly Result<CanonicalCampaignContext> _result;
+
+        internal RecordingCanonicalCampaignContextResolver(CanonicalCampaignContext campaign)
+            : this(Result<CanonicalCampaignContext>.Success(campaign))
+        {
+        }
+
+        internal RecordingCanonicalCampaignContextResolver(Error error)
+            : this(Result<CanonicalCampaignContext>.Failure(error))
+        {
+        }
+
+        private RecordingCanonicalCampaignContextResolver(
+            Result<CanonicalCampaignContext> result)
+        {
+            _result = result;
+        }
+
+        internal ConcurrentQueue<CanonicalCampaignResolutionRequest> Requests { get; } = new();
+
+        public ValueTask<Result<CanonicalCampaignContext>> ResolveAsync(
+            CanonicalCampaignResolutionRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Requests.Enqueue(request);
+
+            return ValueTask.FromResult(_result);
+        }
+    }
+
+    private sealed record SessionCreationCall(
+        CanonicalCampaignContext Campaign,
+        string Title);
+    private sealed class RecordingSessionTurnBeginStore : ISessionTurnBeginStore
+    {
+        private readonly Result<Guid> _createResult;
+
+        private int _beginCalls;
+
+        internal RecordingSessionTurnBeginStore(Guid sessionId)
+            : this(Result<Guid>.Success(sessionId))
+        {
+        }
+
+        internal RecordingSessionTurnBeginStore(Error error)
+            : this(Result<Guid>.Failure(error))
+        {
+        }
+
+        private RecordingSessionTurnBeginStore(Result<Guid> createResult)
+        {
+            _createResult = createResult;
+        }
+
+        internal ConcurrentQueue<SessionCreationCall> Creations { get; } = new();
+
+        internal int BeginCalls => Volatile.Read(ref _beginCalls);
+
+        public ValueTask<Result<Guid>> CreateBoundSessionAsync(
+            CanonicalCampaignContext campaign,
+            string title,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Creations.Enqueue(new SessionCreationCall(campaign, title));
+
+            return ValueTask.FromResult(_createResult);
+        }
+
+        public ValueTask<Result<AssistantReplyBeginReceipt>> BeginAssistantReplyAsync(
+            Guid existingSessionId,
+            CanonicalCampaignContext campaign,
+            string prompt,
+            string model,
+            CancellationToken cancellationToken)
+        {
+            _ = Interlocked.Increment(ref _beginCalls);
+
+            throw new InvalidOperationException(
+                "Apprentice Session creation must not append placeholder Entries.");
+        }
+    }
+
+    private sealed class BlockingSessionStepIntelligence : IArcanumIntelligenceProvider
+    {
+        internal TaskCompletionSource StreamReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            StreamReached.TrySetResult();
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+            yield break;
+        }
+    }
+
+    private sealed class CountingSessionStepIntelligence : IArcanumIntelligenceProvider
+    {
+        private int _streamCalls;
+
+        internal int StreamCalls => Volatile.Read(ref _streamCalls);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken,
+            InferenceAuditContext? auditContext = null)
+        {
+            _ = Interlocked.Increment(ref _streamCalls);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await Task.Yield();
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "unexpected inference");
+        }
+    }
     // Minimal IGrimoireRepository stub: every method throws NotImplementedException.
     // RunApprenticeAsync resolves the grimoire from the scope before plan
     // generation, but the failing-plan path returns before any grimoire call, so
@@ -1368,7 +5914,6 @@ public sealed class ApprenticeServiceReliabilityTests
 
     private sealed class NotImplementedGrimoireRepository : IGrimoireRepository
     {
-
         public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
             Guid? sessionId, string prompt, string model, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
@@ -1475,7 +6020,5 @@ public sealed class ApprenticeServiceReliabilityTests
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(
             string workspacePath, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
-
     }
-
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.DataProtection;
 
 using Microsoft.Extensions.Logging.Abstractions;
@@ -17,14 +18,128 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
 {
-
     private readonly string _storeDir = Path.Combine(Path.GetTempPath(), $"arcanum-keyboot-{Guid.NewGuid():N}");
 
     private readonly Dictionary<string, string?> _originalEnvironment = new(StringComparer.Ordinal);
 
+    [Fact]
+    public async Task Existing_key_seeds_the_host_presence_digest_without_a_second_store_read()
+    {
+        const string apiKey = "existing-host-key";
+
+        RecordingBootstrapSecretStore store = new(
+            SecretStoreReadResult.Ok(apiKey));
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        string? generated = await ArcanumMasterKeyBootstrapper
+            .EnsureMasterApiKeyExistsAsync(
+                store,
+                new ReachableFailingStore(),
+                cache,
+                grimoireExists: static () => false);
+
+        Assert.Null(generated);
+        Assert.Equal(1, store.ReadCount);
+        Assert.Equal(0, store.SaveCount);
+
+        Assert.True(cache.TryGetPresenceDigest(out byte[]? digest));
+
+        Assert.Equal(
+            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(apiKey)),
+            digest);
+    }
+
+    [Fact]
+    public async Task Existing_os_key_is_mirrored_before_the_host_publishes_its_presence_proof()
+    {
+        const string apiKey = "existing-key-without-client-mirror";
+
+        InMemoryOsCredentialStore osStore = new();
+
+        OsCredentialStoreResult stored = osStore.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            apiKey);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, stored.Status);
+
+        using DataProtectionSecretStore mirrorStore = CreateDataProtectionStore();
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        using OsKeychainSecretStore store = new(
+            osStore,
+            mirrorStore,
+            cache,
+            NullLogger<OsKeychainSecretStore>.Instance);
+
+        string? generated = await ArcanumMasterKeyBootstrapper
+            .EnsureMasterApiKeyExistsAsync(
+                store,
+                osStore,
+                cache,
+                grimoireExists: static () => false);
+
+        SecretStoreReadResult mirror = await mirrorStore
+            .GetApiKeyReadResultAsync();
+
+        Assert.Null(generated);
+        Assert.Equal(SecretStoreReadStatus.Ok, mirror.Status);
+        Assert.Equal(apiKey, mirror.Value);
+    }
+
+    [Fact]
+    public async Task Empty_successful_read_fails_closed_without_replacing_the_live_credential()
+    {
+        RecordingBootstrapSecretStore store = new(
+            SecretStoreReadResult.Ok("   "));
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        MasterApiKeyUnavailableException exception =
+            await Assert.ThrowsAsync<MasterApiKeyUnavailableException>(
+                () => ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(
+                    store,
+                    new ReachableFailingStore(),
+                    cache,
+                    grimoireExists: static () => false));
+
+        Assert.Equal(1, store.ReadCount);
+        Assert.Equal(0, store.SaveCount);
+        Assert.False(cache.TryGetPresenceDigest(out _));
+        Assert.Contains("empty", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Generated_key_is_saved_once_and_seeds_the_host_presence_digest()
+    {
+        RecordingBootstrapSecretStore store = new(
+            SecretStoreReadResult.Missing());
+
+        ApiKeyDigestCache cache = new(new FakeTimeProvider());
+
+        string? generated = await ArcanumMasterKeyBootstrapper
+            .EnsureMasterApiKeyExistsAsync(
+                store,
+                new ReachableMissingStore(),
+                cache,
+                grimoireExists: static () => false);
+
+        Assert.NotNull(generated);
+        Assert.Equal(generated, store.SavedApiKey);
+        Assert.Equal(1, store.ReadCount);
+        Assert.Equal(1, store.SaveCount);
+
+        Assert.True(cache.TryGetPresenceDigest(out byte[]? digest));
+
+        Assert.Equal(
+            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(generated!)),
+            digest);
+    }
+
     public ArcanumMasterKeyBootstrapperTests()
     {
-
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
 
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
@@ -34,55 +149,39 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         _ = Directory.CreateDirectory(_storeDir);
 
         DeleteSecurityDat();
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             DeleteSecurityDat();
 
             if (Directory.Exists(_storeDir))
             {
-
                 Directory.Delete(_storeDir, recursive: true);
-
             }
-
         }
         catch (IOException)
         {
-
             // Best-effort cleanup.
-
         }
         catch (UnauthorizedAccessException)
         {
-
             // Best-effort cleanup.
-
         }
         finally
         {
-
             foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
             {
-
                 global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
             }
-
         }
-
     }
 
     [Fact]
     public void Corrupt_key_with_existing_grimoire_throws_sanitized_controlled_failure()
     {
-
         SecretStoreReadResult result = new(
             SecretStoreReadStatus.Corrupted,
             null,
@@ -96,13 +195,11 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         Assert.DoesNotContain("secret-canary", exception.Message, StringComparison.Ordinal);
 
         Assert.Contains("master API key", exception.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Corrupt_key_without_grimoire_allows_safe_regeneration()
     {
-
         SecretStoreReadResult result = new(
             SecretStoreReadStatus.Corrupted,
             null,
@@ -111,7 +208,6 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         ArcanumMasterKeyBootstrapper.ThrowIfCorruptedWithExistingGrimoire(
             result,
             grimoireExists: false);
-
     }
 
     /// <summary>
@@ -127,7 +223,6 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
     public void Regeneration_is_refused_while_os_storage_may_hold_the_live_key(
         OsCredentialStoreStatus status)
     {
-
         OsCredentialStoreResult probe = new(status, "surviving-key", "probe message");
 
         MasterApiKeyUnavailableException exception =
@@ -139,7 +234,6 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         Assert.DoesNotContain("surviving-key", exception.Message, StringComparison.Ordinal);
 
         Assert.Contains("master API key", exception.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -148,13 +242,11 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
     public void Regeneration_is_allowed_when_os_storage_holds_nothing_of_ours(
         OsCredentialStoreStatus status)
     {
-
         OsCredentialStoreResult probe = new(status, null, "probe message");
 
         ArcanumMasterKeyBootstrapper.ThrowIfOsKeyStorageMayHoldTheLiveKey(
             probe,
             new ReachableFailingStore());
-
     }
 
     /// <summary>
@@ -171,13 +263,11 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
     [Fact]
     public void Regeneration_is_allowed_when_a_failed_probe_comes_from_an_unreachable_backend()
     {
-
         OsCredentialStoreResult probe = OsCredentialStoreResult.Failed("no secret service answered the bus");
 
         ArcanumMasterKeyBootstrapper.ThrowIfOsKeyStorageMayHoldTheLiveKey(
             probe,
             new UnreachableFailingStore());
-
     }
 
     /// <summary>
@@ -192,7 +282,6 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
     [Fact]
     public async Task Headless_first_run_reaches_the_mint_instead_of_refusing_to_start()
     {
-
         UnreachableFailingStore os = new();
 
         using DataProtectionSecretStore legacy = CreateDataProtectionStore();
@@ -224,58 +313,43 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Ok, reread.Status);
 
         Assert.Equal("minted-first-run-key", reread.Value);
-
     }
 
     private DataProtectionSecretStore CreateDataProtectionStore()
     {
-
         IDataProtectionProvider dataProtectionProvider = DataProtectionProvider.Create(
             new DirectoryInfo(_storeDir),
             static _ => { });
 
         return new DataProtectionSecretStore(dataProtectionProvider, new ApiKeyDigestCache(new FakeTimeProvider()));
-
     }
 
     private static void DeleteSecurityDat()
     {
-
         string path = ArcanumPaths.ApiKeyStoreFile;
 
         try
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
         catch (IOException)
         {
-
             // Best-effort cleanup.
-
         }
         catch (UnauthorizedAccessException)
         {
-
             // Best-effort cleanup.
-
         }
-
     }
 
     private void SetEnvironment(string name, string value)
     {
-
         _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
-
     }
 
     /// <summary>
@@ -283,7 +357,6 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
     /// </summary>
     private sealed class ReachableFailingStore : IOsCredentialStore
     {
-
         public bool IsAvailable => true;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -294,7 +367,54 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Failed("the keychain is locked");
+    }
 
+    private sealed class ReachableMissingStore : IOsCredentialStore
+    {
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            OsCredentialStoreResult.NotFound();
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Ok(secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.NotFound();
+    }
+
+    private sealed class RecordingBootstrapSecretStore(
+        SecretStoreReadResult read) : ISecretStore
+    {
+        public int ReadCount { get; private set; }
+
+        public int SaveCount { get; private set; }
+
+        public string? SavedApiKey { get; private set; }
+
+        public Task<string?> GetApiKeyAsync() =>
+            throw new InvalidOperationException("Bootstrap must preserve typed key state.");
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync()
+        {
+            ReadCount++;
+
+            return Task.FromResult(read);
+        }
+
+        public Task SaveApiKeyAsync(string apiKey)
+        {
+            SaveCount++;
+            SavedApiKey = apiKey;
+
+            return Task.CompletedTask;
+        }
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
+            Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
+            Task.CompletedTask;
     }
 
     /// <summary>
@@ -303,7 +423,6 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
     /// </summary>
     private sealed class UnreachableFailingStore : IOsCredentialStore
     {
-
         public bool IsAvailable => false;
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
@@ -314,7 +433,5 @@ public sealed class ArcanumMasterKeyBootstrapperTests : IDisposable
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Failed("no secret service answered the bus");
-
     }
-
 }

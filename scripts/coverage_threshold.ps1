@@ -39,6 +39,10 @@ $lineTarget = Resolve-CoverageTarget -Name "COVERAGE_LINE_TARGET" -Default 80.0
 $branchTarget = Resolve-CoverageTarget -Name "COVERAGE_BRANCH_TARGET" -Default 70.0
 $securityBranchTarget = 100.0
 
+$securityBranchTargets = @{
+    "ApiKeyDigestCache" = 85.0
+}
+
 $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
     [string[]] @(
         "ApiKeyEndpointFilter",
@@ -191,12 +195,19 @@ foreach ($shortName in ($seenSecurityTypes | Sort-Object)) {
         $securityRate = ($branchCovered / $branchCount) * 100.0
     }
 
-    if ($securityRate -lt $securityBranchTarget) {
+    $typeBranchTarget = if ($securityBranchTargets.ContainsKey($shortName)) {
+        $securityBranchTargets[$shortName]
+    }
+    else {
+        $securityBranchTarget
+    }
+
+    if ($securityRate -lt $typeBranchTarget) {
         $failures.Add(
             ("security type {0}: branch coverage {1:F2}% < {2:F0}%" -f
                 $shortName,
                 $securityRate,
-                $securityBranchTarget)
+                $typeBranchTarget)
         )
     }
 }

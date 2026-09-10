@@ -21,19 +21,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 /// </remarks>
 internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
 {
-
     public async Task<AnnalClaimHead?> GetClaimAsync(
         AnnalSubjectStore subjectStore,
         string subjectId,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -60,9 +57,7 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
                 // the upgrade sweep drains.
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     return null;
-
                 }
 
                 return new AnnalClaimHead(
@@ -73,23 +68,19 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
                     reader.GetInt32(4),
                     (AnnalOperation)reader.GetInt32(5),
                     ParseTimestamp(reader.GetString(6)));
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<AnnalClaimVersion>> GetVersionsAsync(
         string claimId,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(claimId);
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -122,7 +113,6 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     versions.Add(
                         new AnnalClaimVersion(
                             reader.GetString(0),
@@ -139,27 +129,22 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
                             ParseTimestamp(reader.GetString(11)),
                             reader.IsDBNull(12) ? null : ParseTimestamp(reader.GetString(12)),
                             reader.IsDBNull(13) ? null : reader.GetString(13)));
-
                 }
 
                 return (IReadOnlyList<AnnalClaimVersion>)versions;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<AnnalDependencyEdge>> GetDependenciesAsync(
         string versionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(versionId);
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -181,29 +166,24 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     edges.Add(
                         new AnnalDependencyEdge(
                             reader.GetString(0),
                             reader.GetString(1),
                             (AnnalDependencyRelation)reader.GetInt32(2),
                             reader.GetInt32(3)));
-
                 }
 
                 return (IReadOnlyList<AnnalDependencyEdge>)edges;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static DateTimeOffset ParseTimestamp(string value) =>
-        DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        UtcInstantText.Parse(value);
 
     private static void AddParameter(DbCommand command, string name, object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -211,23 +191,17 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
-
 }

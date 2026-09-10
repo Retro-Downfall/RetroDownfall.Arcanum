@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Collections;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
@@ -32,53 +33,32 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// <c>Arcanum:Integrations:A2A:AllowedRemoteAgents</c> entry — one uniform rule for every caller. Otherwise
 /// the Sending still goes out, unauthenticated.
 /// </remarks>
-[Collection("OutboundUrlGuardDns")]
+[Collection(ProcessEnvironmentCollectionName.Value)]
 public sealed class A2ACredentialScopeTests : IDisposable
 {
-
     private const string OperatorHost = "operator-supplied.example.test";
 
     private const string ThirdPartyHost = "card-controlled.example.test";
 
     private const string EnvVar = "ARCANUM_TEST_A2A_SCOPE_KEY";
 
-    private readonly IDnsResolver _originalResolver;
-
     public A2ACredentialScopeTests()
     {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        FakeDnsResolver fake = new();
-
-        fake.Add(OperatorHost, IPAddress.Parse("93.184.216.34"));
-
-        fake.Add(ThirdPartyHost, IPAddress.Parse("93.184.216.35"));
-
-        OutboundUrlGuard.DnsResolver = fake;
-
         global::System.Environment.SetEnvironmentVariable(EnvVar, "operator-secret");
-
     }
 
     public void Dispose()
     {
-
-        OutboundUrlGuard.DnsResolver = _originalResolver;
-
         global::System.Environment.SetEnvironmentVariable(EnvVar, null);
-
     }
 
     [Fact]
     public async Task Credential_TravelsToAnAllowlistedOrigin()
     {
-
         (TestServer server, HeaderProbe probe) = await CreateAgentAsync($"http://{OperatorHost}/agent");
 
         using (server)
         {
-
             Result<A2ADispatchResult> result = await DispatchAsync(
                 probe,
                 $"http://{OperatorHost}/",
@@ -87,15 +67,12 @@ public sealed class A2ACredentialScopeTests : IDisposable
             Assert.True(result.IsSuccess);
 
             Assert.Contains("operator-secret", probe.CredentialsSentTo(OperatorHost));
-
         }
-
     }
 
     [Fact]
     public async Task Credential_IsWithheldFromEveryTargetWhenTheAllowlistIsEmpty()
     {
-
         // The default configuration. agent_url arrives verbatim from the model, so a prompt-injected
         // Apprentice naming an attacker host must not be handed an operator-equivalent peer key — not even
         // during Agent Card discovery, which runs before any card-interface scoping.
@@ -103,7 +80,6 @@ public sealed class A2ACredentialScopeTests : IDisposable
 
         using (server)
         {
-
             Result<A2ADispatchResult> result = await DispatchAsync(
                 probe,
                 $"http://{ThirdPartyHost}/",
@@ -115,21 +91,17 @@ public sealed class A2ACredentialScopeTests : IDisposable
             Assert.NotEmpty(probe.Requests);
 
             Assert.Empty(probe.CredentialsSentTo(ThirdPartyHost));
-
         }
-
     }
 
     [Fact]
     public async Task Credential_IsWithheldWhenTheCardSteersToAThirdPartyOrigin()
     {
-
         // Same server, but the card advertises an interface on a host the allowlist never named.
         (TestServer server, HeaderProbe probe) = await CreateAgentAsync($"http://{ThirdPartyHost}/agent");
 
         using (server)
         {
-
             Result<A2ADispatchResult> result = await DispatchAsync(
                 probe,
                 $"http://{OperatorHost}/",
@@ -145,24 +117,19 @@ public sealed class A2ACredentialScopeTests : IDisposable
             Assert.Equal(ErrorCodes.Sending.AgentNotAllowed, result.Error.Code);
 
             Assert.Empty(probe.CredentialsSentTo(ThirdPartyHost));
-
         }
-
     }
 
     [Fact]
     public async Task WithholdingTheCredential_LogsAWarningNamingTheSettingWithoutTheSecret()
     {
-
         (TestServer server, HeaderProbe probe) = await CreateAgentAsync($"http://{ThirdPartyHost}/agent");
 
         TestCapturingLogger<A2AClientService> logger = new();
 
         using (server)
         {
-
             await DispatchAsync(probe, $"http://{ThirdPartyHost}/", allowlist: [], logger);
-
         }
 
         TestLogEntry[] withheld = [.. logger.Entries.Where(static entry =>
@@ -179,7 +146,6 @@ public sealed class A2ACredentialScopeTests : IDisposable
         Assert.All(
             logger.Entries,
             static entry => Assert.DoesNotContain("operator-secret", entry.Message, StringComparison.Ordinal));
-
     }
 
     private static async Task<Result<A2ADispatchResult>> DispatchAsync(
@@ -188,7 +154,6 @@ public sealed class A2ACredentialScopeTests : IDisposable
         string[] allowlist,
         ILogger<A2AClientService>? logger = null)
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Conclave = true, A2AClient = true },
@@ -205,15 +170,23 @@ public sealed class A2ACredentialScopeTests : IDisposable
         A2AClientService client = new(
             new SingleHandlerHttpClientFactory(probe),
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            logger ?? NullLogger<A2AClientService>.Instance);
+            logger ?? NullLogger<A2AClientService>.Instance,
+            DeterministicDns());
 
         return await client.DispatchSendingAsync("do the thing", null, discoveryUrl);
+    }
 
+    private static IDnsResolver DeterministicDns()
+    {
+        FakeDnsResolver dns = new();
+        dns.Add(OperatorHost, IPAddress.Parse("93.184.216.34"));
+        dns.Add(ThirdPartyHost, IPAddress.Parse("93.184.216.35"));
+
+        return dns;
     }
 
     private static async Task<(TestServer Server, HeaderProbe Probe)> CreateAgentAsync(string advertisedInterfaceUrl)
     {
-
         AgentCard card = new()
         {
             Name = "Probe agent",
@@ -229,19 +202,16 @@ public sealed class A2ACredentialScopeTests : IDisposable
         IHost host = await new HostBuilder()
             .ConfigureWebHost(webHost =>
             {
-
                 webHost.UseTestServer();
 
                 webHost.ConfigureServices(static services => services.AddRouting());
 
                 webHost.Configure(app =>
                 {
-
                     app.UseRouting();
 
                     app.UseEndpoints(endpoints =>
                     {
-
                         A2AServer server = new(
                             new EchoAgent(),
                             new InMemoryTaskStore(),
@@ -252,23 +222,18 @@ public sealed class A2ACredentialScopeTests : IDisposable
                         endpoints.MapA2A(server, "/agent");
 
                         endpoints.MapWellKnownAgentCard(card);
-
                     });
-
                 });
-
             })
             .StartAsync();
 
         TestServer testServer = host.GetTestServer();
 
         return (testServer, new HeaderProbe(testServer.CreateHandler()));
-
     }
 
     private sealed class HeaderProbe(HttpMessageHandler inner) : DelegatingHandler(inner)
     {
-
         /// <summary>Every request seen, as <c>host => credential or "(none)"</c>.</summary>
         public System.Collections.Concurrent.ConcurrentBag<(string Host, string Credential)> Requests { get; } = [];
 
@@ -279,7 +244,6 @@ public sealed class A2ACredentialScopeTests : IDisposable
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             string credential = request.Headers.TryGetValues(
                 A2AClientService.DefaultOutboundCredentialHeader,
                 out IEnumerable<string>? values)
@@ -289,24 +253,18 @@ public sealed class A2ACredentialScopeTests : IDisposable
             Requests.Add((request.RequestUri?.Host ?? string.Empty, credential));
 
             return base.SendAsync(request, cancellationToken);
-
         }
-
     }
 
     private sealed class SingleHandlerHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
-
     }
 
     private sealed class EchoAgent : IAgentHandler
     {
-
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
@@ -316,12 +274,9 @@ public sealed class A2ACredentialScopeTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText("done")], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
             Task.CompletedTask;
-
     }
-
 }

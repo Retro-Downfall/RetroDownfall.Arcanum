@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
@@ -9,7 +10,6 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// </summary>
 public sealed class ReleasePipelineTests
 {
-
     /// <summary>
     /// Expression contexts an outside party can influence. Expanded by the Actions templating
     /// engine into the generated script's source text, so they may never appear inside a
@@ -27,29 +27,20 @@ public sealed class ReleasePipelineTests
     [Fact]
     public void Workflow_run_blocks_never_interpolate_untrusted_expressions()
     {
-
         List<string> offenders = [];
 
         foreach (string workflow in WorkflowFiles())
         {
-
             foreach ((int number, string text) in ShellScriptLines(File.ReadAllLines(workflow)))
             {
-
                 foreach (string context in UntrustedExpressionContexts)
                 {
-
                     if (ContainsExpression(text, context))
                     {
-
                         offenders.Add($"{Path.GetFileName(workflow)}:{number}: {text.Trim()}");
-
                     }
-
                 }
-
             }
-
         }
 
         Assert.True(
@@ -59,7 +50,6 @@ public sealed class ReleasePipelineTests
             + "the environment variable instead:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -81,15 +71,12 @@ public sealed class ReleasePipelineTests
     [Fact]
     public void Packaging_never_passes_a_secret_as_a_command_line_argument()
     {
-
         List<string> offenders = [];
 
         foreach ((string file, int number, string text) in PackagingShellLines())
         {
-
             foreach (string secret in SecretVariables)
             {
-
                 Regex option = new(
                     "(^|\\s)-{1,2}[A-Za-z][A-Za-z0-9-]*[=\\s]+\"?\\$(env:|\\{)?"
                     + Regex.Escape(secret)
@@ -99,13 +86,9 @@ public sealed class ReleasePipelineTests
 
                 if (option.IsMatch(text))
                 {
-
                     offenders.Add($"{file}:{number}: {text.Trim()}");
-
                 }
-
             }
-
         }
 
         Assert.True(
@@ -115,7 +98,6 @@ public sealed class ReleasePipelineTests
             + "value when the option is omitted) or hand it over through the environment:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -136,29 +118,20 @@ public sealed class ReleasePipelineTests
     [Fact]
     public void Release_workflows_never_pass_a_non_release_signing_flag()
     {
-
         List<string> offenders = [];
 
         foreach (string workflow in WorkflowFiles())
         {
-
             foreach ((int number, string text) in ShellScriptLines(File.ReadAllLines(workflow)))
             {
-
                 foreach (string flag in NonReleaseSigningFlags)
                 {
-
                     if (text.Contains(flag, StringComparison.Ordinal))
                     {
-
                         offenders.Add($"{Path.GetFileName(workflow)}:{number}: {text.Trim()}");
-
                     }
-
                 }
-
             }
-
         }
 
         Assert.True(
@@ -168,24 +141,22 @@ public sealed class ReleasePipelineTests
             + "the release job can tell the difference:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
-    /// Local signing exists so the hardened runtime and the JIT entitlements can be exercised on a
-    /// development certificate, which Apple will not notarize. If a notarization or stapling step
-    /// were reachable from that path it would fail at the Apple end, late, and only on the one
-    /// machine that runs it — so every call site stays behind an explicit <c>LOCAL_SIGN</c> guard.
+    /// Local signing exists so the privilege-free Native AOT hardened-runtime signature can be
+    /// exercised on a development certificate, which Apple will not notarize. If a notarization or
+    /// stapling step were reachable from that path it would fail at the Apple end, late, and only on
+    /// the one machine that runs it — so every call site stays behind an explicit
+    /// <c>LOCAL_SIGN</c> guard.
     /// </summary>
     [Fact]
     public void MacOs_local_signing_never_reaches_notarization()
     {
-
         string[] notarizationCalls = ["notarize_submit", "staple_item", "spctl --assess"];
 
         foreach (string script in MacOsPackagingBuildScripts())
         {
-
             string text = File.ReadAllText(script);
 
             string name = Path.GetFileName(script);
@@ -197,22 +168,16 @@ public sealed class ReleasePipelineTests
 
             foreach (string call in notarizationCalls)
             {
-
                 foreach (string block in GuardedBlocksContaining(text, call))
                 {
-
                     Assert.True(
                         block.Contains("LOCAL_SIGN", StringComparison.Ordinal),
                         $"{name} reaches '{call}' from a branch that does not exclude "
                         + "--local-sign. Apple rejects a development certificate, so this fails "
                         + "at submission time rather than at the flag.");
-
                 }
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -223,7 +188,6 @@ public sealed class ReleasePipelineTests
     /// </summary>
     private static IReadOnlyList<string> GuardedBlocksContaining(string script, string needle)
     {
-
         List<string> conditions = [];
 
         string[] lines = script.Split('\n');
@@ -232,53 +196,39 @@ public sealed class ReleasePipelineTests
 
         foreach (string line in lines)
         {
-
             string trimmed = line.Trim();
 
             if (trimmed.StartsWith("if ", StringComparison.Ordinal))
             {
-
                 open.Add(trimmed);
-
             }
             else if (trimmed.StartsWith("elif ", StringComparison.Ordinal) && open.Count > 0)
             {
-
                 open[^1] = open[^1] + " " + trimmed;
-
             }
             else if (trimmed == "fi" && open.Count > 0)
             {
-
                 open.RemoveAt(open.Count - 1);
-
             }
 
             if (!line.Contains(needle, StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             if (trimmed.StartsWith('#'))
             {
-
                 continue;
-
             }
 
             conditions.Add(open.Count == 0 ? string.Empty : string.Join(" ", open));
-
         }
 
         return conditions;
-
     }
 
     private static IReadOnlyList<string> MacOsPackagingBuildScripts()
     {
-
         string directory = Path.Combine(
             RepositoryRoot(),
             "scripts",
@@ -296,19 +246,15 @@ public sealed class ReleasePipelineTests
 
         foreach (string script in scripts)
         {
-
             Assert.True(File.Exists(script), $"Missing macOS packaging script: {script}");
-
         }
 
         return scripts;
-
     }
 
     [Fact]
     public void Windows_packaging_signs_every_portable_executable_it_ships()
     {
-
         string script = File.ReadAllText(WindowsPackagingScript());
 
         // Every product that gets staged and archived must be signed as a whole tree. Signing an
@@ -319,7 +265,6 @@ public sealed class ReleasePipelineTests
 
         foreach (string publisher in publishers)
         {
-
             string body = Assert.Single(BracedBlocksAfter(script, $"function {publisher}"));
 
             Assert.True(
@@ -331,7 +276,6 @@ public sealed class ReleasePipelineTests
                 body.Contains("Invoke-AuthenticodeSign ", StringComparison.Ordinal),
                 $"{publisher} signs an individually named file; sign the staged tree instead so "
                 + "every shipped .exe and .dll is covered.");
-
         }
 
         string helper = Assert.Single(BracedBlocksAfter(script, "function Invoke-StageAuthenticodeSign"));
@@ -343,7 +287,189 @@ public sealed class ReleasePipelineTests
         Assert.Contains(".dll", helper, StringComparison.Ordinal);
 
         Assert.Contains("signtool verify", helper, StringComparison.Ordinal);
+    }
 
+    [Fact]
+    public void Every_gui_publish_captures_output_and_rejects_warnings()
+    {
+        string root = RepositoryRoot();
+
+        string windows = File.ReadAllText(WindowsPackagingScript());
+
+        string windowsGui = Assert.Single(BracedBlocksAfter(windows, "function Publish-Gui"));
+
+        Assert.Contains("$publishOutput = @(& dotnet publish", windowsGui, StringComparison.Ordinal);
+
+        Assert.Contains("2>&1)", windowsGui, StringComparison.Ordinal);
+
+        Assert.Contains("$publishWarnings", windowsGui, StringComparison.Ordinal);
+
+        Assert.Contains("Where-Object", windowsGui, StringComparison.Ordinal);
+
+        Assert.Contains("warning output", windowsGui, StringComparison.Ordinal);
+
+        string macOs = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "macos", "build-app-dmg.sh"));
+
+        int macOsPublish = macOs.IndexOf("dotnet \"${PUBLISH_ARGS[@]}\"", StringComparison.Ordinal);
+
+        int macOsCapture = macOs.IndexOf("2>&1 | tee \"$PUBLISH_LOG\"", macOsPublish, StringComparison.Ordinal);
+
+        int macOsReject = macOs.IndexOf("GUI publish emitted warning output", macOsCapture, StringComparison.Ordinal);
+
+        int macOsScanFailure = macOs.IndexOf("could not scan GUI publish output", macOsCapture, StringComparison.Ordinal);
+
+        Assert.True(
+            macOsPublish >= 0
+            && macOsCapture > macOsPublish
+            && macOsReject > macOsCapture
+            && macOsScanFailure > macOsCapture,
+            "The macOS GUI publish must capture the real dotnet output and reject warnings before packaging.");
+
+        string linux = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "linux", "package-linux.sh"));
+
+        string linuxGui = Assert.Single(BracedBlocksAfter(linux, "publish_gui()"));
+
+        int linuxPublish = linuxGui.IndexOf("dotnet publish", StringComparison.Ordinal);
+
+        int linuxCapture = linuxGui.IndexOf("2>&1 | tee \"$publish_log\"", linuxPublish, StringComparison.Ordinal);
+
+        int linuxReject = linuxGui.IndexOf("GUI publish emitted warning output", linuxCapture, StringComparison.Ordinal);
+
+        int linuxScanFailure = linuxGui.IndexOf("could not scan GUI publish output", linuxCapture, StringComparison.Ordinal);
+
+        Assert.True(
+            linuxPublish >= 0
+            && linuxCapture > linuxPublish
+            && linuxReject > linuxCapture
+            && linuxScanFailure > linuxCapture,
+            "The dormant Linux GUI publish must remain warning-free when Linux shipping is restored.");
+    }
+
+    [Fact]
+    public void Every_ripgrep_publish_warning_scan_fails_when_the_scan_itself_errors()
+    {
+        string root = RepositoryRoot();
+
+        string macOsCli = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "macos", "build-arcanum.sh"));
+
+        Assert.Contains("could not scan Arcanum publish output", macOsCli, StringComparison.Ordinal);
+
+        Assert.Contains("could not inspect Native AOT package", macOsCli, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("-print -quit | rg --no-config -q", macOsCli, StringComparison.Ordinal);
+
+        string linux = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "linux", "package-linux.sh"));
+
+        string linuxCli = Assert.Single(BracedBlocksAfter(linux, "publish_cli()"));
+
+        Assert.Contains("could not scan Arcanum publish output", linuxCli, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Signing_credentials_and_packaging_workspaces_are_cleaned_fail_closed()
+    {
+        string root = RepositoryRoot();
+
+        string windows = File.ReadAllText(WindowsPackagingScript());
+
+        Assert.Contains("ArcanumPackaging-", windows, StringComparison.Ordinal);
+
+        Assert.Contains("$script:SigningStoreName", windows, StringComparison.Ordinal);
+
+        Assert.Contains("$script:SigningStorePath", windows, StringComparison.Ordinal);
+
+        Assert.Contains("function Remove-OwnedSigningStore", windows, StringComparison.Ordinal);
+
+        Assert.Contains("/s $script:SigningStoreName", windows, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Cert:\\CurrentUser\\My", windows, StringComparison.Ordinal);
+
+        Assert.Contains("function Remove-PackagingWorkDirectory", windows, StringComparison.Ordinal);
+
+        Assert.Contains("for ($attempt = 1; $attempt -le 3; $attempt++)", windows, StringComparison.Ordinal);
+
+        Assert.Contains("Start-Sleep -Milliseconds (50 * $attempt)", windows, StringComparison.Ordinal);
+
+        Assert.Contains("-DeleteKey", windows, StringComparison.Ordinal);
+
+        Assert.True(
+            Regex.Matches(
+                windows,
+                "SetEnvironmentVariable\\(\\s*\\\"WINDOWS_CERT_PASSWORD\\\",\\s*\\$null",
+                RegexOptions.CultureInvariant).Count >= 2,
+            "The signing password must be cleared immediately after capture and again in finally.");
+
+        Assert.Contains("[System.AggregateException]", windows, StringComparison.Ordinal);
+
+        string windowsFinally = windows[windows.LastIndexOf("finally {", StringComparison.Ordinal)..];
+
+        Assert.DoesNotContain("SilentlyContinue", windowsFinally, StringComparison.Ordinal);
+
+        string common = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "macos", "common.sh"));
+
+        Assert.Contains("notary_keychain_is_absent", common, StringComparison.Ordinal);
+
+        Assert.Contains("for attempt in 1 2 3", common, StringComparison.Ordinal);
+
+        Assert.Contains("packaging_cleanup_exit", common, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("delete-keychain \"$NOTARY_KEYCHAIN\" >/dev/null 2>&1 || true", common, StringComparison.Ordinal);
+
+        foreach (string packagerName in new[] { "build-arcanum.sh", "build-app-dmg.sh" })
+        {
+            string packager = File.ReadAllText(
+                Path.Combine(root, "scripts", "packaging", "macos", packagerName));
+
+            Assert.Contains("local original_status=$?", packager, StringComparison.Ordinal);
+
+            Assert.Contains("packaging_cleanup_exit \"$original_status\" \"$WORK\"", packager, StringComparison.Ordinal);
+        }
+
+        string release = File.ReadAllText(
+            Path.Combine(root, ".github", "workflows", "release-macos-arm64.yml"));
+
+        Assert.DoesNotContain("security delete-keychain \"$KEYCHAIN_PATH\" || true", release, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Release_packagers_fail_when_gatekeeper_rejects_the_notarized_artifact()
+    {
+        string root = RepositoryRoot();
+
+        string cli = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "macos", "build-arcanum.sh"));
+
+        Assert.Contains(
+            "spctl --assess --type execute --verbose=4 \"$BINARY\"",
+            cli,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "spctl --assess --type execute --verbose=4 \"$BINARY\" ||",
+            cli,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("warning: spctl", cli, StringComparison.Ordinal);
+
+        string gui = File.ReadAllText(
+            Path.Combine(root, "scripts", "packaging", "macos", "build-app-dmg.sh"));
+
+        Assert.Contains(
+            "spctl --assess --type open --context context:primary-signature --verbose=4 \"$DMG_PATH\"",
+            gui,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "spctl --assess --type open --context context:primary-signature --verbose=4 \"$DMG_PATH\" ||",
+            gui,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("warning: spctl", gui, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -352,21 +478,17 @@ public sealed class ReleasePipelineTests
     /// </summary>
     private static IReadOnlyList<string> BracedBlocksAfter(string script, string header)
     {
-
         List<string> blocks = [];
 
         int search = 0;
 
         while (true)
         {
-
             int start = script.IndexOf(header, search, StringComparison.Ordinal);
 
             if (start < 0)
             {
-
                 return blocks;
-
             }
 
             search = start + header.Length;
@@ -375,49 +497,36 @@ public sealed class ReleasePipelineTests
 
             if (open < 0)
             {
-
                 return blocks;
-
             }
 
             int depth = 0;
 
             for (int i = open; i < script.Length; i++)
             {
-
                 if (script[i] == '{')
                 {
-
                     depth++;
-
                 }
                 else if (script[i] == '}')
                 {
-
                     depth--;
 
                     if (depth == 0)
                     {
-
                         blocks.Add(script[(open + 1)..i]);
 
                         search = i;
 
                         break;
-
                     }
-
                 }
-
             }
-
         }
-
     }
 
     private static string WindowsPackagingScript()
     {
-
         string path = Path.Combine(
             RepositoryRoot(),
             "scripts",
@@ -428,7 +537,6 @@ public sealed class ReleasePipelineTests
         Assert.True(File.Exists(path), $"Missing Windows packaging script: {path}");
 
         return path;
-
     }
 
     /// <summary>
@@ -437,61 +545,45 @@ public sealed class ReleasePipelineTests
     /// </summary>
     private static IEnumerable<(string File, int Number, string Text)> PackagingShellLines()
     {
-
         string root = RepositoryRoot();
 
         string scripts = Path.Combine(root, "scripts");
 
         foreach (string file in Directory.EnumerateFiles(scripts, "*.*", SearchOption.AllDirectories))
         {
-
             if (Path.GetExtension(file) is not (".sh" or ".ps1"))
             {
-
                 continue;
-
             }
 
             string[] lines = File.ReadAllLines(file);
 
             for (int i = 0; i < lines.Length; i++)
             {
-
                 yield return (Path.GetRelativePath(root, file), i + 1, lines[i]);
-
             }
-
         }
 
         foreach (string workflow in WorkflowFiles())
         {
-
             foreach ((int number, string text) in ShellScriptLines(File.ReadAllLines(workflow)))
             {
-
                 yield return (Path.GetRelativePath(root, workflow), number, text);
-
             }
-
         }
-
     }
 
     private static bool ContainsExpression(string line, string context)
     {
-
         int index = 0;
 
         while (true)
         {
-
             index = line.IndexOf("${{", index, StringComparison.Ordinal);
 
             if (index < 0)
             {
-
                 return false;
-
             }
 
             index += 3;
@@ -500,20 +592,14 @@ public sealed class ReleasePipelineTests
 
             if (end < 0)
             {
-
                 return false;
-
             }
 
             if (line[index..end].TrimStart().StartsWith(context, StringComparison.Ordinal))
             {
-
                 return true;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -522,35 +608,27 @@ public sealed class ReleasePipelineTests
     /// </summary>
     private static IEnumerable<(int Number, string Text)> ShellScriptLines(string[] lines)
     {
-
         int blockIndent = -1;
 
         for (int i = 0; i < lines.Length; i++)
         {
-
             string line = lines[i];
 
             if (blockIndent >= 0)
             {
-
                 if (line.Trim().Length == 0)
                 {
-
                     continue;
-
                 }
 
                 if (IndentOf(line) > blockIndent)
                 {
-
                     yield return (i + 1, line);
 
                     continue;
-
                 }
 
                 blockIndent = -1;
-
             }
 
             int indent = IndentOf(line);
@@ -559,56 +637,43 @@ public sealed class ReleasePipelineTests
 
             if (trimmed.StartsWith("- ", StringComparison.Ordinal))
             {
-
                 indent += 2;
 
                 trimmed = trimmed[2..].TrimStart();
-
             }
 
             if (!trimmed.StartsWith("run:", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             string value = trimmed[4..].Trim();
 
             if (value.Length == 0 || value[0] is '|' or '>')
             {
-
                 blockIndent = indent;
 
                 continue;
-
             }
 
             yield return (i + 1, line);
-
         }
-
     }
 
     private static int IndentOf(string line)
     {
-
         int indent = 0;
 
         while (indent < line.Length && line[indent] == ' ')
         {
-
             indent++;
-
         }
 
         return indent;
-
     }
 
     private static IReadOnlyList<string> WorkflowFiles()
     {
-
         string directory = Path.Combine(RepositoryRoot(), ".github", "workflows");
 
         Assert.True(Directory.Exists(directory), $"Missing workflow directory: {directory}");
@@ -618,30 +683,24 @@ public sealed class ReleasePipelineTests
         Assert.NotEmpty(files);
 
         return files;
-
     }
 
-    private static string RepositoryRoot()
+    private static string RepositoryRoot(
+        [CallerFilePath] string sourceFile = "")
     {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        DirectoryInfo? directory = new(Path.GetDirectoryName(sourceFile)!);
 
         while (directory is not null)
         {
-
             if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
             {
-
                 return directory.FullName;
-
             }
 
             directory = directory.Parent;
-
         }
 
         throw new InvalidOperationException("Could not locate the repository root.");
-
     }
 
     /// <summary>
@@ -663,24 +722,19 @@ public sealed class ReleasePipelineTests
     [Fact]
     public void Workflows_pin_every_third_party_action_to_a_commit()
     {
-
         List<string> offenders = [];
 
         foreach (string workflow in WorkflowFiles())
         {
-
             string[] lines = File.ReadAllLines(workflow);
 
             for (int i = 0; i < lines.Length; i++)
             {
-
                 string trimmed = lines[i].Trim();
 
                 if (!trimmed.StartsWith("uses:", StringComparison.Ordinal))
                 {
-
                     continue;
-
                 }
 
                 string reference = trimmed["uses:".Length..].Trim();
@@ -688,24 +742,18 @@ public sealed class ReleasePipelineTests
                 // A local action is this repository's own reviewed code, not an upstream ref.
                 if (reference.StartsWith("./", StringComparison.Ordinal))
                 {
-
                     continue;
-
                 }
 
                 int at = reference.LastIndexOf('@');
 
                 if (at >= 0 && IsCommitSha(reference[(at + 1)..]))
                 {
-
                     continue;
-
                 }
 
                 offenders.Add($"{Path.GetFileName(workflow)}:{i + 1}: {reference}");
-
             }
-
         }
 
         Assert.True(
@@ -715,18 +763,14 @@ public sealed class ReleasePipelineTests
             + "SHA and keep the version in a trailing comment:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     private static bool IsCommitSha(string reference)
     {
-
         string candidate = reference.Split('#')[0].Trim();
 
         return candidate.Length == 40
             && candidate.All(static character =>
                 character is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
-
     }
-
 }

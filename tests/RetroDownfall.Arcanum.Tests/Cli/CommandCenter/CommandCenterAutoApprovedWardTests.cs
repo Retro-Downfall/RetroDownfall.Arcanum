@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 /// <summary>
@@ -25,7 +27,6 @@ public sealed class CommandCenterWardRecordTests
     [Fact]
     public void Ward_argument_preview_remains_bounded_for_informational_records()
     {
-
         string payload = "{\"command\":\"" + new string('x', 300) + "\"}";
 
         using JsonDocument document = JsonDocument.Parse(payload);
@@ -37,7 +38,6 @@ public sealed class CommandCenterWardRecordTests
         Assert.True(preview.Length <= 41);
 
         Assert.EndsWith("…", preview);
-
     }
 
     [Theory]
@@ -46,7 +46,6 @@ public sealed class CommandCenterWardRecordTests
     public async Task Legacy_or_originless_Ward_frames_are_informational(
         WardResolutionOrigin? origin)
     {
-
         RecordingHandler handler = new(
             SerializeFrames(
                 new IntelligenceEvent(
@@ -88,13 +87,11 @@ public sealed class CommandCenterWardRecordTests
         Assert.DoesNotContain(
             state.Log.Snapshot(),
             static entry => entry.Kind == SessionLogEntryKind.Error);
-
     }
 
     [Fact]
     public async Task Record_only_workspace_memory_and_Covenant_frames_never_block_or_post_a_resolution()
     {
-
         RecordingHandler handler = new(
             SerializeFrames(
                 new IntelligenceEvent(
@@ -180,7 +177,6 @@ public sealed class CommandCenterWardRecordTests
         Assert.DoesNotContain(
             state.Log.Snapshot(),
             static entry => entry.Kind == SessionLogEntryKind.Error);
-
     }
 
     private static string SerializeFrames(params IntelligenceEvent[] frames) =>
@@ -192,8 +188,9 @@ public sealed class CommandCenterWardRecordTests
 
     private static CommandCenterChatRunner CreateRunner(HttpMessageHandler handler)
     {
-
-        ArcanumApiClient client = new(new FakeHttpClientFactory(handler), new FakeSecretStore());
+        ArcanumApiClient client = new(
+            new FakeHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
 
         SessionWorkspaceService workspace = new(
             client,
@@ -206,7 +203,6 @@ public sealed class CommandCenterWardRecordTests
             workspace,
             new CommandCenterHumanPromptCoordinator(client, new CommandCenterHardModalArbiter()),
             NullLogger<CommandCenterChatRunner>.Instance);
-
     }
 
     private sealed class StaticOptionsMonitor(ArcanumSettings settings) : IOptionsMonitor<ArcanumSettings>
@@ -258,7 +254,6 @@ public sealed class CommandCenterWardRecordTests
 
     private sealed class RecordingHandler(string ndjson) : HttpMessageHandler
     {
-
         private readonly ConcurrentQueue<string> _requests = new();
 
         public IReadOnlyCollection<string> Requests => _requests;
@@ -267,16 +262,12 @@ public sealed class CommandCenterWardRecordTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             _requests.Enqueue(request.RequestUri?.AbsolutePath ?? string.Empty);
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson"),
             });
-
         }
-
     }
-
 }

@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class CovenantCurationEvolutionTests
 {
-
     /// <summary>
     /// The pin is a literal captured before the version-1 tree was edited, and nothing can recompute it
     /// from a tree that no longer exists. A wrong pin means every version-1 installation refuses the
@@ -24,14 +23,12 @@ public sealed class CovenantCurationEvolutionTests
     [Fact]
     public void The_shipped_chain_pins_the_fingerprint_the_version_one_tree_published()
     {
-
         GrimoireSchemaVersionChain canonical =
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical);
 
         Assert.Equal(
             CovenantCanonicalSchemaVersionOneFixture.Fingerprint,
             canonical.SourceDefinitionFingerprintFor(1));
-
     }
 
     /// <summary>
@@ -41,11 +38,9 @@ public sealed class CovenantCurationEvolutionTests
     [Fact]
     public void The_version_two_reconstruction_keeps_its_published_fingerprint()
     {
-
         Assert.Equal(
             CovenantCanonicalSchemaVersionTwoFixture.PublishedFingerprint,
             CovenantCanonicalSchemaVersionTwoFixture.Fingerprint);
-
     }
 
     /// <summary>
@@ -55,7 +50,6 @@ public sealed class CovenantCurationEvolutionTests
     [Fact]
     public void The_version_one_reconstruction_is_smaller_than_the_head_tree()
     {
-
         Assert.True(
             CovenantCanonicalSchemaVersionOneFixture.Objects.Count
                 < GrimoireSchemaCatalog.CovenantCanonicalObjects.Count,
@@ -64,7 +58,6 @@ public sealed class CovenantCurationEvolutionTests
         Assert.NotEqual(
             CovenantCanonicalSchemaVersionOneFixture.Fingerprint,
             GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint);
-
     }
 
     /// <summary>
@@ -81,7 +74,6 @@ public sealed class CovenantCurationEvolutionTests
     [Fact]
     public async Task An_evolved_installation_stores_the_same_definitions_as_a_fresh_one()
     {
-
         IReadOnlyDictionary<string, string> evolved = await CurationDefinitionsAsync(evolve: true);
 
         IReadOnlyDictionary<string, string> fresh = await CurationDefinitionsAsync(evolve: false);
@@ -92,13 +84,10 @@ public sealed class CovenantCurationEvolutionTests
 
         foreach ((string name, string definition) in fresh)
         {
-
             Assert.Equal(
                 GrimoireSqlNormalizer.Normalize(definition),
                 GrimoireSqlNormalizer.Normalize(evolved[name]));
-
         }
-
     }
 
     /// <summary>
@@ -108,7 +97,6 @@ public sealed class CovenantCurationEvolutionTests
     [Fact]
     public async Task An_evolved_canonical_tier_reports_healthy_at_version_two()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -135,37 +123,33 @@ public sealed class CovenantCurationEvolutionTests
 
         evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CovenantCanonicalSchemaVersionThreeFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.CovenantCanonical.Health);
 
         Assert.Equal(3, evolved.CovenantCanonical.SchemaVersion);
-
     }
 
     private static async Task<IReadOnlyDictionary<string, string>> CurationDefinitionsAsync(bool evolve)
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
         if (evolve)
         {
-
             _ = await GrimoireSchemaTestInstaller.InstallAsync(
                 connection,
                 CovenantCanonicalSchemaVersionOneFixture.ChainSet(),
                 1536,
                 CancellationToken.None);
-
         }
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CovenantCanonicalSchemaVersionTwoFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
@@ -180,18 +164,12 @@ public sealed class CovenantCurationEvolutionTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             if (!reader.IsDBNull(1))
             {
-
                 definitions[reader.GetString(0)] = reader.GetString(1);
-
             }
-
         }
 
         return definitions;
-
     }
-
 }

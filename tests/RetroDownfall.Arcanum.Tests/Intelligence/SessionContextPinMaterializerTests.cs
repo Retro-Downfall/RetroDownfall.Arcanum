@@ -5,8 +5,12 @@ using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -86,7 +90,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     [Fact]
     public async Task Bounded_file_reader_hashes_full_stream_without_materializing_full_content()
     {
-
         byte[] payload = Encoding.UTF8.GetBytes(new string('x', 2 * 1024 * 1024));
 
         using MemoryStream stream = new(payload, writable: false);
@@ -104,20 +107,16 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Equal(
             Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(),
             read.Sha256);
-
     }
 
     [Fact]
     public async Task Large_file_pin_streams_a_bounded_preview_and_full_hash()
     {
-
         string file = Path.Combine(_workspace, "oversized.bin");
 
         await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             stream.SetLength(64L * 1024L * 1024L + 1L);
-
         }
 
         SessionContextPinRecord pin = Pin(
@@ -138,13 +137,11 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Contains("sha256=", text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("safe materialization limit", text, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Symbol_range_normalizes_crlf_line_endings()
     {
-
         string file = Path.Combine(_workspace, "lines.txt");
 
         await File.WriteAllTextAsync(file, "first\r\nsecond\r\nthird\r\nfourth\r\n");
@@ -165,24 +162,20 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Contains("second\nthird", text, StringComparison.Ordinal);
 
         Assert.DoesNotContain('\r', text);
-
     }
 
     [Fact]
     public async Task Large_symbol_source_streams_only_the_requested_range()
     {
-
         string file = Path.Combine(_workspace, "oversized-lines.txt");
 
         await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             byte[] firstLine = "requested line\n"u8.ToArray();
 
             await stream.WriteAsync(firstLine);
 
             stream.SetLength(64L * 1024L * 1024L + 1L);
-
         }
 
         SessionContextPinRecord pin = Pin(
@@ -201,13 +194,11 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Contains("requested line", text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("safe materialization limit", text, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Symbol_range_has_no_arbitrary_line_count_ceiling()
     {
-
         string file = Path.Combine(_workspace, "many-lines.txt");
 
         string contents = string.Join(
@@ -232,13 +223,11 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Contains("line-2101", text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Invalid or excessive line range", text, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task Directory_snapshot_never_enumerates_through_a_symlink_outside_the_workspace()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Symlink-escape containment is exercised on Unix hosts.");
@@ -261,7 +250,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         try
         {
-
             await File.WriteAllTextAsync(
                 Path.Combine(_workspace, "visible.txt"),
                 "visible");
@@ -284,23 +272,18 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             Assert.Contains("visible.txt", text, StringComparison.Ordinal);
 
             Assert.DoesNotContain(marker, text, StringComparison.Ordinal);
-
         }
         finally
         {
-
             Directory.Delete(link);
 
             Directory.Delete(outside, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task Directory_snapshot_visits_a_canonical_directory_only_once_across_symlink_cycles()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Symlink-cycle containment is exercised on Unix hosts.");
@@ -319,7 +302,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         try
         {
-
             SessionContextPinRecord pin = Pin(
                 SessionContextPinKind.DirectorySnapshot,
                 ".",
@@ -343,21 +325,16 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
                 "nested/back-to-root/",
                 text,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             Directory.Delete(link);
-
         }
-
     }
 
     [SkippableFact]
     public async Task Directory_snapshot_preserves_access_through_a_contained_noncyclic_directory_symlink()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "Symlink containment is exercised on Unix hosts.");
@@ -380,7 +357,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         try
         {
-
             SessionContextPinRecord pin = Pin(
                 SessionContextPinKind.DirectorySnapshot,
                 "scope",
@@ -402,21 +378,16 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
                     "allowed.txt"),
                 text,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             Directory.Delete(link);
-
         }
-
     }
 
     [Fact]
     public async Task Per_turn_truncation_suffix_is_included_inside_the_exact_byte_budget()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         string payload = new(
@@ -427,7 +398,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         for (int index = 0; index < 4; index++)
         {
-
             string relativePath = $"budget-{index}.txt";
 
             await File.WriteAllTextAsync(
@@ -444,7 +414,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
                     ContentVersion: null,
                     DateTimeOffset.UtcNow,
                     DateTimeOffset.UtcNow));
-
         }
 
         SessionContextPinMaterialization result =
@@ -474,7 +443,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             "[TRUNCATED BY PER-TURN CONTEXT BUDGET]",
             finalBlock,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -482,7 +450,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     public async Task Image_attachment_pin_is_retained_but_reports_unsupported_implicit_materialization()
 
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid attachmentId = Guid.NewGuid();
@@ -516,7 +483,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         SessionContextPinMaterializer materializer = new(
             new StaticPinStore(pin),
             new NoOpSessionAttachmentStore(attachment),
-            _db!);
+            CreateSessions());
 
         SessionContextPinMaterialization result = await materializer.MaterializeAsync(
             sessionId,
@@ -530,12 +497,95 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Contains("explicit attachment reference", text, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("status: Missing", text, StringComparison.Ordinal);
+    }
 
+    [Fact]
+    public async Task Session_entry_pin_reads_only_the_entry_owned_by_that_session()
+    {
+        Guid owningSessionId = Guid.NewGuid();
+
+        Guid otherSessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _db!.Sessions.AddRange(
+            new Session
+            {
+                Id = owningSessionId,
+                Status = "active",
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            new Session
+            {
+                Id = otherSessionId,
+                Status = "active",
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+
+        _db.Entries.Add(
+            new Entry
+            {
+                Id = entryId,
+                SessionId = owningSessionId,
+                Role = MessageRole.User,
+                Content = "owned entry text",
+                CreatedAt = now,
+                Sequence = 1,
+            });
+
+        _ = await _db.SaveChangesAsync();
+
+        SessionContextPinRecord ownedPin = new(
+            Guid.NewGuid(),
+            owningSessionId,
+            SessionContextPinKind.SessionEntry,
+            entryId.ToString("D"),
+            "entry",
+            ContentVersion: null,
+            now,
+            now);
+
+        SessionContextPinMaterialization owned = await Create(ownedPin).MaterializeAsync(
+            owningSessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string ownedText = Assert.IsType<TextContent>(Assert.Single(owned.Contents)).Text;
+
+        Assert.Contains("owned entry text", ownedText, StringComparison.Ordinal);
+
+        SessionContextPinRecord crossSessionPin = ownedPin with
+        {
+            Id = Guid.NewGuid(),
+            SessionId = otherSessionId,
+        };
+
+        SessionContextPinMaterialization crossSession = await Create(crossSessionPin).MaterializeAsync(
+            otherSessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string missingText = Assert.IsType<TextContent>(Assert.Single(crossSession.Contents)).Text;
+
+        Assert.Contains("status: Missing", missingText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("owned entry text", missingText, StringComparison.Ordinal);
     }
 
     private SessionContextPinMaterializer Create(
         params SessionContextPinRecord[] pins) =>
-        new(new StaticPinStore(pins), new NoOpSessionAttachmentStore(), _db!);
+        new(new StaticPinStore(pins), new NoOpSessionAttachmentStore(), CreateSessions());
+
+    private ISessionRepository CreateSessions() =>
+        new SessionRepository(
+            _db!,
+            new NoOpSessionAttachmentStore(),
+            fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(_db!));
 
     private static SessionContextPinRecord Pin(
         SessionContextPinKind kind, string target, string label, string? version) =>
@@ -545,7 +595,6 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         string value,
         string search)
     {
-
         int count = 0;
 
         int offset = 0;
@@ -555,15 +604,12 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
                    offset,
                    StringComparison.Ordinal)) >= 0)
         {
-
             count++;
 
             offset += search.Length;
-
         }
 
         return count;
-
     }
 
     private sealed class StaticPinStore(

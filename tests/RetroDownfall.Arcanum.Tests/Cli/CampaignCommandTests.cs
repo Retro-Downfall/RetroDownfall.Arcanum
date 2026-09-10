@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class CampaignCommandTests
 {
-
     /// <summary>
     /// CSI and OSC sequences, so an assertion about a message's text is not also an assertion
     /// about whether the terminal Spectre found supports colour.
@@ -34,7 +33,6 @@ public sealed class CampaignCommandTests
     [Fact]
     public void Campaign_list_calls_get_campaigns()
     {
-
         CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -50,13 +48,11 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/campaigns", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Campaign_list_rejects_an_undocumented_type_without_calling_the_api()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["campaign", "list", "--type", "bogus"]);
@@ -66,13 +62,11 @@ public sealed class CampaignCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--type", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Campaign_create_rejects_an_undocumented_type_without_calling_the_api()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -84,7 +78,6 @@ public sealed class CampaignCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--type", result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -98,7 +91,6 @@ public sealed class CampaignCommandTests
     [Fact]
     public void Campaign_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
-
         const int ConfiguredPort = 19999;
 
         RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
@@ -113,13 +105,11 @@ public sealed class CampaignCommandTests
         string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Campaign_get_binds_id_argument()
     {
-
         CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -135,13 +125,11 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Campaign_get_reports_missing_name_candidate_after_list_lookup()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<ListPageResult<CampaignDto>>(
                 new ListPageResult<CampaignDto>([], false),
@@ -155,14 +143,12 @@ public sealed class CampaignCommandTests
 
         HttpRequestMessage request = Assert.Single(handler.Requests);
         Assert.Equal("/api/campaigns", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public void Campaign_operation_in_a_workspace_without_a_campaign_offers_registration()
     {
-
         WorkspaceInfo workspace = new(
             "ws-current",
             "current",
@@ -172,14 +158,11 @@ public sealed class CampaignCommandTests
 
         RecordingHandler handler = new(request =>
         {
-
             if (request.RequestUri!.AbsolutePath == "/api/workspaces")
             {
-
                 return CreateResponse(
                     new ApiResponse<WorkspaceInfo[]>([workspace], true, null),
                     ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray);
-
             }
 
             return CreateResponse(
@@ -188,7 +171,6 @@ public sealed class CampaignCommandTests
                     true,
                     null),
                 ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto);
-
         });
 
         CliTestResult result = RunCommand(handler, ["campaign", "show"]);
@@ -204,13 +186,11 @@ public sealed class CampaignCommandTests
             "server path",
             result.Error,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Campaign_create_posts_register_request()
     {
-
         CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -235,13 +215,11 @@ public sealed class CampaignCommandTests
         Assert.Contains("\"name\":\"Demo\"", body, StringComparison.Ordinal);
 
         Assert.Contains("\"path\":\"/tmp/demo\"", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Campaign_delete_binds_id_and_handles_no_content()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(handler, ["--yes", "campaign", "delete", SampleId.ToString()]);
@@ -253,14 +231,12 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public void Campaign_delete_requires_confirmation_before_sending_request()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
@@ -270,14 +246,12 @@ public sealed class CampaignCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>Campaign codex delete is also irreversible and must ask before it acts.</summary>
     [Fact]
     public void Campaign_codex_delete_requires_confirmation_before_sending_request()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(handler, ["campaign", "codex", "delete", SampleId.ToString()]);
@@ -287,13 +261,11 @@ public sealed class CampaignCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Campaign_codex_delete_binds_id_when_confirmed()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(handler, ["--yes", "campaign", "codex", "delete", SampleId.ToString()]);
@@ -305,13 +277,11 @@ public sealed class CampaignCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}/codex", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Campaign_get_surfaces_not_found_error()
     {
-
         Error error = new("Campaign.NotFound", "No campaign exists with that identifier.");
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -326,7 +296,6 @@ public sealed class CampaignCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>
@@ -337,7 +306,6 @@ public sealed class CampaignCommandTests
     [Fact]
     public void Campaign_export_reports_the_path_and_cause_when_the_output_cannot_be_written()
     {
-
         CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -353,7 +321,6 @@ public sealed class CampaignCommandTests
 
         try
         {
-
             CliTestResult result = RunCommand(handler, ["campaign", "export", SampleId.ToString(), "--output", output]);
 
             Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
@@ -375,15 +342,11 @@ public sealed class CampaignCommandTests
                 "An unexpected CLI error occurred.",
                 reported,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             Directory.Delete(output, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -395,7 +358,6 @@ public sealed class CampaignCommandTests
     [Fact]
     public void Campaign_sessions_under_json_emits_one_document_rather_than_a_table()
     {
-
         SessionSummaryDto session = new(
             SampleId,
             SampleId,
@@ -423,13 +385,11 @@ public sealed class CampaignCommandTests
         Assert.NotNull(emitted);
 
         Assert.Equal(session.Id, Assert.Single(emitted).Id);
-
     }
 
     [Fact]
     public void Campaign_prompts_under_json_emits_one_document_rather_than_a_table()
     {
-
         PromptSummaryDto prompt = new(
             SampleId,
             SampleId,
@@ -457,7 +417,6 @@ public sealed class CampaignCommandTests
         Assert.NotNull(emitted);
 
         Assert.Equal(prompt.Name, Assert.Single(emitted).Name);
-
     }
 
     private static CliTestResult RunCommand(
@@ -465,7 +424,6 @@ public sealed class CampaignCommandTests
         string[] args,
         Action<ServiceCollection>? configureServices = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -480,10 +438,13 @@ public sealed class CampaignCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -491,31 +452,26 @@ public sealed class CampaignCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static string ReadBody(HttpRequestMessage request)
     {
-
         if (request.Content is null)
         {
             return string.Empty;
         }
 
         return request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -526,33 +482,27 @@ public sealed class CampaignCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -561,7 +511,6 @@ public sealed class CampaignCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -571,9 +520,6 @@ public sealed class CampaignCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

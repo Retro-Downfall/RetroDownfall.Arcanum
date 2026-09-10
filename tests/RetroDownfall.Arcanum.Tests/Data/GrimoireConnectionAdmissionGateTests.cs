@@ -10,12 +10,12 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
-public sealed class GrimoireConnectionAdmissionGateTests
+public sealed partial class GrimoireConnectionAdmissionGateTests
 {
-
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary>
@@ -29,10 +29,94 @@ public sealed class GrimoireConnectionAdmissionGateTests
     /// </remarks>
     private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
 
+    public static TheoryData<object> HostedWorkKinds => new()
+    {
+        GrimoireWorkKind.SessionAttachmentIndexing,
+        GrimoireWorkKind.EntryWeaving,
+        GrimoireWorkKind.SagaExtraction,
+        GrimoireWorkKind.WorkspaceIndexing,
+        GrimoireWorkKind.TapestryWeaving,
+        GrimoireWorkKind.BatchProcessing,
+        GrimoireWorkKind.UnseenServant,
+        GrimoireWorkKind.ApprenticeExecution,
+        GrimoireWorkKind.DataRetentionSweep,
+        GrimoireWorkKind.LoremasterSummarization,
+        GrimoireWorkKind.A2ASendingLeaseRenewal,
+        GrimoireWorkKind.CovenantMaintenance,
+        GrimoireWorkKind.GrimoireSchemaTransition,
+        GrimoireWorkKind.LongRunningOperationRecovery,
+        GrimoireWorkKind.ProviderHealthProbe,
+        GrimoireWorkKind.McpServerBootstrap,
+    };
+
+    [Fact]
+    public void ExistingWorkKindValuesRemainStable()
+    {
+        Assert.Equal(1, (byte)GrimoireWorkKind.SessionAttachmentIndexing);
+
+        Assert.Equal(2, (byte)GrimoireWorkKind.EntryWeaving);
+
+        Assert.Equal(3, (byte)GrimoireWorkKind.SagaExtraction);
+    }
+
+    [Theory]
+    [MemberData(nameof(HostedWorkKinds))]
+    public async Task EveryHostedWorkKindIsAdmittedWhileOrdinary(object value)
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        GrimoireWorkKind kind = Assert.IsType<GrimoireWorkKind>(value);
+
+        Assert.True(gate.TryAcquireWorkLease(kind, out IGrimoireWorkLease? work));
+
+        await using IGrimoireWorkLease lease = work!;
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(17)]
+    public void ZeroAndUndefinedWorkKindsAreRejected(byte value)
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => gate.TryAcquireWorkLease((GrimoireWorkKind)value, out _));
+    }
+
+    [Fact]
+    public async Task Throwing_work_lease_disposal_callback_still_releases_the_inner_lease()
+    {
+        GrimoireConnectionAdmissionGate inner = CreateGate();
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner)
+        {
+            BeforeWorkLeaseDisposalAsync = static () =>
+                ValueTask.FromException(new InvalidOperationException("Expected test callback failure.")),
+        };
+
+        Assert.True(gate.TryAcquireWorkLease(
+            GrimoireWorkKind.WorkspaceIndexing,
+            out IGrimoireWorkLease? work));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await work!.DisposeAsync());
+
+        await using IGrimoireClosingOwner closing = Begin(inner, Owner(59));
+
+        Task<Result> drain = inner.DrainRequestAndWorkAsync(
+            closing,
+            CancellationToken.None).AsTask();
+
+        Assert.True(drain.IsCompleted);
+
+        Result drained = await drain;
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+    }
+
     [Fact]
     public void Ordinary_open_ticket_is_available_before_closing()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -42,13 +126,41 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal(gate.CurrentGeneration, ticket.Generation);
 
         ticket.MarkFailed();
+    }
 
+    [Fact]
+    public async Task Successful_stage_two_drain_callback_runs_exactly_once()
+    {
+        int callbacks = 0;
+
+        GrimoireConnectionAdmissionGate gate = new(
+            new ManualTimeProvider(),
+            new RecordingStageTwoDrain(block: false),
+            OpeningTimeout,
+            cancellationToken =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Interlocked.Increment(ref callbacks);
+
+                return ValueTask.CompletedTask;
+            });
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(77));
+
+        Result<IGrimoireExclusiveClosedLease> result = await gate
+            .CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease closed = result.Value;
+
+        Assert.Equal(1, callbacks);
     }
 
     [Fact]
     public void Successful_post_native_open_revalidation_remains_unresolved_until_final_success()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -64,7 +176,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result opened = ticket.MarkOpened();
 
         Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
-
     }
 
     /// <summary>
@@ -80,7 +191,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Ordinary_opens_build_terminal_callbacks_only_once_a_closure_needs_them()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -91,13 +201,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         for (int index = 0; index < 32; index++)
         {
-
             SqliteConnection connection = new();
 
             connections.Add(connection);
 
             tickets.Add(gate.AcquireOrdinaryOpen(connection));
-
         }
 
         Assert.Equal(0, gate.MaterializedTerminalCallbacks);
@@ -113,11 +221,9 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         foreach (IGrimoireConnectionOpenTicket ticket in tickets)
         {
-
             ticket.MarkFailed();
 
             ticket.Dispose();
-
         }
 
         Result<IGrimoireExclusiveClosedLease> closed = await close.WaitAsync(BoundedWait);
@@ -128,17 +234,13 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         foreach (SqliteConnection connection in connections)
         {
-
             connection.Dispose();
-
         }
-
     }
 
     [Fact]
     public async Task Stale_open_is_refused_at_post_native_open_revalidation()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -164,13 +266,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
-
     }
 
     [Fact]
     public async Task Closure_between_post_native_open_revalidation_and_final_success_wins()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -202,13 +302,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
-
     }
 
     [Fact]
     public async Task Disposal_cannot_terminalize_a_native_open_without_an_explicit_outcome()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -252,13 +350,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Connection_close_advances_generation_and_refuses_new_open_before_native_io()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         long ordinaryGeneration = gate.CurrentGeneration;
@@ -284,13 +380,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Close_waits_for_a_preexisting_native_open_attempt_to_resolve()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -331,13 +425,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Closed_lease_waits_for_ticket_terminalization_then_the_singleton_drain()
     {
-
         RecordingStageTwoDrain drain = new(block: true);
 
         await using ServiceProvider provider = CreateProvider(drain);
@@ -382,13 +474,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
-
     }
 
     [Fact]
     public async Task Drain_failure_issues_no_closed_lease_and_keeps_admission_closed()
     {
-
         RecordingStageTwoDrain drain = new(
             block: false,
             result: Result.Failure(
@@ -443,13 +533,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal(2, drain.CallCount);
 
         await using IGrimoireExclusiveClosedLease lease = retried.Value;
-
     }
 
     [Fact]
     public async Task Drain_exception_issues_no_closed_lease_and_allows_the_exact_owner_to_retry()
     {
-
         RecordingStageTwoDrain drain = new(block: false)
         {
             ThrownException = new InvalidOperationException("physical drain threw")
@@ -493,13 +581,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal(2, drain.CallCount);
 
         await using IGrimoireExclusiveClosedLease lease = retried.Value;
-
     }
 
     [Fact]
     public async Task Drain_cancellation_issues_no_closed_lease_and_keeps_admission_closed()
     {
-
         RecordingStageTwoDrain drain = new(block: true);
 
         await using ServiceProvider provider = CreateProvider(drain);
@@ -558,13 +644,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal(2, drain.CallCount);
 
         await using IGrimoireExclusiveClosedLease lease = retried.Value;
-
     }
 
     [Fact]
     public async Task Cancellation_after_noncooperative_drain_success_keeps_owner_closed_and_allows_retry()
     {
-
         using CancellationTokenSource cancelled = new();
 
         RecordingStageTwoDrain drain = new(block: false)
@@ -608,13 +692,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal(2, drain.CallCount);
 
         await using IGrimoireExclusiveClosedLease lease = retried.Value;
-
     }
 
     [Fact]
     public async Task Adoption_interlock_cannot_enter_between_drain_and_closed_lease_reservation()
     {
-
         RecordingStageTwoDrain drain = new(block: false);
 
         PostDrainReservationBarrier reservationBoundary = new();
@@ -665,13 +747,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
-
     }
 
     [Fact]
     public async Task Open_that_loses_the_generation_race_must_be_refused_after_physical_close()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -728,13 +808,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Opening_timeout_leaves_admission_closed_and_does_not_issue_a_closed_lease()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -763,13 +841,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             () => gate.AcquireOrdinaryOpen(refused));
 
         ticket.MarkFailed();
-
     }
 
     [Fact]
     public async Task Precancelled_connection_close_does_not_issue_a_lease_when_no_open_is_unresolved()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using IGrimoireClosingOwner closing = Begin(gate, Owner(9));
@@ -802,7 +878,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     /// <summary>
@@ -817,7 +892,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Precancelled_connection_close_leaves_the_transition_and_its_unresolved_open_intact()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using SqliteConnection connection = new();
@@ -848,7 +922,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
 
         ticket.Dispose();
-
     }
 
     /// <summary>
@@ -864,7 +937,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Precancelled_lease_disposition_still_reopens_connection_admission()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(42));
@@ -884,7 +956,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             out IGrimoireRequestLease? admitted));
 
         await admitted!.DisposeAsync();
-
     }
 
     /// <summary>
@@ -900,7 +971,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [SkippableFact]
     public async Task Closed_admission_is_refused_to_the_ordinary_factory_under_its_own_code()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RecordingStageTwoDrain drain = new(block: false);
@@ -932,13 +1002,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(refused.IsFailure);
 
         Assert.Equal(GrimoireMaintenanceUnavailableException.Code, refused.Error.Code);
-
     }
 
     [Fact]
     public async Task Owner_generation_and_double_disposition_mismatches_are_rejected()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(5);
@@ -979,13 +1047,42 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
 
         Assert.True(second.IsFailure);
+    }
 
+    [Fact]
+    public async Task Refused_generation_wait_cannot_miss_a_reopen_that_wins_before_registration()
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(71));
+
+        Result<IGrimoireExclusiveClosedLease> closed =
+            await gate.CloseConnectionAdmissionAsync(closing, CancellationToken.None);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        await using IGrimoireExclusiveClosedLease lease = closed.Value;
+
+        long refusedGeneration = lease.Generation;
+
+        Result reopened = await lease.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            CancellationToken.None);
+
+        Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
+
+        IGrimoireConnectionAdmissionGate contract = gate;
+
+        Assert.Equal(
+            refusedGeneration,
+            await contract.WaitForOpenGenerationAfterRefusalAsync(
+                refusedGeneration,
+                CancellationToken.None));
     }
 
     [Fact]
     public async Task Next_open_generation_completes_once_only_after_commit_reopen()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         long observedGeneration = gate.CurrentGeneration;
@@ -1020,13 +1117,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(duplicate.IsFailure);
 
         Assert.Equal(observedGeneration + 1, await nextOpen);
-
     }
 
     [Fact]
     public async Task Precancelled_next_open_generation_wait_is_cancelled_when_generation_is_already_open()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         long observedGeneration = gate.CurrentGeneration;
@@ -1055,13 +1150,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             cancelled.Token);
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => nextOpen);
-
     }
 
     [Fact]
     public async Task Keep_closed_never_completes_the_next_open_generation()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using CancellationTokenSource stopping = new();
@@ -1090,13 +1183,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         stopping.Cancel();
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => nextOpen);
-
     }
 
     [Fact]
     public async Task Exclusive_waits_for_another_request_through_async_scope_disposal()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireRequestLease(
@@ -1143,13 +1234,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result drained = await drain;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Promotion_removes_only_the_exact_owner_matched_initiating_request()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireRequestLease(
@@ -1181,13 +1270,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result drained = await drain;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Promotion_rejects_another_request_owner_or_connection()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireRequestLease(
@@ -1234,13 +1321,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         await initiating!.DisposeAsync();
 
         await other!.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Revocation_wins_effect_race_and_provider_frontier_cannot_start()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireWorkLease(
@@ -1265,13 +1350,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result drained = await drain;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Effect_start_wins_race_and_closure_waits_through_durable_disposition()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireWorkLease(
@@ -1308,7 +1391,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result drained = await drain;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     /// <summary>
@@ -1329,7 +1411,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task One_work_lease_begins_a_second_effect_group_after_giving_back_the_first()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireWorkLease(
@@ -1371,13 +1452,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result drained = await drain;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Denied_work_waits_for_a_later_open_generation_without_spinning()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         long observedGeneration = gate.CurrentGeneration;
@@ -1416,13 +1495,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
 
         Assert.Equal(observedGeneration + 1, await nextOpen);
-
     }
 
     [Fact]
     public async Task Stage_one_open_requires_the_exact_still_live_finisher_lifetime()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireRequestLease(
@@ -1444,11 +1521,9 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         using (ExecutionContext.SuppressFlow())
         {
-
             unrelatedOpen = Task.Run<Exception?>(
                 () => Record.Exception(
                     () => gate.AcquireOrdinaryOpen(new SqliteConnection()).Dispose()));
-
         }
 
         _ = Assert.IsType<GrimoireMaintenanceUnavailableException>(await unrelatedOpen);
@@ -1459,13 +1534,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(
             () => gate.AcquireOrdinaryOpen(releasedConnection));
-
     }
 
     [Fact]
     public async Task Stage_one_timeout_stays_closing_denies_new_work_allows_finisher_opens_and_starts_no_destructive_work()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -1512,13 +1585,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(destructive.IsFailure);
 
         await work.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Promotion_allows_only_the_exact_scoped_connection_during_stage_one()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireRequestLease(
@@ -1543,13 +1614,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             () => gate.AcquireOrdinaryOpen(foreign));
 
         await initiating!.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Pre_reopen_lifetime_cannot_authorize_a_later_closing_generation()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -1610,13 +1679,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task The_same_owner_can_resume_a_timed_out_stage_one_transition()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -1657,7 +1724,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await closed.Value.DisposeAsync();
-
     }
 
     /// <summary>
@@ -1680,7 +1746,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Stage_one_drain_honours_its_own_deadline_not_the_physical_open_one()
     {
-
         ManualTimeProvider clock = new();
 
         TimeSpan workDrainCheckpoint = OpeningTimeout / 4;
@@ -1712,13 +1777,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.Equal("Grimoire.WorkDrainTimeout", timedOut.Error.Code);
 
         await request!.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Only_proven_pre_erasure_safety_can_abort_a_timed_out_stage_one_transition()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -1774,7 +1837,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             out IGrimoireRequestLease? admitted));
 
         await admitted!.DisposeAsync();
-
     }
 
     /// <summary>
@@ -1789,7 +1851,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Precancelled_abort_still_releases_a_timed_out_stage_one_transition()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -1828,13 +1889,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             out IGrimoireRequestLease? admitted));
 
         await admitted!.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Revoked_work_cannot_start_effect_after_proven_stage_one_abort()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -1881,13 +1940,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         await newGenerationWork.DisposeAsync();
 
         await revokedWork.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Throwing_revocation_callbacks_do_not_prevent_all_signals_or_exact_closing_token()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         Assert.True(gate.TryAcquireRequestLease(
@@ -1945,13 +2002,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Scoped_permit_authorizes_only_the_exact_connection_owner_and_generation()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(24);
@@ -2034,7 +2089,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     /// <summary>
@@ -2050,7 +2104,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Leaked_maintenance_handle_cannot_stall_lane_release_or_later_adoption()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -2098,7 +2151,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(adoption.IsSuccess, adoption.IsFailure ? adoption.Error.Message : null);
 
         await adoption.Value.DisposeAsync();
-
     }
 
     /// <summary>
@@ -2115,7 +2167,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Disposing_a_never_opened_maintenance_handle_completes_its_lifetime()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -2154,7 +2205,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     /// <summary>
@@ -2171,7 +2221,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
     [Fact]
     public async Task Disposing_an_open_maintenance_handle_leaves_the_lease_undispositionable()
     {
-
         ManualTimeProvider clock = new();
 
         GrimoireConnectionAdmissionGate gate = CreateGate(clock);
@@ -2213,9 +2262,7 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         if (await Task.WhenAny(release, scheduled).WaitAsync(BoundedWait) == scheduled)
         {
-
             clock.Advance(OpeningTimeout);
-
         }
 
         await release.WaitAsync(BoundedWait);
@@ -2228,13 +2275,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             refused.IsFailure,
             "A disposition was allowed while a maintenance open that nobody observed closing is "
             + "still outstanding.");
-
     }
 
     [Fact]
     public async Task Factory_capability_is_one_shot_and_rejects_path_mode_or_purpose_widening()
     {
-
         const string CanonicalPath = "/var/lib/arcanum/grimoire.db";
 
         GrimoireConnectionAdmissionGate gate = CreateGate();
@@ -2355,13 +2400,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Closed_lease_disposition_refuses_an_active_zero_handle_lane()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using IGrimoireExclusiveClosedLease closed = await Close(gate, Owner(41));
@@ -2376,13 +2419,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(disposition.IsFailure);
-
     }
 
     [Fact]
     public async Task Lane_disposal_waits_for_real_physical_close_before_disposition()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(42);
@@ -2425,13 +2466,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Renewal_ticket_is_one_shot_owner_generation_bound_and_physically_tracked()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(27);
@@ -2508,13 +2547,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Scoped_permit_reuses_the_exact_physically_closed_connection_across_lanes()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(34);
@@ -2575,13 +2612,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Lane_release_retires_unconsumed_one_shot_authorities_before_another_lane()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(35);
@@ -2630,13 +2665,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             CancellationToken.None);
 
         Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Open_started_handle_rejects_not_opened_shortcut_until_physical_close()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(36);
@@ -2673,13 +2706,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(handle.Value.ReportPhysicallyClosed().IsSuccess);
 
         await laneDisposal;
-
     }
 
     [Fact]
     public async Task Maintenance_lane_wins_first_and_blocks_expired_owner_adoption()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(29);
@@ -2698,13 +2729,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
                 owner,
                 (candidate, _) =>
                 {
-
                     Assert.Equal(owner, candidate);
 
                     adoptionRevalidated.TrySetResult();
 
                     return ValueTask.FromResult(true);
-
                 },
                 CancellationToken.None)
             .AsTask();
@@ -2722,13 +2751,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         await using IGrimoireExpiredLeaseAdoptionInterlock interlock = adopted.Value;
 
         Assert.True(adoptionRevalidated.Task.IsCompletedSuccessfully);
-
     }
 
     [Fact]
     public async Task Adoption_wins_first_and_incumbent_cannot_enter_a_sensitive_phase()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(30);
@@ -2767,23 +2794,19 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         if (rejected.IsSuccess)
         {
-
             sensitivePhaseStarted = true;
 
             await rejected.Value.DisposeAsync();
-
         }
 
         Assert.True(rejected.IsFailure);
 
         Assert.False(sensitivePhaseStarted);
-
     }
 
     [Fact]
     public async Task Adoption_interlock_can_be_held_through_reopen_and_terminal_CAS()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(31);
@@ -2832,13 +2855,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Result<IGrimoireMaintenanceIoLane> staleLane = await competingLane;
 
         Assert.True(staleLane.IsFailure);
-
     }
 
     [Fact]
     public async Task Overrun_step_selects_KeepClosed_before_any_next_phase()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(32);
@@ -2862,13 +2883,10 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         if (afterStep.IsSuccess)
         {
-
             nextPhaseStarted = true;
-
         }
         else
         {
-
             await lane.DisposeAsync();
 
             Result keptClosed = await closed.CompleteAsync(
@@ -2876,7 +2894,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
                 CancellationToken.None);
 
             Assert.True(keptClosed.IsSuccess, keptClosed.IsFailure ? keptClosed.Error.Message : null);
-
         }
 
         Assert.True(afterStep.IsFailure);
@@ -2888,13 +2905,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
             out IGrimoireRequestLease? denied));
 
         Assert.Null(denied);
-
     }
 
     [Fact]
     public async Task Precancelled_interlock_entry_never_revalidates_durable_ownership()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         CovenantExclusiveRecoveryOwner owner = Owner(33);
@@ -2913,11 +2928,9 @@ public sealed class GrimoireConnectionAdmissionGateTests
             () => closed.AcquireMaintenanceIoLaneAsync(
                 (_, _, _) =>
                 {
-
                     laneRevalidated = true;
 
                     return ValueTask.FromResult(true);
-
                 },
                 cancelled.Token).AsTask());
 
@@ -2926,18 +2939,15 @@ public sealed class GrimoireConnectionAdmissionGateTests
                 owner,
                 (_, _) =>
                 {
-
                     adoptionRevalidated = true;
 
                     return ValueTask.FromResult(true);
-
                 },
                 cancelled.Token).AsTask());
 
         Assert.False(laneRevalidated);
 
         Assert.False(adoptionRevalidated);
-
     }
 
     /// <summary>A gate whose three waits can only expire when a test says so.</summary>
@@ -2957,7 +2967,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     private static ServiceProvider CreateProvider(ICovenantConnectionDrain drain)
     {
-
         ServiceCollection services = new();
 
         services.AddArcanumGrimoireForCli();
@@ -2965,14 +2974,12 @@ public sealed class GrimoireConnectionAdmissionGateTests
         services.AddSingleton<ICovenantConnectionDrain>(drain);
 
         return services.BuildServiceProvider();
-
     }
 
     private static async Task<IGrimoireExclusiveClosedLease> Close(
         GrimoireConnectionAdmissionGate gate,
         CovenantExclusiveRecoveryOwner owner)
     {
-
         await using IGrimoireClosingOwner closing = Begin(gate, owner);
 
         Result<IGrimoireExclusiveClosedLease> closed =
@@ -2981,7 +2988,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         return closed.Value;
-
     }
 
     private static async Task AssertCapabilityMismatchConsumesAsync(
@@ -2990,7 +2996,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         CovenantExclusiveRecoveryOwner owner,
         CovenantMaintenanceConnectionPurpose actualPurpose)
     {
-
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
@@ -3011,7 +3016,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(mismatch.IsFailure);
 
         Assert.True(spent.IsFailure);
-
     }
 
     private static async Task AssertCapabilityIdentityMismatchConsumesAsync(
@@ -3021,7 +3025,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         long actualGeneration,
         string canonicalPath)
     {
-
         await using IGrimoireMaintenanceConnectionCapability capability =
             closed.IssueMaintenanceConnectionCapability(
                 CovenantMaintenanceConnectionPurpose.IntegrityVerification,
@@ -3042,7 +3045,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(mismatch.IsFailure);
 
         Assert.True(spent.IsFailure);
-
     }
 
     private static IGrimoireClosingOwner Begin(
@@ -3051,7 +3053,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         IGrimoireRequestLease? initiatingRequest = null,
         DbConnection? scopedConnection = null)
     {
-
         Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(
             owner,
             initiatingRequest,
@@ -3060,7 +3061,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
         return begun.Value;
-
     }
 
     private static void AssertClosedOwnerRetained(
@@ -3069,7 +3069,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         IGrimoireClosingOwner closing,
         long closingGeneration)
     {
-
         Assert.Equal(closingGeneration, gate.CurrentGeneration);
 
         using SqliteConnection refused = new();
@@ -3082,7 +3081,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
 
         Assert.Same(closing, resumed.Value);
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner(byte seed) =>
@@ -3096,7 +3094,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
     private sealed class RecordingStageTwoDrain : ICovenantConnectionDrain
     {
-
         private readonly TaskCompletionSource _entered = NewBarrier();
 
         private readonly TaskCompletionSource _released = NewBarrier();
@@ -3107,11 +3104,9 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         internal RecordingStageTwoDrain(bool block, Result? result = null)
         {
-
             _block = block;
 
             Result = result ?? Result.Success();
-
         }
 
         internal int CallCount => Volatile.Read(ref _callCount);
@@ -3132,45 +3127,35 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         public async Task<Result> DrainAsync(CancellationToken cancellationToken)
         {
-
             _ = Interlocked.Increment(ref _callCount);
 
             _entered.TrySetResult();
 
             if (_block)
             {
-
                 await _released.Task.WaitAsync(cancellationToken);
-
             }
 
             if (ThrownException is not null)
             {
-
                 throw ThrownException;
-
             }
 
             BeforeReturn?.Invoke();
 
             return Result;
-
         }
 
         private sealed class NoOpRegistration : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
 
     private sealed class PostDrainReservationBarrier
     {
-
         private readonly TaskCompletionSource _entered = NewBarrier();
 
         private readonly TaskCompletionSource _released = NewBarrier();
@@ -3181,13 +3166,10 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         internal async ValueTask WaitAsync(CancellationToken cancellationToken)
         {
-
             _entered.TrySetResult();
 
             await _released.Task.WaitAsync(cancellationToken);
-
         }
-
     }
 
     private sealed class AsyncScopeDisposalSentinel(
@@ -3195,18 +3177,14 @@ public sealed class GrimoireConnectionAdmissionGateTests
         TaskCompletionSource databaseHolderDisposed,
         TaskCompletionSource allowScopeDisposal) : IAsyncDisposable
     {
-
         public async ValueTask DisposeAsync()
         {
-
             databaseHolderDisposed.TrySetResult();
 
             await allowScopeDisposal.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             await inner.DisposeAsync();
-
         }
-
     }
 
     private static async Task SimulateFailingNativeOpenAsync(
@@ -3214,13 +3192,11 @@ public sealed class GrimoireConnectionAdmissionGateTests
         TaskCompletionSource nativeOpenEntered,
         TaskCompletionSource allowNativeFailure)
     {
-
         nativeOpenEntered.TrySetResult();
 
         await allowNativeFailure.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         ticket.MarkFailed();
-
     }
 
     private static async Task SimulateRacingNativeOpenAsync(
@@ -3230,7 +3206,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
         TaskCompletionSource refusalObserved,
         TaskCompletionSource physicalCloseCompleted)
     {
-
         nativeOpenEntered.TrySetResult();
 
         await allowNativeCompletion.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -3244,12 +3219,10 @@ public sealed class GrimoireConnectionAdmissionGateTests
         await physicalCloseCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         ticket.MarkRefusedAfterOpen();
-
     }
 
     private sealed class ManualTimeProvider : TimeProvider
     {
-
         private readonly object _gate = new();
 
         private readonly List<ManualTimer> _timers = [];
@@ -3264,14 +3237,10 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
         public override DateTimeOffset GetUtcNow()
         {
-
             lock (_gate)
             {
-
                 return _utcNow;
-
             }
-
         }
 
         public override long GetTimestamp() => GetUtcNow().UtcTicks;
@@ -3282,7 +3251,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             ArgumentNullException.ThrowIfNull(callback);
 
             ManualTimer timer = new(this, callback, state);
@@ -3290,50 +3258,37 @@ public sealed class GrimoireConnectionAdmissionGateTests
             _ = timer.Change(dueTime, period);
 
             return timer;
-
         }
 
         public void Advance(TimeSpan amount)
         {
-
             ArgumentOutOfRangeException.ThrowIfLessThan(amount, TimeSpan.Zero);
 
             List<(TimerCallback Callback, object? State)> callbacks = [];
 
             lock (_gate)
             {
-
                 _utcNow = _utcNow.Add(amount);
 
                 foreach (ManualTimer timer in _timers.ToArray())
                 {
-
                     timer.CollectDueCallbacks(_utcNow, callbacks);
-
                 }
-
             }
 
             foreach ((TimerCallback callback, object? state) in callbacks)
             {
-
                 callback(state);
-
             }
-
         }
 
         public Task WaitForScheduledTimerCountAsync(int expectedCount)
         {
-
             lock (_gate)
             {
-
                 if (_scheduledTimerCount >= expectedCount)
                 {
-
                     return Task.CompletedTask;
-
                 }
 
                 TaskCompletionSource waiter = NewBarrier();
@@ -3341,40 +3296,30 @@ public sealed class GrimoireConnectionAdmissionGateTests
                 _timerWaiters.Add((expectedCount, waiter));
 
                 return waiter.Task;
-
             }
-
         }
 
         private void ChangeTimer(ManualTimer timer, TimeSpan dueTime, TimeSpan period)
         {
-
             if (dueTime < Timeout.InfiniteTimeSpan)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(dueTime));
-
             }
 
             if (period < Timeout.InfiniteTimeSpan || period == TimeSpan.Zero)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(period));
-
             }
 
             List<TaskCompletionSource> completedWaiters = [];
 
             lock (_gate)
             {
-
                 ObjectDisposedException.ThrowIf(timer.Disposed, timer);
 
                 if (!_timers.Contains(timer))
                 {
-
                     _timers.Add(timer);
-
                 }
 
                 timer.DueAt = dueTime == Timeout.InfiniteTimeSpan
@@ -3385,48 +3330,34 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
                 if (dueTime != Timeout.InfiniteTimeSpan)
                 {
-
                     _scheduledTimerCount++;
 
                     for (int index = _timerWaiters.Count - 1; index >= 0; index--)
                     {
-
                         if (_timerWaiters[index].ExpectedCount > _scheduledTimerCount)
                         {
-
                             continue;
-
                         }
 
                         completedWaiters.Add(_timerWaiters[index].Completion);
 
                         _timerWaiters.RemoveAt(index);
-
                     }
-
                 }
-
             }
 
             foreach (TaskCompletionSource waiter in completedWaiters)
             {
-
                 waiter.TrySetResult();
-
             }
-
         }
 
         private void RemoveTimer(ManualTimer timer)
         {
-
             lock (_gate)
             {
-
                 _ = _timers.Remove(timer);
-
             }
-
         }
 
         private sealed class ManualTimer(
@@ -3434,7 +3365,6 @@ public sealed class GrimoireConnectionAdmissionGateTests
             TimerCallback callback,
             object? state) : ITimer
         {
-
             public bool Disposed { get; private set; }
 
             public DateTimeOffset? DueAt { get; set; }
@@ -3443,78 +3373,57 @@ public sealed class GrimoireConnectionAdmissionGateTests
 
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
-
                 owner.ChangeTimer(this, dueTime, period);
 
                 return true;
-
             }
 
             public void Dispose()
             {
-
                 if (Disposed)
                 {
-
                     return;
-
                 }
 
                 Disposed = true;
 
                 owner.RemoveTimer(this);
-
             }
 
             public ValueTask DisposeAsync()
             {
-
                 Dispose();
 
                 return ValueTask.CompletedTask;
-
             }
 
             public void CollectDueCallbacks(
                 DateTimeOffset now,
                 List<(TimerCallback Callback, object? State)> callbacks)
             {
-
                 if (Disposed || DueAt is not DateTimeOffset dueAt || dueAt > now)
                 {
-
                     return;
-
                 }
 
                 callbacks.Add((callback, state));
 
                 if (Period == Timeout.InfiniteTimeSpan)
                 {
-
                     DueAt = null;
-
                 }
                 else
                 {
-
                     do
                     {
-
                         dueAt = dueAt.Add(Period);
-
                     }
 
                     while (dueAt <= now);
 
                     DueAt = dueAt;
-
                 }
-
             }
-
         }
-
     }
-
 }

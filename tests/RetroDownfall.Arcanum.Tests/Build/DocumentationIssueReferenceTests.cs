@@ -29,6 +29,25 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 public sealed class DocumentationIssueReferenceTests
 {
+    [Fact]
+    public void Parent_admission_design_records_the_current_delivery_boundary()
+    {
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string path = Path.Combine(
+            root,
+            "docs",
+            "superpowers",
+            "specs",
+            "2026-08-31-issue-239-grimoire-admission-design.md");
+
+        string document = File.ReadAllText(path);
+
+        Assert.Contains(
+            "**Status:** Approved umbrella; #243/#244 integrated; #245–#256 delivered; #257 and parent #239 remain open.",
+            document,
+            StringComparison.Ordinal);
+    }
 
     /// <summary>Documents that must stand on their own, so neither exempt document appears here.</summary>
     private static readonly string[] GovernedDocuments =
@@ -72,22 +91,18 @@ public sealed class DocumentationIssueReferenceTests
         string line,
         bool expected)
     {
-
         Assert.Equal(expected, TrackerIssueReference.IsMatch(line));
-
     }
 
     [Fact]
     public void No_governed_document_explains_itself_by_naming_a_tracker_issue()
     {
-
         string root = NativeSqlCipherTestPaths.RepositoryRoot();
 
         List<string> offenders = [];
 
         foreach (string relative in GovernedDocuments)
         {
-
             string path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
 
             Assert.True(File.Exists(path), $"{relative} is missing; the inventory names a document that does not exist.");
@@ -96,22 +111,15 @@ public sealed class DocumentationIssueReferenceTests
 
             for (int index = 0; index < lines.Length; index++)
             {
-
                 Match match = TrackerIssueReference.Match(lines[index]);
 
                 if (match.Success)
                 {
-
                     offenders.Add($"{relative}:{index + 1} names {match.Value}");
-
                 }
-
             }
-
         }
 
         Assert.Empty(offenders);
-
     }
-
 }

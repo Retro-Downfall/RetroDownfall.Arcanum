@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Core.Operations;
 /// </remarks>
 public sealed class LongRunningOperationOwnership
 {
-
     private readonly ConcurrentDictionary<Guid, Guid> _claims = new();
 
     /// <summary>
@@ -38,11 +37,9 @@ public sealed class LongRunningOperationOwnership
     /// </remarks>
     public bool TryClaim(Guid operationId, out Guid token)
     {
-
         token = Guid.NewGuid();
 
         return operationId != Guid.Empty && _claims.TryAdd(operationId, token);
-
     }
 
     /// <summary>Releases a claim, but only for the exact token that took it.</summary>
@@ -54,4 +51,10 @@ public sealed class LongRunningOperationOwnership
     /// <summary>Whether this process is already running the named operation.</summary>
     public bool IsClaimed(Guid operationId) => _claims.ContainsKey(operationId);
 
+    /// <summary>Whether this process holds the exact claim token for the named operation.</summary>
+    public bool IsClaimedBy(Guid operationId, Guid token) =>
+        operationId != Guid.Empty
+        && token != Guid.Empty
+        && _claims.TryGetValue(operationId, out Guid held)
+        && held == token;
 }

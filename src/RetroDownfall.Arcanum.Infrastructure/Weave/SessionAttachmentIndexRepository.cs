@@ -67,13 +67,11 @@ internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
     WeaveIndexAvailability availability) : ISessionAttachmentIndexMaintenance
 {
-
     public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
         int expectedDimensions,
         int maxAttachments,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -81,7 +79,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand stale = connection.CreateCommand())
         {
-
             stale.Transaction = transaction;
 
             stale.CommandText =
@@ -104,41 +101,35 @@ internal sealed class SessionAttachmentIndexRepository(
                   )
                 """;
 
-            AddParameter(stale, "@updatedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            AddParameter(stale, "@updatedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
             AddParameter(stale, "@dimensions", expectedDimensions);
 
             _ = await stale.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         await using (DbCommand orphanState = connection.CreateCommand())
         {
-
             orphanState.Transaction = transaction;
 
             orphanState.CommandText =
                 "DELETE FROM session_attachment_index_state WHERE AttachmentId NOT IN (SELECT Id FROM SessionAttachments)";
 
             _ = await orphanState.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         await using (DbCommand orphanChunks = connection.CreateCommand())
         {
-
             orphanChunks.Transaction = transaction;
 
             orphanChunks.CommandText =
                 "DELETE FROM session_attachment_chunks WHERE AttachmentId NOT IN (SELECT Id FROM SessionAttachments)";
 
             _ = await orphanChunks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         if (availability.IsVecAvailable)
         {
-
             await using DbCommand orphanVec = connection.CreateCommand();
 
             orphanVec.Transaction = transaction;
@@ -148,24 +139,18 @@ internal sealed class SessionAttachmentIndexRepository(
 
             try
             {
-
                 _ = await orphanVec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
             catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
             {
-
                 availability.SetAvailable(false);
-
             }
-
         }
 
         List<SessionAttachmentIndexRequest> requests = [];
 
         await using (DbCommand pending = connection.CreateCommand())
         {
-
             pending.Transaction = transaction;
 
             pending.CommandText =
@@ -186,20 +171,16 @@ internal sealed class SessionAttachmentIndexRepository(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 requests.Add(new SessionAttachmentIndexRequest(
                     Guid.Parse(reader.GetString(0)),
                     Guid.Parse(reader.GetString(1)),
                     reader.GetInt32(2)));
-
             }
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return [.. requests];
-
     }
 
     public async Task SetPendingAsync(
@@ -207,12 +188,9 @@ internal sealed class SessionAttachmentIndexRepository(
         int attempt,
         CancellationToken cancellationToken)
     {
-
         if (attachment.SessionId is not { } sessionId)
         {
-
             throw new InvalidOperationException("Only bound session attachments can be marked pending.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -229,7 +207,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         if (attachment.Version == latestVersion)
         {
-
             await using DbCommand historical = connection.CreateCommand();
 
             historical.Transaction = transaction;
@@ -250,7 +227,6 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(historical, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             _ = await historical.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         await UpsertStateAsync(
@@ -266,7 +242,6 @@ internal sealed class SessionAttachmentIndexRepository(
             cancellationToken).ConfigureAwait(false);
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task MarkWithoutIndexAsync(
@@ -278,7 +253,6 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset? extractedAt,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -317,7 +291,6 @@ internal sealed class SessionAttachmentIndexRepository(
             cancellationToken).ConfigureAwait(false);
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<SessionAttachmentIndexCheckpoint> BeginReplaceAsync(
@@ -327,12 +300,9 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset extractedAt,
         CancellationToken cancellationToken)
     {
-
         if (attachment.SessionId is null)
         {
-
             throw new InvalidOperationException("Only bound session attachments can be indexed.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -344,7 +314,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand current = connection.CreateCommand())
         {
-
             current.Transaction = transaction;
 
             current.CommandText =
@@ -371,23 +340,18 @@ internal sealed class SessionAttachmentIndexRepository(
                 && string.Equals(reader.GetString(3), pipelineFingerprint, StringComparison.Ordinal)
                 && !reader.IsDBNull(4))
             {
-
                 existingCheckpoint = new SessionAttachmentIndexCheckpoint(
                     reader.GetString(0),
                     reader.GetInt32(1),
-                    DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture));
-
+                    UtcInstantText.Parse(reader.GetString(4)));
             }
-
         }
 
         if (existingCheckpoint is not null)
         {
-
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return existingCheckpoint;
-
         }
 
         string? publishedGenerationId = await GetPublishedGenerationIdAsync(
@@ -408,7 +372,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand checkpoint = connection.CreateCommand())
         {
-
             checkpoint.Transaction = transaction;
 
             checkpoint.CommandText =
@@ -432,23 +395,21 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(
                 checkpoint,
                 "@extractedAt",
-                extractedAt.ToString("O", CultureInfo.InvariantCulture));
+                UtcInstantText.Format(extractedAt));
 
             AddParameter(
                 checkpoint,
                 "@updatedAt",
-                DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                UtcInstantText.Format(DateTimeOffset.UtcNow));
 
             AddParameter(checkpoint, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
             _ = await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return new SessionAttachmentIndexCheckpoint(generationId, 0, extractedAt);
-
     }
 
     public async Task AppendReplaceBatchAsync(
@@ -461,33 +422,24 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset indexedAt,
         CancellationToken cancellationToken)
     {
-
         if (attachment.SessionId is null)
         {
-
             throw new InvalidOperationException("Only bound session attachments can be indexed.");
-
         }
 
         if (chunks.Count != embeddings.Count)
         {
-
             throw new InvalidOperationException("Attachment chunk and embedding counts do not match.");
-
         }
 
         if (embeddings.Any(embedding => embedding.Vector.Length != expectedDimensions))
         {
-
             throw new InvalidOperationException("Attachment embedding dimension does not match configured dimensions.");
-
         }
 
         if (chunks.Count == 0)
         {
-
             throw new InvalidOperationException("Attachment indexing checkpoint batches cannot be empty.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -499,7 +451,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand checkpoint = connection.CreateCommand())
         {
-
             checkpoint.Transaction = transaction;
 
             checkpoint.CommandText =
@@ -521,35 +472,27 @@ internal sealed class SessionAttachmentIndexRepository(
                 || reader.IsDBNull(2)
                 || reader.GetInt32(2) != expectedDimensions)
             {
-
                 throw new InvalidOperationException(
                     "Attachment indexing checkpoint no longer matches the active generation.");
-
             }
 
             nextChunkIndex = reader.GetInt32(1);
-
         }
 
         if (chunks[0].ChunkIndex != nextChunkIndex
             || chunks.Where((chunk, index) => chunk.ChunkIndex != nextChunkIndex + index).Any())
         {
-
             throw new InvalidOperationException(
                 $"Attachment indexing checkpoint expected chunk {nextChunkIndex}, but received a non-contiguous batch beginning at {chunks[0].ChunkIndex}.");
-
         }
 
         SessionAttachmentRecord stagedAttachment = attachment with
         {
-
             SessionId = Guid.Empty,
-
         };
 
         for (int i = 0; i < chunks.Count; i++)
         {
-
             SessionAttachmentTextChunk chunk = chunks[i];
 
             string chunkId = string.Concat(
@@ -580,12 +523,10 @@ internal sealed class SessionAttachmentIndexRepository(
                 chunkId,
                 vector,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         await using (DbCommand advance = connection.CreateCommand())
         {
-
             advance.Transaction = transaction;
 
             advance.CommandText =
@@ -603,7 +544,7 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(
                 advance,
                 "@updatedAt",
-                DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                UtcInstantText.Format(DateTimeOffset.UtcNow));
 
             AddParameter(advance, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
@@ -613,16 +554,12 @@ internal sealed class SessionAttachmentIndexRepository(
 
             if (await advance.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-
                 throw new InvalidOperationException(
                     "Attachment indexing checkpoint was advanced by another worker.");
-
             }
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task CompleteReplaceAsync(
@@ -634,12 +571,9 @@ internal sealed class SessionAttachmentIndexRepository(
         int attempt,
         CancellationToken cancellationToken)
     {
-
         if (attachment.SessionId is not { } sessionId)
         {
-
             throw new InvalidOperationException("Only bound session attachments can be indexed.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -651,7 +585,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand checkpoint = connection.CreateCommand())
         {
-
             checkpoint.Transaction = transaction;
 
             checkpoint.CommandText =
@@ -672,14 +605,11 @@ internal sealed class SessionAttachmentIndexRepository(
                 || !string.Equals(reader.GetString(1), generationId, StringComparison.Ordinal)
                 || reader.GetInt32(2) != expectedChunkCount)
             {
-
                 throw new InvalidOperationException(
                     "Attachment indexing completion does not match the durable checkpoint.");
-
             }
 
             publishedGenerationId = reader.IsDBNull(0) ? null : reader.GetString(0);
-
         }
 
         int latestVersion = await GetLatestVersionAsync(
@@ -691,7 +621,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         if (attachment.Version == latestVersion)
         {
-
             await using DbCommand historical = connection.CreateCommand();
 
             historical.Transaction = transaction;
@@ -708,25 +637,21 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(historical, "@logicalKey", attachment.LogicalKey);
 
             _ = await historical.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         if (publishedGenerationId is not null
             && !string.Equals(publishedGenerationId, generationId, StringComparison.Ordinal))
         {
-
             await DeleteAttachmentGenerationsExceptAsync(
                 connection,
                 transaction,
                 attachment.Id,
                 generationId,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         await using (DbCommand publish = connection.CreateCommand())
         {
-
             publish.Transaction = transaction;
 
             publish.CommandText =
@@ -746,7 +671,7 @@ internal sealed class SessionAttachmentIndexRepository(
                 "@retrievalScope",
                 attachment.Version == latestVersion ? sessionId.ToString() : DBNull.Value);
 
-            AddParameter(publish, "@indexedAt", indexedAt.ToString("O", CultureInfo.InvariantCulture));
+            AddParameter(publish, "@indexedAt", UtcInstantText.Format(indexedAt));
 
             AddParameter(publish, "@attachmentId", attachment.Id.ToString().ToUpperInvariant());
 
@@ -755,12 +680,9 @@ internal sealed class SessionAttachmentIndexRepository(
             if (await publish.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false)
                 != expectedChunkCount)
             {
-
                 throw new InvalidOperationException(
                     "Attachment indexing completion found an incomplete staged generation.");
-
             }
-
         }
 
         await UpsertStateAsync(
@@ -777,7 +699,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand finalize = connection.CreateCommand())
         {
-
             finalize.Transaction = transaction;
 
             finalize.CommandText =
@@ -799,23 +720,18 @@ internal sealed class SessionAttachmentIndexRepository(
 
             if (await finalize.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-
                 throw new InvalidOperationException(
                     "Attachment indexing generation changed before publication completed.");
-
             }
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<SessionAttachmentIndexState> GetStateAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -836,25 +752,19 @@ internal sealed class SessionAttachmentIndexRepository(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             throw new InvalidOperationException($"No attachment indexing state exists for '{attachmentId}'.");
-
         }
 
         return ReadState(reader);
-
     }
 
     public async Task<IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus>> GetStatusesAsync(
         IReadOnlyList<Guid> attachmentIds,
         CancellationToken cancellationToken)
     {
-
         if (attachmentIds.Count == 0)
         {
-
             return new Dictionary<Guid, SessionAttachmentIndexStatus>();
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -881,22 +791,18 @@ internal sealed class SessionAttachmentIndexRepository(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             statuses[Guid.Parse(reader.GetString(0))] = Enum.Parse<SessionAttachmentIndexStatus>(
                 reader.GetString(1),
                 ignoreCase: false);
-
         }
 
         return statuses;
-
     }
 
     public async Task<SessionAttachmentIndexedChunk[]> GetChunksForAttachmentAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -915,7 +821,6 @@ internal sealed class SessionAttachmentIndexRepository(
         AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         return await ReadChunksAsync(command, cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<SessionAttachmentRetrievedChunk[]> GetRetrievedChunksAsync(
@@ -923,12 +828,9 @@ internal sealed class SessionAttachmentIndexRepository(
         IReadOnlyList<DivinationResult> hits,
         CancellationToken cancellationToken)
     {
-
         if (hits.Count == 0)
         {
-
             return [];
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -959,7 +861,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string chunkId = reader.GetString(0);
 
             byId[chunkId] = new SessionAttachmentRetrievedChunk(
@@ -978,26 +879,21 @@ internal sealed class SessionAttachmentIndexRepository(
                 reader.GetInt32(12),
                 reader.GetString(13),
                 Similarity: 0f);
-
         }
 
         return hits
             .Where(hit => byId.ContainsKey(hit.Id))
             .Select(hit => byId[hit.Id] with { Similarity = hit.Similarity })
             .ToArray();
-
     }
 
     public async Task DeleteForSessionInAmbientTransactionAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         if (db.Database.CurrentTransaction is null)
         {
-
             throw new InvalidOperationException("Attachment index purge requires an ambient transaction.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -1035,7 +931,6 @@ internal sealed class SessionAttachmentIndexRepository(
         AddParameter(command, "@attachmentSessionId", sessionId.ToString().ToUpperInvariant());
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task DeleteAttachmentIndexAsync(
@@ -1044,12 +939,10 @@ internal sealed class SessionAttachmentIndexRepository(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         List<string> ids = [];
 
         await using (DbCommand select = connection.CreateCommand())
         {
-
             select.Transaction = transaction;
 
             select.CommandText = "SELECT ChunkId FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
@@ -1060,11 +953,8 @@ internal sealed class SessionAttachmentIndexRepository(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 ids.Add(reader.GetString(0));
-
             }
-
         }
 
         await DeleteVecRowsAsync(connection, transaction, ids, cancellationToken).ConfigureAwait(false);
@@ -1078,7 +968,6 @@ internal sealed class SessionAttachmentIndexRepository(
         AddParameter(delete, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<string?> GetPublishedGenerationIdAsync(
@@ -1087,7 +976,6 @@ internal sealed class SessionAttachmentIndexRepository(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1100,7 +988,6 @@ internal sealed class SessionAttachmentIndexRepository(
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task DeleteAttachmentGenerationsExceptAsync(
@@ -1110,7 +997,6 @@ internal sealed class SessionAttachmentIndexRepository(
         string? preservedGenerationId,
         CancellationToken cancellationToken)
     {
-
         string generationPredicate = preservedGenerationId is null
             ? string.Empty
             : " AND GenerationId <> @preservedGenerationId";
@@ -1119,7 +1005,6 @@ internal sealed class SessionAttachmentIndexRepository(
 
         await using (DbCommand select = connection.CreateCommand())
         {
-
             select.Transaction = transaction;
 
             select.CommandText =
@@ -1130,9 +1015,7 @@ internal sealed class SessionAttachmentIndexRepository(
 
             if (preservedGenerationId is not null)
             {
-
                 AddParameter(select, "@preservedGenerationId", preservedGenerationId);
-
             }
 
             await using DbDataReader reader = await select
@@ -1141,11 +1024,8 @@ internal sealed class SessionAttachmentIndexRepository(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 chunkIds.Add(reader.GetString(0));
-
             }
-
         }
 
         await DeleteVecRowsAsync(connection, transaction, chunkIds, cancellationToken)
@@ -1163,13 +1043,10 @@ internal sealed class SessionAttachmentIndexRepository(
 
         if (preservedGenerationId is not null)
         {
-
             AddParameter(delete, "@preservedGenerationId", preservedGenerationId);
-
         }
 
         _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task ClearPendingGenerationAsync(
@@ -1178,7 +1055,6 @@ internal sealed class SessionAttachmentIndexRepository(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1197,7 +1073,6 @@ internal sealed class SessionAttachmentIndexRepository(
         AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task DeleteVecRowsAsync(
@@ -1206,12 +1081,9 @@ internal sealed class SessionAttachmentIndexRepository(
         IReadOnlyList<string> chunkIds,
         CancellationToken cancellationToken)
     {
-
         if (!availability.IsVecAvailable || chunkIds.Count == 0)
         {
-
             return;
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -1226,17 +1098,12 @@ internal sealed class SessionAttachmentIndexRepository(
 
         try
         {
-
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
         {
-
             availability.SetAvailable(false);
-
         }
-
     }
 
     private async Task InsertChunkAsync(
@@ -1252,7 +1119,6 @@ internal sealed class SessionAttachmentIndexRepository(
         string? retrievalScope,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1303,14 +1169,13 @@ internal sealed class SessionAttachmentIndexRepository(
 
         AddParameter(command, "@dimensions", dimensions);
 
-        AddParameter(command, "@extractedAt", extractedAt.ToString("O", CultureInfo.InvariantCulture));
+        AddParameter(command, "@extractedAt", UtcInstantText.Format(extractedAt));
 
-        AddParameter(command, "@indexedAt", indexedAt.ToString("O", CultureInfo.InvariantCulture));
+        AddParameter(command, "@indexedAt", UtcInstantText.Format(indexedAt));
 
         AddParameter(command, "@retrievalScope", retrievalScope is null ? DBNull.Value : retrievalScope);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task InsertEmbeddingAsync(
@@ -1320,12 +1185,10 @@ internal sealed class SessionAttachmentIndexRepository(
         float[] vector,
         CancellationToken cancellationToken)
     {
-
         byte[] encoded = EmbeddingBlobCodec.Encode(vector);
 
         await using (DbCommand blob = connection.CreateCommand())
         {
-
             blob.Transaction = transaction;
 
             blob.CommandText =
@@ -1338,14 +1201,11 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(blob, "@dim", vector.Length);
 
             _ = await blob.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         if (!availability.IsVecAvailable)
         {
-
             return;
-
         }
 
         await using DbCommand vec = connection.CreateCommand();
@@ -1361,17 +1221,12 @@ internal sealed class SessionAttachmentIndexRepository(
 
         try
         {
-
             _ = await vec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
         {
-
             availability.SetAvailable(false);
-
         }
-
     }
 
     private async Task UpsertStateAsync(
@@ -1384,7 +1239,6 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset? indexedAt,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await UpsertStateAsync(
@@ -1398,7 +1252,6 @@ internal sealed class SessionAttachmentIndexRepository(
             extractedAt,
             indexedAt,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task UpsertStateAsync(
@@ -1413,7 +1266,6 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset? indexedAt,
         CancellationToken cancellationToken)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         await using DbCommand command = connection.CreateCommand();
@@ -1450,16 +1302,15 @@ internal sealed class SessionAttachmentIndexRepository(
 
         AddParameter(command, "@extractedAt", extractedAt is null
             ? DBNull.Value
-            : extractedAt.Value.ToString("O", CultureInfo.InvariantCulture));
+            : UtcInstantText.Format(extractedAt.Value));
 
         AddParameter(command, "@indexedAt", indexedAt is null
             ? DBNull.Value
-            : indexedAt.Value.ToString("O", CultureInfo.InvariantCulture));
+            : UtcInstantText.Format(indexedAt.Value));
 
-        AddParameter(command, "@updatedAt", now.ToString("O", CultureInfo.InvariantCulture));
+        AddParameter(command, "@updatedAt", UtcInstantText.Format(now));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<int> GetLatestVersionAsync(
@@ -1469,7 +1320,6 @@ internal sealed class SessionAttachmentIndexRepository(
         string logicalKey,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1484,7 +1334,6 @@ internal sealed class SessionAttachmentIndexRepository(
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<List<string>> GetChunkIdsForSessionAsync(
@@ -1493,7 +1342,6 @@ internal sealed class SessionAttachmentIndexRepository(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1520,13 +1368,10 @@ internal sealed class SessionAttachmentIndexRepository(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             ids.Add(reader.GetString(0));
-
         }
 
         return ids;
-
     }
 
     private static SessionAttachmentIndexState ReadState(DbDataReader reader) => new(
@@ -1535,28 +1380,26 @@ internal sealed class SessionAttachmentIndexRepository(
         reader.GetString(2),
         reader.GetInt32(3),
         reader.IsDBNull(4) ? null : reader.GetString(4),
-        reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
-        reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture),
+        reader.IsDBNull(5) ? null : UtcInstantText.Parse(reader.GetString(5)),
+        reader.IsDBNull(6) ? null : UtcInstantText.Parse(reader.GetString(6)),
         reader.IsDBNull(7) ? null : reader.GetString(7),
         reader.IsDBNull(8) ? null : reader.GetString(8),
         reader.GetInt32(9),
         reader.IsDBNull(10) ? null : reader.GetInt32(10),
         reader.IsDBNull(11) ? null : reader.GetString(11),
-        reader.IsDBNull(12) ? null : DateTimeOffset.Parse(reader.GetString(12), CultureInfo.InvariantCulture),
-        DateTimeOffset.Parse(reader.GetString(13), CultureInfo.InvariantCulture));
+        reader.IsDBNull(12) ? null : UtcInstantText.Parse(reader.GetString(12)),
+        UtcInstantText.Parse(reader.GetString(13)));
 
     private static async Task<SessionAttachmentIndexedChunk[]> ReadChunksAsync(
         DbCommand command,
         CancellationToken cancellationToken)
     {
-
         List<SessionAttachmentIndexedChunk> chunks = [];
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             chunks.Add(new SessionAttachmentIndexedChunk(
                 reader.GetString(0),
                 Guid.Parse(reader.GetString(1)),
@@ -1573,30 +1416,24 @@ internal sealed class SessionAttachmentIndexRepository(
                 reader.GetInt32(12),
                 reader.GetString(13),
                 reader.GetInt32(14),
-                DateTimeOffset.Parse(reader.GetString(15), CultureInfo.InvariantCulture),
-                DateTimeOffset.Parse(reader.GetString(16), CultureInfo.InvariantCulture),
+                UtcInstantText.Parse(reader.GetString(15)),
+                UtcInstantText.Parse(reader.GetString(16)),
                 reader.IsDBNull(17) ? null : reader.GetString(17)));
-
         }
 
         return [.. chunks];
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
 
     private static string BuildInCommand<T>(
@@ -1605,17 +1442,13 @@ internal sealed class SessionAttachmentIndexRepository(
         DbCommand command,
         string suffix)
     {
-
         System.Text.StringBuilder sql = new(prefix);
 
         for (int i = 0; i < values.Count; i++)
         {
-
             if (i > 0)
             {
-
                 sql.Append(',');
-
             }
 
             string name = "@p" + i.ToString(CultureInfo.InvariantCulture);
@@ -1629,18 +1462,15 @@ internal sealed class SessionAttachmentIndexRepository(
             // canonical while a chunk's SessionId is not. A caller that binds an identity therefore
             // renders it before it gets here, where the column it is comparing against is known.
             AddParameter(command, name, value is Guid guid ? guid.ToString() : value);
-
         }
 
         sql.Append(suffix);
 
         return sql.ToString();
-
     }
 
     private static void AddParameter(DbCommand command, string name, object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1648,7 +1478,5 @@ internal sealed class SessionAttachmentIndexRepository(
         parameter.Value = value;
 
         command.Parameters.Add(parameter);
-
     }
-
 }

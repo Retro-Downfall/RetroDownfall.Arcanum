@@ -548,14 +548,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 File.WriteAllBytes(location.JournalPath, substituteBytes);
 
-                if (!OperatingSystem.IsWindows())
-                {
-
-                    File.SetUnixFileMode(
-                        location.JournalPath,
-                        UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
-                }
+                Assert.True(SecureFilePermissions.TryApplyOwnerOnlyFileStrict(
+                    location.JournalPath,
+                    logFailure: false));
 
             });
 
@@ -1994,11 +1989,90 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     }
 
+    /// <summary>
+    /// POSIX deletion removes the directory link while already-open handles retain access to the
+    /// file object. The retained evidence handle must therefore witness both the zero link count and
+    /// the original bytes after the exact journal name has disappeared.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises POSIX unlink through a separately retained evidence handle.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest);
+
+        Assert.True(
+            opened.IsSuccess,
+            opened.IsFailure ? "open: " + opened.Error.Code : "open: success");
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        byte[] expectedBytes = Bytes("windows-retained-unlink-witness").ToArray();
+
+        using GrimoireOfflineTransitionJournalOpenedFile retained = Value(
+            primitives.CreateWorkingExclusive(location.WorkingLeaf));
+
+        FileStream retainedStream = retained.GetStream(FileAccess.ReadWrite);
+
+        retainedStream.Write(expectedBytes);
+
+        Assert.True(primitives.FlushWorking(retained).IsSuccess);
+
+        Assert.True(
+            primitives.PublishFirstNoReplace(
+                location.JournalLeaf,
+                location.WorkingLeaf).IsSuccess);
+
+        Result unlinked = primitives.CompareUnlink(retained, location.JournalLeaf);
+
+        Assert.True(unlinked.IsSuccess, unlinked.IsFailure ? unlinked.Error.Code : "success");
+
+        using GrimoireOfflineTransitionJournalChildEnumeration after = Value(
+            primitives.EnumerateExactChildren([location.JournalLeaf]));
+
+        Assert.DoesNotContain(location.JournalLeaf, after.Names);
+
+        Assert.False(after.ExactChildren.ContainsKey(location.JournalLeaf));
+
+        Assert.True(
+            FileHandleIdentityInterop.TryGetHandleMetadata(
+                retained.Handle,
+                out FileHandleMetadata retainedMetadata));
+
+        Assert.Equal(0U, retainedMetadata.HardLinkCount);
+
+        retainedStream.Position = 0;
+
+        byte[] actualBytes = new byte[expectedBytes.Length];
+
+        retainedStream.ReadExactly(actualBytes);
+
+        Assert.Equal(expectedBytes, actualBytes);
+
+    }
+
     [Fact]
     public void Windows_desired_access_and_share_mode_constants_are_exact()
     {
 
         const uint fileShareDelete = 0x00000004;
+
+        const uint fileTraverse = 0x00000020;
 
         const uint readControl = 0x00020000;
 
@@ -2006,7 +2080,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         const uint writeOwner = 0x00080000;
 
-        Assert.Equal(0x00120081U,
+        Assert.Equal(0x001200A1U,
             GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess);
 
         Assert.Equal(0x00000003U,
@@ -2016,6 +2090,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             0U,
             GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess
                 & readControl);
+
+        Assert.NotEqual(
+            0U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsParentDesiredAccess
+                & fileTraverse);
 
         Assert.Equal(
             0U,
@@ -2042,6 +2121,258 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 & (writeDac | writeOwner));
 
         Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync);
+
+    }
+
+    [Theory]
+
+    [InlineData(unchecked((int)0xC000000F), true, 0, true)]
+
+    [InlineData(unchecked((int)0xC000000F), false, 0, false)]
+
+    [InlineData(unchecked((int)0xC000000F), true, 1, false)]
+
+    [InlineData(unchecked((int)0x80000006), false, 1, true)]
+
+    [InlineData(unchecked((int)0xC0000022), true, 0, false)]
+
+    [InlineData(0, true, 0, false)]
+
+    public void Windows_directory_enumeration_accepts_no_such_file_only_for_an_empty_initial_scan(
+        int status,
+        bool initialQuery,
+        int observedNameCount,
+        bool expected)
+    {
+
+        Assert.Equal(
+            expected,
+            GrimoireOfflineTransitionJournalFilePrimitives
+                .IsWindowsDirectoryEnumerationComplete(
+                    status,
+                    initialQuery,
+                    observedNameCount));
+
+    }
+
+    /// <summary>
+    /// Splits the first-publication Windows path at its two native boundaries. The production store
+    /// enumerates an empty directory, creates and flushes the working file, re-enumerates through the
+    /// same retained parent capability, and only then renames it. A single end-to-end failure cannot
+    /// say which boundary failed, while this test identifies the failing operation in its assertion.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_real_primitives_reinspect_then_publish_a_new_working_file()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises repeated NT directory queries and handle-relative rename.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest);
+
+        Assert.True(
+            opened.IsSuccess,
+            opened.IsFailure ? "open: " + opened.Error.Code : "open: success");
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        string[] leaves =
+        [
+            location.JournalLeaf,
+            location.WorkingLeaf,
+            location.PreviousLeaf,
+            location.RetiringLeaf,
+        ];
+
+        Result<GrimoireOfflineTransitionJournalChildEnumeration> initialResult =
+            primitives.EnumerateExactChildren(leaves);
+
+        Assert.True(
+            initialResult.IsSuccess,
+            initialResult.IsFailure
+                ? "initial enumeration: " + initialResult.Error.Code
+                : "initial enumeration: success");
+
+        using (GrimoireOfflineTransitionJournalChildEnumeration initial = initialResult.Value)
+        {
+
+            Assert.Empty(initial.ExactChildren);
+
+        }
+
+        Result<GrimoireOfflineTransitionJournalOpenedFile> createdResult =
+            primitives.CreateWorkingExclusive(location.WorkingLeaf);
+
+        Assert.True(
+            createdResult.IsSuccess,
+            createdResult.IsFailure ? "create: " + createdResult.Error.Code : "create: success");
+
+        using GrimoireOfflineTransitionJournalOpenedFile created = createdResult.Value;
+
+        created.GetStream(FileAccess.ReadWrite).Write(Bytes("windows-primitive-publication").Span);
+
+        Result flushed = primitives.FlushWorking(created);
+
+        Assert.True(flushed.IsSuccess, flushed.IsFailure ? "flush: " + flushed.Error.Code : "flush: success");
+
+        Result<GrimoireOfflineTransitionJournalChildEnumeration> postCreateResult =
+            primitives.EnumerateExactChildren(leaves);
+
+        Assert.True(
+            postCreateResult.IsSuccess,
+            postCreateResult.IsFailure
+                ? "post-create enumeration: " + postCreateResult.Error.Code
+                : "post-create enumeration: success");
+
+        using (GrimoireOfflineTransitionJournalChildEnumeration postCreate = postCreateResult.Value)
+        {
+
+            Assert.Contains(location.WorkingLeaf, postCreate.Names);
+
+            Assert.True(
+                postCreate.ExactChildren.TryGetValue(
+                    location.WorkingLeaf,
+                    out GrimoireOfflineTransitionJournalOpenedFile? reopened),
+                "post-create enumeration missed the working leaf; observed: "
+                    + string.Join(",", postCreate.Names));
+
+            Assert.True(
+                FileHandleIdentity.IdentitiesMatch(
+                    created.Metadata.Identity,
+                    reopened.Metadata.Identity),
+                "post-create enumeration reopened a different working-file identity");
+
+        }
+
+        Result published = primitives.PublishFirstNoReplace(
+            location.JournalLeaf,
+            location.WorkingLeaf);
+
+        Assert.True(
+            published.IsSuccess,
+            published.IsFailure ? "publish: " + published.Error.Code : "publish: success");
+
+    }
+
+    /// <summary>
+    /// The first-publication primitive is a rename-if-absent operation, not replacement with a
+    /// pre-check. A real destination collision must therefore leave both directory entries bound to
+    /// the identities and bytes they had before the single native call.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_no_replace_rename_preserves_both_files_when_destination_exists()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises the NT rename primitive's no-replace collision contract.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest);
+
+        Assert.True(
+            opened.IsSuccess,
+            opened.IsFailure ? "open: " + opened.Error.Code : "open: success");
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        byte[] sourceBytes = Bytes("windows-no-replace-source").ToArray();
+
+        byte[] destinationBytes = Bytes("windows-no-replace-destination").ToArray();
+
+        FileHandleIdentity sourceIdentity;
+
+        using (GrimoireOfflineTransitionJournalOpenedFile source = Value(
+                   primitives.CreateWorkingExclusive(location.WorkingLeaf)))
+        {
+
+            source.GetStream(FileAccess.ReadWrite).Write(sourceBytes);
+
+            Assert.True(primitives.FlushWorking(source).IsSuccess);
+
+            sourceIdentity = source.Metadata.Identity;
+
+        }
+
+        FileHandleIdentity destinationIdentity;
+
+        using (GrimoireOfflineTransitionJournalOpenedFile destination = Value(
+                   primitives.CreateWorkingExclusive(location.JournalLeaf)))
+        {
+
+            destination.GetStream(FileAccess.ReadWrite).Write(destinationBytes);
+
+            Assert.True(primitives.FlushWorking(destination).IsSuccess);
+
+            destinationIdentity = destination.Metadata.Identity;
+
+        }
+
+        Result collision = primitives.PublishFirstNoReplace(
+            location.JournalLeaf,
+            location.WorkingLeaf);
+
+        Assert.True(collision.IsFailure, "An existing destination was replaced.");
+
+        string[] leaves = [location.JournalLeaf, location.WorkingLeaf];
+
+        using GrimoireOfflineTransitionJournalChildEnumeration survivors = Value(
+            primitives.EnumerateExactChildren(leaves));
+
+        GrimoireOfflineTransitionJournalOpenedFile sourceAfter =
+            Assert.IsType<GrimoireOfflineTransitionJournalOpenedFile>(
+                survivors.ExactChildren[location.WorkingLeaf]);
+
+        GrimoireOfflineTransitionJournalOpenedFile destinationAfter =
+            Assert.IsType<GrimoireOfflineTransitionJournalOpenedFile>(
+                survivors.ExactChildren[location.JournalLeaf]);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(sourceIdentity, sourceAfter.Metadata.Identity));
+
+        Assert.True(
+            FileHandleIdentity.IdentitiesMatch(
+                destinationIdentity,
+                destinationAfter.Metadata.Identity));
+
+        FileStream sourceAfterStream = sourceAfter.GetStream(FileAccess.Read);
+
+        byte[] actualSourceBytes = new byte[sourceBytes.Length];
+
+        sourceAfterStream.ReadExactly(actualSourceBytes);
+
+        Assert.Equal(sourceBytes, actualSourceBytes);
+
+        FileStream destinationAfterStream = destinationAfter.GetStream(FileAccess.Read);
+
+        byte[] actualDestinationBytes = new byte[destinationBytes.Length];
+
+        destinationAfterStream.ReadExactly(actualDestinationBytes);
+
+        Assert.Equal(destinationBytes, actualDestinationBytes);
 
     }
 

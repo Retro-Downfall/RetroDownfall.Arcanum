@@ -31,6 +31,20 @@ internal static class OpenAiStreamErrorMapper
 
         return internalCode switch
         {
+            ErrorCodes.ClientTools.ModelUnsupported =>
+                new OpenAiErrorDetail(
+                    PublicInferenceErrorMessages.ToolChoiceModelUnsupported,
+                    "invalid_request_error",
+                    Param: "tool_choice",
+                    Code: "unsupported_parameter"),
+
+            ErrorCodes.ClientTools.ToolChoiceUnavailable =>
+                new OpenAiErrorDetail(
+                    PublicInferenceErrorMessages.ToolChoiceUnavailable,
+                    "invalid_request_error",
+                    Param: "tool_choice",
+                    Code: "invalid_value"),
+
             ErrorCodes.Guardrails.Blocked or ErrorCodes.Guardrails.PiiDetected =>
                 new OpenAiErrorDetail(
                     "The response was blocked by a configured guardrail policy.",
@@ -62,6 +76,11 @@ internal static class OpenAiStreamErrorMapper
 
     public static bool IsReasoningValidationCode(string? internalCode) =>
         MapReasoningValidationCode(internalCode) is not null;
+
+    public static bool IsRequestValidationCode(string? internalCode) =>
+        IsReasoningValidationCode(internalCode)
+        || internalCode is ErrorCodes.ClientTools.ModelUnsupported
+            or ErrorCodes.ClientTools.ToolChoiceUnavailable;
 
     private static string ResolveMessage(Error? error) =>
         error?.Code switch

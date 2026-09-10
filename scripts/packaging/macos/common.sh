@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Keep the app-specific password out of every dotnet, codesign, security, and inspection child.
+# It is needed only once, on notarytool's stdin, and shell variables are not exported by default.
+NOTARY_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
+unset APPLE_APP_SPECIFIC_PASSWORD
+
 PACKAGING_MACOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Consumed by build-arcanum.sh and build-app-dmg.sh after they source this file; shellcheck
 # cannot see those readers when it lints common.sh on its own.
@@ -41,12 +46,18 @@ marketing_version_from_semver() {
 require_signing_env() {
   local missing=0
   local key
-  for key in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+  for key in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID; do
     if [[ -z "${!key:-}" ]]; then
       echo "error: missing required env var: $key" >&2
       missing=1
     fi
   done
+
+  if [[ -z "$NOTARY_APP_SPECIFIC_PASSWORD" ]]; then
+    echo "error: missing required env var: APPLE_APP_SPECIFIC_PASSWORD" >&2
+    missing=1
+  fi
+
   if [[ "$missing" -ne 0 ]]; then
     exit 1
   fi
@@ -336,6 +347,62 @@ NOTARY_KEYCHAIN_PROFILE="arcanum-notarytool"
 NOTARY_KEYCHAIN=""
 NOTARY_KEYCHAIN_OWNED=0
 
+remove_owned_directory_with_retries() {
+  local path="$1"
+  local description="$2"
+  local attempt
+
+  if [[ -z "$path" || "$path" == "/" ]]; then
+    echo "error: refusing unsafe $description cleanup target: '$path'" >&2
+    return 1
+  fi
+
+  for attempt in 1 2 3; do
+    if [[ ! -e "$path" ]]; then
+      return 0
+    fi
+
+    if rm -rf "$path" && [[ ! -e "$path" ]]; then
+      return 0
+    fi
+
+    if [[ "$attempt" -lt 3 ]]; then
+      sleep 0.1
+    fi
+  done
+
+  echo "error: could not remove $description after three attempts: $path" >&2
+  return 1
+}
+
+notary_keychain_is_absent() {
+  local path="$1"
+  local listed
+  local entry
+
+  if [[ -e "$path" ]]; then
+    return 1
+  fi
+
+  if ! listed="$(security list-keychains -d user)"; then
+    echo "error: could not inspect the user keychain search list after cleanup" >&2
+    return 2
+  fi
+
+  while IFS= read -r entry; do
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    entry="${entry#\"}"
+    entry="${entry%\"}"
+
+    if [[ "$entry" == "$path" ]]; then
+      return 1
+    fi
+  done <<<"$listed"
+
+  return 0
+}
+
 notarize_prepare_credentials() {
   if [[ -n "$NOTARY_KEYCHAIN" ]]; then
     return 0
@@ -343,39 +410,104 @@ notarize_prepare_credentials() {
 
   require_cmd security
   require_cmd xcrun
+  require_cmd openssl
 
-  if [[ -n "${KEYCHAIN_PATH:-}" && -f "${KEYCHAIN_PATH:-}" ]]; then
-    # CI already built an ephemeral signing keychain for this run and deletes it afterwards.
-    NOTARY_KEYCHAIN="$KEYCHAIN_PATH"
-  else
-    require_cmd openssl
-    local keychain_password
-    keychain_password="$(openssl rand -hex 24)"
-    NOTARY_KEYCHAIN="$(mktemp -d "${TMPDIR:-/tmp}/arcanum-notary.XXXXXX")/notary.keychain-db"
-    printf '%s\n%s\n' "$keychain_password" "$keychain_password" |
-      security create-keychain "$NOTARY_KEYCHAIN"
-    NOTARY_KEYCHAIN_OWNED=1
-    security set-keychain-settings -lut 21600 "$NOTARY_KEYCHAIN"
-    printf '%s\n' "$keychain_password" | security unlock-keychain "$NOTARY_KEYCHAIN"
-  fi
+  # The notarization profile always lives in a purpose-built owned keychain. Reusing a signing
+  # keychain supplied through KEYCHAIN_PATH makes credential ownership unknowable for local calls:
+  # cleanup cannot safely delete a persistent user keychain, so the app-specific password remains.
+  local keychain_password
+  keychain_password="$(openssl rand -hex 24)"
+  NOTARY_KEYCHAIN="$(mktemp -d "${TMPDIR:-/tmp}/arcanum-notary.XXXXXX")/notary.keychain-db"
+  NOTARY_KEYCHAIN_OWNED=1
+  printf '%s\n%s\n' "$keychain_password" "$keychain_password" |
+    security create-keychain "$NOTARY_KEYCHAIN"
+  security set-keychain-settings -lut 21600 "$NOTARY_KEYCHAIN"
+  printf '%s\n' "$keychain_password" | security unlock-keychain "$NOTARY_KEYCHAIN"
 
   echo "==> Storing notarization credentials in keychain profile '$NOTARY_KEYCHAIN_PROFILE'"
-  printf '%s\n' "$APPLE_APP_SPECIFIC_PASSWORD" |
+  printf '%s\n' "$NOTARY_APP_SPECIFIC_PASSWORD" |
     xcrun notarytool store-credentials "$NOTARY_KEYCHAIN_PROFILE" \
       --apple-id "$APPLE_ID" \
       --team-id "$APPLE_TEAM_ID" \
       --keychain "$NOTARY_KEYCHAIN"
+  NOTARY_APP_SPECIFIC_PASSWORD=""
 }
 
-# Callers own an EXIT trap; they must call this from it. Deletes only a keychain this script
-# created — a CI-provided KEYCHAIN_PATH is the workflow's to clean up.
+# Deletes only a keychain this script created — a CI-provided KEYCHAIN_PATH is the workflow's to
+# clean up. Both the file and its user search-list registration must disappear before success.
 notarize_cleanup() {
-  if [[ "$NOTARY_KEYCHAIN_OWNED" -eq 1 && -n "$NOTARY_KEYCHAIN" && -f "$NOTARY_KEYCHAIN" ]]; then
-    security delete-keychain "$NOTARY_KEYCHAIN" >/dev/null 2>&1 || true
-    rm -rf "$(dirname "$NOTARY_KEYCHAIN")"
+  local cleanup_status=0
+
+  if [[ "$NOTARY_KEYCHAIN_OWNED" -eq 1 ]]; then
+    if [[ -z "$NOTARY_KEYCHAIN" ]]; then
+      echo "error: owned notarization keychain path is empty" >&2
+      cleanup_status=1
+    else
+      local keychain_deleted=0
+      local attempt
+
+      for attempt in 1 2 3; do
+        if notary_keychain_is_absent "$NOTARY_KEYCHAIN"; then
+          keychain_deleted=1
+          break
+        fi
+
+        if security delete-keychain "$NOTARY_KEYCHAIN"; then
+          :
+        fi
+
+        if notary_keychain_is_absent "$NOTARY_KEYCHAIN"; then
+          keychain_deleted=1
+          break
+        fi
+
+        if [[ "$attempt" -lt 3 ]]; then
+          sleep 0.1
+        fi
+      done
+
+      if [[ "$keychain_deleted" -ne 1 ]]; then
+        echo "error: could not delete owned notarization keychain after three attempts: $NOTARY_KEYCHAIN" >&2
+        cleanup_status=1
+      elif ! remove_owned_directory_with_retries \
+        "$(dirname "$NOTARY_KEYCHAIN")" \
+        "notarization keychain temporary directory"; then
+        cleanup_status=1
+      fi
+    fi
   fi
-  NOTARY_KEYCHAIN=""
-  NOTARY_KEYCHAIN_OWNED=0
+
+  if [[ "$cleanup_status" -eq 0 ]]; then
+    NOTARY_KEYCHAIN=""
+    NOTARY_KEYCHAIN_OWNED=0
+  fi
+
+  return "$cleanup_status"
+}
+
+# EXIT traps pass their original status here. Cleanup failure turns a successful package into a
+# failure, while a primary packaging failure remains nonzero. Disabling the trap before exit avoids
+# recursion and makes the final status independent of the caller's errexit state.
+packaging_cleanup_exit() {
+  local original_status="$1"
+  local work="$2"
+  local final_status="$original_status"
+
+  trap - EXIT
+
+  if ! notarize_cleanup; then
+    if [[ "$final_status" -eq 0 ]]; then
+      final_status=1
+    fi
+  fi
+
+  if ! remove_owned_directory_with_retries "$work" "packaging temporary directory"; then
+    if [[ "$final_status" -eq 0 ]]; then
+      final_status=1
+    fi
+  fi
+
+  exit "$final_status"
 }
 
 notarize_submit() {

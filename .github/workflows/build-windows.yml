@@ -75,11 +75,9 @@ jobs:
     needs: native-sqlcipher-asset
     if: needs.native-sqlcipher-asset.outputs.status == 'verified'
     # Each Windows architecture builds on its own architecture. Native AOT can target win-arm64
-    # from an x64 host, but only from a shell that has already sourced the cross MSVC environment,
-    # and a publish that cannot find those tools does not fail -- it falls back to a self-contained
-    # CoreCLR folder that packages, ships, and is quietly no longer Native AOT. A native runner
-    # removes the question rather than answering it, and `windows-11-arm` is free for this
-    # repository because it is public.
+    # from an x64 host, but only from a shell that has already sourced the cross MSVC environment.
+    # A native runner removes that toolchain ambiguity, and `windows-11-arm` is free for this
+    # repository because it is public. The package gate below separately proves the result is AOT.
     runs-on: ${{ inputs.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}
     env:
       DOTNET_NOLOGO: true
@@ -150,6 +148,33 @@ jobs:
               throw "$($env:RID) needs an SDK whose host RID is $($env:RID); this runner's is $($match.Groups['rid'].Value), so the publish would cross-compile."
           }
 
+      # The AOT diagnostic gate fails closed when ripgrep is absent. Runner images do not promise
+      # it, so install the pinned fallback before publishing a release artifact.
+      - name: Install ripgrep
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Get-Command rg -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --version=15.2.0 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          rg --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Package creation performs a fresh Native AOT publish under the normal warning-free profile.
+      # Audit detailed diagnostics on the same validated native SDK first; a prior CI run may belong
+      # to another commit and cannot prove this release input.
+      - name: Audit Native AOT diagnostics for the exact RID
+        shell: bash
+        env:
+          RID: ${{ inputs.rid }}
+        run: |
+          set -euo pipefail
+          rg --version
+          ./scripts/verify-aot-il-warnings.sh "$RID"
+
       - name: Package Arcanum, Compendium, and The Forge
         shell: pwsh
         env:
@@ -160,6 +185,30 @@ jobs:
             -Version "${{ steps.ver.outputs.version }}" `
             -OutputDir .\dist\windows `
             -Rid $env:RID
+
+      - name: Verify exact packaged Arcanum provider-contract smoke
+        shell: pwsh
+        env:
+          RID: ${{ inputs.rid }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "dist\windows\arcanum-$env:RID.zip"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("arcanum-package-smoke-" + [guid]::NewGuid().ToString("N"))
+
+          try {
+              Expand-Archive -LiteralPath $archive -DestinationPath $smokeRoot
+              $executable = Join-Path $smokeRoot "arcanum-$env:RID\arcanum.exe"
+              & bash ./scripts/verify-published-apphost.sh --executable $executable
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Exact packaged Arcanum apphost smoke failed with exit code $LASTEXITCODE."
+              }
+          }
+          finally {
+              if (Test-Path -LiteralPath $smokeRoot) {
+                  Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+              }
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

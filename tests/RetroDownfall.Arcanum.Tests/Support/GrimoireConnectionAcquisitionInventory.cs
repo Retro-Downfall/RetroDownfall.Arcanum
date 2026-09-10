@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal enum GrimoirePathAuthority : byte
 {
-
     LiveGrimoire = 1,
 
     StoppedHostGrimoire = 2,
@@ -26,12 +25,10 @@ internal enum GrimoirePathAuthority : byte
     NativeRuntimeValidation = 8,
 
     NotGrimoire = 9,
-
 }
 
 internal enum GrimoireAcquisitionKind : byte
 {
-
     ServingEfOrdinary = 1,
 
     ServingRawOrdinary = 2,
@@ -47,12 +44,10 @@ internal enum GrimoireAcquisitionKind : byte
     DesignTimeOrNativeValidation = 8,
 
     NonGrimoireCandidate = 9,
-
 }
 
 internal enum AcquisitionConstructKind : byte
 {
-
     UseSqlite = 1,
 
     AddDbContext = 2,
@@ -64,7 +59,6 @@ internal enum AcquisitionConstructKind : byte
     MarkedRouteDeclaration = 5,
 
     MarkedRouteInvocation = 6,
-
 }
 
 internal readonly record struct AcquisitionIdentity(
@@ -90,7 +84,6 @@ internal sealed record GrimoireAcquisitionCatalogEntry(
 
 internal enum GrimoireRuntimeAdmissionRoute : byte
 {
-
     SharedEfInterceptor = 1,
 
     OrdinaryConnectionFactory = 2,
@@ -100,12 +93,10 @@ internal enum GrimoireRuntimeAdmissionRoute : byte
     StoppedHostConnectionFactory = 4,
 
     ExactNonServingProof = 5,
-
 }
 
 internal enum ExactNonServingProofKind : byte
 {
-
     StoppedHostAuthority = 1,
 
     PreReadinessHeldLock = 2,
@@ -119,12 +110,10 @@ internal enum ExactNonServingProofKind : byte
     NativeRuntimeValidation = 6,
 
     NegativeNonDatabaseProof = 7,
-
 }
 
 internal enum InventoryFailureCode : byte
 {
-
     UncataloguedDiscovery = 1,
 
     StaleCatalogEntry = 2,
@@ -140,7 +129,6 @@ internal enum InventoryFailureCode : byte
     InvalidClassification = 7,
 
     MissingNonServingProof = 8,
-
 }
 
 internal readonly record struct AcquisitionSource(string RelativePath, string Text);
@@ -152,7 +140,6 @@ internal sealed record InventoryFailure(
 
 internal static class GrimoireConnectionAcquisitionScanner
 {
-
     private static readonly HashSet<string> ProviderOpenNames =
     [
         "Open",
@@ -178,7 +165,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
     internal static IReadOnlyList<AcquisitionIdentity> Discover(IEnumerable<AcquisitionSource> sources)
     {
-
         List<(AcquisitionSource Source, CompilationUnitSyntax Root)> parsed = Parse(sources);
 
         List<AcquisitionIdentity> identities = [];
@@ -187,13 +173,10 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         foreach ((AcquisitionSource source, CompilationUnitSyntax root) in parsed)
         {
-
             foreach (MethodDeclarationSyntax method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
             {
-
                 if (IsConcrete(method) && IsMarked(method))
                 {
-
                     markedRouteArities[method.Identifier.ValueText] = method.ParameterList.Parameters.Count;
 
                     identities.Add(MarkedRouteIdentity(
@@ -201,17 +184,13 @@ internal static class GrimoireConnectionAcquisitionScanner
                         method,
                         method.Identifier.ValueText,
                         method.ParameterList.Parameters.Count));
-
                 }
-
             }
 
             foreach (LocalFunctionStatementSyntax localFunction in root.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
             {
-
                 if (IsConcrete(localFunction) && IsMarked(localFunction))
                 {
-
                     markedRouteArities[localFunction.Identifier.ValueText] = localFunction.ParameterList.Parameters.Count;
 
                     identities.Add(MarkedRouteIdentity(
@@ -219,104 +198,83 @@ internal static class GrimoireConnectionAcquisitionScanner
                         localFunction,
                         localFunction.Identifier.ValueText,
                         localFunction.ParameterList.Parameters.Count));
-
                 }
-
             }
-
         }
 
         foreach ((AcquisitionSource source, CompilationUnitSyntax root) in parsed)
         {
-
             foreach (InvocationExpressionSyntax invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
             {
-
                 string terminalName = TerminalName(invocation.Expression);
 
                 int arity = invocation.ArgumentList.Arguments.Count;
 
                 if (terminalName == "UseSqlite")
                 {
-
                     identities.Add(Identity(
                         source.RelativePath,
                         invocation,
                         AcquisitionConstructKind.UseSqlite,
                         Tokens(invocation.Expression),
                         arity));
-
                 }
 
                 if (terminalName.StartsWith("AddDbContext", StringComparison.Ordinal))
                 {
-
                     identities.Add(Identity(
                         source.RelativePath,
                         invocation,
                         AcquisitionConstructKind.AddDbContext,
                         Tokens(invocation.Expression),
                         arity));
-
                 }
 
                 if (ProviderOpenNames.Contains(terminalName))
                 {
-
                     identities.Add(Identity(
                         source.RelativePath,
                         invocation,
                         AcquisitionConstructKind.ProviderOpen,
                         Tokens(invocation.Expression),
                         arity));
-
                 }
 
                 if (markedRouteArities.TryGetValue(terminalName, out int markedArity)
                     && markedArity == arity)
                 {
-
                     identities.Add(Identity(
                         source.RelativePath,
                         invocation,
                         AcquisitionConstructKind.MarkedRouteInvocation,
                         terminalName,
                         arity));
-
                 }
-
             }
 
             foreach (ObjectCreationExpressionSyntax creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
             {
-
                 string typeName = TerminalName(creation.Type);
 
                 if (typeName is "DbConnection" or "SqliteConnection")
                 {
-
                     identities.Add(Identity(
                         source.RelativePath,
                         creation,
                         AcquisitionConstructKind.ProviderObjectCreation,
                         Tokens(creation.Type),
                         creation.ArgumentList?.Arguments.Count ?? 0));
-
                 }
-
             }
 
             foreach (ImplicitObjectCreationExpressionSyntax creation in root.DescendantNodes()
                 .OfType<ImplicitObjectCreationExpressionSyntax>())
             {
-
                 VariableDeclaratorSyntax? target = ImplicitObjectCreationTarget(creation);
 
                 if (target is null)
                 {
-
                     continue;
-
                 }
 
                 VariableDeclarationSyntax declaration = (VariableDeclarationSyntax)target.Parent!;
@@ -325,59 +283,45 @@ internal static class GrimoireConnectionAcquisitionScanner
 
                 if (typeName is "DbConnection" or "SqliteConnection")
                 {
-
                     identities.Add(ImplicitObjectCreationIdentity(
                         source.RelativePath,
                         creation,
                         target,
                         declaration.Type));
-
                 }
-
             }
-
         }
 
         return identities;
-
     }
 
     internal static IReadOnlyList<InventoryFailure> Validate(
         IReadOnlyList<AcquisitionIdentity> discoveries,
         IReadOnlyList<GrimoireAcquisitionCatalogEntry> catalog)
     {
-
         List<InventoryFailure> failures = [];
 
         foreach (IGrouping<AcquisitionIdentity, AcquisitionIdentity> duplicate in discoveries.GroupBy(static identity => identity))
         {
-
             if (duplicate.Count() > 1)
             {
-
                 failures.Add(new(
                     InventoryFailureCode.DuplicateDiscovery,
                     duplicate.Key,
                     "The syntax scanner resolved this construct more than once."));
-
             }
-
         }
 
         foreach (IGrouping<AcquisitionIdentity, GrimoireAcquisitionCatalogEntry> duplicate in catalog.GroupBy(
                      static entry => entry.Identity))
         {
-
             if (duplicate.Count() > 1)
             {
-
                 failures.Add(new(
                     InventoryFailureCode.DuplicateCatalogEntry,
                     duplicate.Key,
                     "The catalog contains this construct more than once."));
-
             }
-
         }
 
         HashSet<AcquisitionIdentity> discovered = [.. discoveries];
@@ -386,45 +330,36 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         foreach (AcquisitionIdentity discovery in discovered.Except(catalogued))
         {
-
             failures.Add(new(
                 InventoryFailureCode.UncataloguedDiscovery,
                 discovery,
                 "The syntax scanner found a construct with no exact catalog entry."));
-
         }
 
         foreach (AcquisitionIdentity entry in catalogued.Except(discovered))
         {
-
             failures.Add(new(
                 InventoryFailureCode.StaleCatalogEntry,
                 entry,
                 "The catalog names a construct the syntax scanner no longer finds."));
-
         }
 
         foreach (GrimoireAcquisitionCatalogEntry entry in catalog)
         {
-
             if (HasBroadIdentity(entry.Identity))
             {
-
                 failures.Add(new(
                     InventoryFailureCode.InvalidClassification,
                     entry.Identity,
                     "A catalog identity must name one exact authored construct, not a wildcard."));
-
             }
 
             if (entry.NonServingProof is not null && !HasExactProofEvidence(entry))
             {
-
                 failures.Add(new(
                     InventoryFailureCode.InvalidClassification,
                     entry.Identity,
                     "A non-serving proof must derive from one exact catalog identity."));
-
             }
 
             bool canonicalLivePath = entry.Identity.Fingerprint.Contains(
@@ -434,12 +369,10 @@ internal static class GrimoireConnectionAcquisitionScanner
             if ((canonicalLivePath && entry.PathAuthority != GrimoirePathAuthority.LiveGrimoire)
                 || !IsValidClassification(entry))
             {
-
                 failures.Add(new(
                     InventoryFailureCode.InvalidClassification,
                     entry.Identity,
                     "A live Grimoire acquisition must use a live authority and serving classification."));
-
             }
 
             // A maintenance-routed acquisition is exempt, and only a maintenance-routed one. The rule
@@ -455,45 +388,34 @@ internal static class GrimoireConnectionAcquisitionScanner
                 && entry.NonServingProof is null
                 && entry.RuntimeRoute != GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory)
             {
-
                 failures.Add(new(
                     InventoryFailureCode.MissingNonServingProof,
                     entry.Identity,
                     "Every non-live or exact-negative candidate requires an exact proof."));
-
             }
-
         }
 
         foreach (IGrouping<string, GrimoireAcquisitionCatalogEntry> duplicate in catalog
             .Where(static entry => entry.NonServingProof is not null)
             .GroupBy(static entry => entry.NonServingProof!.EvidenceMember, StringComparer.Ordinal))
         {
-
             if (duplicate.Count() > 1)
             {
-
                 foreach (GrimoireAcquisitionCatalogEntry entry in duplicate)
                 {
-
                     failures.Add(new(
                         InventoryFailureCode.InvalidClassification,
                         entry.Identity,
                         "A non-serving proof cannot be shared by multiple catalog identities."));
-
                 }
-
             }
-
         }
 
         return failures;
-
     }
 
     internal static IReadOnlyList<InventoryFailure> ValidateMarkerCoverage(IEnumerable<AcquisitionSource> sources)
     {
-
         List<InventoryFailure> failures = [];
 
         List<(AcquisitionSource Source, CompilationUnitSyntax Root)> parsed = Parse(sources);
@@ -502,42 +424,31 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         foreach ((AcquisitionSource source, CompilationUnitSyntax root) in parsed)
         {
-
             foreach (MethodDeclarationSyntax method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
             {
-
                 ValidateMethodMarker(source, method, failures, markedRoutes);
-
             }
 
             foreach (LocalFunctionStatementSyntax localFunction in root.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
             {
-
                 ValidateLocalFunctionMarker(source, localFunction, failures, markedRoutes);
-
             }
-
         }
 
         foreach (IGrouping<string, (string Name, AcquisitionIdentity Identity)> duplicate in markedRoutes.GroupBy(
                      static route => route.Name,
                      StringComparer.Ordinal))
         {
-
             if (duplicate.Count() > 1)
             {
-
                 failures.Add(new(
                     InventoryFailureCode.DuplicateMarkedRouteName,
                     duplicate.First().Identity,
                     "Marked route names must be repository-unique."));
-
             }
-
         }
 
         return failures;
-
     }
 
     internal static IReadOnlyList<GrimoireAcquisitionCatalogEntry> Catalog() =>
@@ -971,14 +882,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs", "GrimoireRepository", "SearchArchivesAsync(3)", AcquisitionConstructKind.ProviderOpen, "_db.Database.OpenConnectionAsync", 1, "_db.Database.OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs", "GrimoireRepository", "GetTodaySpendAsync(1)", AcquisitionConstructKind.ProviderOpen, "_db.Database.OpenConnectionAsync", 1, "_db.Database.OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs", "GrimoireRepository", "IncrementSessionTokensAndCostWithinImmediateTransactionAsync(4)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1986,7 +1890,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/UnseenServantWatermarkStore.cs", "UnseenServantWatermarkStore", "SaveAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/UnseenServantWatermarkStore.cs", "UnseenServantWatermarkStore", "SaveFieldsAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2588,14 +2492,14 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "FindExpiredAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "FindExpiredAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "AcquireLeaseAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "AcquireLeaseAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2799,6 +2703,34 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DataRetentionService", "DeleteAccountingCandidateAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BatchAccountingRecoveryStore.cs", "BatchAccountingRecoveryStore", "ClaimRecoveryAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BatchAccountingRecoveryStore.cs", "BatchAccountingRecoveryStore", "TryCompleteRecoveryAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BatchAccountingRecoveryStore.cs", "BatchAccountingRecoveryStore", "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireSqlCommandFactory.cs", "GrimoireSqlCommandFactory", "CreateAsync(3)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -3189,7 +3121,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
             null),
 
-
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs", "CovenantLocalErasureStorageHealth", "ReadAndVerifyCandidateAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenCandidateReopenAsync", 1, "authority.OpenCandidateReopenAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
@@ -3378,7 +3309,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
-
         ]);
 
     private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> BindProofEvidence(
@@ -3411,12 +3341,9 @@ internal static class GrimoireConnectionAcquisitionScanner
         ICollection<InventoryFailure> failures,
         ICollection<(string Name, AcquisitionIdentity Identity)> markedRoutes)
     {
-
         if (!IsConcrete(method))
         {
-
             return;
-
         }
 
         AcquisitionIdentity identity = MarkedRouteIdentity(
@@ -3427,23 +3354,18 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         if (IsMarked(method))
         {
-
             markedRoutes.Add((method.Identifier.ValueText, identity));
-
         }
 
         if (ReturnsOpaqueAcquisitionRouteType(method.ReturnType)
             && !IsFailureOnlyHelper(method)
             && !IsMarked(method))
         {
-
             failures.Add(new(
                 InventoryFailureCode.MissingRequiredRouteMarker,
                 identity,
                 "A concrete opaque acquisition route requires GrimoireConnectionAcquisitionRoute."));
-
         }
-
     }
 
     private static void ValidateLocalFunctionMarker(
@@ -3452,12 +3374,9 @@ internal static class GrimoireConnectionAcquisitionScanner
         ICollection<InventoryFailure> failures,
         ICollection<(string Name, AcquisitionIdentity Identity)> markedRoutes)
     {
-
         if (!IsConcrete(localFunction))
         {
-
             return;
-
         }
 
         AcquisitionIdentity identity = MarkedRouteIdentity(
@@ -3468,68 +3387,51 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         if (IsMarked(localFunction))
         {
-
             markedRoutes.Add((localFunction.Identifier.ValueText, identity));
-
         }
 
         if (ReturnsOpaqueAcquisitionRouteType(localFunction.ReturnType)
             && !IsFailureOnlyHelper(localFunction)
             && !IsMarked(localFunction))
         {
-
             failures.Add(new(
                 InventoryFailureCode.MissingRequiredRouteMarker,
                 identity,
                 "A concrete opaque acquisition route requires GrimoireConnectionAcquisitionRoute."));
-
         }
-
     }
 
     private static bool ReturnsOpaqueAcquisitionRouteType(TypeSyntax type)
     {
-
         string terminalName = TerminalName(type);
 
         if (OpaqueAcquisitionRouteReturnNames.Contains(terminalName))
         {
-
             return true;
-
         }
 
         if (type is NullableTypeSyntax nullable)
         {
-
             return ReturnsOpaqueAcquisitionRouteType(nullable.ElementType);
-
         }
 
         if (type is GenericNameSyntax generic
             && RecursiveReturnWrappers.Contains(generic.Identifier.ValueText))
         {
-
             return generic.TypeArgumentList.Arguments.Any(ReturnsOpaqueAcquisitionRouteType);
-
         }
 
         if (type is QualifiedNameSyntax qualified)
         {
-
             return ReturnsOpaqueAcquisitionRouteType(qualified.Right);
-
         }
 
         if (type is AliasQualifiedNameSyntax aliasQualified)
         {
-
             return ReturnsOpaqueAcquisitionRouteType(aliasQualified.Name);
-
         }
 
         return false;
-
     }
 
     private static bool IsFailureOnlyHelper(MethodDeclarationSyntax method) =>
@@ -3546,19 +3448,14 @@ internal static class GrimoireConnectionAcquisitionScanner
         BlockSyntax? body,
         ArrowExpressionClauseSyntax? expressionBody)
     {
-
         if (expressionBody is not null)
         {
-
             return IsExactTypedResultFailure(expressionBody.Expression);
-
         }
 
         if (body is null)
         {
-
             return false;
-
         }
 
         IReadOnlyList<ReturnStatementSyntax> returns =
@@ -3567,17 +3464,13 @@ internal static class GrimoireConnectionAcquisitionScanner
         return returns.Count != 0
             && returns.All(statement => statement.Expression is { } expression
                 && IsExactTypedResultFailure(expression));
-
     }
 
     private static bool IsExactTypedResultFailure(ExpressionSyntax expression)
     {
-
         if (expression is not InvocationExpressionSyntax invocation)
         {
-
             return false;
-
         }
 
         if (invocation.Expression is MemberAccessExpressionSyntax
@@ -3593,9 +3486,7 @@ internal static class GrimoireConnectionAcquisitionScanner
                 },
             })
         {
-
             return true;
-
         }
 
         return invocation.Expression is MemberAccessExpressionSyntax
@@ -3608,7 +3499,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             }
             && invocation.ArgumentList.Arguments.Count == 1
             && IsExactTypedResultFailure(invocation.ArgumentList.Arguments[0].Expression);
-
     }
 
     private static bool IsConcrete(MethodDeclarationSyntax method) =>
@@ -3763,17 +3653,13 @@ internal static class GrimoireConnectionAcquisitionScanner
     private static VariableDeclaratorSyntax? ImplicitObjectCreationTarget(
         ImplicitObjectCreationExpressionSyntax creation)
     {
-
         if (creation.Parent is not EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax variable }
             || variable.Parent is not VariableDeclarationSyntax)
         {
-
             return null;
-
         }
 
         return variable;
-
     }
 
     private static AcquisitionIdentity MarkedRouteIdentity(
@@ -3792,7 +3678,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
     private static string EnclosingType(SyntaxNode node)
     {
-
         string[] types =
         [
             .. node.Ancestors().OfType<TypeDeclarationSyntax>()
@@ -3801,34 +3686,27 @@ internal static class GrimoireConnectionAcquisitionScanner
         ];
 
         return types.Length == 0 ? "<global>" : string.Join('.', types);
-
     }
 
     private static string EnclosingMember(SyntaxNode node)
     {
-
         LocalFunctionStatementSyntax? localFunction = node.AncestorsAndSelf()
             .OfType<LocalFunctionStatementSyntax>()
             .FirstOrDefault();
 
         if (localFunction is not null)
         {
-
             return localFunction.Identifier.ValueText + "(" + localFunction.ParameterList.Parameters.Count + ")";
-
         }
 
         MethodDeclarationSyntax? method = node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>().FirstOrDefault();
 
         if (method is not null)
         {
-
             return method.Identifier.ValueText + "(" + method.ParameterList.Parameters.Count + ")";
-
         }
 
         return "<global>";
-
     }
 
     private static string TerminalName(SyntaxNode node) => node switch
@@ -3860,5 +3738,4 @@ internal static class GrimoireConnectionAcquisitionScanner
             source,
             CSharpSyntaxTree.ParseText(source.Text, new CSharpParseOptions(LanguageVersion.Preview)).GetCompilationUnitRoot())),
     ];
-
 }

@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -25,10 +26,9 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Collection("WorkspacePathPolicy")]
 public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLifetime
 {
-
     private static readonly CancellationToken Token = CancellationToken.None;
 
-    private static readonly CovenantExclusiveRecoveryOwner Adopted = new(
+    private static readonly CovenantExclusiveRecoveryOwner Owner = new(
         Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         CovenantExclusiveOperation.CovenantReset,
         new CovenantDigest(Convert.FromHexString(new string('a', 64))));
@@ -49,19 +49,20 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
     public async Task Every_durable_verdict_lets_readiness_proceed(
         LongRunningOperationSettlementOutcome verdict)
     {
-
         using Held held = Hold("verdict-" + verdict);
 
         RecordingDispatch dispatch = new(
             Result<LongRunningOperationSettlementOutcome>.Success(verdict));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
-            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, Adopted, Token);
+            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, adopted, Token);
 
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
 
-        Assert.Equal(Adopted.OperationId, dispatch.Dispatched);
-
+        Assert.Equal(Owner.OperationId, dispatch.Dispatched);
     }
 
     [Theory]
@@ -76,19 +77,20 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
     public async Task A_verdict_short_of_terminal_refuses_readiness(
         LongRunningOperationSettlementOutcome verdict)
     {
-
         using Held held = Hold("short-" + verdict);
 
         RecordingDispatch dispatch = new(
             Result<LongRunningOperationSettlementOutcome>.Success(verdict));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
-            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, Adopted, Token);
+            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, adopted, Token);
 
         Assert.True(resumed.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resumed.Error.Code);
-
     }
 
     /// <summary>
@@ -102,7 +104,6 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
     [Fact]
     public async Task No_adopted_owner_dispatches_nothing()
     {
-
         using Held held = Hold("none");
 
         RecordingDispatch dispatch = new(
@@ -115,38 +116,40 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
 
         Assert.Null(dispatch.Dispatched);
-
     }
 
     [Fact]
     public async Task A_dispatch_refusal_travels_out_unchanged()
     {
-
         using Held held = Hold("refused");
 
         RecordingDispatch dispatch = new(
             Result<LongRunningOperationSettlementOutcome>.Failure(
                 new Error(ErrorCodes.Covenant.ManualRecoveryRequired, "no lease")));
 
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
+
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
-            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, Adopted, Token);
+            .ResumeBeforeReadinessAsync(dispatch, held.Lock, held.Root, adopted, Token);
 
         Assert.True(resumed.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resumed.Error.Code);
-
     }
 
     [Fact]
     public async Task A_lock_held_for_another_root_refuses()
     {
-
         using Held held = Hold("foreign");
 
         string elsewhere = _workspace.CreateSubdir("launch-gap-elsewhere");
 
         using ArcanumMaintenanceLock foreign = Assert.IsType<ArcanumMaintenanceLock>(
             ArcanumMaintenanceLock.TryAcquire(elsewhere));
+
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted =
+            await IssueAdoptedOwnerAsync();
 
         await Assert.ThrowsAnyAsync<Exception>(
             async () => await CovenantOfflineTransitionLaunchGapResumption
@@ -156,48 +159,43 @@ public sealed class CovenantOfflineTransitionLaunchGapResumptionTests : IAsyncLi
                             LongRunningOperationSettlementOutcome.Completed)),
                     foreign,
                     held.Root,
-                    Adopted,
+                    adopted,
                     Token));
-
     }
+
+    private static Task<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner>
+        IssueAdoptedOwnerAsync() =>
+        CovenantAdoptedOwnerTestIssuer.IssueAsync(
+            CovenantAdoptedOwnerTestIssuer.BuildLaunch(Owner));
 
     private Held Hold(string name)
     {
-
         string root = _workspace.CreateSubdir("launch-gap-" + name);
 
         return new Held(
             Assert.IsType<ArcanumMaintenanceLock>(ArcanumMaintenanceLock.TryAcquire(root)),
             root);
-
     }
 
     private sealed record Held(ArcanumMaintenanceLock Lock, string Root) : IDisposable
     {
-
         public void Dispose() => Lock.Dispose();
-
     }
 
     private sealed class RecordingDispatch(Result<LongRunningOperationSettlementOutcome> answer)
         : IGrimoireOfflineTransitionHandlerDispatch
     {
-
         internal Guid? Dispatched { get; private set; }
 
         public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             string guardedDirectory,
-            Guid operationId,
+            LongRunningRecoveryOwnerEvidence ownerEvidence,
             CancellationToken cancellationToken)
         {
-
-            Dispatched = operationId;
+            Dispatched = ownerEvidence.ExpectedOperation.OperationId;
 
             return Task.FromResult(answer);
-
         }
-
     }
-
 }

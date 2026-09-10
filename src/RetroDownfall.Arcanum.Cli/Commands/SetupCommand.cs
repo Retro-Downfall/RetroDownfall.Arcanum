@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
@@ -34,11 +35,9 @@ internal sealed record SetupCommandOptions(
 
 internal interface ISetupCommand
 {
-
     Task<int> RunAsync(
         SetupCommandOptions options,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -60,9 +59,9 @@ internal sealed class SetupCommand(
     ISetupPrompt prompt,
     IConsoleDispatcher console,
     ICliInvocationContext invocationContext,
-    IGrimoireCliInitialization initialization) : ISetupCommand
+    IGrimoireCliInitialization initialization,
+    ISecureStorageNotice secureStorageNotice) : ISetupCommand
 {
-
     private const string OpenAiTemplate = "openai";
 
     private const string LocalTemplate = "local";
@@ -73,14 +72,11 @@ internal sealed class SetupCommand(
         SetupCommandOptions options,
         CancellationToken cancellationToken)
     {
-
         if (options.Plan && options.Apply)
         {
-
             console.WriteDiagnostic("Use either --plan or --apply, not both.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Result<SetupPlanContext> read = await planner
@@ -89,11 +85,9 @@ internal sealed class SetupCommand(
 
         if (read.IsFailure)
         {
-
             console.WriteDiagnostic(read.Error.Message);
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         SetupPlanContext context = read.Value;
@@ -102,25 +96,20 @@ internal sealed class SetupCommand(
 
         try
         {
-
             draft = await ApplyOptionsAsync(planner.Seed(context), options, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (SetupInputException exception)
         {
-
             console.WriteDiagnostic(exception.Message);
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         return options.Plan || options.Apply
             ? await RunNonInteractiveAsync(context, draft, options, cancellationToken)
                 .ConfigureAwait(false)
             : await RunInteractiveAsync(context, draft, cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<int> RunNonInteractiveAsync(
@@ -129,7 +118,6 @@ internal sealed class SetupCommand(
         SetupCommandOptions options,
         CancellationToken cancellationToken)
     {
-
         SetupConnectivityResult connectivity = await ProbeAsync(draft, cancellationToken)
             .ConfigureAwait(false);
 
@@ -139,22 +127,18 @@ internal sealed class SetupCommand(
 
         if (options.Plan)
         {
-
             Report(new SetupResultPayload(false, SetupStep.Review.ToString(), plan.Payload, [], [], null, null));
 
             return plan.IsApplicable
                 ? (int)CliExitCode.Success
                 : (int)CliExitCode.ConfigurationError;
-
         }
 
         if (!plan.IsApplicable)
         {
-
             Report(new SetupResultPayload(false, SetupStep.Review.ToString(), plan.Payload, [], [], "The plan is not applicable.", null));
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         SetupCommitOutcome outcome = await CommitUnderExclusiveAsync(
@@ -163,6 +147,11 @@ internal sealed class SetupCommand(
                 plan,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (outcome.Committed)
+        {
+            secureStorageNotice.ExplainAfterSetup();
+        }
 
         Report(
             new SetupResultPayload(
@@ -177,7 +166,6 @@ internal sealed class SetupCommand(
         return outcome.Committed
             ? (int)CliExitCode.Success
             : (int)CliExitCode.ConfigurationError;
-
     }
 
     private async Task<int> RunInteractiveAsync(
@@ -185,7 +173,6 @@ internal sealed class SetupCommand(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         SetupStateMachine machine = new();
 
         SetupConnectivityResult connectivity = SetupConnectivityResult.NotAttempted;
@@ -198,15 +185,12 @@ internal sealed class SetupCommand(
 
         try
         {
-
             while (!machine.IsComplete)
             {
-
                 SetupNavigation navigation;
 
                 switch (machine.Current)
                 {
-
                     case SetupStep.Edition:
 
                         navigation = Adopt(
@@ -300,12 +284,10 @@ internal sealed class SetupCommand(
                         navigation = SetupNavigation.Advance;
 
                         break;
-
                 }
 
                 switch (navigation)
                 {
-
                     case SetupNavigation.Advance:
 
                         _ = machine.MoveNext();
@@ -327,24 +309,22 @@ internal sealed class SetupCommand(
                     default:
 
                         return Abort();
-
                 }
-
             }
-
         }
         catch (OperationCanceledException)
         {
-
             return Abort();
-
         }
 
         if (plan is null)
         {
-
             return Abort();
+        }
 
+        if (outcome is { Committed: true })
+        {
+            secureStorageNotice.ExplainAfterSetup();
         }
 
         Report(
@@ -360,31 +340,24 @@ internal sealed class SetupCommand(
         return outcome is { Committed: true }
             ? (int)CliExitCode.Success
             : (int)CliExitCode.ConfigurationError;
-
     }
 
     private int Abort()
     {
-
         console.WriteDiagnostic(
             "Setup was cancelled. No configuration, credential, context, or workspace change was made.");
 
         return (int)CliExitCode.Cancelled;
-
     }
 
     private static SetupNavigation Adopt(ref SetupDraft draft, SetupStepResult result)
     {
-
         if (result.Draft is not null)
         {
-
             draft = result.Draft;
-
         }
 
         return result.Navigation;
-
     }
 
     private static SetupNavigation ApplyConnectivity(
@@ -392,25 +365,20 @@ internal sealed class SetupCommand(
         ref SetupConnectivityResult connectivity,
         SetupConnectivityStepResult result)
     {
-
         connectivity = result.Connectivity;
 
         if (result.Draft is not null)
         {
-
             draft = result.Draft;
-
         }
 
         return result.Navigation;
-
     }
 
     private async Task<SetupStepResult> RunEditionStepAsync(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         string? edition = await prompt.SelectAsync(
                 "Step 1/8 — Runtime edition",
                 [
@@ -429,9 +397,7 @@ internal sealed class SetupCommand(
 
         if (edition is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         bool? loopbackOnly = await prompt.ConfirmAsync(
@@ -442,30 +408,24 @@ internal sealed class SetupCommand(
 
         if (loopbackOnly is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         return SetupStepResult.Next(
             draft with
             {
-
                 Edition = string.Equals(edition, "development", StringComparison.OrdinalIgnoreCase)
                     ? ArcanumEdition.Development
                     : ArcanumEdition.Local,
 
                 ListenAny = !loopbackOnly.Value,
-
             });
-
     }
 
     private async Task<SetupStepResult> RunProviderStepAsync(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         string? template = await prompt.SelectAsync(
                 "Step 2/8 — Inference provider (OpenAI-compatible endpoints only)",
                 [
@@ -488,9 +448,7 @@ internal sealed class SetupCommand(
 
         if (template is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         (string defaultName, string defaultEndpoint, string defaultModel) = template switch
@@ -508,9 +466,7 @@ internal sealed class SetupCommand(
 
         if (name is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         string? endpoint = await prompt.AskAsync(
@@ -523,9 +479,7 @@ internal sealed class SetupCommand(
 
         if (endpoint is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         string? model = await prompt.AskAsync(
@@ -539,22 +493,18 @@ internal sealed class SetupCommand(
             : SetupStepResult.Next(
                 draft with
                 {
-
                     ProviderName = name.Trim(),
 
                     ProviderEndpoint = endpoint.Trim(),
 
                     Model = model.Trim(),
-
                 });
-
     }
 
     private async Task<SetupStepResult> RunProviderCredentialStepAsync(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         List<SetupChoice> choices =
         [
             new(
@@ -577,7 +527,6 @@ internal sealed class SetupCommand(
 
         if (presence.Present)
         {
-
             choices.Insert(
                 0,
                 new SetupChoice(
@@ -586,7 +535,6 @@ internal sealed class SetupCommand(
                     presence.FromEnvironment
                         ? "An environment reference already resolves for this provider."
                         : "A credential is already stored for this provider."));
-
         }
 
         string? choice = await prompt.SelectAsync(
@@ -598,7 +546,6 @@ internal sealed class SetupCommand(
 
         switch (choice)
         {
-
             case null:
 
                 return SetupStepResult.Abort;
@@ -624,28 +571,22 @@ internal sealed class SetupCommand(
 
                 if (variable is null)
                 {
-
                     return SetupStepResult.Abort;
-
                 }
 
                 if (!EnvironmentCredentialResolver.IsValidEnvironmentVariableName(variable.Trim()))
                 {
-
                     prompt.Write($"'{variable.Trim()}' is not a valid environment variable name.");
 
                     return SetupStepResult.Retry;
-
                 }
 
                 return SetupStepResult.Next(
                     draft with
                     {
-
                         ProviderCredential = SetupCredentialAction.Reference,
 
                         ProviderCredentialEnvironmentVariable = variable.Trim(),
-
                     });
 
             default:
@@ -656,32 +597,24 @@ internal sealed class SetupCommand(
 
                 if (secret is null)
                 {
-
                     return SetupStepResult.Abort;
-
                 }
 
                 if (string.IsNullOrWhiteSpace(secret))
                 {
-
                     prompt.Write("The API key must not be empty.");
 
                     return SetupStepResult.Retry;
-
                 }
 
                 return SetupStepResult.Next(
                     draft with
                     {
-
                         ProviderCredential = SetupCredentialAction.Store,
 
                         ProviderCredentialValue = secret,
-
                     });
-
         }
-
     }
 
     private async Task<SetupStepResult> RunWebResearchStepAsync(
@@ -689,7 +622,6 @@ internal sealed class SetupCommand(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         bool? wanted = await prompt.ConfirmAsync(
                 "Step 4/8 — Would you like to enable advanced web research using Perplexity?",
                 draft.WebResearchRequested,
@@ -698,31 +630,24 @@ internal sealed class SetupCommand(
 
         if (wanted is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         if (!wanted.Value)
         {
-
             return SetupStepResult.Next(
                 draft with
                 {
-
                     WebResearchRequested = false,
 
                     WebResearchCredential = SetupCredentialAction.Unchanged,
 
                     WebResearchCredentialValue = null,
-
                 });
-
         }
 
         if (context.WebResearchCredential.Present)
         {
-
             bool? keep = await prompt.ConfirmAsync(
                     "A web-research credential is already available. Keep it?",
                     true,
@@ -731,26 +656,19 @@ internal sealed class SetupCommand(
 
             if (keep is null)
             {
-
                 return SetupStepResult.Abort;
-
             }
 
             if (keep.Value)
             {
-
                 return SetupStepResult.Next(
                     draft with
                     {
-
                         WebResearchRequested = true,
 
                         WebResearchCredential = SetupCredentialAction.Unchanged,
-
                     });
-
             }
-
         }
 
         string? secret = await prompt
@@ -759,39 +677,31 @@ internal sealed class SetupCommand(
 
         if (secret is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         if (string.IsNullOrWhiteSpace(secret))
         {
-
             prompt.Write("The API key must not be empty.");
 
             return SetupStepResult.Retry;
-
         }
 
         return SetupStepResult.Next(
             draft with
             {
-
                 WebResearchRequested = true,
 
                 WebResearchCredential = SetupCredentialAction.Store,
 
                 WebResearchCredentialValue = secret,
-
             });
-
     }
 
     private async Task<SetupConnectivityStepResult> RunConnectivityStepAsync(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         prompt.Write("Step 5/8 — Validating the provider (no inference tokens are spent)…");
 
         SetupConnectivityResult connectivity = await ProbeAsync(draft, cancellationToken)
@@ -801,9 +711,7 @@ internal sealed class SetupCommand(
 
         if (connectivity.IsUsable)
         {
-
             return new SetupConnectivityStepResult(SetupNavigation.Advance, connectivity, null);
-
         }
 
         bool? proceed = await prompt.ConfirmAsync(
@@ -821,14 +729,12 @@ internal sealed class SetupCommand(
                 draft with { AllowUnreachableProvider = true }),
             _ => new SetupConnectivityStepResult(SetupNavigation.Back, connectivity, null),
         };
-
     }
 
     private async Task<SetupStepResult> RunWorkspaceStepAsync(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         string? workspace = await prompt.AskAsync(
                 "Step 6/8 — Default workspace root",
                 string.IsNullOrWhiteSpace(draft.WorkspaceRoot)
@@ -839,9 +745,7 @@ internal sealed class SetupCommand(
 
         if (workspace is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         string? campaign = await prompt.AskAsync(
@@ -855,20 +759,16 @@ internal sealed class SetupCommand(
             : SetupStepResult.Next(
                 draft with
                 {
-
                     WorkspaceRoot = string.IsNullOrWhiteSpace(workspace) ? null : workspace.Trim(),
 
                     CampaignName = string.IsNullOrWhiteSpace(campaign) ? null : campaign.Trim(),
-
                 });
-
     }
 
     private async Task<SetupStepResult> RunPresetStepAsync(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         SetupChoice[] choices = [.. ConfigurationPresetCatalog.All
             .Select(static preset =>
                 new SetupChoice(preset.Id, preset.DisplayName, preset.Purpose))];
@@ -882,25 +782,20 @@ internal sealed class SetupCommand(
 
         if (preset is null)
         {
-
             return SetupStepResult.Abort;
-
         }
 
         if (ConfigurationPresetCatalog.Find(preset) is null)
         {
-
             prompt.Write(
                 $"Unknown preset '{preset}'. Available presets: "
                 + string.Join(", ", ConfigurationPresetCatalog.All.Select(static p => p.Id))
                 + ".");
 
             return SetupStepResult.Retry;
-
         }
 
         return SetupStepResult.Next(draft with { PresetId = preset });
-
     }
 
     private async Task<SetupNavigation> RunReviewStepAsync(
@@ -910,7 +805,6 @@ internal sealed class SetupCommand(
         Action<SetupPlan> capture,
         CancellationToken cancellationToken)
     {
-
         SetupPlan plan = await planner
             .PlanAsync(context, draft, connectivity, SetupStep.Review, cancellationToken)
             .ConfigureAwait(false);
@@ -923,7 +817,6 @@ internal sealed class SetupCommand(
 
         if (!plan.IsApplicable)
         {
-
             bool? retry = await prompt.ConfirmAsync(
                     "The plan cannot be applied. Go back and change an answer?",
                     true,
@@ -931,14 +824,11 @@ internal sealed class SetupCommand(
                 .ConfigureAwait(false);
 
             return retry is true ? SetupNavigation.Back : SetupNavigation.Abort;
-
         }
 
         if (plan.Payload.IsIdempotent)
         {
-
             prompt.Write("Nothing would change; the current installation already matches this plan.");
-
         }
 
         bool? accept = invocationContext.Options.Yes
@@ -952,7 +842,6 @@ internal sealed class SetupCommand(
             true => SetupNavigation.Advance,
             _ => SetupNavigation.Abort,
         };
-
     }
 
     private async Task<SetupNavigation> RunCommitStepAsync(
@@ -962,7 +851,6 @@ internal sealed class SetupCommand(
         Action<SetupCommitOutcome> capture,
         CancellationToken cancellationToken)
     {
-
         SetupCommitOutcome outcome = await CommitUnderExclusiveAsync(
                 context,
                 draft,
@@ -973,7 +861,6 @@ internal sealed class SetupCommand(
         capture(outcome);
 
         return SetupNavigation.Advance;
-
     }
 
     private Task<SetupCommitOutcome> CommitUnderExclusiveAsync(
@@ -996,7 +883,6 @@ internal sealed class SetupCommand(
         SetupDraft draft,
         CancellationToken cancellationToken)
     {
-
         string? apiKey = draft.ProviderCredential switch
         {
             SetupCredentialAction.Store => draft.ProviderCredentialValue,
@@ -1005,14 +891,12 @@ internal sealed class SetupCommand(
                 .PeekAsync(
                     new ProviderSettings
                     {
-
                         Name = draft.ProviderName,
 
                         CredentialEnvironmentVariable =
                             draft.ProviderCredential == SetupCredentialAction.Reference
                                 ? draft.ProviderCredentialEnvironmentVariable
                                 : null,
-
                     },
                     cancellationToken)
                 .ConfigureAwait(false),
@@ -1021,7 +905,6 @@ internal sealed class SetupCommand(
         return await probe
             .ProbeAsync(draft.ProviderEndpoint, draft.Model, apiKey, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<SetupDraft> ApplyOptionsAsync(
@@ -1029,163 +912,122 @@ internal sealed class SetupCommand(
         SetupCommandOptions options,
         CancellationToken cancellationToken)
     {
-
         SetupDraft draft = seed;
 
         if (options.Edition is not null)
         {
-
             draft = Enum.TryParse(options.Edition, ignoreCase: true, out ArcanumEdition edition)
                 ? draft with { Edition = edition }
                 : throw new SetupInputException(
                     $"Unknown edition '{options.Edition}'. Supported editions: local, development.");
-
         }
 
         if (options.ListenAny is { } listenAny)
         {
-
             draft = draft with { ListenAny = listenAny };
-
         }
 
         if (options.ProviderName is not null)
         {
-
             draft = draft with { ProviderName = options.ProviderName.Trim() };
-
         }
 
         if (options.ProviderEndpoint is not null)
         {
-
             draft = draft with { ProviderEndpoint = options.ProviderEndpoint.Trim() };
-
         }
 
         if (options.Model is not null)
         {
-
             draft = draft with { Model = options.Model.Trim() };
-
         }
 
         if (options.Workspace is not null)
         {
-
             draft = draft with { WorkspaceRoot = options.Workspace.Trim() };
-
         }
 
         if (options.Campaign is not null)
         {
-
             draft = draft with { CampaignName = options.Campaign.Trim() };
-
         }
 
         if (options.Preset is not null)
         {
-
             draft = draft with { PresetId = options.Preset.Trim() };
-
         }
 
         if (options.AllowUnreachableProvider)
         {
-
             draft = draft with { AllowUnreachableProvider = true };
-
         }
 
         if (options.ProviderKeyEnvironmentVariable is not null)
         {
-
             string variable = options.ProviderKeyEnvironmentVariable.Trim();
 
             if (!EnvironmentCredentialResolver.IsValidEnvironmentVariableName(variable))
             {
-
                 throw new SetupInputException(
                     $"'{variable}' is not a valid environment variable name.");
-
             }
 
             draft = draft with
             {
-
                 ProviderCredential = SetupCredentialAction.Reference,
 
                 ProviderCredentialEnvironmentVariable = variable,
-
             };
-
         }
         else if (options.ClearProviderKey)
         {
-
             draft = draft with { ProviderCredential = SetupCredentialAction.Clear };
-
         }
 
         if (options.Research is { } research)
         {
-
             draft = draft with { WebResearchRequested = research };
-
         }
 
         if (options.ResearchKeyEnvironmentVariable is not null)
         {
-
             string variable = options.ResearchKeyEnvironmentVariable.Trim();
 
             if (!EnvironmentCredentialResolver.IsValidEnvironmentVariableName(variable))
             {
-
                 throw new SetupInputException(
                     $"'{variable}' is not a valid environment variable name.");
-
             }
 
             draft = draft with
             {
-
                 WebResearchRequested = true,
 
                 WebResearchCredential = SetupCredentialAction.Reference,
 
                 WebResearchCredentialEnvironmentVariable = variable,
-
             };
-
         }
 
         // Secrets arrive only on redirected stdin, in the documented order: the provider credential
         // first, then the web-research credential. Never argv.
         if (options.ProviderKeyStdin)
         {
-
             draft = draft with
             {
-
                 ProviderCredential = SetupCredentialAction.Store,
 
                 ProviderCredentialValue = await ReadStdinSecretAsync(
                         "provider",
                         cancellationToken)
                     .ConfigureAwait(false),
-
             };
-
         }
 
         if (options.ResearchKeyStdin)
         {
-
             draft = draft with
             {
-
                 WebResearchRequested = true,
 
                 WebResearchCredential = SetupCredentialAction.Store,
@@ -1194,26 +1036,20 @@ internal sealed class SetupCommand(
                         "web-research",
                         cancellationToken)
                     .ConfigureAwait(false),
-
             };
-
         }
 
         return draft;
-
     }
 
     private static async Task<string> ReadStdinSecretAsync(
         string kind,
         CancellationToken cancellationToken)
     {
-
         if (!Console.IsInputRedirected)
         {
-
             throw new SetupInputException(
                 $"Reading the {kind} credential from stdin requires redirected input.");
-
         }
 
         string? line = await Console.In.ReadLineAsync(cancellationToken).ConfigureAwait(false);
@@ -1221,7 +1057,6 @@ internal sealed class SetupCommand(
         return string.IsNullOrWhiteSpace(line)
             ? throw new SetupInputException($"The {kind} credential read from stdin was empty.")
             : line.Trim();
-
     }
 
     private static string DefaultTemplate(SetupDraft draft) =>
@@ -1233,51 +1068,38 @@ internal sealed class SetupCommand(
 
     private void Report(SetupResultPayload payload)
     {
-
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(payload, CliJsonContext.Default.SetupResultPayload);
 
             return;
-
         }
 
         WritePlan(payload.Plan);
 
         foreach (string entry in payload.Applied)
         {
-
             console.WritePayload($"  applied: {entry}");
-
         }
 
         foreach (string entry in payload.RolledBack)
         {
-
             console.WritePayload($"  rolled back: {entry}");
-
         }
 
         if (payload.Failure is { } failure)
         {
-
             console.WriteDiagnostic($"Setup failed at {payload.Step}: {failure}");
-
         }
 
         if (payload.Recovery is { } recovery)
         {
-
             console.WriteDiagnostic(recovery);
-
         }
-
     }
 
     private void WritePlan(SetupPlanPayload plan)
     {
-
         console.WritePayload("Arcanum setup plan");
 
         console.WritePayload($"  Applicable: {(plan.IsApplicable ? "yes" : "no")}");
@@ -1294,37 +1116,29 @@ internal sealed class SetupCommand(
 
         foreach (SetupChangePayload change in plan.ConfigurationChanges)
         {
-
             console.WritePayload($"    {change.Path}: {change.Current} -> {change.Proposed}");
-
         }
 
         console.WritePayload("  Credentials:");
 
         foreach (SetupCredentialPlanPayload credential in plan.Credentials)
         {
-
             console.WritePayload(
                 $"    {credential.Kind} '{credential.Target}': {credential.Action} "
                 + $"({credential.Storage}"
                 + (credential.EnvironmentVariable is null
                     ? ")"
                     : $"; {credential.EnvironmentVariable})"));
-
         }
 
         foreach (string blocker in plan.Blockers)
         {
-
             console.WritePayload($"  blocker: {blocker}");
-
         }
 
         foreach (string note in plan.Notes)
         {
-
             console.WritePayload($"  note: {note}");
-
         }
 
         SetupCompletionSummaryPayload summary = plan.Summary;
@@ -1350,12 +1164,10 @@ internal sealed class SetupCommand(
         console.WritePayload($"    Privacy state: {summary.PrivacyState}");
 
         console.WritePayload($"    Next command: {summary.NextCommand}");
-
     }
 
     private void WritePlanDiagnostics(SetupPlanPayload plan)
     {
-
         prompt.Write(
             plan.ConfigurationChanges.Length == 0
                 ? "  Configuration changes: none"
@@ -1363,38 +1175,28 @@ internal sealed class SetupCommand(
 
         foreach (SetupChangePayload change in plan.ConfigurationChanges)
         {
-
             prompt.Write($"    {change.Path}: {change.Current} -> {change.Proposed}");
-
         }
 
         foreach (SetupCredentialPlanPayload credential in plan.Credentials)
         {
-
             prompt.Write(
                 $"    credential {credential.Kind} '{credential.Target}': {credential.Action}");
-
         }
 
         foreach (string blocker in plan.Blockers)
         {
-
             prompt.Write($"    blocker: {blocker}");
-
         }
 
         foreach (string note in plan.Notes)
         {
-
             prompt.Write($"    note: {note}");
-
         }
-
     }
 
     private enum SetupNavigation
     {
-
         Advance,
 
         Back,
@@ -1403,21 +1205,18 @@ internal sealed class SetupCommand(
         Retry,
 
         Abort,
-
     }
 
     private readonly record struct SetupStepResult(
         SetupNavigation Navigation,
         SetupDraft? Draft)
     {
-
         public static SetupStepResult Abort { get; } = new(SetupNavigation.Abort, null);
 
         public static SetupStepResult Retry { get; } = new(SetupNavigation.Retry, null);
 
         public static SetupStepResult Next(SetupDraft draft) =>
             new(SetupNavigation.Advance, draft);
-
     }
 
     private readonly record struct SetupConnectivityStepResult(
@@ -1426,5 +1225,4 @@ internal sealed class SetupCommand(
         SetupDraft? Draft);
 
     private sealed class SetupInputException(string message) : Exception(message);
-
 }

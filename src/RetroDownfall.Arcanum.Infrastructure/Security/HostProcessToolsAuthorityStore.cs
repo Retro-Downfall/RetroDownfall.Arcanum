@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -23,20 +24,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection)
     : IHostProcessToolsAuthorityStore
 {
-
     private readonly SqliteConnection _connection =
         connection ?? throw new ArgumentNullException(nameof(connection));
 
     public async Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken)
     {
-
         Result<HostProcessToolsAuthorityRow?> row = await TryReadAsync(cancellationToken).ConfigureAwait(false);
 
         if (row.IsFailure)
         {
-
             return row.Error;
-
         }
 
         return row.Value is { } present
@@ -44,17 +41,13 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
             : new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The installation has no durable authority row.");
-
     }
 
     public async Task<Result<HostProcessToolsAuthorityRow?>> TryReadAsync(CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync("covenant_authority_state", cancellationToken).ConfigureAwait(false))
         {
-
             return Result<HostProcessToolsAuthorityRow?>.Success(null);
-
         }
 
         await using SqliteCommand command = _connection.CreateCommand();
@@ -78,39 +71,30 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<HostProcessToolsAuthorityRow?>.Success(null);
-
         }
 
         try
         {
-
             // The digest columns are declared BLOB, which in a non-STRICT table is SQLite's "no
             // affinity": a TEXT value is stored as TEXT and still satisfies length(...) = 32, so the
             // CHECK constraint cannot be relied on to guarantee the shape. Match on it the way the
             // sibling readers of this same column do, rather than casting and hoping.
             if (reader.GetValue(3) is not byte[] fingerprint)
             {
-
                 return MalformedRow("CurrentMasterKeyFingerprint");
-
             }
 
             byte[]? taintFingerprint = null;
 
             if (!reader.IsDBNull(8))
             {
-
                 if (reader.GetValue(8) is not byte[] taint)
                 {
-
                     return MalformedRow("TaintFingerprint");
-
                 }
 
                 taintFingerprint = taint;
-
             }
 
             return new HostProcessToolsAuthorityRow(
@@ -123,28 +107,22 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
                 reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6)),
                 ReadTaintVersion(reader.GetValue(7)),
                 taintFingerprint is null ? null : new CovenantDigest(taintFingerprint));
-
         }
         catch (Exception exception) when (
             exception is FormatException or OverflowException or ArgumentException
                 or InvalidCastException)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The durable authority row is malformed.");
-
         }
-
     }
 
     public async Task<Result<HostProcessToolsProtectedInventory>> InventoryProtectedStateAsync(
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             long canonical = await CountIfPresentAsync("covenant_versions", cancellationToken)
                 .ConfigureAwait(false)
                 + await CountIfPresentAsync("covenant_entries", cancellationToken).ConfigureAwait(false);
@@ -153,17 +131,13 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
                 .ConfigureAwait(false);
 
             return new HostProcessToolsProtectedInventory(canonical, protectedArtifacts);
-
         }
         catch (SqliteException)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The protected-state inventory could not be completed.");
-
         }
-
     }
 
     public Task<Result> CommitPendingAsync(
@@ -171,7 +145,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         Guid transitionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         // The taint pins the key in force right now. A later rotation advances the current version
@@ -192,16 +165,13 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
             """,
             command =>
             {
-
                 _ = command.Parameters.AddWithValue("$transitionId", Format(transitionId));
 
                 _ = command.Parameters.AddWithValue(
                     "$taintVersion",
                     HostProcessToolsTaintVersionStorage.Encode(expected.CurrentMasterKeyVersion));
-
             },
             cancellationToken);
-
     }
 
     public Task<Result> CommitTaintedAsync(
@@ -209,7 +179,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         Guid transitionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         // Both epochs advance in the same statement as the state. A reader that saw the new epoch
@@ -230,7 +199,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
             """,
             command => command.Parameters.AddWithValue("$transitionId", Format(transitionId)),
             cancellationToken);
-
     }
 
     public Task<Result> CompensateToCleanAsync(
@@ -238,7 +206,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         Guid transitionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         return CompareAndSwapAsync(
@@ -258,7 +225,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
             """,
             command => command.Parameters.AddWithValue("$transitionId", Format(transitionId)),
             cancellationToken);
-
     }
 
     private async Task<Result> CompareAndSwapAsync(
@@ -267,7 +233,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         Action<SqliteCommand> bind,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.CommandText = sql;
@@ -278,13 +243,12 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
 
         _ = command.Parameters.AddWithValue(
             "$updatedAtUtc",
-            DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(DateTimeOffset.UtcNow));
 
         bind(command);
 
         try
         {
-
             int affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             return affected == 1
@@ -292,22 +256,17 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
                 : Result.Failure(new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "The durable authority row changed before this transition could advance it."));
-
         }
         catch (SqliteException)
         {
-
             return new Error(
                 ErrorCodes.Grimoire.WriteFailed,
                 "The durable authority transition could not be written.");
-
         }
-
     }
 
     private async Task<bool> TableExistsAsync(string table, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand exists = _connection.CreateCommand();
 
         exists.CommandText = """
@@ -317,31 +276,23 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         _ = exists.Parameters.AddWithValue("$name", table);
 
         return await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not (null or DBNull);
-
     }
 
     private static ulong? ReadTaintVersion(object value)
     {
-
         if (HostProcessToolsTaintVersionStorage.TryDecode(value, out ulong? version))
         {
-
             return version;
-
         }
 
         throw new InvalidCastException();
-
     }
 
     private async Task<long> CountIfPresentAsync(string table, CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(table, cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         await using SqliteCommand count = _connection.CreateCommand();
@@ -352,7 +303,6 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
         object? value = await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -365,5 +315,4 @@ internal sealed class HostProcessToolsAuthorityStore(SqliteConnection connection
             $"The durable authority row is malformed: {column} is not stored as a digest.");
 
     private static string Format(Guid value) => value.ToString().ToUpperInvariant();
-
 }

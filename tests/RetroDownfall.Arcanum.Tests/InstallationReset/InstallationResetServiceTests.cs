@@ -20,11 +20,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed partial class InstallationResetServiceTests
 {
-
     [Fact]
     public async Task Stopped_host_plan_returns_the_exact_local_Covenant_disclosure()
     {
-
         DataRetentionCovenantInventory disclosure = new(
             Rows: 7,
             ManagedFiles: 5,
@@ -61,13 +59,11 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.Equal("stopped-host-data", Assert.Single(
             planned.Value.Plan.AcceptedBinding.DataPlanIds));
-
     }
 
     [Fact]
     public async Task Stopped_host_global_plan_requires_a_local_Covenant_disclosure()
     {
-
         InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("missing-disclosure") with
             {
@@ -89,13 +85,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(planned.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.InventoryUnavailable, planned.Error.Code);
-
     }
 
     [Fact]
     public async Task Stopped_host_workspace_plan_permits_no_Covenant_disclosure()
     {
-
         InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("workspace-data") with
             {
@@ -118,13 +112,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(planned.IsSuccess, planned.Error.Message);
 
         Assert.Null(planned.Value.CovenantDisclosure);
-
     }
 
     [Fact]
     public async Task Fresh_locked_apply_replans_and_uses_only_authority_aware_local_apply()
     {
-
         DataRetentionCovenantInventory disclosure = new(
             Rows: 1,
             ManagedFiles: 1,
@@ -180,13 +172,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(1, stoppedData.ApplyCount);
 
         Assert.True(active.Retired);
-
     }
 
     [Fact]
     public async Task Fresh_locked_apply_rejects_changed_local_disclosure_before_publication()
     {
-
         DataRetentionPlan confirmedData = CreateDataPlan("stable-data") with
         {
             Covenant = new DataRetentionCovenantInventory(
@@ -244,7 +234,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(active.Writes);
 
         Assert.Equal(0, stoppedData.ApplyCount);
-
     }
 
     [Theory]
@@ -253,7 +242,6 @@ public sealed partial class InstallationResetServiceTests
     public async Task Fresh_locked_apply_rejects_an_existing_active_before_local_evidence(
         string failingEvidence)
     {
-
         DataRetentionPlan dataPlan = CreateDataPlan("existing-active-data") with
         {
             Covenant = new DataRetentionCovenantInventory(
@@ -319,13 +307,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(pairReadsBeforeApply, pairReader.ReadCount);
 
         Assert.Equal(identityReadsBeforeApply, active.IdentityReadCount);
-
     }
 
     [Fact]
     public async Task BindOnlineDataPlan_rebinds_only_the_Covenant_aware_data_identity()
     {
-
         DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
 
         InstallationResetService service = CreateService(
@@ -409,7 +395,6 @@ public sealed partial class InstallationResetServiceTests
             rebound.Targets,
             static target => target.Role is InstallationResetTargetRole.Daemon
                 && target.ResourceId == "platform-daemon-registration");
-
     }
 
     [Theory]
@@ -426,7 +411,6 @@ public sealed partial class InstallationResetServiceTests
     public async Task BindOnlineDataPlan_rejects_each_changed_ordinary_candidate_dimension(
         string dimension)
     {
-
         DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
 
         InstallationResetService service = CreateService(
@@ -465,7 +449,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
-
     }
 
     [Theory]
@@ -474,7 +457,6 @@ public sealed partial class InstallationResetServiceTests
     public async Task BindOnlineDataPlan_rejects_a_missing_online_data_identity(
         string onlinePlanId)
     {
-
         DataRetentionPlan localDataPlan = CreateDataPlan("local-data-plan");
 
         InstallationResetService service = CreateService(
@@ -499,13 +481,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
-
     }
 
     [Fact]
     public async Task Workspace_apply_preserves_global_daemon_registration()
     {
-
         DataRetentionWorkspaceBinding workspace = new(
             Guid.Parse("50505050-5050-5050-5050-505050505050"),
             "/workspace");
@@ -536,13 +516,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(applied.IsSuccess, applied.Error.Message);
 
         Assert.False(preDataMutation.Executed);
-
     }
 
     [Fact]
     public async Task Dry_run_composes_global_data_and_credentials_without_creating_active_state()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new(
@@ -575,13 +553,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.False(active.Written);
 
         Assert.Equal(InstallationResetDataScope.Global, Assert.Single(data.PlanRequests).Scope);
-
     }
 
     [Fact]
     public async Task Unavailable_credential_inventory_is_reported_as_a_dry_run_blocker()
     {
-
         InstallationResetService service = CreateService(
             new FakeDataService(CreateDataPlan("global-data")),
             new FakeCredentialInventory(
@@ -609,13 +585,11 @@ public sealed partial class InstallationResetServiceTests
             static item => item.Code == ErrorCodes.Data.CredentialInventoryUnavailable);
 
         Assert.Equal("master-api-key", blocker.ResourceId);
-
     }
 
     [Fact]
     public async Task Workspace_plan_resolves_the_most_specific_registered_campaign()
     {
-
         string parent = Path.GetFullPath(Path.Combine("/tmp", "campaign-parent"));
 
         string nested = Path.Combine(parent, "nested");
@@ -656,13 +630,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(result.Value.Credentials);
 
         Assert.Empty(result.Value.AcceptedBinding.CredentialAccounts);
-
     }
 
     [Fact]
     public async Task Workspace_plan_passes_nested_campaign_roots_to_filesystem_inventory()
     {
-
         string root = Path.GetFullPath(Path.Combine("/tmp", "campaign-parent"));
 
         string nested = Path.Combine(root, ".arcanum", "nested-campaign");
@@ -690,13 +662,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsSuccess, result.Error.Message);
 
         Assert.Equal([nested], Assert.Single(cleanup.PlanExcludedRoots));
-
     }
 
     [Fact]
     public void Workspace_resolution_returns_nested_campaigns_inside_selected_state_root()
     {
-
         string root = Path.GetFullPath(Path.Combine("/tmp", "campaign-parent"));
 
         string nested = Path.Combine(root, ".arcanum", "nested-campaign");
@@ -714,13 +684,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(root, result.Value.Workspace.WorkspaceRoot);
 
         Assert.Equal([nested], result.Value.ExcludedRoots);
-
     }
 
     [Fact]
     public async Task All_resume_uses_resolver_exclusions_for_an_ordinary_nested_campaign()
     {
-
         string root = Path.GetFullPath(Path.Combine("/tmp", "campaign-parent-resume"));
 
         string nested = Path.Combine(root, "nested-campaign");
@@ -768,13 +736,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.ResetInProgress, result.Error.Code);
-
     }
 
     [Fact]
     public async Task Workspace_plan_rejects_a_selected_root_that_overlaps_reset_control()
     {
-
         string guardedRoot = Path.GetFullPath(Path.Combine("/tmp", "grimoire"));
 
         string controlParent = Path.GetDirectoryName(
@@ -806,13 +772,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(ErrorCodes.Data.WorkspaceOverlap, result.Error.Code);
 
         Assert.Empty(cleanup.PlanSelectedRoots);
-
     }
 
     [Fact]
     public async Task Plan_binds_the_exact_selected_files_backups_and_exclusions()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeOfflineCleanup cleanup = new()
@@ -883,13 +847,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(5, result.Value.EstimatedBytes);
 
         Assert.Equal(["/state"], Assert.Single(cleanup.PlanSelectedRoots));
-
     }
 
     [Fact]
     public async Task Plan_id_changes_when_an_ordinary_selected_file_identity_changes()
     {
-
         FakeOfflineCleanup cleanup = new();
 
         cleanup.Inventory = InventoryWithIdentity("first-identity");
@@ -922,13 +884,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(second.IsSuccess, second.Error.Message);
 
         Assert.NotEqual(first.Value.PlanId, second.Value.PlanId);
-
     }
 
     [Fact]
     public async Task Binding_and_plan_ids_distinguish_delimiter_ambiguous_exclusion_sets()
     {
-
         InstallationResetPlan first = await PlanWithInventoryAsync(
             new InstallationResetFileSystemInventory(
                 Targets: [],
@@ -962,13 +922,11 @@ public sealed partial class InstallationResetServiceTests
             second.AcceptedBinding.BindingId);
 
         Assert.NotEqual(first.PlanId, second.PlanId);
-
     }
 
     [Fact]
     public async Task Plan_ids_distinguish_delimiter_ambiguous_target_fields()
     {
-
         InstallationResetPlan first = await PlanWithInventoryAsync(
             InventoryWithTarget(
                 resourceId: "file:one",
@@ -986,13 +944,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.NotEqual(first.Targets, second.Targets);
 
         Assert.NotEqual(first.PlanId, second.PlanId);
-
     }
 
     [Fact]
     public async Task Apply_claims_the_nested_factory_erasure_before_it_launches_one()
     {
-
         // Mutation caught: launching the nested erasure without a durable claim leaves a crash mid
         // erasure indistinguishable from one that never started it, which is the state the whole
         // dual-record resolution exists to tell apart.
@@ -1047,13 +1003,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(
             claimed.NestedTransitionReceipt!.NestedOperationId,
             applied.RequestedOperationId);
-
     }
 
     [Fact]
     public async Task Apply_claims_no_nested_transition_for_a_workspace_scope()
     {
-
         // A workspace reset routes to the workspace arm, which is not an offline database transition.
         // A claim there would name a nested transition that never exists and would block the ending.
         DataRetentionWorkspaceBinding workspace = new(
@@ -1095,13 +1049,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.All(
             data.ApplyRequests,
             static applied => Assert.Null(applied.RequestedOperationId));
-
     }
 
     [Fact]
     public async Task Apply_replans_before_active_publication_and_binds_the_expected_plan()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new([]);
@@ -1145,13 +1097,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(active.Retired);
 
         Assert.True(cleanup.Executed);
-
     }
 
     [Fact]
     public async Task Apply_rejects_plan_drift_before_active_publication()
     {
-
         FakeDataService data = new(
             CreateDataPlan("initial"),
             CreateDataPlan("changed"));
@@ -1183,7 +1133,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.False(active.Written);
 
         Assert.Empty(data.ApplyRequests);
-
     }
 
     [Theory]
@@ -1195,7 +1144,6 @@ public sealed partial class InstallationResetServiceTests
     public async Task Uncertain_data_failure_keeps_prepared_record_for_resume(
         string dataErrorCode)
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"))
         {
             ApplyResult = Result<DataRetentionApplyResult>.Failure(new Error(
@@ -1242,13 +1190,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(active.Record.PointOfNoReturn);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, active.Record.LastErrorCode);
-
     }
 
     [Fact]
     public async Task Post_data_failure_returns_a_resumable_result_and_keeps_active_state()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeActiveStore active = new();
@@ -1288,13 +1234,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(ErrorCodes.Data.FileLocked, result.Value.ErrorCode);
 
         Assert.False(active.Retired);
-
     }
 
     [Fact]
     public async Task Daemon_failure_after_active_publication_is_resumable_before_data_deletion()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeActiveStore active = new();
@@ -1338,13 +1282,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.NotNull(active.Record);
 
         Assert.Empty(data.ApplyRequests);
-
     }
 
     [Fact]
     public async Task Cancellation_after_active_publication_is_checkpointed_as_a_reset_result()
     {
-
         FakeActiveStore active = new();
 
         FakePreDataMutation preData = new()
@@ -1382,13 +1324,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.NotNull(active.Record);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, active.Record.LastErrorCode);
-
     }
 
     [Fact]
     public async Task Cancellation_after_canonical_data_call_is_checkpointed_conservatively()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"))
         {
             ApplyException = new OperationCanceledException(),
@@ -1425,13 +1365,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.NotNull(active.Record);
 
         Assert.True(active.Record.PointOfNoReturn);
-
     }
 
     [Fact]
     public async Task Resume_after_data_checkpoint_keeps_operation_and_skips_data_replay()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new(
@@ -1487,13 +1425,11 @@ public sealed partial class InstallationResetServiceTests
             Assert.Equal(checkpoint.OperationId, write.OperationId));
 
         Assert.True(active.Retired);
-
     }
 
     [Fact]
     public async Task Prepared_resume_uses_the_accepted_data_plan_without_replanning()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeActiveStore active = new();
@@ -1535,13 +1471,11 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.All(active.Writes, write =>
             Assert.Equal(prepared.OperationId, write.OperationId));
-
     }
 
     [Fact]
     public async Task Different_expected_plan_cannot_overwrite_the_active_operation()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeActiveStore active = new();
@@ -1579,13 +1513,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(active.Writes);
 
         Assert.Empty(data.ApplyRequests);
-
     }
 
     [Fact]
     public async Task Changed_workspace_binding_cannot_resume_the_active_operation()
     {
-
         string root = Path.GetFullPath(Path.Combine("/tmp", "campaign"));
 
         FakeWorkspaceResolver resolver = new(
@@ -1632,13 +1564,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(active.Writes);
 
         Assert.Empty(data.ApplyRequests);
-
     }
 
     [Fact]
     public async Task Completed_unreported_result_is_returned_from_the_record_then_retired()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new([]);
@@ -1703,13 +1633,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(Assert.Single(credentials.DeleteRequests));
 
         Assert.True(cleanup.Executed);
-
     }
 
     [Fact]
     public async Task Completed_unreported_result_rechecks_selected_files_before_retirement()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeActiveStore active = new();
@@ -1760,13 +1688,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.False(result.Value.Verification.Succeeded);
 
         Assert.False(active.Retired);
-
     }
 
     [Fact]
     public async Task Completed_unreported_result_rechecks_accepted_credentials_before_retirement()
     {
-
         const string account = "inference-provider-OPENAI-api-key";
 
         FakeCredentialInventory credentials = new(
@@ -1824,13 +1750,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal([account], Assert.Single(credentials.DeleteRequests));
 
         Assert.False(active.Retired);
-
     }
 
     [Fact]
     public async Task Completed_record_remains_authoritative_when_exact_retirement_fails()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeActiveStore active = new()
@@ -1877,14 +1801,12 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(completed, active.Record);
 
         Assert.Empty(active.Writes);
-
     }
 
     [Fact]
 
     public async Task All_resume_after_global_data_reset_uses_accepted_workspace_binding()
     {
-
         string workspaceRoot = Path.GetFullPath(Path.Combine(
             "/tmp",
             "all-resume-workspace"));
@@ -1930,13 +1852,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(plan.Workspace, active.Writes[0].Workspace);
 
         Assert.Empty(data.ApplyRequests);
-
     }
 
     [Fact]
     public async Task All_resume_after_global_commit_uses_prepared_accepted_workspace_when_catalog_is_gone()
     {
-
         string workspaceRoot = Path.GetFullPath(Path.Combine(
             "/tmp",
             "all-prepared-resume-workspace"));
@@ -1979,13 +1899,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsSuccess, result.Error.Message);
 
         Assert.Equal(InstallationResetPhase.Completed, result.Value.Phase);
-
     }
 
     [Fact]
     public async Task All_resume_rejects_invocation_outside_the_accepted_workspace()
     {
-
         string workspaceRoot = Path.GetFullPath(Path.Combine(
             "/tmp",
             "all-bound-workspace"));
@@ -2025,13 +1943,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.ResetInProgress, result.Error.Code);
-
     }
 
     [Fact]
     public async Task All_resume_rejects_invocation_inside_an_excluded_nested_campaign()
     {
-
         string workspaceRoot = Path.GetFullPath(Path.Combine(
             "/tmp",
             "all-parent-workspace"));
@@ -2084,26 +2000,22 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.ResetInProgress, result.Error.Code);
-
     }
 
     [Fact]
     public async Task Apply_persists_the_point_of_no_return_before_canonical_data_mutation()
     {
-
         FakeActiveStore active = new();
 
         FakeDataService data = new(CreateDataPlan("global-data"))
         {
             BeforeApply = () =>
             {
-
                 Assert.NotNull(active.Record);
 
                 Assert.Equal(InstallationResetPhase.Prepared, active.Record.Phase);
 
                 Assert.True(active.Record.PointOfNoReturn);
-
             },
         };
 
@@ -2126,13 +2038,11 @@ public sealed partial class InstallationResetServiceTests
             CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
-
     }
 
     [Fact]
     public async Task Apply_deletes_only_accepted_credentials_and_merges_cleanup_results()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new(
@@ -2193,13 +2103,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(
             ["accepted-account", "cleanup-account"],
             result.Value.CredentialResults.Select(static item => item.Account));
-
     }
 
     [Fact]
     public async Task Credential_verification_failure_is_durable_and_resumes_without_data_replay()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new(
@@ -2278,7 +2186,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(3, credentials.DeleteRequests.Count);
 
         Assert.True(active.Retired);
-
     }
 
     [Theory]
@@ -2288,7 +2195,6 @@ public sealed partial class InstallationResetServiceTests
     public async Task Global_plan_adds_one_content_free_external_remediation_blocker_for_dangerous_pair(
         HostProcessToolsMarkerPairDisposition disposition)
     {
-
         const string secret = "taint-evidence-that-must-not-escape";
 
         FakePairReader pairReader = new(JoinResult(disposition));
@@ -2319,13 +2225,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.DoesNotContain(secret, blocker.Message, StringComparison.Ordinal);
 
         Assert.Equal(1, pairReader.ReadCount);
-
     }
 
     [Fact]
     public async Task Workspace_plan_does_not_read_host_process_tools_pair()
     {
-
         DataRetentionWorkspaceBinding workspace = new(
             Guid.Parse("50505050-5050-5050-8050-505050505050"),
             "/workspace");
@@ -2355,13 +2259,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(result.IsSuccess, result.Error.Message);
 
         Assert.Equal(0, pairReader.ReadCount);
-
     }
 
     [Fact]
     public async Task Ordinary_apply_rechecks_pair_and_refuses_dangerous_state_before_effects()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new([]);
@@ -2418,13 +2320,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.False(offline.Executed);
 
         Assert.Empty(credentials.DeleteRequests);
-
     }
 
     [Fact]
     public void Service_construction_requires_a_host_process_tools_pair_reader()
     {
-
         ArgumentNullException exception = Assert.Throws<ArgumentNullException>(() =>
             new InstallationResetService(
                 new FakeDataService(CreateDataPlan("global-data")),
@@ -2434,13 +2334,11 @@ public sealed partial class InstallationResetServiceTests
                 pairReader: null));
 
         Assert.Equal("pairReader", exception.ParamName);
-
     }
 
     [Fact]
     public async Task Ordinary_locked_apply_rejects_an_authenticated_full_claim_before_effects()
     {
-
         FakeDataService data = new(CreateDataPlan("global-data"));
 
         FakeCredentialInventory credentials = new([]);
@@ -2500,13 +2398,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.False(offline.Executed);
 
         Assert.Empty(credentials.DeleteRequests);
-
     }
 
     [Fact]
     public async Task Full_apply_rejects_request_operation_mismatch_before_any_dependency()
     {
-
         Guid signedOperationId = Guid.Parse("12121212-1212-4121-8121-121212121212");
 
         FakeActiveStore active = new();
@@ -2553,13 +2449,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(0, active.IdentityReadCount);
 
         Assert.Equal(0, active.RecoverCount);
-
     }
 
     [Fact]
     public async Task Full_apply_with_matching_operation_requires_the_exact_locked_control_path()
     {
-
         Guid operationId = Guid.Parse("35353535-3535-4353-8353-353535353535");
 
         FakeActiveStore active = new();
@@ -2600,13 +2494,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(0, active.IdentityReadCount);
 
         Assert.Equal(0, active.RecoverCount);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_requires_the_exact_held_installation_lock()
     {
-
         Guid operationId = Guid.Parse("45454545-4545-4545-8545-454545454545");
 
         FakePairReader pairReader = new(JoinResult(
@@ -2643,13 +2535,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(0, pairReader.ReadCount);
 
         Assert.Equal(0, verifier.VerifyCount);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_rejects_non_all_scope_before_lock_or_dependency_access()
     {
-
         Guid operationId = Guid.Parse("46464646-4646-4464-8464-464646464646");
 
         FakePairReader pairReader = new(JoinResult(
@@ -2715,13 +2605,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(0, active.IdentityReadCount);
 
         Assert.Equal(0, active.RecoverCount);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_publishes_authenticated_claim_and_runs_no_reset_effects()
     {
-
         Guid operationId = Guid.Parse("56565656-5656-4565-8565-565656565656");
 
         FakeDataService data = new(CreateDataPlan("global-data"));
@@ -2818,13 +2706,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.False(offline.Executed);
 
         Assert.Empty(credentials.DeleteRequests);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_rejects_a_pair_that_changes_during_replanning()
     {
-
         Guid operationId = Guid.Parse("59595959-5959-4595-8595-595959595959");
 
         FakeActiveStore active = new();
@@ -2870,13 +2756,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(0, verifier.MatchCount);
 
         Assert.Empty(active.Writes);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_requires_and_preserves_the_confirmed_online_rebound_plan()
     {
-
         Guid operationId = Guid.Parse("62626262-6262-4626-8626-626262626262");
 
         DataRetentionPlan localData = CreateDataPlan("local-data");
@@ -2928,13 +2812,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(
             [onlineData.PlanId],
             published.AcceptedBinding.DataPlanIds);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_accepts_exact_admitted_claim_without_reverification()
     {
-
         Guid operationId = Guid.Parse("67676767-6767-4676-8676-676767676767");
 
         FakeActiveStore active = new();
@@ -2980,7 +2862,6 @@ public sealed partial class InstallationResetServiceTests
         {
             Exception = new InvalidOperationException(
                 "An admitted exact claim must not be reverified after expiry."),
-
         };
 
         InstallationResetService restarted = CreateService(
@@ -3010,13 +2891,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Empty(retryData.PlanRequests);
 
         Assert.Single(active.Writes);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_rejects_an_advanced_record_as_an_admission_retry()
     {
-
         Guid operationId = Guid.Parse("71717171-7171-4717-8171-717171717171");
 
         FakeActiveStore active = new();
@@ -3075,13 +2954,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(0, verifier.MatchCount);
 
         Assert.Single(active.Writes);
-
     }
 
     [Fact]
     public async Task Full_locked_apply_rejects_a_different_claim_for_an_active_operation()
     {
-
         Guid operationId = Guid.Parse("78787878-7878-4787-8787-787878787878");
 
         FakeActiveStore active = new();
@@ -3180,7 +3057,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(1, verifier.MatchCount);
 
         Assert.Single(active.Writes);
-
     }
 
     private static InstallationResetService CreateService(
@@ -3201,13 +3077,19 @@ public sealed partial class InstallationResetServiceTests
         IInstallationResetStoppedHostDataService? stoppedHostDataService = null,
         IInstallationResetStoppedHostProcessToolsPairReader? stoppedHostPairReader = null)
     {
-
         IInstallationResetHostProcessToolsPairReader effectivePairReader =
             pairReader ?? CleanPairReader();
 
         IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
             identityReader
             ?? activeStore as IInstallationResetDatabaseIdentityReader;
+
+        IInstallationResetDeferredServices? deferredServices =
+            markerPairReset is null && terminalContinuation is null
+                ? null
+                : new TestInstallationResetDeferredServices(
+                    markerPairReset,
+                    terminalContinuation);
 
         return new InstallationResetService(
             dataService,
@@ -3222,8 +3104,7 @@ public sealed partial class InstallationResetServiceTests
             identityReader,
             effectivePairReader,
             remediationVerifier,
-            markerPairReset,
-            terminalContinuation,
+            deferredServices,
             stoppedHostDataService ?? new TestStoppedHostDataService(
                     dataService,
                     workspaceResolver,
@@ -3231,7 +3112,22 @@ public sealed partial class InstallationResetServiceTests
             stoppedHostPairReader ?? new TestStoppedHostPairReader(
                 effectivePairReader),
             Path.Combine(activeStore.GuardedRoot, "arcanum.db"));
+    }
 
+    private sealed class TestInstallationResetDeferredServices(
+        Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset,
+        Func<IFullInstallationResetTerminalContinuation>? terminalContinuation)
+        : IInstallationResetDeferredServices
+    {
+        public IHostToolsMarkerPairResetCoordinator ResolveMarkerPairResetCoordinator() =>
+            (markerPairReset
+                ?? throw new InvalidOperationException(
+                    "This test did not configure a marker-pair coordinator."))();
+
+        public IFullInstallationResetTerminalContinuation ResolveTerminalContinuation() =>
+            (terminalContinuation
+                ?? throw new InvalidOperationException(
+                    "This test did not configure a terminal continuation."))();
     }
 
     private static async Task<Result<InstallationResetResult>>
@@ -3240,7 +3136,6 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetApplyRequest request,
             CancellationToken cancellationToken = default)
     {
-
         ArcanumMaintenanceLockAcquisitionResult acquired =
             ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
 
@@ -3251,7 +3146,6 @@ public sealed partial class InstallationResetServiceTests
             request,
             heldInstallationLock,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<Result<StoppedHostInstallationResetPlan>>
@@ -3260,7 +3154,6 @@ public sealed partial class InstallationResetServiceTests
             IInstallationResetStoppedHostPlanner planner,
             InstallationResetPlanRequest request)
     {
-
         ArcanumMaintenanceLockAcquisitionResult acquired =
             ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
 
@@ -3276,7 +3169,6 @@ public sealed partial class InstallationResetServiceTests
             request,
             issuer,
             CancellationToken.None).ConfigureAwait(false);
-
     }
 
     private static async Task<Result<InstallationResetResult>>
@@ -3285,7 +3177,6 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetPlanRequest request,
             StoppedHostInstallationResetPlan confirmedPlan)
     {
-
         ArcanumMaintenanceLockAcquisitionResult acquired =
             ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
 
@@ -3297,13 +3188,11 @@ public sealed partial class InstallationResetServiceTests
             confirmedPlan,
             heldInstallationLock,
             CancellationToken.None).ConfigureAwait(false);
-
     }
 
     private static async Task<InstallationResetPlan> PlanWithInventoryAsync(
         InstallationResetFileSystemInventory inventory)
     {
-
         FakeOfflineCleanup cleanup = new()
         {
             Inventory = Result<InstallationResetFileSystemInventory>.Success(inventory),
@@ -3326,7 +3215,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.True(planned.IsSuccess, planned.Error.Message);
 
         return planned.Value;
-
     }
 
     private static async Task<Result<InstallationResetResult>>
@@ -3335,7 +3223,6 @@ public sealed partial class InstallationResetServiceTests
             FullInstallationResetRequest request,
             CancellationToken cancellationToken = default)
     {
-
         ArcanumMaintenanceLockAcquisitionResult acquired =
             ArcanumMaintenanceLock.AcquireDetailed(service.GuardedRoot);
 
@@ -3346,7 +3233,6 @@ public sealed partial class InstallationResetServiceTests
             request,
             heldInstallationLock,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static FullInstallationResetRequest FullRequest(
@@ -3354,7 +3240,6 @@ public sealed partial class InstallationResetServiceTests
         string expectedPlanId,
         InstallationResetPlanRequest? planRequest = null)
     {
-
         HostProcessToolsMatchedPair pair = MatchedPair();
 
         FullInstallationResetExternalRemediationAttestation attestation = new(
@@ -3381,7 +3266,6 @@ public sealed partial class InstallationResetServiceTests
                     "/invocation"),
                 expectedPlanId),
             attestation);
-
     }
 
     private static FullInstallationResetRemediationAuthorization Authorization(
@@ -3426,7 +3310,6 @@ public sealed partial class InstallationResetServiceTests
 
     private static HostProcessToolsMatchedPair MatchedPair()
     {
-
         const string installationIdentity = "installation-identity";
 
         Guid transitionId = Guid.Parse("91919191-9191-4191-8191-919191919191");
@@ -3449,7 +3332,6 @@ public sealed partial class InstallationResetServiceTests
             durableIdentityDigest: Digest(3));
 
         return new HostProcessToolsMatchedPair(database, osMarker);
-
     }
 
     private static CovenantDigest Digest(byte value) =>
@@ -3464,7 +3346,6 @@ public sealed partial class InstallationResetServiceTests
         params HostProcessToolsMarkerPairJoinResult[] results)
         : IInstallationResetHostProcessToolsPairReader
     {
-
         private int _index;
 
         public int ReadCount { get; private set; }
@@ -3474,16 +3355,13 @@ public sealed partial class InstallationResetServiceTests
         public Task<Result<HostProcessToolsMarkerPairJoinResult>> ReadAsync(
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             ReadCount++;
 
             if (Exception is { } exception)
             {
-
                 throw exception;
-
             }
 
             HostProcessToolsMarkerPairJoinResult result =
@@ -3493,22 +3371,18 @@ public sealed partial class InstallationResetServiceTests
 
             return Task.FromResult(
                 Result<HostProcessToolsMarkerPairJoinResult>.Success(result));
-
         }
-
     }
 
     private sealed class TestStoppedHostPairReader(
         IInstallationResetHostProcessToolsPairReader inner)
         : IInstallationResetStoppedHostProcessToolsPairReader
     {
-
         public Task<Result<HostProcessToolsMarkerPairJoinResult>>
             ReadUnderStoppedHostAuthorityAsync(
                 IStoppedHostGrimoireAuthorityIssuer issuer,
                 CancellationToken cancellationToken = default) =>
             inner.ReadAsync(cancellationToken);
-
     }
 
     private sealed class TestStoppedHostDataService(
@@ -3517,7 +3391,6 @@ public sealed partial class InstallationResetServiceTests
         IInstallationResetDatabaseIdentityReader? identity)
         : IInstallationResetStoppedHostDataService
     {
-
         public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
             InstallationResetDataPlanRequest request,
             IStoppedHostGrimoireAuthorityIssuer issuer,
@@ -3556,13 +3429,11 @@ public sealed partial class InstallationResetServiceTests
             IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken) =>
             data.ApplyAsync(request, cancellationToken);
-
     }
 
     private sealed class SequentialStoppedHostDataService(
         params DataRetentionPlan[] plans) : IInstallationResetStoppedHostDataService
     {
-
         private int _planIndex;
 
         public int ApplyCount { get; private set; }
@@ -3572,13 +3443,11 @@ public sealed partial class InstallationResetServiceTests
             IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken)
         {
-
             DataRetentionPlan plan = plans[Math.Min(_planIndex, plans.Length - 1)];
 
             _planIndex++;
 
             return Task.FromResult(Result<DataRetentionPlan>.Success(plan));
-
         }
 
         public Task<Result<InstallationResetWorkspaceResolution>>
@@ -3608,7 +3477,6 @@ public sealed partial class InstallationResetServiceTests
                 IStoppedHostGrimoireAuthorityIssuer issuer,
                 CancellationToken cancellationToken)
         {
-
             ApplyCount++;
 
             return Task.FromResult(Result<DataRetentionApplyResult>.Success(
@@ -3622,16 +3490,13 @@ public sealed partial class InstallationResetServiceTests
                     Reconciled: true,
                     Blockers: [],
                     Conflicts: [])));
-
         }
-
     }
 
     private sealed class FakeRemediationVerifier(
         FullInstallationResetRemediationAuthorization authorization)
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         public FullInstallationResetRemediationAuthorization Authorization { get; set; } =
             authorization;
 
@@ -3648,19 +3513,15 @@ public sealed partial class InstallationResetServiceTests
             Guid currentInstallationId,
             HostProcessToolsMatchedPair matchedPair)
         {
-
             VerifyCount++;
 
             if (Exception is { } exception)
             {
-
                 throw exception;
-
             }
 
             return Result<FullInstallationResetRemediationAuthorization>.Success(
                 Authorization);
-
         }
 
         public Result<FullInstallationResetRemediationAuthorization> VerifyAtAcceptedTime(
@@ -3683,7 +3544,6 @@ public sealed partial class InstallationResetServiceTests
             CovenantDigest acceptedNonceDigest,
             CovenantDigest acceptedIssuerDigest)
         {
-
             MatchCount++;
 
             return ClaimMatches
@@ -3692,9 +3552,7 @@ public sealed partial class InstallationResetServiceTests
                 && acceptedAttestationDigest == Authorization.AttestationDigest
                 && acceptedNonceDigest == Authorization.NonceDigest
                 && acceptedIssuerDigest == Authorization.IssuerDigest;
-
         }
-
     }
 
     private static InstallationResetActiveRecord CreateActive(
@@ -3836,7 +3694,6 @@ public sealed partial class InstallationResetServiceTests
     private sealed class FakeDataService(params DataRetentionPlan[] plans)
         : IInstallationResetDataService
     {
-
         private int _planIndex;
 
         public List<InstallationResetDataPlanRequest> PlanRequests { get; } = [];
@@ -3853,7 +3710,6 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetDataPlanRequest request,
             CancellationToken cancellationToken = default)
         {
-
             PlanRequests.Add(request);
 
             DataRetentionPlan plan = plans[Math.Min(_planIndex, plans.Length - 1)];
@@ -3861,30 +3717,24 @@ public sealed partial class InstallationResetServiceTests
             _planIndex++;
 
             return Task.FromResult(Result<DataRetentionPlan>.Success(plan));
-
         }
 
         public Task<Result<DataRetentionApplyResult>> ApplyAsync(
             DataRetentionApplyRequest request,
             CancellationToken cancellationToken = default)
         {
-
             ApplyRequests.Add(request);
 
             BeforeApply?.Invoke();
 
             if (ApplyException is { } exception)
             {
-
                 throw exception;
-
             }
 
             if (ApplyResult is { } configured)
             {
-
                 return Task.FromResult(configured);
-
             }
 
             return Task.FromResult(Result<DataRetentionApplyResult>.Success(
@@ -3898,16 +3748,13 @@ public sealed partial class InstallationResetServiceTests
                     Reconciled: true,
                     Blockers: [],
                     Conflicts: [])));
-
         }
-
     }
 
     private sealed class FakeCredentialInventory(
         InstallationResetCredentialSummary[] inventory)
         : IInstallationResetCredentialService
     {
-
         public List<string[]> DeleteRequests { get; } = [];
 
         public InstallationResetCredentialResult[]? DeleteResults { get; set; }
@@ -3916,13 +3763,11 @@ public sealed partial class InstallationResetServiceTests
 
         public InstallationResetCredentialResult[] DeleteAndVerify(string[] accounts)
         {
-
             DeleteRequests.Add([.. accounts]);
 
             return DeleteResults ??
                 [.. accounts.Select(account =>
                 {
-
                     InstallationResetCredentialSummary? item = inventory.SingleOrDefault(
                         candidate => string.Equals(
                             candidate.Account,
@@ -3935,21 +3780,16 @@ public sealed partial class InstallationResetServiceTests
                             ? InstallationResetItemStatus.Deleted
                             : item?.Status ?? InstallationResetItemStatus.Absent,
                         item?.ErrorCode);
-
                 })];
-
         }
-
     }
 
     private sealed class FakeActiveStore :
         IInstallationResetActiveStore,
         IInstallationResetDatabaseIdentityReader
     {
-
         public FakeActiveStore()
         {
-
             // Nested under the shared test shell rather than directly under the temp root. The
             // maintenance lock deliberately lives beside the directory it guards, so a guarded root at
             // the temp root leaves a lock file there too — and enough of those make the whole suite
@@ -3964,7 +3804,6 @@ public sealed partial class InstallationResetServiceTests
                 .CreateOwnerOnlyDirectoryAtPath(parent);
 
             GuardedRoot = Path.Combine(parent, "grimoire");
-
         }
 
         public string GuardedRoot { get; }
@@ -4010,7 +3849,6 @@ public sealed partial class InstallationResetServiceTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             heldInstallationLock.AssertHeldFor(GuardedRoot);
 
             RecoverCount++;
@@ -4018,7 +3856,6 @@ public sealed partial class InstallationResetServiceTests
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(RecoveryState());
-
         }
 
         public Task<Result<InstallationResetActivePublication>> BeginAsync(
@@ -4044,11 +3881,9 @@ public sealed partial class InstallationResetServiceTests
         public Task<Result<InstallationResetActiveRecoveryState>> InspectAsync(
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(RecoveryState());
-
         }
 
         public Task<Result<InstallationResetActivePublication>> MigrateLegacyV1Async(
@@ -4070,43 +3905,35 @@ public sealed partial class InstallationResetServiceTests
             Guid operationId,
             CancellationToken cancellationToken = default)
         {
-
             heldInstallationLock.AssertHeldFor(GuardedRoot);
 
             return RetireAsync(operationId, cancellationToken);
-
         }
 
         public Task<Result> CompleteStartupCleanupAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             heldInstallationLock.AssertHeldFor(GuardedRoot);
 
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(Result.Success());
-
         }
 
         Task<Result<Guid>> IInstallationResetDatabaseIdentityReader.ReadAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             IdentityReadCount++;
 
             return Task.FromResult(IdentityReadResult);
-
         }
 
         public void Seed(InstallationResetActiveRecord record)
         {
-
             Record = record;
-
         }
 
         public Task<Result<InstallationResetActiveRecord?>> ReadAsync(
@@ -4117,21 +3944,16 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetActiveRecord record,
             CancellationToken cancellationToken)
         {
-
             Writes.Add(record);
 
             if (WriteOverride is { } writeOverride)
             {
-
                 Result overridden = writeOverride(record);
 
                 if (overridden.IsFailure)
                 {
-
                     return Task.FromResult(overridden);
-
                 }
-
             }
 
             Record = record;
@@ -4139,29 +3961,24 @@ public sealed partial class InstallationResetServiceTests
             OnWrite?.Invoke(record);
 
             return Task.FromResult(Result.Success());
-
         }
 
         public Task<Result> RetireAsync(
             Guid operationId,
             CancellationToken cancellationToken)
         {
-
             Retired = true;
 
             RetiredOperationIds.Add(operationId);
 
             if (RetireResult.IsFailure)
             {
-
                 return Task.FromResult(RetireResult);
-
             }
 
             Record = null;
 
             return Task.FromResult(Result.Success());
-
         }
 
         private async Task<Result<InstallationResetActivePublication>>
@@ -4170,7 +3987,6 @@ public sealed partial class InstallationResetServiceTests
                 InstallationResetActiveRecord record,
                 CancellationToken cancellationToken)
         {
-
             heldInstallationLock.AssertHeldFor(GuardedRoot);
 
             Result written = await WriteAsync(record, cancellationToken)
@@ -4181,7 +3997,6 @@ public sealed partial class InstallationResetServiceTests
                     Publication(record))
                 : Result<InstallationResetActivePublication>.Failure(
                     written.Error);
-
         }
 
         private Result<InstallationResetActiveRecoveryState> RecoveryState() =>
@@ -4208,12 +4023,10 @@ public sealed partial class InstallationResetServiceTests
         private static Task<T> AuthenticatedSurfaceNotUsed<T>() =>
             throw new InvalidOperationException(
                 "This legacy-only test double must not receive an authenticated-store call.");
-
     }
 
     private sealed class FakeOfflineCleanup : IInstallationResetOfflineCleanup
     {
-
         public bool Executed => Plans.Count > 0;
 
         public List<InstallationResetPlan> Plans { get; } = [];
@@ -4239,11 +4052,9 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetPlan plan,
             CancellationToken cancellationToken)
         {
-
             Plans.Add(plan);
 
             return Task.FromResult(Result);
-
         }
 
         public Task<Result<InstallationResetFileSystemInventory>> PlanAsync(
@@ -4251,29 +4062,23 @@ public sealed partial class InstallationResetServiceTests
             string[] excludedRoots,
             CancellationToken cancellationToken)
         {
-
             PlanSelectedRoots.Add([.. selectedRoots]);
 
             PlanExcludedRoots.Add([.. excludedRoots]);
 
             return Task.FromResult(Inventory);
-
         }
-
     }
 
     private sealed class FixedStateRoots(string[] roots) : IInstallationResetStateRoots
     {
-
         public string[] Resolve(
             InstallationResetScope scope,
             DataRetentionWorkspaceBinding? workspace) => [.. roots];
-
     }
 
     private sealed class FakePreDataMutation : IInstallationResetPreDataMutation
     {
-
         public bool Executed { get; private set; }
 
         public Result Result { get; set; } = Result.Success();
@@ -4282,46 +4087,37 @@ public sealed partial class InstallationResetServiceTests
 
         public Task<Result> ExecuteAsync(CancellationToken cancellationToken)
         {
-
             Executed = true;
 
             if (Exception is { } exception)
             {
-
                 throw exception;
-
             }
 
             return Task.FromResult(Result);
-
         }
-
     }
 
     private sealed class FakeWorkspaceResolver(
         params InstallationResetWorkspaceResolution[] resolutions)
         : IInstallationResetWorkspaceResolver
     {
-
         public FakeWorkspaceResolver(params DataRetentionWorkspaceBinding[] bindings)
             : this(
                 [.. bindings.Select(static binding =>
                     new InstallationResetWorkspaceResolution(binding, []))])
         {
-
         }
 
         public InstallationResetWorkspaceResolution[] Resolutions { get; set; } = resolutions;
 
         public DataRetentionWorkspaceBinding[] Bindings
         {
-
             get => [.. Resolutions.Select(static resolution => resolution.Workspace)];
 
             set => Resolutions =
                 [.. value.Select(static binding =>
                     new InstallationResetWorkspaceResolution(binding, []))];
-
         }
 
         public Error? Failure { get; set; }
@@ -4330,13 +4126,10 @@ public sealed partial class InstallationResetServiceTests
             string invocationDirectory,
             CancellationToken cancellationToken)
         {
-
             if (Failure is { } failure)
             {
-
                 return Task.FromResult(
                     Result<InstallationResetWorkspaceResolution>.Failure(failure));
-
             }
 
             // Both sides through GetFullPath, and the comparison the platform actually uses. Only the
@@ -4373,9 +4166,6 @@ public sealed partial class InstallationResetServiceTests
 
             return Task.FromResult(
                 Result<InstallationResetWorkspaceResolution>.Success(matches[0]));
-
         }
-
     }
-
 }

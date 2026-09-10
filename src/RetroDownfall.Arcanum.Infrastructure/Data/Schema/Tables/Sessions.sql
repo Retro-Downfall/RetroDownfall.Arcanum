@@ -1,3 +1,7 @@
+-- TotalCostUsd is laid out exactly as SQLite splices an added column into the stored table
+-- declaration. Version 8 replaces the former NUMERIC-affinity column because SQLite coerced EF's
+-- exact decimal text to an IEEE-754 REAL before storing it. The replacement TEXT column keeps the
+-- decimal(18,8) value exact, and fresh and evolved installations must normalize to the same DDL.
 CREATE TABLE IF NOT EXISTS "Sessions" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Sessions" PRIMARY KEY,
     "CampaignId" TEXT NULL,
@@ -8,10 +12,9 @@ CREATE TABLE IF NOT EXISTS "Sessions" (
     "Summary" TEXT NULL,
     "LastSummarizedMessageAt" TEXT NULL,
     "TotalTokensUsed" INTEGER NOT NULL DEFAULT 0,
-    "TotalCostUsd" NUMERIC NOT NULL DEFAULT 0,
     "UnsummarizedEntryCount" INTEGER NOT NULL DEFAULT 0,
     "ForkedFromSessionId" TEXT NULL
-);
+, "TotalCostUsd" TEXT NOT NULL DEFAULT 0);
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_CreatedAt" ON "Sessions" ("CreatedAt");
 

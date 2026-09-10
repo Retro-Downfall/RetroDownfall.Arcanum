@@ -17,13 +17,11 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class ApprenticeCommandTests
 {
-
     private static readonly Guid SampleId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
     [Fact]
     public void Apprentice_list_calls_get_apprentices()
     {
-
         ApprenticeSummaryDto summary = new(SampleId, null, "Task", "Do the thing", "Idle", 0, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -39,7 +37,6 @@ public sealed class ApprenticeCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/apprentices", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>
@@ -53,7 +50,6 @@ public sealed class ApprenticeCommandTests
     [Fact]
     public void Apprentice_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
-
         const int ConfiguredPort = 19999;
 
         RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
@@ -68,13 +64,11 @@ public sealed class ApprenticeCommandTests
         string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Apprentice_create_posts_goal_and_derives_name()
     {
-
         ApprenticeDetailDto detail = new(
             SampleId, null, null, "Do the thing", "Do the thing", [], 0, "Idle", null, "/tmp/ws", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
@@ -98,13 +92,11 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("\"goal\":\"Do the thing\"", body, StringComparison.Ordinal);
 
         Assert.Contains("\"name\":\"Do the thing\"", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Apprentice_start_posts_to_start_route()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<string>(SampleId.ToString("D"), true, null),
             ArcanumJsonContext.Default.ApiResponseString,
@@ -119,13 +111,11 @@ public sealed class ApprenticeCommandTests
         Assert.Equal(HttpMethod.Post, request.Method);
 
         Assert.Equal($"/api/apprentices/{SampleId:D}/start", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Apprentice_cast_surfaces_conclave_disabled_error()
     {
-
         Error error = new("Apprentice.ConclaveDisabled", "The Conclave is disabled.");
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -140,13 +130,11 @@ public sealed class ApprenticeCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal($"/api/apprentices/{SampleId:D}/cast", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Apprentice_delete_binds_id_and_handles_no_content()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(handler, ["--yes", "apprentice", "delete", SampleId.ToString()]);
@@ -156,14 +144,12 @@ public sealed class ApprenticeCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal(HttpMethod.Delete, request.Method);
-
     }
 
     /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public void Apprentice_delete_requires_confirmation_before_sending_request()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(handler, ["apprentice", "delete", SampleId.ToString()]);
@@ -173,7 +159,6 @@ public sealed class ApprenticeCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     private static CliTestResult RunCommand(
@@ -181,7 +166,6 @@ public sealed class ApprenticeCommandTests
         string[] args,
         Action<ServiceCollection>? configureServices = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -196,10 +180,13 @@ public sealed class ApprenticeCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -207,31 +194,26 @@ public sealed class ApprenticeCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static string ReadBody(HttpRequestMessage request)
     {
-
         if (request.Content is null)
         {
             return string.Empty;
         }
 
         return request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -242,33 +224,27 @@ public sealed class ApprenticeCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -277,7 +253,6 @@ public sealed class ApprenticeCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -287,9 +262,6 @@ public sealed class ApprenticeCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

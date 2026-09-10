@@ -19,14 +19,12 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
+public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 {
-
     [Fact]
 
     public void Candidate_walk_has_no_total_entry_ceiling()
     {
-
         Type serviceType = typeof(WorkspaceIndexingService);
 
         Assert.Null(
@@ -51,7 +49,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
                 parameter.Name,
                 "maxWalkEntries",
                 StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -64,7 +61,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     [SkippableFact]
     public void Candidate_walk_terminates_on_an_in_workspace_directory_symlink_cycle()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "This asserts POSIX behaviour and runs on macOS and Linux only.");
@@ -79,21 +75,16 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         try
         {
-
             candidates = EnumerateCandidateFiles(_workspace.Root, [".md"], take: 64);
-
         }
         finally
         {
-
             Directory.Delete(cyclePath);
-
         }
 
         Assert.Equal(
             [Path.Combine(_workspace.Root, "docs", "note.md")],
             candidates);
-
     }
 
     private static List<string> EnumerateCandidateFiles(
@@ -101,7 +92,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         string[] extensions,
         int take)
     {
-
         System.Reflection.MethodInfo? method = typeof(WorkspaceIndexingService)
             .GetMethod(
                 "EnumerateCandidateFiles",
@@ -116,7 +106,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         // Bounded so an unterminated walk fails the assertion instead of hanging the suite.
         return [.. walk.Take(take)];
-
     }
 
     private readonly GrimoireFixture _fixture;
@@ -127,49 +116,59 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     private ArcanumDbContext? _db;
 
+    private readonly List<WorkspaceIndexingService> _services = [];
+
+    private readonly List<ServiceProvider> _scopeProviders = [];
+
+    private readonly List<IReleasableWorkspaceWeave> _releasableWeaves = [];
+
     public WorkspaceIndexingServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public async Task InitializeAsync()
     {
-
         await _workspace.InitializeAsync();
 
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
-
     }
 
     public async Task DisposeAsync()
     {
+        foreach (IReleasableWorkspaceWeave weave in _releasableWeaves)
+        {
+            weave.ReleaseAll();
+        }
+
+        foreach (WorkspaceIndexingService service in _services)
+        {
+            await service.DisposeAsync();
+        }
+
+        foreach (ServiceProvider provider in _scopeProviders)
+        {
+            await provider.DisposeAsync();
+        }
 
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         await _workspace.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_OnlyIndexesConfiguredExtensions()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("src/Foo.cs", "public class Foo {}");
@@ -187,13 +186,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Contains("src/Foo.cs".Replace('/', Path.DirectorySeparatorChar), indexedPaths);
 
         Assert.DoesNotContain("assets/logo.png".Replace('/', Path.DirectorySeparatorChar), indexedPaths);
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_IndexesFilesBeyondFormerTotalFileSizeCeiling()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("small.txt", "short content");
@@ -215,14 +212,12 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.True(
             weave.EmbedBatchCallCount > 1,
             "Large files should be embedded through bounded streaming pages.");
-
     }
 
     [SkippableFact]
 
     public async Task IndexWorkspaceAsync_ContinuesAcrossInternalCheckpointsUntilEveryFileIsIndexed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("one.txt", "one");
@@ -239,13 +234,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         for (int checkpoint = 0; checkpoint < 3; checkpoint++)
         {
-
             Assert.True(
                 await service.IndexWorkspaceAsync(
                     _workspace.Root,
                     embeddings,
                     CancellationToken.None));
-
         }
 
         Assert.Equal(
@@ -253,13 +246,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
             (await GetIndexedRelativePathsAsync())
                 .OrderBy(static path => path, StringComparer.Ordinal)
                 .ToArray());
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_SkipsUnchangedFiles_ReindexesModifiedFiles()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string fullPath = _workspace.WriteFile("notes.md", "version one");
@@ -290,7 +281,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         List<string> contents = await GetChunkContentsAsync("notes.md");
 
         Assert.Contains("version two", string.Join(' ', contents));
-
     }
 
     /// <summary>
@@ -312,7 +302,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task IndexWorkspaceAsync_ReindexesAFileRewrittenUnderTheIndexedTimestamp()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string fullPath = _workspace.WriteFile("notes.md", "version one");
@@ -338,13 +327,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Equal(2, weave.EmbedBatchCallCount);
 
         Assert.Contains("version two", string.Join(' ', await GetChunkContentsAsync("notes.md")));
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_ChunksEmbedsAndPersistsFile()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("README.md", "# Title\n\nSome documentation content.");
@@ -362,13 +349,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Equal(1, chunkCount);
 
         Assert.Equal(1, embeddingCount);
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_EmbeddingFailureForOneFile_ContinuesWithOthers()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("a.txt", "alpha content");
@@ -386,13 +371,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.DoesNotContain("a.txt", indexedPaths);
 
         Assert.Contains("b.txt", indexedPaths);
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_PrunesIgnoredDirectories_NeverDescendsIntoThem()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("src/Foo.cs", "public class Foo {}");
@@ -412,13 +395,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Contains("src/Foo.cs".Replace('/', Path.DirectorySeparatorChar), indexedPaths);
 
         Assert.DoesNotContain("node_modules/pkg/index.js".Replace('/', Path.DirectorySeparatorChar), indexedPaths);
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_FileDeletedSinceLastIndex_RemovesOrphanedChunks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("kept.md", "still here");
@@ -450,13 +431,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         // The BLOB/vec embedding rows must be cleaned up alongside the chunk row (no orphaned
         // embeddings left pointing at a ChunkId whose chunk metadata no longer exists).
         Assert.Equal(1, await CountRowsAsync("workspace_file_embeddings"));
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_NeverIndexesSymlinkEscapingWorkspace()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Skip.If(
@@ -469,7 +448,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         try
         {
-
             string linkPath = Path.Combine(_workspace.Root, "escape-link.md");
 
             File.CreateSymbolicLink(linkPath, outsideFile);
@@ -485,21 +463,16 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
             Assert.Equal(0, weave.EmbedBatchCallCount);
 
             Assert.Equal(0, await CountRowsAsync("workspace_file_chunks"));
-
         }
         finally
         {
-
             File.Delete(outsideFile);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_IdlesWhenDisabled_NeverIndexesRegisteredWorkspace()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("idle.txt", "should not be indexed while disabled");
@@ -523,6 +496,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
             new WeaveIndexAvailability(),
             scopeFactory,
             new FakeWorkspaceFileWatcherFactory(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<WorkspaceIndexingService>.Instance);
 
         service.RegisterWorkspace(_workspace.Root);
@@ -538,13 +512,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
         Assert.Equal(0, await CountRowsAsync("workspace_file_chunks"));
-
     }
 
     [SkippableFact]
-    public async Task IndexNowAsync_IndexesFile_WhenWorkspaceUnderAllowedCampaignRoot()
+    public async Task QueueIndexNow_IndexesFile_WhenWorkspaceUnderAllowedCampaignRoot()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("allowed.md", "content under an allowed root");
@@ -553,18 +525,18 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         WorkspaceIndexingService service = CreateService(weave, out _, campaignAllowedRoots: [_workspace.Root]);
 
-        await service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
+
+        await DrainWorkspaceSchedulerAsync(service);
 
         List<string> indexedPaths = await GetIndexedRelativePathsAsync();
 
         Assert.Contains("allowed.md", indexedPaths);
-
     }
 
     [SkippableFact]
-    public async Task IndexNowAsync_RejectsWorkspace_WhenNotUnderAnyAllowedCampaignRoot()
+    public async Task QueueIndexNow_RejectsWorkspace_WhenNotUnderAnyAllowedCampaignRoot()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("secret.md", "should never be indexed");
@@ -576,18 +548,16 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         // unvalidated directory — see CampaignPathPolicy.ValidateAndNormalizePath.
         WorkspaceIndexingService service = CreateService(weave, out _, campaignAllowedRoots: []);
 
-        await service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsFailure);
 
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
         Assert.Equal(0, await CountRowsAsync("workspace_file_chunks"));
-
     }
 
     [SkippableFact]
-    public async Task IndexNowAsync_CoalescesASecondRequestWhileTheSameWorkspaceIsAlreadyReconciling()
+    public async Task QueueIndexNow_CoalescesASecondRequestWhileTheSameWorkspaceIsAlreadyReconciling()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("coalesce.md", "content that must only be embedded once per in-flight run");
@@ -596,32 +566,24 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         WorkspaceIndexingService service = CreateService(weave, out _);
 
-        Task first = service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
 
         await weave.EmbedEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-        Task second = service.IndexNowAsync(_workspace.Root, CancellationToken.None);
-
-        Task settled = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
+        Result<WorkspaceIndexQueueDisposition> second = service.QueueIndexNow(_workspace.Root);
 
         weave.Release();
 
-        await first.WaitAsync(TimeSpan.FromSeconds(30));
+        await DrainWorkspaceSchedulerAsync(service);
 
-        await second.WaitAsync(TimeSpan.FromSeconds(30));
-
-        Assert.True(
-            ReferenceEquals(settled, second),
-            "A re-index requested while the same workspace is still reconciling must coalesce onto the in-flight run instead of starting a duplicate scan.");
+        Assert.Equal(WorkspaceIndexQueueDisposition.Coalesced, second.Value);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_NeverIndexesRegisteredWorkspace_WhenNotUnderAnyAllowedCampaignRoot()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("secret.md", "should never be indexed via the background tick either");
@@ -645,13 +607,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
         Assert.Equal(0, await CountRowsAsync("workspace_file_chunks"));
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_ReconciliationThrowsRepeatedly_BacksOffInsteadOfTightLooping()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("spin.txt", "the failing reconciliation never gets this far");
@@ -677,13 +637,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.True(
             scopes.ScopeCount <= 2,
             $"Expected at most 2 reconciliation attempts within 300ms given a 1s backoff after failure; got {scopes.ScopeCount}.");
-
     }
 
     [SkippableFact]
     public async Task RegisterWorkspace_IsThreadSafe_UnderConcurrentCalls()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWeaveService weave = new();
@@ -732,13 +690,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
             statuses.Count(static status => status.Degraded && !status.Watching));
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task WatcherRegistry_IsBounded_AndUnwatchedWorkspaceStaysOnDegradedPollingFallback()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         int watcherCapacity = ArcanumRuntimeDefaults.Embeddings.Codebase.MaxWatchers;
@@ -759,9 +715,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         foreach (string workspace in workspaces)
         {
-
             service.RegisterWorkspace(workspace);
-
         }
 
         Assert.Equal(watcherCapacity, service.ActiveWatcherCount);
@@ -771,13 +725,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.False(service.GetRuntimeStatus(workspaces[^1]).Watching);
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task WatcherEventStorm_IsDebouncedAndCoalescedToOneIncrementalReindex()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string fullPath = _workspace.WriteFile("storm.cs", "public class Storm {}");
@@ -792,25 +744,21 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         for (int i = 0; i < 500; i++)
         {
-
             watchers.Single.TriggerChanged(fullPath);
-
         }
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
 
         Assert.NotNull(service.GetRuntimeStatus(_workspace.Root).LastEventAt);
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task WatcherRenameSave_ReplacesTargetAndRemovesTemporaryFileChunks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string target = _workspace.WriteFile("notes.md", "old content");
@@ -831,20 +779,18 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         watchers.Single.TriggerDeleted(target);
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         Assert.Contains("new replacement content", await GetChunkContentsAsync("notes.md"));
 
         Assert.DoesNotContain(".notes.md.tmp", await GetIndexedRelativePathsAsync());
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task WatcherOverflow_MarksStaleAndRunsBoundedReconciliation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string fullPath = _workspace.WriteFile("overflow.txt", "before overflow");
@@ -877,7 +823,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         Assert.True(stale.Overflowed);
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         WorkspaceIndexRuntimeStatus recovered = service.GetRuntimeStatus(_workspace.Root);
 
@@ -892,13 +838,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Contains("after overflow", await GetChunkContentsAsync("overflow.txt"));
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task WatcherSymlinkReplacement_RemovesPreviouslyIndexedContent()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Skip.If(
@@ -913,7 +857,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         try
         {
-
             FakeWorkspaceFileWatcherFactory watchers = new();
 
             FakeWeaveService weave = new();
@@ -930,28 +873,23 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
             watchers.Single.TriggerChanged(target);
 
-            await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+            await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
             Assert.DoesNotContain("linked.md", await GetIndexedRelativePathsAsync());
 
             Assert.DoesNotContain(weave.EmbeddedTexts, text => text.Contains("outside secret", StringComparison.Ordinal));
 
             await service.DisposeAsync();
-
         }
         finally
         {
-
             File.Delete(outside);
-
         }
-
     }
 
     [SkippableFact]
     public async Task WatcherEvents_IgnoreExcludedFoldersAndIndexLargeFiles()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string ignored = _workspace.WriteFile("node_modules/pkg/index.js", "console.log('ignored');");
@@ -970,20 +908,18 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         watchers.Single.TriggerCreated(large);
 
-        await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
         Assert.True(weave.EmbedBatchCallCount > 0);
 
         Assert.Contains("large.txt", await GetIndexedRelativePathsAsync());
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task WatcherProcessing_HonorsCancellation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string fullPath = _workspace.WriteFile("cancel.cs", "public class Cancel {}");
@@ -1001,16 +937,14 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         cancellation.Cancel();
 
         await Assert.ThrowsAsync<OperationCanceledException>(
-            () => service.ProcessPendingWatcherEventsAsync(_workspace.Root, cancellation.Token));
+            () => ProcessPendingWatcherEventsAsync(service, _workspace.Root, cancellation.Token));
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task StopAsync_DisposesEveryWorkspaceWatcher()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWorkspaceFileWatcherFactory watchers = new();
@@ -1028,13 +962,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.True(watchers.Single.IsDisposed);
 
         Assert.Equal(0, service.ActiveWatcherCount);
-
     }
 
     [SkippableFact]
     public async Task UnregisterWorkspace_DisposesWatcherForInactiveWorkspace()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWorkspaceFileWatcherFactory watchers = new();
@@ -1052,13 +984,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.False(service.GetRuntimeStatus(_workspace.Root).Watching);
 
         await service.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task StableChunkIds_ReuseUnchangedChunkEmbeddingsAfterSmallEdit()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string fullPath = _workspace.WriteFile(
@@ -1116,13 +1046,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Equal(2, weave.EmbedBatchCallCount);
 
         Assert.Single(weave.EmbedBatches[^1]);
-
     }
 
     [SkippableFact]
     public async Task IndexedChunks_PersistAccurateOneBasedLineRanges()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile(
@@ -1142,7 +1070,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         (int StartLine, int EndLine)[] ranges = await GetLineRangesAsync("lines.md");
 
         Assert.Equal([(1, 3), (4, 5)], ranges);
-
     }
 
     private WorkspaceIndexingService CreateService(
@@ -1150,9 +1077,9 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         out EmbeddingSettings embeddings,
         string[]? campaignAllowedRoots = null,
         FakeWorkspaceFileWatcherFactory? watcherFactory = null,
-        IServiceScopeFactory? scopeFactory = null)
+        IServiceScopeFactory? scopeFactory = null,
+        IGrimoireConnectionAdmissionGate? workAdmission = null)
     {
-
         embeddings = ArcanumRuntimeDefaults.Embeddings;
 
         IServiceScopeFactory scopes = scopeFactory ?? BuildScopeFactory();
@@ -1180,37 +1107,45 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         embeddings = settings.ResolveEmbeddings();
 
-        return new WorkspaceIndexingService(
+        WorkspaceIndexingService service = new(
             new TestOptionsMonitor<ArcanumSettings>(settings),
             weave,
             new WeaveIndexAvailability(),
             scopes,
             watcherFactory ?? new FakeWorkspaceFileWatcherFactory(),
+            workAdmission ?? new GrimoireConnectionAdmissionGate(TimeProvider.System),
             NullLogger<WorkspaceIndexingService>.Instance);
 
+        _services.Add(service);
+
+        if (weave is IReleasableWorkspaceWeave releasable)
+        {
+            _releasableWeaves.Add(releasable);
+        }
+
+        return service;
     }
 
     private IServiceScopeFactory BuildScopeFactory()
     {
-
         ServiceCollection services = new();
 
-        services.AddSingleton(_db!);
+        services.AddScoped(_ => _fixture.CreateContext(_dbPath!));
 
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        ServiceProvider provider = services.BuildServiceProvider();
 
+        _scopeProviders.Add(provider);
+
+        return provider.GetRequiredService<IServiceScopeFactory>();
     }
 
     private async Task<List<string>> GetIndexedRelativePathsAsync()
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1223,25 +1158,19 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         while (await reader.ReadAsync())
         {
-
             results.Add(reader.GetString(0));
-
         }
 
         return results;
-
     }
 
     private async Task<List<string>> GetChunkContentsAsync(string relativePath)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1262,19 +1191,15 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         while (await reader.ReadAsync())
         {
-
             results.Add(reader.GetString(0));
-
         }
 
         return results;
-
     }
 
     [SkippableFact]
     public async Task IndexWorkspaceAsync_NeverSplitsASurrogatePairAcrossReadPages()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
@@ -1301,27 +1226,21 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         foreach (string chunk in chunks)
         {
-
             Assert.DoesNotContain(
                 '�',
                 Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(chunk)));
-
         }
 
         Assert.Contains(chunks, static chunk => chunk.Contains("\U0001F600", StringComparison.Ordinal));
-
     }
 
     private async Task<int> CountRowsAsync(string tableName)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1331,19 +1250,15 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         object? result = await cmd.ExecuteScalarAsync();
 
         return Convert.ToInt32(result);
-
     }
 
     private async Task<Dictionary<string, string>> GetChunkIdsByContentAsync(string relativePath)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1364,25 +1279,19 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         while (await reader.ReadAsync())
         {
-
             results[reader.GetString(0)] = reader.GetString(1);
-
         }
 
         return results;
-
     }
 
     private async Task<(int StartLine, int EndLine)[]> GetLineRangesAsync(string relativePath)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1409,18 +1318,14 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         while (await reader.ReadAsync())
         {
-
             results.Add((reader.GetInt32(0), reader.GetInt32(1)));
-
         }
 
         return [.. results];
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public string? FailForContentContaining { get; set; }
 
         public int EmbedBatchCallCount { get; private set; }
@@ -1436,36 +1341,29 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
-
             EmbedBatchCallCount++;
 
             EmbedBatches.Add([.. texts]);
 
             if (FailForContentContaining is { } needle && texts.Any(t => t.Contains(needle, StringComparison.Ordinal)))
             {
-
                 return Task.FromResult(Result<Embedding<float>[]>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure.")));
-
             }
 
             Embedding<float>[] generated = new Embedding<float>[texts.Count];
 
             for (int i = 0; i < texts.Count; i++)
             {
-
                 generated[i] = new Embedding<float>(new float[] { 1f, 0f, 0f });
-
             }
 
             return Task.FromResult(Result<Embedding<float>[]>.Success(generated));
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             Task.FromResult(Result<(string Chunk, int Offset)[]>.Success(
                 string.IsNullOrEmpty(text) ? [] : [(text, 0)]));
-
     }
 
     /// <summary>
@@ -1475,34 +1373,31 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     /// </summary>
     private sealed class FailingScopeFactory : IServiceScopeFactory
     {
-
         private int _scopeCount;
 
         public int ScopeCount => Volatile.Read(ref _scopeCount);
 
         public IServiceScope CreateScope()
         {
-
             Interlocked.Increment(ref _scopeCount);
 
             throw new InvalidOperationException("Simulated Grimoire failure during workspace reconciliation.");
-
         }
-
     }
 
     /// <summary>
     /// Parks every embedding call until <see cref="Release"/> is called, so a test can hold one
     /// reconciliation run in flight while it issues a second one.
     /// </summary>
-    private sealed class GatedWeaveService : IWeaveService
+    private sealed class GatedWeaveService : IWeaveService, IReleasableWorkspaceWeave
     {
-
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _embedBatchCallCount;
 
         public TaskCompletionSource EmbedEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SecondEmbedEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int EmbedBatchCallCount => Volatile.Read(ref _embedBatchCallCount);
 
@@ -1510,13 +1405,17 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public void Release() => _release.TrySetResult();
 
+        public void ReleaseAll() => Release();
+
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("WorkspaceIndexingService only calls EmbedBatchAsync.");
 
         public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
-
-            Interlocked.Increment(ref _embedBatchCallCount);
+            if (Interlocked.Increment(ref _embedBatchCallCount) == 2)
+            {
+                SecondEmbedEntered.TrySetResult();
+            }
 
             EmbedEntered.TrySetResult();
 
@@ -1526,44 +1425,54 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
             for (int i = 0; i < texts.Count; i++)
             {
-
                 generated[i] = new Embedding<float>(new float[] { 1f, 0f, 0f });
-
             }
 
             return Result<Embedding<float>[]>.Success(generated);
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             Task.FromResult(Result<(string Chunk, int Offset)[]>.Success(
                 string.IsNullOrEmpty(text) ? [] : [(text, 0)]));
-
     }
 
     private sealed class FakeWorkspaceFileWatcherFactory : IWorkspaceFileWatcherFactory
     {
+        private readonly object _gate = new();
 
         private readonly List<FakeWorkspaceFileWatcher> _watchers = [];
 
-        public FakeWorkspaceFileWatcher Single => Assert.Single(_watchers);
+        internal Action? BeforeReturn { get; set; }
 
-        public IReadOnlyList<FakeWorkspaceFileWatcher> Created => _watchers;
+        public FakeWorkspaceFileWatcher Single => Assert.Single(Created);
+
+        public IReadOnlyList<FakeWorkspaceFileWatcher> Created
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _watchers.ToArray();
+                }
+            }
+        }
 
         public IWorkspaceFileWatcher Create(
             string workspacePath,
             Action<WorkspaceFileChange> onChange,
             Action<Exception> onError)
         {
-
             FakeWorkspaceFileWatcher watcher = new(workspacePath, onChange, onError);
 
-            _watchers.Add(watcher);
+            lock (_gate)
+            {
+                _watchers.Add(watcher);
+            }
+
+            BeforeReturn?.Invoke();
 
             return watcher;
-
         }
-
     }
 
     private sealed class FakeWorkspaceFileWatcher(
@@ -1571,8 +1480,9 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         Action<WorkspaceFileChange> onChange,
         Action<Exception> onError) : IWorkspaceFileWatcher
     {
-
         public bool IsDisposed { get; private set; }
+
+        internal Action? AfterDispose { get; set; }
 
         public string WorkspacePath => workspacePath;
 
@@ -1590,8 +1500,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public void TriggerError(Exception exception) => onError(exception);
 
-        public void Dispose() => IsDisposed = true;
+        public void Dispose()
+        {
+            IsDisposed = true;
 
+            AfterDispose?.Invoke();
+        }
     }
-
 }

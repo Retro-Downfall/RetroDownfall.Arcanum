@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed class DataRetentionLeaseMaintainer
 {
-
     internal static readonly TimeSpan DefaultLeaseDuration = TimeSpan.FromMinutes(5);
 
     internal static readonly TimeSpan DefaultHeartbeatInterval = TimeSpan.FromMinutes(1);
@@ -33,7 +32,6 @@ internal sealed class DataRetentionLeaseMaintainer
         TimeSpan? leaseDuration = null,
         TimeSpan? heartbeatInterval = null)
     {
-
         ArgumentNullException.ThrowIfNull(renewLease);
 
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -44,23 +42,18 @@ internal sealed class DataRetentionLeaseMaintainer
 
         if (_leaseDuration <= TimeSpan.Zero)
         {
-
             throw new ArgumentOutOfRangeException(nameof(leaseDuration));
-
         }
 
         if (_heartbeatInterval <= TimeSpan.Zero
             || _heartbeatInterval >= _leaseDuration)
         {
-
             throw new ArgumentOutOfRangeException(nameof(heartbeatInterval));
-
         }
 
         _renewLease = renewLease;
 
         _timeProvider = timeProvider;
-
     }
 
     internal async Task<T> RunAsync<T>(
@@ -69,7 +62,6 @@ internal sealed class DataRetentionLeaseMaintainer
         Func<CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
         ArgumentNullException.ThrowIfNull(action);
@@ -82,29 +74,29 @@ internal sealed class DataRetentionLeaseMaintainer
 
         Task<T> actionTask = action(actionCancellation.Token);
 
+        Task? pendingHeartbeatDelay = null;
+
         try
         {
-
             while (!actionTask.IsCompleted)
             {
-
-                Task delay = Task.Delay(
+                pendingHeartbeatDelay = Task.Delay(
                     _heartbeatInterval,
                     _timeProvider,
                     heartbeatCancellation.Token);
 
                 Task completed = await Task.WhenAny(
                     actionTask,
-                    delay).ConfigureAwait(false);
+                    pendingHeartbeatDelay).ConfigureAwait(false);
 
                 if (ReferenceEquals(completed, actionTask))
                 {
-
                     break;
-
                 }
 
-                await delay.ConfigureAwait(false);
+                await pendingHeartbeatDelay.ConfigureAwait(false);
+
+                pendingHeartbeatDelay = null;
 
                 DateTimeOffset now = _timeProvider.GetUtcNow();
 
@@ -117,64 +109,79 @@ internal sealed class DataRetentionLeaseMaintainer
 
                 if (!renewed)
                 {
-
                     if (actionTask.IsCompleted)
                     {
-
                         return await actionTask.ConfigureAwait(false);
-
                     }
 
                     throw new DataRetentionLeaseLostException(
                         "The retention operation lost its durable lease while applying a candidate.");
-
                 }
-
             }
 
             return await actionTask.ConfigureAwait(false);
-
         }
-        catch
+        catch (Exception primaryFailure)
         {
+            bool cancellationCallbackFailed = false;
 
-            actionCancellation.Cancel();
+            try
+            {
+                actionCancellation.Cancel();
+            }
+            catch (Exception)
+            {
+                cancellationCallbackFailed = true;
+            }
+            finally
+            {
+                await ObserveCompletionAsync(actionTask).ConfigureAwait(false);
+            }
 
-            await ObserveCompletionAsync(actionTask).ConfigureAwait(false);
+            if (cancellationCallbackFailed)
+            {
+                throw new AggregateException(
+                    "The retention action failed, and its cancellation callbacks did not complete cleanly.",
+                    primaryFailure,
+                    new DataRetentionCancellationCallbackException());
+            }
 
             throw;
-
         }
         finally
         {
-
-            heartbeatCancellation.Cancel();
-
+            try
+            {
+                heartbeatCancellation.Cancel();
+            }
+            finally
+            {
+                if (pendingHeartbeatDelay is not null)
+                {
+                    await ObserveCompletionAsync(pendingHeartbeatDelay).ConfigureAwait(false);
+                }
+            }
         }
-
     }
 
-    private static async Task ObserveCompletionAsync<T>(Task<T> task)
+    private static async Task ObserveCompletionAsync(Task task)
     {
-
         try
         {
-
-            _ = await task.ConfigureAwait(false);
-
+            await task.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-
         }
         catch
         {
-
         }
-
     }
-
 }
 
 internal sealed class DataRetentionLeaseLostException(string message)
     : InvalidOperationException(message);
+
+internal sealed class DataRetentionCancellationCallbackException()
+    : InvalidOperationException(
+        "One or more retention action cancellation callbacks failed.");

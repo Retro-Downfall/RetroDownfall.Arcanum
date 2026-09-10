@@ -14,11 +14,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 public sealed class CliSurfaceTests
 {
-
     [Fact]
     public void Surface_projects_the_live_tree_root()
     {
-
         CliSurfaceMap map = BuildMap();
 
         Assert.NotEmpty(map.Commands);
@@ -26,13 +24,11 @@ public sealed class CliSurfaceTests
         Assert.Contains(map.Commands, command => command.Path == "run");
 
         Assert.Contains(map.Commands, command => command.Path == "doctor");
-
     }
 
     [Fact]
     public void Every_command_carries_help_text()
     {
-
         List<string> missing =
         [
             .. Walk(BuildMap())
@@ -41,18 +37,15 @@ public sealed class CliSurfaceTests
         ];
 
         Assert.Empty(missing);
-
     }
 
     [Fact]
     public void Every_option_and_argument_carries_help_text()
     {
-
         List<string> missing = [];
 
         foreach (CliSurfaceCommand command in Walk(BuildMap()))
         {
-
             missing.AddRange(
                 command.Options
                     .Where(static option => string.IsNullOrWhiteSpace(option.Description))
@@ -62,11 +55,9 @@ public sealed class CliSurfaceTests
                 command.Arguments
                     .Where(static argument => string.IsNullOrWhiteSpace(argument.Description))
                     .Select(argument => $"{command.Path} <{argument.Name}>"));
-
         }
 
         Assert.Empty(missing);
-
     }
 
     /// <summary>
@@ -77,46 +68,35 @@ public sealed class CliSurfaceTests
     [Fact]
     public void Short_options_have_exactly_one_meaning_across_the_whole_tree()
     {
-
         Dictionary<string, string> meanings = [];
 
         List<string> collisions = [];
 
         foreach (CliSurfaceCommand command in Walk(BuildMap()))
         {
-
             foreach (CliSurfaceOption option in command.Options)
             {
-
                 foreach (string alias in option.Aliases.Where(IsShort))
                 {
-
                     if (meanings.TryGetValue(alias, out string? existing)
                         && existing != option.Name)
                     {
-
                         collisions.Add($"{alias} means {existing} and {option.Name} ({command.Path})");
 
                         continue;
-
                     }
 
                     meanings[alias] = option.Name;
-
                 }
-
             }
-
         }
 
         Assert.Empty(collisions);
-
     }
 
     [Fact]
     public void Short_option_table_publishes_the_claude_aligned_meanings()
     {
-
         Dictionary<string, string> table = BuildMap()
             .ShortOptions
             .ToDictionary(static entry => entry.Alias, static entry => entry.Option, StringComparer.Ordinal);
@@ -136,13 +116,11 @@ public sealed class CliSurfaceTests
         Assert.Equal("--session", table["-s"]);
 
         Assert.Equal("--workspace", table["-w"]);
-
     }
 
     [Fact]
     public void Diagnostic_mcp_invoke_help_names_master_pipeline_reservation_not_a_ward_gate()
     {
-
         CliSurfaceCommand invoke = Walk(BuildMap()).Single(
             static command => command.Path == "mcp invoke");
 
@@ -153,13 +131,11 @@ public sealed class CliSurfaceTests
         Assert.DoesNotContain("Forbidden Art", invoke.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("blocked server-side", invoke.Description, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Ward_resolve_help_describes_retained_record_resolution_not_tool_admission()
     {
-
         CliSurfaceCommand resolve = Walk(BuildMap()).Single(
             static command => command.Path == "ward resolve");
 
@@ -176,7 +152,6 @@ public sealed class CliSurfaceTests
         Assert.DoesNotContain("proceed", allow.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("tool call", deny.Description, StringComparison.OrdinalIgnoreCase);
-
     }
 
     /// <summary>
@@ -188,32 +163,26 @@ public sealed class CliSurfaceTests
     [Fact]
     public void Committed_command_map_matches_the_live_tree()
     {
-
         string path = CommandMapPath();
 
         string actual = CliSurfaceWriter.ToJson(BuildMap()).ReplaceLineEndings("\n");
 
         if (global::System.Environment.GetEnvironmentVariable("ARCANUM_UPDATE_COMMAND_MAP") == "1")
         {
-
             File.WriteAllText(path, actual);
-
         }
 
         string expected = File.ReadAllText(path).ReplaceLineEndings("\n");
 
         Assert.Equal(expected, actual);
-
     }
 
     [Fact]
     public void Command_map_generation_is_byte_for_byte_stable()
     {
-
         Assert.Equal(
             CliSurfaceWriter.ToJson(BuildMap()),
             CliSurfaceWriter.ToJson(BuildMap()));
-
     }
 
     /// <summary>
@@ -233,7 +202,6 @@ public sealed class CliSurfaceTests
     [Fact]
     public void Every_documented_command_row_resolves_or_declares_itself_unregistered()
     {
-
         HashSet<string> registered = new(
             Walk(BuildMap()).Select(static command => command.Path),
             StringComparer.Ordinal);
@@ -250,15 +218,12 @@ public sealed class CliSurfaceTests
 
         foreach ((int Number, string Cell) row in rows)
         {
-
             Match match = DocumentedCommandCell.Match(row.Cell);
 
             if (!match.Success
                 || match.Groups["unregistered"].Success)
             {
-
                 continue;
-
             }
 
             string path = VerbPath(match.Groups["spelling"].Value);
@@ -266,13 +231,10 @@ public sealed class CliSurfaceTests
             if (path.Length == 0
                 || registered.Contains(path))
             {
-
                 continue;
-
             }
 
             offenders.Add($"line {row.Number}: arcanum {path}");
-
         }
 
         Assert.True(
@@ -281,7 +243,6 @@ public sealed class CliSurfaceTests
                 + " mark the row unregistered:"
                 + global::System.Environment.NewLine
                 + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -298,7 +259,6 @@ public sealed class CliSurfaceTests
     [Fact]
     public void The_covenant_heading_states_the_number_of_verbs_the_tree_registers()
     {
-
         int registered = Walk(BuildMap())
             .Count(static command =>
                 command.Path.StartsWith("memory covenant ", StringComparison.Ordinal));
@@ -311,7 +271,6 @@ public sealed class CliSurfaceTests
             $"#### Dedicated Covenant management commands ({NumberWord(registered)} registered, the rest contract-frozen)",
             reference,
             StringComparison.Ordinal);
-
     }
 
     private static readonly Regex DocumentedCommandCell = new(
@@ -326,41 +285,31 @@ public sealed class CliSurfaceTests
     /// <summary>The first cell of every table row above the removed-spellings section.</summary>
     private static IEnumerable<(int Number, string Cell)> CommandReferenceRows()
     {
-
         int number = 0;
 
         foreach (string line in File.ReadLines(CommandReferencePath()))
         {
-
             number++;
 
             if (line.StartsWith("## Removed spellings", StringComparison.Ordinal))
             {
-
                 yield break;
-
             }
 
             if (!line.StartsWith('|'))
             {
-
                 continue;
-
             }
 
             string[] cells = UnescapedPipe.Split(line);
 
             if (cells.Length < 2)
             {
-
                 continue;
-
             }
 
             yield return (number, cells[1].Replace("\\|", "|", StringComparison.Ordinal).Trim());
-
         }
-
     }
 
     /// <summary>The verb path of a spelling, stopping at its first argument, option, or alternation.</summary>
@@ -390,7 +339,6 @@ public sealed class CliSurfaceTests
 
     internal static CliSurfaceMap BuildMap()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -402,7 +350,6 @@ public sealed class CliSurfaceTests
         RootCommand root = CliCommandTree.Build(provider, out _);
 
         return CliSurfaceBuilder.Build(root);
-
     }
 
     internal static IEnumerable<CliSurfaceCommand> Walk(CliSurfaceMap map) =>
@@ -410,38 +357,22 @@ public sealed class CliSurfaceTests
 
     internal static IEnumerable<CliSurfaceCommand> Walk(CliSurfaceCommand command)
     {
-
         yield return command;
 
         foreach (CliSurfaceCommand child in command.Commands.SelectMany(Walk))
         {
-
             yield return child;
-
         }
-
     }
 
     internal static string CommandMapPath()
     {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null
-            && !File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-        {
-
-            directory = directory.Parent;
-
-        }
-
-        Assert.NotNull(directory);
-
-        return Path.Combine(directory.FullName, "docs", "Arcanum.CommandMap.json");
-
+        return Path.Combine(
+            global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(),
+            "docs",
+            "Arcanum.CommandMap.json");
     }
 
     private static bool IsShort(string alias) =>
         alias.Length == 2 && alias[0] == '-' && alias[1] != '-';
-
 }

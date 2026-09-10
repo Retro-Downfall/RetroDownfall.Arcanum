@@ -30,12 +30,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class SessionManagementCommandTests
 {
-
     [Fact]
 
     public void Session_help_exposes_complete_lifecycle_command_family()
     {
-
         CliTestResult result = RunCommand(new RecordingHandler(), ["session", "--help"]);
 
         Assert.Equal(0, result.ExitCode);
@@ -62,11 +60,8 @@ public sealed class SessionManagementCommandTests
 
         foreach (string command in commands)
         {
-
             Assert.Contains(command, result.Output, StringComparison.Ordinal);
-
         }
-
     }
 
     /// <summary>
@@ -77,7 +72,6 @@ public sealed class SessionManagementCommandTests
     [Fact]
     public void Session_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
-
         // A default HostSettings() and this harness's own default configuration resolve to the
         // same address, so asserting against the default alone would also pass a hardcoded
         // "http://localhost:5001" literal in the annotation path. Configuring a non-default port
@@ -96,14 +90,12 @@ public sealed class SessionManagementCommandTests
         string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Session_list_passes_all_filters_and_emits_structured_json()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         SessionQueryResult payload = new(
@@ -156,14 +148,12 @@ public sealed class SessionManagementCommandTests
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
         Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
-
     }
 
     [Fact]
 
     public void Session_show_combines_detail_and_attachment_count_as_json()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         SessionDetailDto detail = new(
@@ -206,14 +196,12 @@ public sealed class SessionManagementCommandTests
         Assert.True(document.RootElement.TryGetProperty("totalCostUsd", out _));
 
         Assert.True(document.RootElement.TryGetProperty("forkedFromSessionId", out _));
-
     }
 
     [Fact]
 
     public void Session_title_resolution_includes_archived_sessions()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         SessionSummaryDto summary = new(
@@ -260,7 +248,6 @@ public sealed class SessionManagementCommandTests
         Assert.Equal(0, result.ExitCode);
 
         Assert.Equal(4, handler.Requests.Count);
-
     }
 
     [Theory]
@@ -278,7 +265,6 @@ public sealed class SessionManagementCommandTests
         string method,
         string suffix)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         RecordingHandler handler = new(request => ResponseFor(request, sessionId));
@@ -292,14 +278,12 @@ public sealed class SessionManagementCommandTests
         Assert.Equal(method, request.Method.Method);
 
         Assert.Equal($"/api/sessions/{sessionId:D}{suffix}", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public void Session_fork_rename_archive_and_export_use_server_contracts()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         RecordingHandler handler = new(request => ResponseFor(request, sessionId));
@@ -316,39 +300,30 @@ public sealed class SessionManagementCommandTests
             handler.Requests,
             request =>
             {
-
                 Assert.Equal(HttpMethod.Post, request.Method);
 
                 Assert.EndsWith("/fork", request.RequestUri!.AbsolutePath, StringComparison.Ordinal);
-
             },
             request =>
             {
-
                 Assert.Equal(HttpMethod.Patch, request.Method);
 
                 Assert.Equal($"/api/sessions/{sessionId:D}", request.RequestUri!.AbsolutePath);
-
             },
             request =>
             {
-
                 Assert.Equal(HttpMethod.Delete, request.Method);
 
                 Assert.Equal($"/api/sessions/{sessionId:D}", request.RequestUri!.AbsolutePath);
-
             },
             request =>
             {
-
                 Assert.Equal(HttpMethod.Get, request.Method);
 
                 Assert.EndsWith("/export", request.RequestUri!.AbsolutePath, StringComparison.Ordinal);
 
                 Assert.Equal("?format=markdown", request.RequestUri.Query);
-
             });
-
     }
 
     [Theory]
@@ -364,7 +339,6 @@ public sealed class SessionManagementCommandTests
         string method,
         string suffix)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid entryId = Guid.NewGuid();
@@ -382,7 +356,6 @@ public sealed class SessionManagementCommandTests
         Assert.Equal(method, request.Method.Method);
 
         Assert.Equal($"/api/sessions/{sessionId:D}/entries/{entryId:D}{suffix}", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>
@@ -392,7 +365,6 @@ public sealed class SessionManagementCommandTests
     [Fact]
     public void Session_continuation_lives_on_the_inference_entry()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult run = RunCommand(handler, ["run", "--help"]);
@@ -406,14 +378,12 @@ public sealed class SessionManagementCommandTests
         Assert.Contains("--resume", run.Output, StringComparison.Ordinal);
 
         Assert.Contains("title", run.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Session_watch_reads_server_sent_entries_as_newline_delimited_json()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         EntryDto entry = new(
@@ -446,14 +416,12 @@ public sealed class SessionManagementCommandTests
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
         Assert.Equal(entry.Id, document.RootElement.GetProperty("id").GetGuid());
-
     }
 
     [Fact]
 
     public void Session_memory_errors_keep_api_code_visible_and_actionable()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Error error = new(
@@ -479,14 +447,12 @@ public sealed class SessionManagementCommandTests
         Assert.Contains(error.Message, result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain(error.Code, result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Session_watch_preserves_since_entry_api_error_code()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid entryId = Guid.NewGuid();
@@ -518,14 +484,12 @@ public sealed class SessionManagementCommandTests
         Assert.Contains(error.Code, result.Error, StringComparison.Ordinal);
 
         Assert.Contains(error.Message, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Delete_entry_requires_confirmation_before_sending_request()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid entryId = Guid.NewGuid();
@@ -541,44 +505,35 @@ public sealed class SessionManagementCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     private static HttpResponseMessage ResponseFor(HttpRequestMessage request, Guid sessionId)
     {
-
         string path = request.RequestUri!.AbsolutePath;
 
         if (path.EndsWith("/entries", StringComparison.Ordinal))
         {
-
             return CreateResponse(
                 ApiResponse<EntryDto[]>.FromResult(Result<EntryDto[]>.Success([])),
                 ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
-
         }
 
         if (path.EndsWith("/attachments", StringComparison.Ordinal))
         {
-
             return CreateResponse(
                 ApiResponse<SessionAttachmentDto[]>.FromResult(Result<SessionAttachmentDto[]>.Success([])),
                 ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
-
         }
 
         if (path.EndsWith("/compact", StringComparison.Ordinal))
         {
-
             return CreateResponse(
                 ApiResponse<CompactResult>.FromResult(Result<CompactResult>.Success(new CompactResult(100, 40, 3))),
                 ArcanumJsonContext.Default.ApiResponseCompactResult);
-
         }
 
         if (path.EndsWith("/fork", StringComparison.Ordinal))
         {
-
             SessionDetailDto fork = new(
                 Guid.NewGuid(),
                 null,
@@ -595,23 +550,19 @@ public sealed class SessionManagementCommandTests
                 ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Success(fork)),
                 ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
                 HttpStatusCode.Created);
-
         }
 
         if (path.EndsWith("/export", StringComparison.Ordinal))
         {
-
             SessionExportResult export = new(sessionId, "markdown", "# Quest", "text/markdown");
 
             return CreateResponse(
                 ApiResponse<SessionExportResult>.FromResult(Result<SessionExportResult>.Success(export)),
                 ArcanumJsonContext.Default.ApiResponseSessionExportResult);
-
         }
 
         if (request.Method == HttpMethod.Patch)
         {
-
             SessionDetailDto renamed = new(
                 sessionId,
                 null,
@@ -626,22 +577,18 @@ public sealed class SessionManagementCommandTests
             return CreateResponse(
                 ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Success(renamed)),
                 ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
-
         }
 
         if (path.EndsWith("/rest", StringComparison.Ordinal))
         {
-
             return CreateResponse(
                 ApiResponse<bool>.FromResult(Result<bool>.Success(true)),
                 ArcanumJsonContext.Default.ApiResponseBoolean,
                 HttpStatusCode.Accepted);
-
         }
 
         if (path.Contains("/entries/", StringComparison.Ordinal))
         {
-
             HttpStatusCode status = request.Method == HttpMethod.Delete && !path.EndsWith("/pin", StringComparison.Ordinal)
                 ? HttpStatusCode.NoContent
                 : HttpStatusCode.OK;
@@ -652,18 +599,14 @@ public sealed class SessionManagementCommandTests
                     ApiResponse<bool>.FromResult(Result<bool>.Success(true)),
                     ArcanumJsonContext.Default.ApiResponseBoolean,
                     status);
-
         }
 
         if (request.Method == HttpMethod.Delete)
         {
-
             return new HttpResponseMessage(HttpStatusCode.NoContent);
-
         }
 
         throw new InvalidOperationException($"Unexpected request: {request.Method} {request.RequestUri}");
-
     }
 
     /// <summary>
@@ -676,7 +619,6 @@ public sealed class SessionManagementCommandTests
 
     public void Session_list_reports_a_failure_on_the_diagnostic_stream_only()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<SessionQueryResult>(
                 null,
@@ -696,7 +638,6 @@ public sealed class SessionManagementCommandTests
         Assert.True(
             string.IsNullOrWhiteSpace(result.Output),
             $"stdout is the payload stream and must stay clean, got: {result.Output}");
-
     }
 
     private static CliTestResult RunCommand(
@@ -704,7 +645,6 @@ public sealed class SessionManagementCommandTests
         string[] args,
         Action<ServiceCollection>? configureServices = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -719,10 +659,13 @@ public sealed class SessionManagementCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -730,19 +673,16 @@ public sealed class SessionManagementCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>("test-key");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -753,46 +693,36 @@ public sealed class SessionManagementCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 snapshot.Content = new ByteArrayContent(
                     request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult());
-
             }
 
             Requests.Add(snapshot);
 
             return Task.FromResult(responder?.Invoke(request) ?? new HttpResponseMessage(HttpStatusCode.NotFound));
-
         }
-
     }
-
 }

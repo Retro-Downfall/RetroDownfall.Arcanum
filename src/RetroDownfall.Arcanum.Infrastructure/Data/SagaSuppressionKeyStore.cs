@@ -1,7 +1,5 @@
 using System.Data.Common;
 
-using System.Globalization;
-
 using System.Security.Cryptography;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -17,16 +15,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </remarks>
 internal static class SagaSuppressionKeyStore
 {
-
-    private const string TimestampFormat = "o";
-
     /// <summary>The installation's suppression key, or <see langword="null"/> when nothing has been retired.</summary>
     internal static async Task<byte[]?> ReadAsync(
         DbConnection connection,
         DbTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using DbCommand command = connection.CreateCommand();
@@ -38,7 +32,6 @@ internal static class SagaSuppressionKeyStore
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? null : (byte[])result;
-
     }
 
     /// <summary>
@@ -56,14 +49,12 @@ internal static class SagaSuppressionKeyStore
         DateTimeOffset createdAt,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         byte[] candidate = RandomNumberGenerator.GetBytes(32);
 
         await using (DbCommand command = connection.CreateCommand())
         {
-
             command.Transaction = transaction;
 
             command.CommandText =
@@ -77,18 +68,15 @@ internal static class SagaSuppressionKeyStore
             AddParameter(command, "@createdAt", Format(createdAt));
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return await ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 "saga_suppression_key holds no row immediately after INSERT OR IGNORE targeted it.");
-
     }
 
     private static void AddParameter(DbCommand command, string name, object? value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -96,10 +84,8 @@ internal static class SagaSuppressionKeyStore
         parameter.Value = value ?? DBNull.Value;
 
         _ = command.Parameters.Add(parameter);
-
     }
 
     private static string Format(DateTimeOffset value) =>
-        value.ToString(TimestampFormat, CultureInfo.InvariantCulture);
-
+        UtcInstantText.Format(value);
 }

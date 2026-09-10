@@ -39,7 +39,6 @@ internal sealed record LocalErasureWorkItemRow(
 /// </remarks>
 internal static class ManagedFileEvidenceCodec
 {
-
     private const byte LocationVersion = 1;
 
     private const byte OwnershipVersion = 1;
@@ -56,7 +55,6 @@ internal static class ManagedFileEvidenceCodec
     /// </remarks>
     internal static byte[] EncodeWriteLocation(ManagedFileWriteDurableLocationEvidence location)
     {
-
         ArgumentNullException.ThrowIfNull(location);
 
         byte[] target = EncodeLocation(location.Target);
@@ -70,22 +68,17 @@ internal static class ManagedFileEvidenceCodec
         WriteComponent(buffer, location.TemporaryLeaf);
 
         return buffer.ToArray();
-
     }
 
     internal static Result<ManagedFileWriteDurableLocationEvidence> DecodeWriteLocation(byte[] payload)
     {
-
         if (payload is null || payload.Length < 1 || payload[0] != WriteLocationVersion)
         {
-
             return Unreadable<ManagedFileWriteDurableLocationEvidence>();
-
         }
 
         try
         {
-
             ReadOnlySpan<byte> span = payload;
 
             int offset = 1;
@@ -102,9 +95,7 @@ internal static class ManagedFileEvidenceCodec
 
             for (int index = 0; index < segmentCount; index++)
             {
-
                 segments.Add(ReadComponent(span, ref offset));
-
             }
 
             CovenantDigest parent = ReadDigest(span, ref offset);
@@ -119,21 +110,16 @@ internal static class ManagedFileEvidenceCodec
                     new ManagedFileWriteDurableLocationEvidence(
                         new ManagedFileDurableLocationEvidence(root, revision, segments.ToImmutable(), parent, leaf),
                         temporaryLeaf));
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or ArgumentOutOfRangeException or IndexOutOfRangeException or DecoderFallbackException)
         {
-
             return Unreadable<ManagedFileWriteDurableLocationEvidence>();
-
         }
-
     }
 
     internal static byte[] EncodeLocation(ManagedFileDurableLocationEvidence location)
     {
-
         ArgumentNullException.ThrowIfNull(location);
 
         using MemoryStream buffer = new();
@@ -152,9 +138,7 @@ internal static class ManagedFileEvidenceCodec
 
         foreach (string segment in location.NormalizedParentSegments)
         {
-
             WriteComponent(buffer, segment);
-
         }
 
         buffer.Write(location.ParentPhysicalIdentityDigest.Bytes.AsSpan());
@@ -162,12 +146,10 @@ internal static class ManagedFileEvidenceCodec
         WriteComponent(buffer, location.TargetLeaf);
 
         return buffer.ToArray();
-
     }
 
     internal static byte[] EncodeOwnership(ManagedFileOwnershipEvidence ownership)
     {
-
         ArgumentNullException.ThrowIfNull(ownership);
 
         byte[] encoded = new byte[1 + (CovenantLimits.DigestBytes * 2) + 8];
@@ -183,22 +165,17 @@ internal static class ManagedFileEvidenceCodec
             ownership.ContentLength);
 
         return encoded;
-
     }
 
     internal static Result<ManagedFileDurableLocationEvidence> DecodeLocation(byte[] payload)
     {
-
         try
         {
-
             ReadOnlySpan<byte> span = payload;
 
             if (span.Length < 1 || span[0] != LocationVersion)
             {
-
                 return Unreadable<ManagedFileDurableLocationEvidence>();
-
             }
 
             int offset = 1;
@@ -215,9 +192,7 @@ internal static class ManagedFileEvidenceCodec
 
             for (int index = 0; index < segmentCount; index++)
             {
-
                 segments.Add(ReadComponent(span, ref offset));
-
             }
 
             CovenantDigest parent = ReadDigest(span, ref offset);
@@ -233,31 +208,23 @@ internal static class ManagedFileEvidenceCodec
                         segments.ToImmutable(),
                         parent,
                         leaf));
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or ArgumentOutOfRangeException or IndexOutOfRangeException or DecoderFallbackException)
         {
-
             return Unreadable<ManagedFileDurableLocationEvidence>();
-
         }
-
     }
 
     internal static Result<ManagedFileOwnershipEvidence> DecodeOwnership(byte[] payload)
     {
-
         try
         {
-
             ReadOnlySpan<byte> span = payload;
 
             if (span.Length != 1 + (CovenantLimits.DigestBytes * 2) + 8 || span[0] != OwnershipVersion)
             {
-
                 return Unreadable<ManagedFileOwnershipEvidence>();
-
             }
 
             return Result<ManagedFileOwnershipEvidence>.Success(
@@ -265,27 +232,20 @@ internal static class ManagedFileEvidenceCodec
                     new CovenantDigest(span.Slice(1, CovenantLimits.DigestBytes).ToArray()),
                     new CovenantDigest(span.Slice(1 + CovenantLimits.DigestBytes, CovenantLimits.DigestBytes).ToArray()),
                     BinaryPrimitives.ReadInt64LittleEndian(span[(1 + (CovenantLimits.DigestBytes * 2))..])));
-
         }
         catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
         {
-
             return Unreadable<ManagedFileOwnershipEvidence>();
-
         }
-
     }
 
     private static void WriteComponent(MemoryStream buffer, string value)
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes(value);
 
         if (bytes.Length is 0 or > 1024)
         {
-
             throw new ArgumentOutOfRangeException(nameof(value));
-
         }
 
         Span<byte> length = stackalloc byte[2];
@@ -295,21 +255,17 @@ internal static class ManagedFileEvidenceCodec
         buffer.Write(length);
 
         buffer.Write(bytes);
-
     }
 
     private static string ReadComponent(ReadOnlySpan<byte> span, ref int offset)
     {
-
         ushort length = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
 
         offset += 2;
 
         if (length is 0 or > 1024)
         {
-
             throw new ArgumentOutOfRangeException(nameof(span));
-
         }
 
         string value = new UTF8Encoding(false, true).GetString(span.Slice(offset, length));
@@ -317,18 +273,15 @@ internal static class ManagedFileEvidenceCodec
         offset += length;
 
         return value;
-
     }
 
     private static CovenantDigest ReadDigest(ReadOnlySpan<byte> span, ref int offset)
     {
-
         CovenantDigest digest = new(span.Slice(offset, CovenantLimits.DigestBytes).ToArray());
 
         offset += CovenantLimits.DigestBytes;
 
         return digest;
-
     }
 
     private static Result<T> Unreadable<T>() =>
@@ -336,7 +289,6 @@ internal static class ManagedFileEvidenceCodec
             new Error(
                 ErrorCodes.Covenant.ManualArtifactErasureRequired,
                 "A durable managed-file erasure work item could not be read by this build."));
-
 }
 
 /// <summary>
@@ -350,7 +302,6 @@ internal static class ManagedFileEvidenceCodec
 /// </remarks>
 internal static class LocalErasureWorkItemStore
 {
-
     /// <summary>How many nonterminal rows one pre-readiness pass will adopt.</summary>
     internal const int RecoveryPageSize = 256;
 
@@ -368,7 +319,6 @@ internal static class LocalErasureWorkItemStore
         DateTimeOffset utcNow,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -401,7 +351,6 @@ internal static class LocalErasureWorkItemStore
         _ = command.Parameters.AddWithValue("$now", Iso(utcNow));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     internal static async Task<Result<LocalErasureWorkItemRow?>> TryReadAsync(
@@ -410,7 +359,6 @@ internal static class LocalErasureWorkItemStore
         Guid workItemId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -425,9 +373,7 @@ internal static class LocalErasureWorkItemStore
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<LocalErasureWorkItemRow?>.Success(null);
-
         }
 
         Result<LocalErasureWorkItemRow> row = Read(reader);
@@ -435,7 +381,6 @@ internal static class LocalErasureWorkItemStore
         return row.IsFailure
             ? Result<LocalErasureWorkItemRow?>.Failure(row.Error)
             : Result<LocalErasureWorkItemRow?>.Success(row.Value);
-
     }
 
     /// <summary>
@@ -445,7 +390,6 @@ internal static class LocalErasureWorkItemStore
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -459,22 +403,17 @@ internal static class LocalErasureWorkItemStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             Result<LocalErasureWorkItemRow> row = Read(reader);
 
             if (row.IsFailure)
             {
-
                 return Result<IReadOnlyList<LocalErasureWorkItemRow>>.Failure(row.Error);
-
             }
 
             rows.Add(row.Value);
-
         }
 
         return Result<IReadOnlyList<LocalErasureWorkItemRow>>.Success(rows);
-
     }
 
     /// <summary>
@@ -495,14 +434,15 @@ internal static class LocalErasureWorkItemStore
         int ceiling,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ceiling);
 
         await using SqliteCommand command = connection.CreateCommand();
 
-        command.CommandText = $"{SelectColumns} ORDER BY WorkItemId LIMIT {ceiling + 1};";
+        command.CommandText = $"{SelectColumns} ORDER BY WorkItemId LIMIT $take;";
+
+        _ = command.Parameters.AddWithValue("$take", checked((long)ceiling + 1L));
 
         List<LocalErasureWorkItemRow> rows = [];
 
@@ -512,22 +452,17 @@ internal static class LocalErasureWorkItemStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             Result<LocalErasureWorkItemRow> row = Read(reader);
 
             if (row.IsFailure)
             {
-
                 return Result<IReadOnlyList<LocalErasureWorkItemRow>>.Failure(row.Error);
-
             }
 
             rows.Add(row.Value);
-
         }
 
         return Result<IReadOnlyList<LocalErasureWorkItemRow>>.Success(rows);
-
     }
 
     /// <summary>
@@ -547,7 +482,6 @@ internal static class LocalErasureWorkItemStore
         Guid sourceWriteOperationId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -570,9 +504,7 @@ internal static class LocalErasureWorkItemStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             identities.Add(Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture));
-
         }
 
         return identities.Count switch
@@ -584,7 +516,6 @@ internal static class LocalErasureWorkItemStore
                     ErrorCodes.Covenant.ManualArtifactErasureRequired,
                     "A managed-file producer has more than one active local erasure work item.")),
         };
-
     }
 
     /// <summary>
@@ -601,7 +532,6 @@ internal static class LocalErasureWorkItemStore
         DateTimeOffset utcNow,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -632,7 +562,6 @@ internal static class LocalErasureWorkItemStore
         _ = command.Parameters.AddWithValue("$expectedRevision", expectedCheckpointRevision);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-
     }
 
     private const string SelectColumns = """
@@ -644,15 +573,12 @@ internal static class LocalErasureWorkItemStore
 
     private static Result<LocalErasureWorkItemRow> Read(SqliteDataReader reader)
     {
-
         Result<ManagedFileDurableLocationEvidence> location =
             ManagedFileEvidenceCodec.DecodeLocation((byte[])reader.GetValue(6));
 
         if (location.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(location.Error);
-
         }
 
         Result<ManagedFileOwnershipEvidence> ownership =
@@ -660,9 +586,7 @@ internal static class LocalErasureWorkItemStore
 
         if (ownership.IsFailure)
         {
-
             return Result<LocalErasureWorkItemRow>.Failure(ownership.Error);
-
         }
 
         return Result<LocalErasureWorkItemRow>.Success(
@@ -678,12 +602,10 @@ internal static class LocalErasureWorkItemStore
                 (LocalErasureWorkItemState)reader.GetInt32(8),
                 reader.IsDBNull(9) ? null : (LocalErasureDeletionEvidenceCode)reader.GetInt32(9),
                 reader.GetInt64(10)));
-
     }
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
 }

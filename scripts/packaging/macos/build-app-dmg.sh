@@ -149,17 +149,20 @@ case "$PRODUCT" in
 esac
 
 require_cmd dotnet
+require_cmd rg
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/app-pack.XXXXXX")"
 cleanup() {
-  notarize_cleanup
-  rm -rf "$WORK"
+  local original_status=$?
+
+  packaging_cleanup_exit "$original_status" "$WORK"
 }
 trap cleanup EXIT
 
 PUBLISH_DIR="$WORK/publish"
+PUBLISH_LOG="$WORK/publish.log"
 APP_PATH="$WORK/${APP_NAME}.app"
 DMG_PATH="$OUTPUT_DIR/$DMG_NAME"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.desktop.plist"
@@ -182,7 +185,22 @@ else
   PUBLISH_ARGS+=(-p:PublishSingleFile=false)
 fi
 
-dotnet "${PUBLISH_ARGS[@]}"
+if ! dotnet "${PUBLISH_ARGS[@]}" 2>&1 | tee "$PUBLISH_LOG"; then
+  echo "error: dotnet publish $APP_NAME failed" >&2
+  exit 1
+fi
+
+if rg --no-config -n -i '(^|[[:space:]:])warning([[:space:]:]|$)' "$PUBLISH_LOG"; then
+  echo "error: GUI publish emitted warning output" >&2
+  exit 1
+else
+  warning_scan_status=$?
+fi
+
+if [[ "$warning_scan_status" -ne 1 ]]; then
+  echo "error: could not scan GUI publish output (ripgrep exit $warning_scan_status)" >&2
+  exit 1
+fi
 
 if [[ ! -f "$PUBLISH_DIR/$EXECUTABLE_NAME" ]]; then
   echo "error: expected apphost not found: $PUBLISH_DIR/$EXECUTABLE_NAME" >&2
@@ -278,9 +296,7 @@ elif [[ "$SKIP_SIGN" -eq 0 ]]; then
   staple_item "$DMG_PATH"
 
   echo "==> Assessing DMG with spctl"
-  spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH" || {
-    echo "warning: spctl --assess on DMG returned non-zero; notarization/staple succeeded — check local policy" >&2
-  }
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
 fi
 
 echo "==> Wrote $DMG_PATH"

@@ -9,19 +9,16 @@ namespace RetroDownfall.Arcanum.Tests.Conclave;
 
 public sealed class ConclaveSimulacrumTests
 {
-
     [Fact]
     public void Defaults_ConclaveDisabled()
     {
         Assert.False(ArcanumRuntimeDefaults.Conclave.Enabled);
         Assert.False(new ArcanumSettings().Features.Conclave);
-
     }
 
     [Fact]
     public async Task CastAsync_WhenConclaveDisabled_Fails()
     {
-
         FakeApprenticeRepository repo = new();
 
         ConclaveArchmage archmage = new(repo, Monitor(new ArcanumSettings()));
@@ -34,13 +31,11 @@ public sealed class ConclaveSimulacrumTests
         Assert.Equal("Apprentice.ConclaveDisabled", result.Error.Code);
 
         Assert.Empty(repo.Items);
-
     }
 
     [Fact]
     public async Task CastAsync_WithEmptyGoal_Fails()
     {
-
         FakeApprenticeRepository repo = new();
 
         ConclaveArchmage archmage = new(repo, Monitor(EnabledSettings()));
@@ -51,13 +46,11 @@ public sealed class ConclaveSimulacrumTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Apprentice.InvalidGoal", result.Error.Code);
-
     }
 
     [Fact]
     public async Task CastAsync_WhenEnabled_CreatesChildWithLineageInCheckpoint()
     {
-
         FakeApprenticeRepository repo = new();
 
         ConclaveArchmage archmage = new(repo, Monitor(EnabledSettings()));
@@ -65,7 +58,13 @@ public sealed class ConclaveSimulacrumTests
         Guid parentId = Guid.NewGuid();
 
         Result<Apprentice> result = await archmage.CastAsync(
-            new ConclaveCastRequest("Delegated task", "Scout", "/tmp/ws", null, parentId));
+            new ConclaveCastRequest(
+                "Delegated task",
+                "Scout",
+                "/tmp/ws",
+                null,
+                parentId,
+                LaunchRequested: true));
 
         Assert.True(result.IsSuccess);
 
@@ -85,12 +84,12 @@ public sealed class ConclaveSimulacrumTests
 
         Assert.Equal(parentId, checkpoint!.ParentApprenticeId);
 
+        Assert.True(checkpoint.LaunchRequested);
     }
 
     [Fact]
     public async Task CastAsync_WithoutParent_CreatesOrphanWithoutCheckpoint()
     {
-
         FakeApprenticeRepository repo = new();
 
         ConclaveArchmage archmage = new(repo, Monitor(EnabledSettings()));
@@ -103,13 +102,11 @@ public sealed class ConclaveSimulacrumTests
         Assert.Null(result.Value!.ParentApprenticeId);
 
         Assert.Null(result.Value!.CheckpointData);
-
     }
 
     [Fact]
     public async Task CastAsync_DeepLineage_AllowsDelegation()
     {
-
         FakeApprenticeRepository repo = new();
 
         Guid root = Guid.NewGuid();
@@ -171,7 +168,6 @@ public sealed class ConclaveSimulacrumTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(greatGrandchild, result.Value.ParentApprenticeId);
-
     }
 
     private static ArcanumSettings EnabledSettings() =>
@@ -185,18 +181,15 @@ public sealed class ConclaveSimulacrumTests
 
     private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
     {
-
         public T CurrentValue { get; } = value;
 
         public T Get(string? name) => CurrentValue;
 
         public IDisposable? OnChange(Action<T, string?> listener) => null;
-
     }
 
     private sealed class FakeApprenticeRepository : IApprenticeRepository
     {
-
         public List<Apprentice> Items { get; } = [];
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -212,11 +205,9 @@ public sealed class ConclaveSimulacrumTests
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-
             Items.Add(apprentice);
 
             return Task.FromResult(apprentice);
-
         }
 
         public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
@@ -230,8 +221,5 @@ public sealed class ConclaveSimulacrumTests
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult((IReadOnlyList<Apprentice>)[]);
-
     }
-
 }
-

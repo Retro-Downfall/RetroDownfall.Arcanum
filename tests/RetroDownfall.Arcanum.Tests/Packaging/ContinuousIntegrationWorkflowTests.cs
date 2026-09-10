@@ -8,12 +8,79 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 public sealed class ContinuousIntegrationWorkflowTests
 {
-
     /// <summary>
     /// One job of a workflow under <c>.github/workflows</c>: the runner it asks for, whether a
     /// job-level <c>if:</c> gates it, and every line of its body.
     /// </summary>
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
+
+    [Fact]
+    public void Unconditional_macos_aot_lane_builds_and_executes_the_dedicated_admission_smoke()
+    {
+        WorkflowJob[] matching = ContinuousIntegrationJobs(FindRepositoryRoot())
+            .Where(static job => job.RunsOn.StartsWith("macos", StringComparison.Ordinal))
+            .Where(static job => !job.IsConditional)
+            .Where(static job => job.Body.Contains(
+                "Build the Grimoire admission benchmark host",
+                StringComparison.Ordinal))
+            .ToArray();
+
+        WorkflowJob lane = Assert.Single(matching);
+
+        const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
+            + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
+
+        int sdk = lane.Body.IndexOf("dotnet-version: \"10.0.401\"", StringComparison.Ordinal);
+
+        int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
+
+        int smoke = lane.Body.IndexOf(
+            "./scripts/benchmark-grimoire-admission.sh --smoke",
+            StringComparison.Ordinal);
+
+        Assert.True(sdk >= 0, "The benchmark lane must pin the serviced Native AOT SDK.");
+
+        Assert.True(build > sdk, "The dedicated host must be built after SDK setup.");
+
+        Assert.True(smoke > build, "The published Native AOT smoke must run after the clean host build.");
+
+        Assert.Contains("-c Debug", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("--no-incremental", lane.Body, StringComparison.Ordinal);
+
+        string benchmarkBuild = lane.Body[build..smoke];
+
+        Assert.Contains(
+            "-p:RestoreLockedMode=true",
+            benchmarkBuild,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Macos_full_suite_checks_out_the_history_its_regression_tests_use()
+    {
+        WorkflowJob lane = Assert.Single(
+            ContinuousIntegrationJobs(FindRepositoryRoot()),
+            static job =>
+                job.RunsOn.StartsWith("macos", StringComparison.Ordinal)
+                && job.Body.Contains("./scripts/coverage.sh --threshold", StringComparison.Ordinal));
+
+        int checkout = lane.Body.IndexOf("uses: actions/checkout@", StringComparison.Ordinal);
+
+        int fullHistory = lane.Body.IndexOf("fetch-depth: 0", StringComparison.Ordinal);
+
+        int suite = lane.Body.IndexOf("./scripts/coverage.sh --threshold", StringComparison.Ordinal);
+
+        Assert.True(checkout >= 0, "The macOS full-suite lane must check the repository out.");
+
+        Assert.True(
+            fullHistory > checkout,
+            "The macOS full-suite lane must fetch the historical benchmark fixtures used by its tests.");
+
+        Assert.True(
+            suite > fullHistory,
+            "The full repository history must be available before the macOS suite starts.");
+    }
 
     /// <summary>
     /// The hermetic SQLCipher targets raise ARCSQLC002 before <c>CopyFilesToOutputDirectory</c>
@@ -32,39 +99,30 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void No_workflow_builds_on_a_runner_whose_native_sqlcipher_asset_is_missing()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         List<string> offenders = [];
 
         foreach (string workflow in WorkflowFiles(repositoryRoot))
         {
-
             foreach (WorkflowJob job in JobsIn(workflow))
             {
-
                 if (!job.Body.Contains("actions/setup-dotnet", StringComparison.Ordinal))
                 {
-
                     continue;
-
                 }
 
                 string rid = RuntimeIdentifierFor(job.RunsOn);
 
                 if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid) || job.IsConditional)
                 {
-
                     continue;
-
                 }
 
                 offenders.Add(
                     $"{Path.GetFileName(workflow)}: {job.Id} (runs-on: {job.RunsOn}, needs a "
                     + $"verified {rid} asset)");
-
             }
-
         }
 
         Assert.True(
@@ -74,7 +132,6 @@ public sealed class ContinuousIntegrationWorkflowTests
             + "the job on the manifest status so it returns automatically once the asset lands:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -86,7 +143,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void Ci_runs_every_test_project_the_solution_carries()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         IReadOnlySet<string> executed = ProjectsCiRunsTestsFor(repositoryRoot);
@@ -97,23 +153,17 @@ public sealed class ContinuousIntegrationWorkflowTests
             XDocument.Load(Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx"))
                 .Descendants("Project"))
         {
-
             string path = (project.Attribute("Path")?.Value ?? string.Empty).Replace('\\', '/');
 
             if (!path.StartsWith("tests/", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             if (!executed.Contains(path))
             {
-
                 offenders.Add(path);
-
             }
-
         }
 
         Assert.True(
@@ -122,7 +172,6 @@ public sealed class ContinuousIntegrationWorkflowTests
             + ".github/workflows/ci.yml, so every assertion it makes is dark on every lane:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -132,7 +181,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private static IReadOnlySet<string> ProjectsCiRunsTestsFor(string repositoryRoot)
     {
-
         string workflow = File
             .ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml"))
             .Replace("\r\n", "\n", StringComparison.Ordinal)
@@ -143,33 +191,24 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (string line in workflow.Split('\n'))
         {
-
             int start = line.IndexOf("dotnet test", StringComparison.Ordinal);
 
             if (start < 0)
             {
-
                 continue;
-
             }
 
             foreach (string token in
                 line[start..].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
             {
-
                 if (token.EndsWith(".csproj", StringComparison.Ordinal))
                 {
-
                     _ = tested.Add(token.Replace('\\', '/'));
-
                 }
-
             }
-
         }
 
         return tested;
-
     }
 
     /// <summary>
@@ -187,26 +226,19 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     public void Macos_lanes_never_install_tools_with_a_linux_package_manager(string packageManager)
     {
-
         List<string> offenders = [];
 
         foreach (WorkflowJob job in ContinuousIntegrationJobs(FindRepositoryRoot()))
         {
-
             if (!job.RunsOn.StartsWith("macos", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             if (job.Body.Contains(packageManager, StringComparison.Ordinal))
             {
-
                 offenders.Add($"{job.Id} (runs-on: {job.RunsOn})");
-
             }
-
         }
 
         Assert.True(
@@ -216,53 +248,85 @@ public sealed class ContinuousIntegrationWorkflowTests
             + "Use `brew install` instead:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
-    /// Both tools the AOT IL gate depends on degrade it rather than stopping it. Without ripgrep
-    /// <c>verify-aot-il-warnings.sh</c> fails closed, and without <c>ld64.lld</c> the CLI csproj
-    /// cannot turn Native AOT on at all, so the gate falls back to Roslyn analyzer diagnostics with
-    /// no ILC whole-program analysis — a weaker gate that still reports success.
+    /// Ripgrep is required explicitly because the Native AOT warning scan fails closed without it.
     /// </summary>
-    [Theory]
-
-    [InlineData("brew install ripgrep")]
-
-    [InlineData("ld64.lld")]
-
-    public void Every_lane_running_the_aot_il_gate_installs_what_the_gate_needs(string requirement)
+    [Fact]
+    public void Every_macos_lane_running_the_aot_il_gate_installs_ripgrep()
     {
-
+        const string requirement = "brew install ripgrep";
         List<string> offenders = [];
 
         foreach (WorkflowJob job in ContinuousIntegrationJobs(FindRepositoryRoot()))
         {
-
             if (!job.Body.Contains("verify-aot-il-warnings.sh", StringComparison.Ordinal))
             {
-
                 continue;
+            }
 
+            if (!job.RunsOn.StartsWith("macos", StringComparison.Ordinal))
+            {
+                continue;
             }
 
             if (!job.Body.Contains(requirement, StringComparison.Ordinal))
             {
-
                 offenders.Add(job.Id);
-
             }
-
         }
 
         Assert.True(
             offenders.Count == 0,
-            $"A CI job runs the AOT IL warning gate without '{requirement}'. Without ripgrep the "
-            + "gate refuses to run; without ld64.lld it silently degrades to analyzer diagnostics "
-            + "and reports success having performed no ILC closure analysis:"
+            $"A CI job runs the AOT compatibility gate without '{requirement}'. Without ripgrep "
+            + "the warning scan cannot run:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
+    }
 
+    /// <summary>
+    /// .NET 10.0.12 emits relocation anchors that fix Apple's large-object linker assertion. LLVM
+    /// lld rejects those anchors, so every macOS AOT lane must use the serviced SDK's Apple linker
+    /// path instead of silently floating to another SDK or forcing the legacy bridge.
+    /// </summary>
+    [Fact]
+    public void Macos_native_aot_lanes_pin_the_serviced_sdk_and_use_its_apple_linker()
+    {
+        List<string> offenders = [];
+        List<string> matching = [];
+
+        foreach (string workflow in WorkflowFiles(FindRepositoryRoot()))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                if (!job.RunsOn.StartsWith("macos", StringComparison.Ordinal)
+                    || (!job.Body.Contains("verify-aot-il-warnings.sh", StringComparison.Ordinal)
+                        && !job.Body.Contains("build-arcanum.sh", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                string identity = $"{Path.GetFileName(workflow)}: {job.Id}";
+
+                matching.Add(identity);
+
+                if (!job.Body.Contains("dotnet-version: \"10.0.401\"", StringComparison.Ordinal)
+                    || job.Body.Contains("ld64.lld", StringComparison.Ordinal)
+                    || job.Body.Contains("brew install lld", StringComparison.Ordinal))
+                {
+                    offenders.Add(identity);
+                }
+            }
+        }
+
+        Assert.Contains("release-macos-arm64.yml: release-macos-arm64", matching);
+        Assert.True(
+            offenders.Count == 0,
+            "A macOS Native AOT lane does not pin .NET SDK 10.0.401 with its compatible Apple "
+            + "linker, or still forces LLVM lld:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
     }
 
     /// <summary>
@@ -282,7 +346,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void Every_shipping_windows_architecture_has_a_test_lane()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         string[] windowsRuntimeIdentifiers = ShippingRuntimeIdentifiers(repositoryRoot)
@@ -297,18 +360,14 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (string rid in windowsRuntimeIdentifiers)
         {
-
             bool tested = jobs.Any(job =>
                 RuntimeIdentifierFor(job.RunsOn) == rid
                 && job.Body.Contains("dotnet test", StringComparison.Ordinal));
 
             if (!tested)
             {
-
                 untested.Add(rid);
-
             }
-
         }
 
         Assert.True(
@@ -318,7 +377,102 @@ public sealed class ContinuousIntegrationWorkflowTests
             + "another architecture's evidence:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, untested));
+    }
 
+    /// <summary>
+    /// The ordinary shipping publish deliberately suppresses dependency summary diagnostics after
+    /// the diagnostic audit has classified their detailed warnings. Running only that ordinary
+    /// publish on Windows would therefore let a Windows-only first-party IL warning merge green.
+    /// Each shipping RID must run the diagnostic profile on its own native runner before the
+    /// warning-free product publish.
+    /// </summary>
+    [Fact]
+    public void Every_shipping_windows_architecture_audits_first_party_aot_diagnostics_before_publish()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<WorkflowJob> jobs = ContinuousIntegrationJobs(repositoryRoot);
+
+        foreach (string rid in ShippingRuntimeIdentifiers(repositoryRoot)
+            .Where(static candidate => candidate.StartsWith("win-", StringComparison.Ordinal)))
+        {
+            WorkflowJob lane = Assert.Single(
+                jobs,
+                job =>
+                    RuntimeIdentifierFor(job.RunsOn) == rid
+                    && job.Body.Contains(
+                        $"./scripts/verify-shipping-publish.sh --rid {rid}",
+                        StringComparison.Ordinal));
+
+            int audit = lane.Body.IndexOf(
+                $"./scripts/verify-aot-il-warnings.sh {rid}",
+                StringComparison.Ordinal);
+            int ripgrepInstall = lane.Body.IndexOf(
+                "choco install ripgrep --version=15.2.0",
+                StringComparison.Ordinal);
+            int publish = lane.Body.IndexOf(
+                $"./scripts/verify-shipping-publish.sh --rid {rid}",
+                StringComparison.Ordinal);
+
+            Assert.True(
+                ripgrepInstall >= 0,
+                $"The native {rid} CI lane runs the fail-closed AOT diagnostic profile without "
+                + "installing its ripgrep prerequisite.");
+            Assert.True(
+                audit >= 0,
+                $"The native {rid} CI lane never runs the AOT diagnostic profile, so a first-party "
+                + "warning unique to that Windows architecture is hidden by the ordinary shipping "
+                + "publish's dependency-warning suppression.");
+            Assert.True(
+                ripgrepInstall < audit,
+                $"The native {rid} CI lane installs ripgrep only after the diagnostic profile "
+                + "already needed it.");
+            Assert.True(
+                audit < publish,
+                $"The native {rid} CI lane audits AOT diagnostics only after its shipping publish. "
+                + "The diagnostic profile must clear before the product publish can be trusted.");
+            Assert.Contains("rg --version", lane.Body, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The reusable Windows workflow is also a release entry point. Its package step performs a
+    /// fresh Native AOT publish, so it must audit the same validated RID first instead of relying on
+    /// a possibly older pull-request run.
+    /// </summary>
+    [Fact]
+    public void Windows_release_audits_the_validated_native_rid_before_packaging()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        WorkflowJob package = Assert.Single(
+            JobsIn(Path.Combine(repositoryRoot, ".github", "workflows", "build-windows.yml")),
+            static job => job.Body.Contains("package-windows.ps1", StringComparison.Ordinal));
+
+        int nativeSdk = package.Body.IndexOf(
+            "Assert the SDK is native to the RID",
+            StringComparison.Ordinal);
+        int audit = package.Body.IndexOf(
+            "./scripts/verify-aot-il-warnings.sh \"$RID\"",
+            StringComparison.Ordinal);
+        int ripgrepInstall = package.Body.IndexOf(
+            "choco install ripgrep --version=15.2.0",
+            StringComparison.Ordinal);
+        int packaging = package.Body.IndexOf("package-windows.ps1", StringComparison.Ordinal);
+
+        Assert.True(nativeSdk >= 0, "The Windows release must validate its SDK architecture.");
+        Assert.True(
+            ripgrepInstall > nativeSdk,
+            "The Windows release must install ripgrep after validating its native SDK and before "
+            + "running the fail-closed AOT diagnostic profile.");
+        Assert.True(
+            audit > ripgrepInstall,
+            "The Windows release must run its AOT diagnostic profile only after installing ripgrep.");
+        Assert.True(
+            audit < packaging,
+            "The Windows release must clear its AOT diagnostic profile before creating archives.");
+        Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
+        Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -344,7 +498,6 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     public void Every_windows_test_lane_opts_in_to_the_windows_surface(string variable)
     {
-
         WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
             .Where(static job => job.RunsOn.StartsWith("windows", StringComparison.Ordinal))
             .Where(static job => job.Body.Contains("dotnet test", StringComparison.Ordinal))
@@ -356,14 +509,10 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (WorkflowJob lane in lanes)
         {
-
             if (!lane.Body.Contains($"{variable}: true", StringComparison.Ordinal))
             {
-
                 offenders.Add($"{lane.Id} (runs-on: {lane.RunsOn})");
-
             }
-
         }
 
         Assert.True(
@@ -373,7 +522,6 @@ public sealed class ContinuousIntegrationWorkflowTests
             + "green while asserting nothing:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
-
     }
 
     /// <summary>
@@ -399,7 +547,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private static IReadOnlyList<string> ShippingRuntimeIdentifiers(string repositoryRoot)
     {
-
         using JsonDocument manifest = JsonDocument.Parse(
             File.ReadAllText(Path.Combine(
                 repositoryRoot,
@@ -411,20 +558,16 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (JsonElement asset in manifest.RootElement.GetProperty("assets").EnumerateArray())
         {
-
             rids.Add(asset.GetProperty("rid").GetString()!);
-
         }
 
         Assert.NotEmpty(rids);
 
         return rids;
-
     }
 
     private static bool HasVerifiedNativeSqlCipherAsset(string repositoryRoot, string rid)
     {
-
         string packageRoot = Path.Combine(
             repositoryRoot,
             "src",
@@ -435,21 +578,16 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (JsonElement asset in manifest.RootElement.GetProperty("assets").EnumerateArray())
         {
-
             if (asset.GetProperty("rid").GetString() != rid)
             {
-
                 continue;
-
             }
 
             return asset.GetProperty("status").GetString() == "verified"
                 && File.Exists(FullPath(packageRoot, asset.GetProperty("path").GetString()!));
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -465,7 +603,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void Ci_runs_the_covenant_benchmark_gate_and_keeps_the_run_it_measured()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         Assert.True(
@@ -517,12 +654,10 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.False(
             gate.IsConditional,
             "The Covenant benchmark lane is conditional, so it can report success without running.");
-
     }
 
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {
-
         string directory = Path.Combine(repositoryRoot, ".github", "workflows");
 
         string[] files = Directory.GetFiles(directory, "*.yml");
@@ -530,7 +665,6 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.NotEmpty(files);
 
         return files;
-
     }
 
     private static IReadOnlyList<WorkflowJob> ContinuousIntegrationJobs(string repositoryRoot) =>
@@ -543,7 +677,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private static IReadOnlyList<WorkflowJob> JobsIn(string workflowPath)
     {
-
         string[] lines = File.ReadAllLines(workflowPath);
 
         List<WorkflowJob> jobs = [];
@@ -560,28 +693,22 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (string line in lines)
         {
-
             string trimmed = line.Trim();
 
             if (!insideJobs)
             {
-
                 insideJobs = line.StartsWith("jobs:", StringComparison.Ordinal);
 
                 continue;
-
             }
 
             if (WorkflowIndentOf(line) == 2
                 && !trimmed.StartsWith('#')
                 && trimmed.EndsWith(':'))
             {
-
                 if (id is not null)
                 {
-
                     jobs.Add(new WorkflowJob(id, runsOn, conditional, body.ToString()));
-
                 }
 
                 id = trimmed[..^1];
@@ -593,68 +720,51 @@ public sealed class ContinuousIntegrationWorkflowTests
                 body.Clear();
 
                 continue;
-
             }
 
             if (id is null)
             {
-
                 continue;
-
             }
 
             body.AppendLine(line);
 
             if (WorkflowIndentOf(line) != 4)
             {
-
                 continue;
-
             }
 
             if (trimmed.StartsWith("runs-on:", StringComparison.Ordinal))
             {
-
                 runsOn = trimmed["runs-on:".Length..].Trim();
-
             }
 
             if (trimmed.StartsWith("if:", StringComparison.Ordinal))
             {
-
                 conditional = true;
-
             }
-
         }
 
         if (id is not null)
         {
-
             jobs.Add(new WorkflowJob(id, runsOn, conditional, body.ToString()));
-
         }
 
         Assert.NotEmpty(jobs);
 
         return jobs;
-
     }
 
     private static int WorkflowIndentOf(string line)
     {
-
         int indent = 0;
 
         while (indent < line.Length && line[indent] == ' ')
         {
-
             indent++;
-
         }
 
         return indent;
-
     }
 
     [Theory]
@@ -675,7 +785,6 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     public void Ci_compiles_every_project_the_release_workflows_ship(string relativeProjectPath)
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         IReadOnlySet<string> compiled = CompiledProjectClosure(repositoryRoot);
@@ -686,7 +795,6 @@ public sealed class ContinuousIntegrationWorkflowTests
             compiled.Contains(expected),
             $"{relativeProjectPath} is shipped by the release workflows but is never compiled by "
             + ".github/workflows/ci.yml, so a compile break in it merges green.");
-
     }
 
     /// <summary>
@@ -705,7 +813,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void Ci_runs_on_demand_and_on_pull_requests_and_not_on_a_push()
     {
-
         IReadOnlySet<string> triggers = TopLevelTriggers(FindRepositoryRoot());
 
         Assert.True(
@@ -723,7 +830,6 @@ public sealed class ContinuousIntegrationWorkflowTests
             "ci.yml has regained an on.push trigger. That is a policy change, not a fix -- the "
             + "operator turned it off on purpose. Restore it deliberately, and replace this "
             + "assertion with the branch-coverage rule it displaced.");
-
     }
 
     /// <summary>
@@ -737,7 +843,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void No_ci_job_is_gated_on_an_event_the_workflow_never_receives()
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         IReadOnlySet<string> triggers = TopLevelTriggers(repositoryRoot);
@@ -746,14 +851,11 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (WorkflowJob job in jobs)
         {
-
             string? requiredEvent = RequiredEventName(job.Body);
 
             if (requiredEvent is null)
             {
-
                 continue;
-
             }
 
             Assert.True(
@@ -761,9 +863,7 @@ public sealed class ContinuousIntegrationWorkflowTests
                 $"{job.Id}'s if: condition requires github.event_name == '{requiredEvent}', but "
                 + $"ci.yml's on: block declares only [{string.Join(", ", triggers)}] -- this job "
                 + "can never run.");
-
         }
-
     }
 
     /// <summary>
@@ -772,16 +872,13 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private static string? RequiredEventName(string jobBody)
     {
-
         const string marker = "github.event_name == '";
 
         int start = jobBody.IndexOf(marker, StringComparison.Ordinal);
 
         if (start < 0)
         {
-
             return null;
-
         }
 
         start += marker.Length;
@@ -789,10 +886,13 @@ public sealed class ContinuousIntegrationWorkflowTests
         int end = jobBody.IndexOf('\'', start);
 
         return end < 0 ? null : jobBody[start..end];
-
     }
 
     [Theory]
+
+    [InlineData(
+        "python3 -m unittest discover -s scripts/tests -p 'test_*.py'",
+        "the C# blank-line formatter regression suite")]
 
     [InlineData(
         "scripts/align_csharp_blanklines.py --repo . --check",
@@ -806,14 +906,12 @@ public sealed class ContinuousIntegrationWorkflowTests
         string invocation,
         string description)
     {
-
         string workflow = WorkflowText(FindRepositoryRoot());
 
         Assert.True(
             workflow.Contains(invocation, StringComparison.Ordinal),
             $"ci.yml never invokes {description} (`{invocation}`), so the repository ships a "
             + "checker no lane runs and violations accumulate unnoticed.");
-
     }
 
     /// <summary>
@@ -830,7 +928,6 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     public void Dependabot_watches_every_ecosystem_the_repository_uses(string ecosystem)
     {
-
         string repositoryRoot = FindRepositoryRoot();
 
         string dependabotPath = Path.Combine(repositoryRoot, ".github", "dependabot.yml");
@@ -843,7 +940,6 @@ public sealed class ContinuousIntegrationWorkflowTests
             text.Contains($"package-ecosystem: {ecosystem}", StringComparison.Ordinal),
             $".github/dependabot.yml declares no \"{ecosystem}\" package-ecosystem entry, so that "
             + "ecosystem gets no automated update PRs.");
-
     }
 
     /// <summary>
@@ -853,7 +949,6 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private static IReadOnlySet<string> TopLevelTriggers(string repositoryRoot)
     {
-
         string[] lines = WorkflowLines(repositoryRoot);
 
         int on = Array.FindIndex(lines, line => line == "on:");
@@ -864,22 +959,17 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         for (int index = on + 1; index < lines.Length; index++)
         {
-
             string line = lines[index];
 
             if (line.Length == 0)
             {
-
                 continue;
-
             }
 
             // A line with no leading space has left the on: block entirely.
             if (!line.StartsWith(" ", StringComparison.Ordinal))
             {
-
                 break;
-
             }
 
             string trimmed = line.Trim();
@@ -889,24 +979,18 @@ public sealed class ContinuousIntegrationWorkflowTests
             // the restoration recipe.
             if (trimmed.StartsWith("#", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             if (line.StartsWith("  ", StringComparison.Ordinal)
                 && !line.StartsWith("   ", StringComparison.Ordinal)
                 && trimmed.EndsWith(":", StringComparison.Ordinal))
             {
-
                 _ = triggers.Add(trimmed[..^1]);
-
             }
-
         }
 
         return triggers;
-
     }
 
     private static string[] WorkflowLines(string repositoryRoot) =>
@@ -917,7 +1001,6 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     private static IReadOnlySet<string> CompiledProjectClosure(string repositoryRoot)
     {
-
         string workflow = WorkflowText(repositoryRoot);
 
         HashSet<string> closure = new(StringComparer.Ordinal);
@@ -926,61 +1009,46 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         foreach (string token in workflow.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
         {
-
             if (!token.EndsWith(".csproj", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             string projectPath = FullPath(repositoryRoot, token);
 
             if (File.Exists(projectPath) && closure.Add(projectPath))
             {
-
                 pending.Enqueue(projectPath);
-
             }
-
         }
 
         Assert.NotEmpty(closure);
 
         while (pending.Count > 0)
         {
-
             string projectPath = pending.Dequeue();
 
             string projectDirectory = Path.GetDirectoryName(projectPath)!;
 
             foreach (XElement element in XDocument.Load(projectPath).Descendants("ProjectReference"))
             {
-
                 string? include = element.Attribute("Include")?.Value;
 
                 if (include is null)
                 {
-
                     continue;
-
                 }
 
                 string referencePath = FullPath(projectDirectory, include);
 
                 if (File.Exists(referencePath) && closure.Add(referencePath))
                 {
-
                     pending.Enqueue(referencePath);
-
                 }
-
             }
-
         }
 
         return closure;
-
     }
 
     private static string FullPath(string baseDirectory, string relativePath) =>
@@ -990,27 +1058,6 @@ public sealed class ContinuousIntegrationWorkflowTests
                 relativePath.Replace('\\', Path.DirectorySeparatorChar)
                     .Replace('/', Path.DirectorySeparatorChar)));
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

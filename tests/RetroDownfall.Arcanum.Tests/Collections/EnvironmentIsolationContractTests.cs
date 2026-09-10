@@ -279,6 +279,55 @@ public sealed class EnvironmentIsolationContractTests
             found);
     }
 
+    /// <summary>
+    /// The archived-source packaging test performs a real Native AOT publish. Its five-minute
+    /// deadline detects an actual hung toolchain only when the publish is not competing with the
+    /// full parallel test suite for the runner's CPU and memory.
+    /// </summary>
+    [Fact]
+    public void Native_AOT_packaging_test_class_is_serialized()
+    {
+        Type packagingTests =
+            typeof(RetroDownfall.Arcanum.Tests.Packaging.GrimoireAdmissionBenchmarkPackagingTests);
+
+        string? collection = AttributeName<CollectionAttribute>(packagingTests);
+
+        Assert.True(
+            collection is not null
+                && CollectionParallelism.Value.TryGetValue(
+                    collection,
+                    out bool disablesParallelization)
+                && disablesParallelization,
+            $"{packagingTests.FullName} performs a real Native AOT publish and must run in a "
+            + "DisableParallelization collection so its liveness deadline measures the toolchain, "
+            + "not full-suite resource contention.");
+    }
+
+    /// <summary>
+    /// Bootstrapper tests exercise durable hosted-service checkpoints whose production deadlines
+    /// must not be consumed by unrelated full-suite CPU pressure.
+    /// </summary>
+    [Fact]
+    public void Grimoire_database_bootstrapper_test_class_is_serialized()
+    {
+        Type bootstrapperTests =
+            typeof(RetroDownfall.Arcanum.Tests.Hosting.GrimoireDatabaseBootstrapperTests);
+
+        string collection = Assert.IsType<string>(
+            AttributeName<CollectionAttribute>(bootstrapperTests));
+
+        Assert.Equal(HostedServiceLifetimeCollection.Name, collection);
+
+        Assert.True(
+            CollectionParallelism.Value.TryGetValue(
+                collection,
+                out bool disablesParallelization)
+            && disablesParallelization,
+            $"{bootstrapperTests.FullName} exercises bounded durable hosted-service checkpoints "
+            + "and must run in a DisableParallelization collection so their liveness deadlines "
+            + "measure the host lifecycle, not full-suite resource contention.");
+    }
+
     [Fact]
     public void Collections_that_mutate_the_process_environment_disable_parallelization()
     {

@@ -7,10 +7,9 @@
 #   ./scripts/benchmark-covenant.sh --record <path>     measure and write a baseline
 #   ./scripts/benchmark-covenant.sh --compare <path>    measure and compare against a baseline
 #
-# The host is published Native AOT and measured as published. The shipped CLI is Native AOT, and a
-# number produced by a JIT-warmed host is a number the product never produces: on this workload the
-# JIT run reported turn planning at roughly twice the published binary's cost, so a ceiling set from
-# one would be meaningless against the other.
+# This Native AOT host measures the same runtime shape as the shipping Arcanum executable. Its
+# numbers remain valid only within this benchmark fingerprint and must not be presented as general
+# shipping-host latency across unlike machines or workloads.
 #
 # A recorded baseline is only comparable on the host that recorded it, and the comparison is weaker
 # than a co-run one would be. There is no co-run mode: this host measures one revision, and --compare

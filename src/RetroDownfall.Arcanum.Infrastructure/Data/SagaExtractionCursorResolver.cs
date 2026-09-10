@@ -17,7 +17,6 @@ internal sealed record SagaExtractionCursorPage(
 /// </summary>
 internal static class SagaExtractionCursorResolver
 {
-
     private const int LegacyPageSize = 200;
 
     /// <summary>
@@ -31,12 +30,10 @@ internal static class SagaExtractionCursorResolver
         DateTimeOffset lastExtractedEntryCreatedAt,
         CancellationToken cancellationToken)
     {
-
         long lastProvenEntrySequence = 0;
 
         while (true)
         {
-
             SagaExtractionCursorPage page = await ReadContiguousPrefixPageAsync(
                 connection,
                 transaction,
@@ -50,13 +47,9 @@ internal static class SagaExtractionCursorResolver
 
             if (page.IsComplete)
             {
-
                 return lastProvenEntrySequence;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -73,7 +66,6 @@ internal static class SagaExtractionCursorResolver
         int limit,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -84,12 +76,10 @@ internal static class SagaExtractionCursorResolver
 
         if (!Guid.TryParse(sessionId, out Guid parsedSessionId))
         {
-
             // A managed watermark always names a Guid Session. If a hand-edited legacy row does not,
             // resolving it to zero is the conservative answer: replay can cost work, advancing past an
             // Entry that was never examined can lose it.
             return new SagaExtractionCursorPage(afterEntrySequence, EntriesExamined: 0, IsComplete: true);
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -142,34 +132,26 @@ internal static class SagaExtractionCursorResolver
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             examined++;
 
             long entrySequence = reader.GetInt64(0);
 
-            DateTimeOffset entryCreatedAt = DateTimeOffset.Parse(
-                reader.GetString(1),
-                CultureInfo.InvariantCulture);
+            DateTimeOffset entryCreatedAt = UtcInstantText.Parse(reader.GetString(1));
 
             if (entryCreatedAt > lastExtractedEntryCreatedAt)
             {
-
                 return new SagaExtractionCursorPage(
                     lastProvenEntrySequence,
                     examined,
                     IsComplete: true);
-
             }
 
             lastProvenEntrySequence = entrySequence;
-
         }
 
         return new SagaExtractionCursorPage(
             lastProvenEntrySequence,
             examined,
             IsComplete: examined < limit);
-
     }
-
 }

@@ -4,8 +4,6 @@ using Microsoft.AspNetCore.Http;
 
 using Microsoft.AspNetCore.Routing;
 
-using Microsoft.EntityFrameworkCore;
-
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -25,10 +23,8 @@ namespace RetroDownfall.Arcanum.Api.Telemetry;
 /// </summary>
 internal static class MetricsEndpoints
 {
-
     public static RouteHandlerBuilder MapMetricsEndpoint(this IEndpointRouteBuilder endpoints)
     {
-
         return endpoints.MapGet("/metrics", async (
             PrometheusMetricsExporter exporter,
             ArcanumDbContext db,
@@ -37,23 +33,31 @@ internal static class MetricsEndpoints
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
-
             if (!settings.Value.ResolveMetrics().Enabled)
             {
-
                 httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
 
                 return;
-
             }
 
             // A single indexed-column count, cheap enough to run on every scrape (typical Prometheus
             // scrape interval is 15s) — no caching, so the exporter singleton stays a pure renderer with
             // no database dependency of its own.
-            long activeSessions = await db.Sessions
-                .AsNoTracking()
-                .CountAsync(s => s.Status == "active", cancellationToken)
+            await using Microsoft.Data.Sqlite.SqliteCommand activeSessionCount =
+                await GrimoireSqlCommandFactory.CreateAsync(
+                    db,
+                    "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Status\" = $status;",
+                    cancellationToken).ConfigureAwait(false);
+
+            _ = activeSessionCount.Parameters.AddWithValue("$status", "active");
+
+            object? activeSessionCountValue = await activeSessionCount
+                .ExecuteScalarAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            long activeSessions = activeSessionCountValue is long count
+                ? count
+                : throw new InvalidOperationException("The active Session count was not an integer.");
 
             IReadOnlyList<LongRunningOperationCount> operationCounts = await operationStore
                 .GetCountsAsync(cancellationToken)
@@ -66,10 +70,7 @@ internal static class MetricsEndpoints
             httpContext.Response.ContentType = "text/plain; version=0.0.4; charset=utf-8";
 
             await httpContext.Response.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-
         })
         .WithName("GetMetrics");
-
     }
-
 }

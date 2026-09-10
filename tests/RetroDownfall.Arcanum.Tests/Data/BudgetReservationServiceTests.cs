@@ -462,8 +462,8 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         AddParameter(command, "@id", Guid.NewGuid().ToString("N"));
         AddParameter(command, "@runId", runId.ToString("N"));
         AddParameter(command, "@operationType", (int)BillableOperationType.Chat);
-        AddParameter(command, "@startedAt", completedAt.AddSeconds(-1).ToString("o", CultureInfo.InvariantCulture));
-        AddParameter(command, "@completedAt", completedAt.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(command, "@startedAt", UtcInstantText.Format(completedAt.AddSeconds(-1)));
+        AddParameter(command, "@completedAt", UtcInstantText.Format(completedAt));
         AddParameter(command, "@actualCostUsd", actualCostUsd);
         AddParameter(command, "@status", (int)BillableOperationStatus.Completed);
 
@@ -486,7 +486,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         AddParameter(command, "@id", Guid.NewGuid().ToString("N"));
         AddParameter(command, "@runId", runId.ToString("N"));
         AddParameter(command, "@amountUsd", amountUsd);
-        AddParameter(command, "@createdAt", createdAt.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(command, "@createdAt", UtcInstantText.Format(createdAt));
 
         Assert.Equal(1, await command.ExecuteNonQueryAsync());
     }

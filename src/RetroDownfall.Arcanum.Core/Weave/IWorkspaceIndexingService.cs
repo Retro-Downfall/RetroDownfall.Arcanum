@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Core.Weave;
 
 /// <summary>
@@ -9,12 +11,11 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// </summary>
 public interface IWorkspaceIndexingService
 {
-
     /// <summary>
     /// Registers a workspace path as known for background re-indexing. Thread-safe; safe to call on
     /// every inference turn (<c>WizardIntelligenceProvider</c> does exactly this whenever
     /// <c>WorkingDirectory</c> is non-empty). The background service picks up new paths on its next
-    /// tick — this method never performs I/O itself.
+    /// tick. Registration validates the directory and may establish its bounded file watcher.
     /// </summary>
     void RegisterWorkspace(string workspacePath);
 
@@ -25,11 +26,24 @@ public interface IWorkspaceIndexingService
     void UnregisterWorkspace(string workspacePath);
 
     /// <summary>
-    /// Immediately indexes the given workspace path (used by the manual
-    /// <c>POST /api/workspaces/{id}/files/index</c> re-index endpoint), awaiting completion. Never
-    /// throws — errors are logged and swallowed, same graceful-degradation contract as a background
-    /// tick. Also registers <paramref name="workspacePath"/> for future background ticks.
+    /// Resolves a live scheduler alias to its immutable persisted indexing path. Readers resolve
+    /// once and use this exact spelling for ranking and metadata joins. Unregistered paths retain
+    /// ordinary full-path normalization; persisted workspace and chunk identities are not rewritten.
     /// </summary>
-    Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken);
+    string ResolveIndexedWorkspacePath(string workspacePath);
 
+    /// <summary>
+    /// Accepts a full reconciliation into the producer-owned scheduler, or coalesces it with
+    /// existing demand. Capacity overflow remains accepted data; only closed/unavailable intake
+    /// fails with <see cref="ErrorCodes.Workspace.IndexingUnavailable"/>. Accepted work is owned
+    /// by the host, independently of the requesting connection's lifetime.
+    /// </summary>
+    Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath);
+}
+
+/// <summary>The immediate disposition of an accepted workspace reconciliation request.</summary>
+public enum WorkspaceIndexQueueDisposition
+{
+    Accepted,
+    Coalesced,
 }

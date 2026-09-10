@@ -5,22 +5,19 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Hosting;
-using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
 internal sealed class ArcanumServeLauncher(
-    IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
-    ISecretStore secretStore,
+    ArcanumApiCredentialLease credentialLease,
     ICliEnvironment cliEnvironment,
     IServeProcessLauncher processLauncher,
+    ISecureStorageNotice secureStorageNotice,
     ILogger<ArcanumServeLauncher> logger) : IArcanumServeLauncher
 {
-
     internal const string AutoLaunchedEnvVar = "ARCANUM_AUTO_LAUNCHED";
 
     internal const string NoAutoServeEnvVar = "ARCANUM_NO_AUTO_SERVE";
@@ -33,9 +30,7 @@ internal sealed class ArcanumServeLauncher(
 
     private static readonly TimeSpan PollDeadline = TimeSpan.FromSeconds(20);
 
-    private static readonly TimeSpan UnhealthyRetryBudget = TimeSpan.FromSeconds(3);
-
-    private static readonly int UnauthorizedWithKeyFailAfter = 8;
+    private static readonly TimeSpan ExistingHostRetryBudget = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Test seam: when set, shortens the post-spawn poll window so timeout cases stay fast in CI.
@@ -43,138 +38,85 @@ internal sealed class ArcanumServeLauncher(
     internal static TimeSpan? TestPollDeadline { get; set; }
 
     internal static string BootstrapLogPath =>
-        Path.Combine(ArcanumPaths.GrimoireDirectory, "logs", "auto-serve-bootstrap.log");
+        Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "logs",
+            "auto-serve-bootstrap.log");
 
-    public async Task<ServeLaunchResult> EnsureRunningAsync(CancellationToken cancellationToken)
+    public async Task<ServeLaunchResult> EnsureRunningAsync(
+        CancellationToken cancellationToken)
     {
-
-        Stopwatch sw = Stopwatch.StartNew();
+        Stopwatch stopwatch = Stopwatch.StartNew();
 
         if (!ShouldAutoServe())
         {
             return new ServeLaunchResult(
                 ServeLaunchStatus.LaunchDisabled,
                 HealthProbeState.NotAttempted,
-                sw.Elapsed,
+                stopwatch.Elapsed,
                 null,
                 "Auto-start disabled (non-interactive, redirected, or ARCANUM_NO_AUTO_SERVE=1).");
         }
 
-        ArcanumSettings settings = settingsMonitor.CurrentValue;
-
-        Uri healthUrl = new(ArcanumLocalApiAddress.ResolveHealthProbeUrl(settings.Host));
-
-        HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
-
-        string? apiKey = await PeekApiKeyAsync().ConfigureAwait(false);
-
-        HealthProbeResult probe = await ArcanumHealthProbe
-            .ProbeAsync(client, healthUrl, apiKey, ProbeTimeout, cancellationToken)
+        ApiCredentialLeaseResult presence = await credentialLease
+            .ResolveAsync(ProbeTimeout, cancellationToken)
             .ConfigureAwait(false);
 
-        if (probe.State == HealthProbeState.Healthy)
+        if (presence.IsVerified)
         {
-            return new ServeLaunchResult(
+            return Success(
                 ServeLaunchStatus.AlreadyRunning,
-                probe.State,
-                sw.Elapsed,
-                null,
-                null);
+                stopwatch,
+                logPath: null);
         }
 
-        if (probe.State == HealthProbeState.Unauthorized)
+        if (presence.ProbeState == HealthProbeState.UnhealthyStatus)
         {
-            return new ServeLaunchResult(
-                ServeLaunchStatus.AuthFailed,
-                probe.State,
-                sw.Elapsed,
-                null,
-                "Server reachable but this CLI cannot authenticate — run `arcanum key show` or re-authenticate.");
-        }
-
-        if (probe.State == HealthProbeState.UnhealthyStatus)
-        {
-            HealthProbeResult retried = await RetryUnhealthyAsync(
-                    client,
-                    healthUrl,
-                    cancellationToken)
+            presence = await RetryExistingHostAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            if (retried.State == HealthProbeState.Healthy)
+            if (presence.IsVerified)
             {
-                return new ServeLaunchResult(
+                return Success(
                     ServeLaunchStatus.AlreadyRunning,
-                    retried.State,
-                    sw.Elapsed,
-                    null,
-                    null);
+                    stopwatch,
+                    logPath: null);
             }
 
-            return new ServeLaunchResult(
-                ServeLaunchStatus.Failed,
-                retried.State,
-                sw.Elapsed,
-                BootstrapLogPath,
-                "Server is up but not healthy/ready. Run `arcanum doctor`.");
+            return FailureFromPresence(
+                presence,
+                stopwatch,
+                logPath: null);
         }
 
-        if (probe.State == HealthProbeState.TlsFailure)
+        if (!IsNoListener(presence.ProbeState))
+        {
+            return FailureFromPresence(
+                presence,
+                stopwatch,
+                logPath: null);
+        }
+
+        ArcanumSettings settings = settingsMonitor.CurrentValue;
+
+        if (ListenAnySecurityPolicy.RequiresInteractiveConfirmation(
+                settings.Host.ListenAny))
         {
             return new ServeLaunchResult(
                 ServeLaunchStatus.Failed,
-                probe.State,
-                sw.Elapsed,
-                null,
-                "Something answered at the address with a TLS/cert problem (untrusted cert, hostname/SAN mismatch, or a non-Arcanum service on the port). Run `arcanum doctor`. Do not auto-start.");
-        }
-
-        if (probe.State == HealthProbeState.Timeout)
-        {
-            return new ServeLaunchResult(
-                ServeLaunchStatus.Failed,
-                probe.State,
-                sw.Elapsed,
-                null,
-                "Probe timed out — a server may be stuck or listening but not responding. Run `arcanum doctor`.");
-        }
-
-        if (probe.State == HealthProbeState.UnexpectedResponder)
-        {
-            return new ServeLaunchResult(
-                ServeLaunchStatus.Failed,
-                probe.State,
-                sw.Elapsed,
-                null,
-                "Something is already listening at the address but did not answer as an Arcanum host (a foreign service on the port, or a host that is mid-crash). Run `arcanum doctor`. Do not auto-start.");
-        }
-
-        if (probe.State is not (
-            HealthProbeState.ConnectionRefused
-            or HealthProbeState.NetworkUnreachable
-            or HealthProbeState.DnsFailure))
-        {
-            return new ServeLaunchResult(
-                ServeLaunchStatus.Failed,
-                probe.State,
-                sw.Elapsed,
-                BootstrapLogPath,
-                "Unexpected health probe state. Run `arcanum doctor`.");
-        }
-
-        if (ListenAnySecurityPolicy.RequiresInteractiveConfirmation(settings.Host.ListenAny))
-        {
-            return new ServeLaunchResult(
-                ServeLaunchStatus.Failed,
-                probe.State,
-                sw.Elapsed,
+                presence.ProbeState,
+                stopwatch.Elapsed,
                 null,
                 "ListenAny requires acknowledgement — run `arcanum serve` manually once to acknowledge, or set ARCANUM_LISTEN_ANY_ACK=1 if intentional.");
         }
 
-        (string executable, IReadOnlyList<string> arguments) = ResolveServeLaunch();
+        (string executable, IReadOnlyList<string> arguments) =
+            ResolveServeLaunch();
 
         try
         {
+            secureStorageNotice.ExplainBeforeHostBootstrap();
+
             _ = await processLauncher
                 .StartServeAsync(
                     new ServeProcessStartOptions(
@@ -188,178 +130,188 @@ internal sealed class ArcanumServeLauncher(
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
-            logger.LogWarning(ex, "Failed to spawn arcanum serve.");
+            logger.LogWarning(
+                exception,
+                "Failed to spawn arcanum serve.");
 
             return new ServeLaunchResult(
                 ServeLaunchStatus.Failed,
-                probe.State,
-                sw.Elapsed,
+                presence.ProbeState,
+                stopwatch.Elapsed,
                 BootstrapLogPath,
-                $"Failed to start arcanum serve: {ex.Message}. Run `arcanum doctor`.");
+                $"Failed to start arcanum serve: {exception.Message}. Run `arcanum doctor`.");
         }
 
-        return await PollUntilReadyAsync(client, healthUrl, sw, cancellationToken).ConfigureAwait(false);
-
+        return await PollUntilReadyAsync(
+                stopwatch,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private async Task<HealthProbeResult> RetryUnhealthyAsync(
-        HttpClient client,
-        Uri healthUrl,
+    private async Task<ApiCredentialLeaseResult> RetryExistingHostAsync(
         CancellationToken cancellationToken)
     {
+        Stopwatch retry = Stopwatch.StartNew();
 
-        Stopwatch budget = Stopwatch.StartNew();
+        ApiCredentialLeaseResult last =
+            ApiCredentialLeaseResult.Transient(
+                HealthProbeState.UnhealthyStatus,
+                "Arcanum is starting but its credential proof is not ready yet.");
 
-        HealthProbeResult last = new(HealthProbeState.UnhealthyStatus, 503, TimeSpan.Zero, null);
-
-        while (budget.Elapsed < UnhealthyRetryBudget)
+        while (retry.Elapsed < ExistingHostRetryBudget)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string? key = await PeekApiKeyAsync().ConfigureAwait(false);
-
-            last = await ArcanumHealthProbe
-                .ProbeAsync(client, healthUrl, key, ProbeTimeout, cancellationToken)
+            await Task.Delay(PollInterval, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (last.State is HealthProbeState.Healthy or HealthProbeState.Unauthorized)
+            last = await credentialLease
+                .ResolveAsync(ProbeTimeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (last.IsVerified
+                || last.ProbeState != HealthProbeState.UnhealthyStatus)
             {
                 return last;
             }
-
-            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
         }
 
         return last;
-
     }
 
     private async Task<ServeLaunchResult> PollUntilReadyAsync(
-        HttpClient client,
-        Uri healthUrl,
-        Stopwatch sw,
+        Stopwatch stopwatch,
         CancellationToken cancellationToken)
     {
-
         Stopwatch poll = Stopwatch.StartNew();
 
-        int unauthorizedWithKeyStreak = 0;
-
         TimeSpan deadline = TestPollDeadline ?? PollDeadline;
+
+        ApiCredentialLeaseResult last =
+            ApiCredentialLeaseResult.Transient(
+                HealthProbeState.ConnectionRefused,
+                "Arcanum has not opened its local endpoint yet.");
 
         while (poll.Elapsed < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string? key = await PeekApiKeyAsync().ConfigureAwait(false);
-
-            HealthProbeResult probe = await ArcanumHealthProbe
-                .ProbeAsync(client, healthUrl, key, ProbeTimeout, cancellationToken)
+            last = await credentialLease
+                .ResolveAsync(ProbeTimeout, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (probe.State == HealthProbeState.Healthy)
+            if (last.IsVerified)
             {
-                return new ServeLaunchResult(
+                return Success(
                     ServeLaunchStatus.Started,
-                    probe.State,
-                    sw.Elapsed,
-                    BootstrapLogPath,
-                    null);
+                    stopwatch,
+                    BootstrapLogPath);
             }
 
-            if (probe.State == HealthProbeState.Unauthorized)
+            if (last.CredentialStatus is not null)
             {
-                if (key is null)
-                {
-                    // First-run race: key not yet written by the spawned server.
-                    unauthorizedWithKeyStreak = 0;
-                }
-                else
-                {
-                    unauthorizedWithKeyStreak++;
-
-                    if (unauthorizedWithKeyStreak >= UnauthorizedWithKeyFailAfter)
-                    {
-                        return new ServeLaunchResult(
-                            ServeLaunchStatus.AuthFailed,
-                            probe.State,
-                            sw.Elapsed,
-                            BootstrapLogPath,
-                            "Server started but rejects this CLI's API key — run `arcanum key show` or re-authenticate.");
-                    }
-                }
+                return FailureFromPresence(
+                    last,
+                    stopwatch,
+                    BootstrapLogPath);
             }
-            else
+
+            if (last.ProbeState is HealthProbeState.TlsFailure
+                or HealthProbeState.UnexpectedResponder)
             {
-                unauthorizedWithKeyStreak = 0;
+                return FailureFromPresence(
+                    last,
+                    stopwatch,
+                    BootstrapLogPath);
             }
 
-            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(PollInterval, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         return new ServeLaunchResult(
             ServeLaunchStatus.Failed,
-            HealthProbeState.Timeout,
-            sw.Elapsed,
+            last.ProbeState == HealthProbeState.NotAttempted
+                ? HealthProbeState.Timeout
+                : last.ProbeState,
+            stopwatch.Elapsed,
             BootstrapLogPath,
             $"Timed out waiting for arcanum serve. Check {BootstrapLogPath} and run `arcanum doctor`.");
-
     }
 
-    private async Task<string?> PeekApiKeyAsync()
+    private static ServeLaunchResult Success(
+        ServeLaunchStatus status,
+        Stopwatch stopwatch,
+        string? logPath) =>
+        new(
+            status,
+            HealthProbeState.Healthy,
+            stopwatch.Elapsed,
+            logPath,
+            null);
+
+    private static ServeLaunchResult FailureFromPresence(
+        ApiCredentialLeaseResult presence,
+        Stopwatch stopwatch,
+        string? logPath)
     {
+        ServeLaunchStatus status = presence.CredentialStatus is null
+            ? ServeLaunchStatus.Failed
+            : ServeLaunchStatus.AuthFailed;
 
-        SecretStoreReadResult result = await secretStore
-            .PeekApiKeyReadResultAsync()
-            .ConfigureAwait(false);
+        string guidance = ArcanumApiCredentialFailureMapper
+            .ToError(presence)
+            .Message;
 
-        return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
-
+        return new ServeLaunchResult(
+            status,
+            presence.ProbeState,
+            stopwatch.Elapsed,
+            logPath,
+            guidance);
     }
+
+    private static bool IsNoListener(HealthProbeState state) =>
+        state is HealthProbeState.ConnectionRefused
+            or HealthProbeState.NetworkUnreachable
+            or HealthProbeState.DnsFailure;
 
     private bool ShouldAutoServe()
     {
-
-        // Trust ICliEnvironment.IsInteractive alone: CliEnvironment already encodes
-        // !stdin && !stdout redirected ("Interactive + not redirected"). Re-checking
-        // Console.Is*Redirected here duplicates that gate and breaks unit tests (xUnit
-        // redirects stdout even when a fake interactive ICliEnvironment is injected).
         if (!cliEnvironment.IsInteractive)
         {
             return false;
         }
 
-        string? disabled = Environment.GetEnvironmentVariable(NoAutoServeEnvVar);
+        string? disabled =
+            Environment.GetEnvironmentVariable(NoAutoServeEnvVar);
 
-        if (!string.IsNullOrWhiteSpace(disabled)
-            && (string.Equals(disabled.Trim(), "1", StringComparison.Ordinal)
-                || string.Equals(disabled.Trim(), bool.TrueString, StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        return true;
-
+        return string.IsNullOrWhiteSpace(disabled)
+            || (!string.Equals(
+                    disabled.Trim(),
+                    "1",
+                    StringComparison.Ordinal)
+                && !string.Equals(
+                    disabled.Trim(),
+                    bool.TrueString,
+                    StringComparison.OrdinalIgnoreCase));
     }
 
     /// <remarks>
     /// The empty <see cref="Assembly.Location"/> a single-file or Native AOT image reports is the
-    /// expected reading here, not a defect: it is only consulted to re-launch through `dotnet
-    /// &lt;dll&gt; serve` during development, and the blank-check below falls through to
-    /// <see cref="Environment.ProcessPath"/> for every published build. Suppressed with an
-    /// attribute rather than the `#pragma` that stood here, because a pragma silences only the
-    /// Roslyn analyzer — ILC re-raises IL3000 during whole-program analysis and failed the Native
-    /// AOT gate on it.
+    /// expected reading here, not a defect: it is only consulted to re-launch through
+    /// <c>dotnet &lt;dll&gt; serve</c> during development, and the blank-check below falls through
+    /// to <see cref="Environment.ProcessPath"/> for every published build.
     /// </remarks>
     [UnconditionalSuppressMessage(
         "SingleFile",
         "IL3000:Avoid accessing Assembly file path when publishing as a single file",
         Justification = "Empty Location is handled: the blank check falls through to Environment.ProcessPath.")]
-    internal static (string Executable, IReadOnlyList<string> Arguments) ResolveServeLaunch()
+    internal static (string Executable, IReadOnlyList<string> Arguments)
+        ResolveServeLaunch()
     {
-
         string? processPath = Environment.ProcessPath;
 
         string? entryLocation = Assembly.GetEntryAssembly()?.Location;
@@ -370,21 +322,24 @@ internal sealed class ArcanumServeLauncher(
             StringComparison.Ordinal);
 
         bool looksLikeDotnet = processPath is not null
-            && (string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(
+                    Path.GetFileNameWithoutExtension(processPath),
+                    "dotnet",
+                    StringComparison.OrdinalIgnoreCase)
                 || forceDev);
 
-        if (looksLikeDotnet && !string.IsNullOrWhiteSpace(entryLocation))
+        if (looksLikeDotnet
+            && !string.IsNullOrWhiteSpace(entryLocation))
         {
             return ("dotnet", [entryLocation, "serve"]);
         }
 
         if (string.IsNullOrWhiteSpace(processPath))
         {
-            throw new InvalidOperationException("Cannot resolve arcanum executable path for auto-serve.");
+            throw new InvalidOperationException(
+                "Cannot resolve arcanum executable path for auto-serve.");
         }
 
         return (processPath, ["serve"]);
-
     }
-
 }

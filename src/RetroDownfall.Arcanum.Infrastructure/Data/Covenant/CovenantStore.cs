@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICovenantStore
 {
-
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     /// <summary>
@@ -39,7 +38,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         Guid? campaignId = campaign.IsCampaignBound ? campaign.CampaignId : null;
 
         CovenantOperationScope required = campaignId is { } present
@@ -51,9 +49,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -80,10 +76,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 datasetGeneration = ReadGuidBlob(reader, 0);
 
                 canonicalSequence = checked((ulong)reader.GetInt64(1));
@@ -92,26 +86,20 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 if (reader.IsDBNull(3))
                 {
-
                     // The left join produced the state row alone: this installation has no active
                     // heads, which is an ordinary empty snapshot rather than an error.
                     continue;
-
                 }
 
                 Result<CovenantSnapshotCandidate> candidate = MaterializeCandidate(reader, offset: 3);
 
                 if (candidate.IsFailure)
                 {
-
                     return candidate.Error;
-
                 }
 
                 candidates.Add(candidate.Value);
-
             }
-
         }
 
         List<string> maskedKeys = [];
@@ -122,7 +110,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         // Covenant this turn was never shown.
         if (campaignId is { } evaluating)
         {
-
             await using SqliteCommand masks = connection.CreateCommand();
 
             masks.Transaction = transaction;
@@ -136,36 +123,28 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
             while (await maskReader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 maskedKeys.Add(maskReader.GetString(0));
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         if (datasetGeneration == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier has no state row, so no turn snapshot can be bound to a dataset.");
-
         }
 
         if (candidates.Count > CovenantLimits.MaxActiveSnapshotRows)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The active Covenant head set exceeds its hard bound, so the canonical tier is not linkable.");
-
         }
 
         try
         {
-
             return new CovenantTurnSnapshot(
                 new CovenantGenerationId(datasetGeneration),
                 keyReclamationEpoch,
@@ -173,15 +152,11 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 canonicalSequence,
                 [.. candidates],
                 [.. maskedKeys]);
-
         }
         catch (ArgumentException exception)
         {
-
             return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
-
         }
-
     }
 
     public async ValueTask<Result<CovenantLaneHeadProbe>> ProbeLaneHeadAsync(
@@ -191,7 +166,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(normalizedKey);
 
         Guid? campaignId = campaign.IsCampaignBound ? campaign.CampaignId : null;
@@ -205,9 +179,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -228,19 +200,15 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (campaignId is { } bound)
         {
-
             Bind(command, "$campaign", bound.ToString("D"));
-
         }
 
         CovenantLaneHeadProbe probe = CovenantLaneHeadProbe.NotFound(scope, lane, normalizedKey, 0);
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 long keyEpoch = reader.GetInt64(0);
 
                 bool pinned = reader.GetInt32(7) == 1;
@@ -261,15 +229,12 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                         reader.GetInt64(6),
                         keyEpoch,
                         pinned);
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return probe;
-
     }
 
     public async ValueTask<Result<CovenantListPage>> ReadListPageAsync(
@@ -277,16 +242,13 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         Result<CovenantOperationScope?> scope = ResolveSelection(query.ScopeSelection, query.CampaignId);
 
         if (scope.IsFailure)
         {
-
             return scope.Error;
-
         }
 
         Result validated = await ValidateLeaseAsync(
@@ -298,9 +260,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -323,21 +283,16 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (scope.Value is { Kind: CovenantScope.Campaign } campaignScope)
         {
-
             Bind(command, "$campaign", campaignScope.CampaignId!.Value.ToString("D"));
-
         }
 
         if (query.Lane is { } lane)
         {
-
             Bind(command, "$lane", (int)lane);
-
         }
 
         if (query.After is { } after)
         {
-
             Bind(command, "$afterScope", (int)after.ScopeOrdinal);
 
             Bind(command, "$afterCampaign", after.CampaignId == Guid.Empty ? string.Empty : after.CampaignId.ToString("D"));
@@ -347,7 +302,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             Bind(command, "$afterEntry", after.EntryId.ToString("D"));
 
             Bind(command, "$afterLane", (int)after.LaneOrdinal);
-
         }
 
         Guid datasetGeneration = Guid.Empty;
@@ -360,10 +314,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 datasetGeneration = ReadGuidBlob(reader, 0);
 
                 canonicalSequence = reader.GetInt64(1);
@@ -372,15 +324,11 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 if (reader.IsDBNull(3))
                 {
-
                     continue;
-
                 }
 
                 items.Add(MaterializeHeadItem(reader, offset: 3));
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -389,9 +337,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (hasMore)
         {
-
             items.RemoveAt(items.Count - 1);
-
         }
 
         CovenantListKeyset? next = hasMore && items.Count > 0
@@ -405,7 +351,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             canonicalSequence,
             deletionSequence,
             hasMore);
-
     }
 
     public async ValueTask<Result<CovenantDetail>> ReadDetailAsync(
@@ -413,7 +358,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         Result validated = await ValidateLeaseAsync(readLease, query.Scope, requireInstallation: false, cancellationToken)
@@ -421,9 +365,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -442,9 +384,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (query.Scope.Kind == CovenantScope.Campaign)
         {
-
             Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
-
         }
 
         Guid datasetGeneration = Guid.Empty;
@@ -459,10 +399,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 datasetGeneration = ReadGuidBlob(reader, 0);
 
                 canonicalSequence = reader.GetInt64(1);
@@ -471,28 +409,20 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 if (reader.IsDBNull(3))
                 {
-
                     continue;
-
                 }
 
                 CovenantHeadItem item = MaterializeHeadItem(reader, offset: 3);
 
                 if (item.Lane == CovenantLane.Confirmed)
                 {
-
                     confirmed = item;
-
                 }
                 else
                 {
-
                     proposed = item;
-
                 }
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -506,7 +436,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             keyEpoch,
             datasetGeneration,
             canonicalSequence);
-
     }
 
     public async ValueTask<Result<CovenantVersionPage>> ReadVersionPageAsync(
@@ -514,7 +443,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         Result validated = await ValidateLeaseAsync(readLease, required: null, requireInstallation: false, cancellationToken)
@@ -522,9 +450,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -547,9 +473,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (query.After is { } after)
         {
-
             Bind(command, "$afterRevision", after.LaneRevision);
-
         }
 
         Guid datasetGeneration = Guid.Empty;
@@ -560,19 +484,15 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 datasetGeneration = ReadGuidBlob(reader, 0);
 
                 canonicalSequence = reader.GetInt64(1);
 
                 if (reader.IsDBNull(2))
                 {
-
                     continue;
-
                 }
 
                 items.Add(
@@ -593,9 +513,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                         checked((uint)reader.GetInt64(15)),
                         new CovenantDigest(ReadBlob(reader, 16)),
                         ReadTimestamp(reader, 17)));
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -604,9 +522,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (hasMore)
         {
-
             items.RemoveAt(items.Count - 1);
-
         }
 
         CovenantVersionKeyset? next = hasMore && items.Count > 0
@@ -614,7 +530,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             : null;
 
         return new CovenantVersionPage([.. items], next, datasetGeneration, canonicalSequence, hasMore);
-
     }
 
     public async ValueTask<Result<CovenantSourcePage>> ReadSourcePageAsync(
@@ -622,7 +537,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         Result validated = await ValidateLeaseAsync(readLease, required: null, requireInstallation: false, cancellationToken)
@@ -630,9 +544,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -661,10 +573,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 found = true;
 
                 storedCount = checked((uint)reader.GetInt64(0));
@@ -673,9 +583,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 if (reader.IsDBNull(2))
                 {
-
                     continue;
-
                 }
 
                 Guid attachmentId = ReadGuidText(reader, 3)!.Value;
@@ -716,47 +624,36 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                         start is { } presentStart ? checked((uint)presentStart) : null,
                         end is { } presentEnd ? checked((uint)presentEnd) : null,
                         []));
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         if (!found)
         {
-
             return new Error(ErrorCodes.Covenant.NotFound, "No Covenant version with that identity exists.");
-
         }
 
         if (items.Count > CovenantLimits.MaxVersionSources)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "This Covenant version carries more attachment sources than its hard bound allows.");
-
         }
 
         CovenantDigest recomputed;
 
         try
         {
-
             recomputed = CovenantDigests.Materialization(
                 new MaterializationDigestInput(Unprovenanced: leaves.Count == 0, [.. leaves]));
-
         }
         catch (ArgumentException exception)
         {
-
             return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
-
         }
 
         return new CovenantSourcePage(query.VersionId, [.. items], storedCount, storedDigest, recomputed);
-
     }
 
     /// <summary>
@@ -774,15 +671,12 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         Result validated = await ValidateLeaseAsync(readLease, scope, requireInstallation: false, cancellationToken)
             .ConfigureAwait(false);
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -801,16 +695,12 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (campaignScoped)
         {
-
             Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
-
         }
 
         for (int index = 0; index < excludedKeys.Length; index++)
         {
-
             Bind(command, $"$xkey{index}", excludedKeys[index]);
-
         }
 
         CovenantQuotaSnapshot snapshot = await CovenantQuotaSnapshotReader
@@ -820,7 +710,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return snapshot;
-
     }
 
     public async ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(
@@ -828,7 +717,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         Result validated = await ValidateLeaseAsync(readLease, query.Scope, requireInstallation: false, cancellationToken)
@@ -836,9 +724,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -857,41 +743,32 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (campaignScoped)
         {
-
             Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
-
         }
 
         Bind(command, "$lane", (int)query.Lane);
 
         for (int index = 0; index < query.ExcludedKeys.Length; index++)
         {
-
             Bind(command, $"$key{index}", query.ExcludedKeys[index]);
-
         }
 
         CovenantSectionOccupancy occupancy = CovenantSectionOccupancy.Empty;
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 occupancy = new CovenantSectionOccupancy(
                     reader.GetInt64(0),
                     reader.GetInt64(1),
                     (int)reader.GetInt64(2));
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return occupancy;
-
     }
 
     /// <summary>
@@ -914,7 +791,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         Result validated = await ValidateLeaseAsync(
                 readLease,
                 required: null,
@@ -924,9 +800,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
@@ -938,7 +812,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         try
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.Transaction = transaction;
@@ -958,10 +831,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false))
             {
-
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     CovenantScope scope = (CovenantScope)reader.GetInt64(0);
 
                     CovenantLane lane = (CovenantLane)reader.GetInt64(1);
@@ -986,13 +857,9 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                     // would read as though it were load-bearing.
                     if (scope is CovenantScope.Global)
                     {
-
                         globalConfirmed += bytes;
-
                     }
-
                 }
-
             }
 
             await using SqliteCommand campaignPeak = connection.CreateCommand();
@@ -1022,25 +889,17 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             await using (SqliteDataReader reader = await campaignPeak.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false))
             {
-
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     if ((CovenantLane)reader.GetInt64(0) is CovenantLane.Confirmed)
                     {
-
                         maxCampaignConfirmed = reader.GetInt64(1);
-
                     }
                     else
                     {
-
                         maxCampaignProposed = reader.GetInt64(1);
-
                     }
-
                 }
-
             }
 
             return new CovenantScopeCensus(
@@ -1048,28 +907,22 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 globalConfirmed,
                 maxCampaignConfirmed,
                 maxCampaignProposed);
-
         }
         catch (SqliteException exception)
         {
-
             // A read-only status request must not unwind through the endpoint. The management
             // service already renders a census it could not take as empty counts beside health that
             // says the tier was not read, and that is only reachable through a returned failure.
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 $"The Covenant canonical tier could not be read for a census: {exception.SqliteErrorCode}.");
-
         }
         finally
         {
-
             BeforeReadScopeCensusRollbackForTesting?.Invoke();
 
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
         }
-
     }
 
     public async ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(
@@ -1077,7 +930,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         // A Global effect scan crosses every Campaign, so it takes the one all-scopes capability. A
@@ -1093,9 +945,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -1122,7 +972,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteCommand command = connection.CreateCommand())
         {
-
             command.Transaction = transaction;
 
             command.CommandText = CovenantStoreSql.DependentHeadScan(allCampaigns: global);
@@ -1131,9 +980,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
             if (!global)
             {
-
                 BindCoreCampaignIdentity(command, "$campaign", query.Scope.CampaignId!.Value);
-
             }
 
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -1141,7 +988,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 Guid campaignId = ReadGuidText(reader, 0)!.Value;
 
                 long confirmedRevision = reader.GetInt64(1);
@@ -1160,7 +1006,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
                 if (examples.Count < CovenantMutationEffectSnapshot.MaxExamples)
                 {
-
                     examples.Add(
                         new CovenantMutationEffectExample(
                             campaignId,
@@ -1169,11 +1014,8 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                                 : DecideLocally(query, local),
                             confirmedRevision > 0,
                             proposedRevision > 0));
-
                 }
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -1205,7 +1047,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             facts.CampaignRegistryEpoch,
             facts.DatasetGeneration,
             facts.CanonicalSearchSequence);
-
     }
 
     private static CovenantEffectDecision DecideForCampaign(CovenantOperation operation, bool hasConfirmedHead) =>
@@ -1217,25 +1058,19 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
     private static CovenantEffectDecision DecideLocally(CovenantMutationEffectQuery query, LocalHeadFacts local)
     {
-
         if (query.Operation == CovenantOperation.Retire)
         {
-
             return local.Present ? CovenantEffectDecision.HeadRetired : CovenantEffectDecision.NoEffect;
-
         }
 
         if (query.Lane == CovenantLane.Proposed)
         {
-
             return local.EffectiveConfirmedPresent
                 ? CovenantEffectDecision.ProposedRemainsReviewOnly
                 : CovenantEffectDecision.ProposedBecomesEligible;
-
         }
 
         return local.Present ? CovenantEffectDecision.HeadUpdated : CovenantEffectDecision.HeadCreated;
-
     }
 
     public async ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(
@@ -1243,7 +1078,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         bool campaignScoped = query.Scope.Kind == CovenantScope.Campaign;
@@ -1259,9 +1093,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -1282,9 +1114,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (campaignScoped)
         {
-
             Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
-
         }
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -1292,11 +1122,9 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "Covenant canonical state is not present on this installation.");
-
         }
 
         long keyEpoch = reader.GetInt64(2);
@@ -1316,7 +1144,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return Result<CovenantCurationEffectSnapshot>.Success(snapshot);
-
     }
 
     public async ValueTask<Result<CovenantRetirementTarget>> ReadRetirementTargetAsync(
@@ -1326,18 +1153,15 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(normalizedKey);
 
         if (!campaign.IsCampaignBound)
         {
-
             // A retirement is authored by an agent, and agent staging requires a Campaign binding by
             // the capability's own constructor. A Global-only turn has no target here at all.
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 "A Covenant retirement target is resolved within one Campaign.");
-
         }
 
         CovenantOperationScope scope = CovenantOperationScope.ForCampaign(campaign.CampaignId!.Value);
@@ -1347,9 +1171,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -1362,7 +1184,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         await using (SqliteCommand command = connection.CreateCommand())
         {
-
             command.Transaction = transaction;
 
             command.CommandText = CovenantStoreSql.RetirementTarget();
@@ -1379,7 +1200,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
                 && reader.GetInt32(3) == (int)CovenantOperation.Set)
             {
-
                 // Global content starts applying only where the retirement removes what was covering
                 // it: retiring a Proposed head reveals nothing, because a proposal never covered the
                 // Global entry in the first place.
@@ -1398,9 +1218,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                     fallback,
                     reader.GetInt64(6),
                     reader.GetInt32(7) == 1);
-
             }
-
         }
 
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -1410,7 +1228,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 ErrorCodes.Covenant.StaleSnapshot,
                 "This Covenant key has no live head in that lane, so there is nothing to retire.")
             : Result<CovenantRetirementTarget>.Success(target);
-
     }
 
     private static async Task<EffectFacts> ReadEffectFactsAsync(
@@ -1419,7 +1236,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1438,7 +1254,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 reader.GetInt64(3),
                 reader.GetInt64(4))
             : new EffectFacts(Guid.Empty, 0, 0, 0, 0);
-
     }
 
     private static async Task<LocalHeadFacts> ReadLocalHeadFactsAsync(
@@ -1447,7 +1262,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         CovenantMutationEffectQuery query,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1458,9 +1272,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (query.Scope.Kind == CovenantScope.Campaign)
         {
-
             Bind(command, "$campaign", query.Scope.CampaignId!.Value.ToString("D"));
-
         }
 
         bool present = false;
@@ -1471,29 +1283,22 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             CovenantLane lane = (CovenantLane)reader.GetInt32(0);
 
             bool live = reader.GetInt32(1) == (int)CovenantOperation.Set;
 
             if (lane == query.Lane)
             {
-
                 present = live;
-
             }
 
             if (lane == CovenantLane.Confirmed && live)
             {
-
                 confirmedPresent = true;
-
             }
-
         }
 
         return new LocalHeadFacts(present, confirmedPresent);
-
     }
 
     private static Result<CovenantOperationScope?> ResolveSelection(
@@ -1522,41 +1327,32 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         bool requireInstallation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(readLease);
 
         Result revalidated = await readLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return revalidated;
-
         }
 
         CovenantOperationLeaseSnapshot snapshot = readLease.Snapshot;
 
         if (snapshot.Coverage == CovenantLeaseCoverage.Installation)
         {
-
             return Result.Success();
-
         }
 
         if (requireInstallation)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "An all-scopes Covenant read requires the installation read capability.");
-
         }
 
         if (required is null)
         {
-
             return Result.Success();
-
         }
 
         CovenantOperationScope held = snapshot.Scope!.Value;
@@ -1568,12 +1364,10 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
             : new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant lease does not cover the scope the read names.");
-
     }
 
     private static Result<CovenantSnapshotCandidate> MaterializeCandidate(SqliteDataReader reader, int offset)
     {
-
         long searchRowId = reader.GetInt64(offset + 0);
 
         Guid entryId = ReadGuidText(reader, offset + 1)!.Value;
@@ -1631,9 +1425,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         if (damage is not null && lane == CovenantLane.Confirmed)
         {
-
             return new Error(ErrorCodes.Covenant.IntegrityFailure, damage);
-
         }
 
         CovenantSnapshotCandidateIntegrity integrity = damage is null
@@ -1642,7 +1434,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
 
         try
         {
-
             return new CovenantSnapshotCandidate(
                 checked((ulong)searchRowId),
                 entryId,
@@ -1663,15 +1454,11 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
                 provenanceDigest,
                 [.. compiledUtf8],
                 integrity);
-
         }
         catch (Exception exception) when (exception is ArgumentException or OverflowException)
         {
-
             return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
-
         }
-
     }
 
     /// <summary>
@@ -1691,54 +1478,40 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         CovenantDigest provenanceDigest,
         byte[] compiledUtf8)
     {
-
         if (headOrigin != versionOrigin)
         {
-
             return "A Covenant head and its current version disagree about origin.";
-
         }
 
         if (compilerPolicy != CovenantCompiler.CompilerPolicyVersion
             || rendererPolicy != CovenantCompiler.RendererPolicyVersion)
         {
-
             return "A Covenant version was compiled under an unsupported policy version.";
-
         }
 
         if (authoredHash is null || renderedHash is null)
         {
-
             return "A live Covenant version is missing its authored or rendered hash.";
-
         }
 
         if (headByteCost != compiledUtf8.Length)
         {
-
             return "A Covenant head's recorded byte cost disagrees with its compiled fragment.";
-
         }
 
         if (provenanceCount is < 0 or > CovenantLimits.MaxVersionSources)
         {
-
             return "A Covenant version reports more attachment sources than its bound allows.";
-
         }
 
         if (!provenanceDigest.IsValid)
         {
-
             return "A Covenant version carries a malformed provenance digest.";
-
         }
 
         return CovenantCompiler.HashFragment(normalizedKey, compiledUtf8) == renderedHash.Value
             ? null
             : "A Covenant compiled fragment does not match its stored rendered hash.";
-
     }
 
     private static CovenantHeadItem MaterializeHeadItem(SqliteDataReader reader, int offset) =>
@@ -1803,10 +1576,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
     private static DateTimeOffset ReadTimestamp(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal)
             ? default
-            : DateTimeOffset.Parse(
-                reader.GetString(ordinal),
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
+            : UtcInstantText.Parse(reader.GetString(ordinal));
 
     private readonly record struct EffectFacts(
         Guid DatasetGeneration,
@@ -1816,5 +1586,4 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections) : ICo
         long CampaignRegistryEpoch);
 
     private readonly record struct LocalHeadFacts(bool Present, bool EffectiveConfirmedPresent);
-
 }

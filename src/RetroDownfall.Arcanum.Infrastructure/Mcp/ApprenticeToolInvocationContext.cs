@@ -15,14 +15,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// The reservation covering the turn that issued the call, stamped at the send boundary so an outbound
 /// Sending's durable row can name the budget it came from (issue #69).
 /// </param>
+/// <param name="CampaignId">
+/// The caller's immutable campaign binding. Local child creation inherits it at the same durable boundary
+/// as parent and delegation lineage so workspace or configuration drift cannot move the child later.
+/// </param>
 internal sealed record ApprenticeToolInvocationContext(
     Guid ApprenticeId,
     IReadOnlyList<string> DelegationChain,
-    Guid? BudgetReservationId = null)
+    Guid? BudgetReservationId = null,
+    Guid? CampaignId = null)
 {
-
     internal bool IsValid => ApprenticeId != Guid.Empty;
-
 }
 
 /// <summary>
@@ -32,7 +35,6 @@ internal sealed record ApprenticeToolInvocationContext(
 /// </summary>
 internal static class ApprenticeToolInvocationAmbient
 {
-
     private static readonly AsyncLocal<ApprenticeToolInvocationContext?> CurrentValue = new();
 
     internal static ApprenticeToolInvocationContext? Current
@@ -43,7 +45,6 @@ internal static class ApprenticeToolInvocationAmbient
 
     internal static IDisposable Begin(ApprenticeToolInvocationContext context)
     {
-
         ArgumentNullException.ThrowIfNull(context);
 
         ApprenticeToolInvocationContext? previous = Current;
@@ -51,32 +52,24 @@ internal static class ApprenticeToolInvocationAmbient
         Current = context;
 
         return new Scope(previous);
-
     }
 
     private sealed class Scope(ApprenticeToolInvocationContext? previous) : IDisposable
     {
-
         private bool _disposed;
 
         public void Dispose()
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             _disposed = true;
 
             Current = previous;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -91,7 +84,6 @@ internal static class ApprenticeToolInvocationAmbient
 /// </remarks>
 internal static class ApprenticeToolInvocationBinding
 {
-
     private static readonly TimeSpan BindingTtl = TimeSpan.FromMinutes(10);
 
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
@@ -106,7 +98,6 @@ internal static class ApprenticeToolInvocationBinding
         string requestId,
         ApprenticeToolInvocationContext context)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionKey);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
@@ -114,7 +105,6 @@ internal static class ApprenticeToolInvocationBinding
         ArgumentNullException.ThrowIfNull(context);
 
         ByRequest.Bind(connectionKey, requestId, context);
-
     }
 
     internal static bool TryResolveRequest(
@@ -122,36 +112,27 @@ internal static class ApprenticeToolInvocationBinding
         string requestId,
         out ApprenticeToolInvocationContext? context)
     {
-
         context = null;
 
         if (string.IsNullOrWhiteSpace(connectionKey)
             || string.IsNullOrWhiteSpace(requestId)
             || !ByRequest.TryResolve(connectionKey, requestId, out ApprenticeToolInvocationContext resolved))
         {
-
             return false;
-
         }
 
         context = resolved;
 
         return true;
-
     }
 
     internal static void UnbindRequest(string connectionKey, string requestId)
     {
-
         if (string.IsNullOrWhiteSpace(connectionKey) || string.IsNullOrWhiteSpace(requestId))
         {
-
             return;
-
         }
 
         ByRequest.Unbind(connectionKey, requestId);
-
     }
-
 }

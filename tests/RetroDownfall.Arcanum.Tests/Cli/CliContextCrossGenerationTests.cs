@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class CliContextCrossGenerationTests
 {
-
     private static readonly Guid CampaignId =
         Guid.Parse("51515151-5151-5151-5151-515151515151");
 
@@ -46,7 +45,6 @@ public sealed class CliContextCrossGenerationTests
     public async Task Selection_does_not_persist_a_resource_that_disappears_before_client_admission(
         byte scopeValue)
     {
-
         CliContextScope scope = (CliContextScope)scopeValue;
 
         CliContextDocument retained = CliContextDocument.Empty with
@@ -82,7 +80,6 @@ public sealed class CliContextCrossGenerationTests
         Assert.Equal(0, store.ExclusiveSaves);
 
         Assert.Equal(1, boundary.Calls);
-
     }
 
     [Theory]
@@ -91,7 +88,6 @@ public sealed class CliContextCrossGenerationTests
     public async Task Selection_persists_the_refreshed_host_payload_observed_inside_client_admission(
         byte scopeValue)
     {
-
         CliContextScope scope = (CliContextScope)scopeValue;
 
         FakeContextStore store = new(CliContextDocument.Empty);
@@ -116,25 +112,19 @@ public sealed class CliContextCrossGenerationTests
 
         if (scope is CliContextScope.Campaign)
         {
-
             Assert.Equal("replacement-campaign", store.Load().CampaignName);
-
         }
         else
         {
-
             Assert.Equal("/replacement/workspace", store.Load().WorkspacePath);
-
         }
 
         Assert.Equal(1, store.ExclusiveSaves);
-
     }
 
     [Fact]
     public async Task Stale_cleanup_revalidates_every_candidate_after_client_admission()
     {
-
         CliContextDocument retained = new(
             CliContextDocument.CurrentVersion,
             CampaignId,
@@ -166,7 +156,6 @@ public sealed class CliContextCrossGenerationTests
         Assert.Equal(0, store.ExclusiveSaves);
 
         Assert.Equal(1, boundary.Calls);
-
     }
 
     private static string Identifier(CliContextScope scope) =>
@@ -189,7 +178,7 @@ public sealed class CliContextCrossGenerationTests
             new SelectedResourceCatalog(),
             new ArcanumApiClient(
                 new FakeHttpClientFactory(host),
-                new FakeSecretStore()),
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key")),
             Options.Create(new ArcanumSettings()),
             boundary);
 
@@ -198,7 +187,6 @@ public sealed class CliContextCrossGenerationTests
         ICliContextStore,
         ICliContextExclusiveWriter
     {
-
         private CliContextDocument _document = document;
 
         internal int ExclusiveSaves { get; private set; }
@@ -209,18 +197,14 @@ public sealed class CliContextCrossGenerationTests
 
         public void SaveUnderExclusive(CliContextDocument value)
         {
-
             ExclusiveSaves++;
 
             _document = value;
-
         }
-
     }
 
     private sealed class SelectedResourceCatalog : ICliResourceCatalog
     {
-
         public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
             string? identifier,
             CancellationToken cancellationToken) =>
@@ -283,12 +267,10 @@ public sealed class CliContextCrossGenerationTests
 
         private static InvalidOperationException Unused() =>
             new("This cross-generation test did not select that resource kind.");
-
     }
 
     private sealed class MutableHostHandler : HttpMessageHandler
     {
-
         internal bool Available { get; set; }
 
         internal string CampaignName { get; set; } = "selected-campaign";
@@ -299,14 +281,12 @@ public sealed class CliContextCrossGenerationTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string path = request.RequestUri!.AbsolutePath;
 
             if (path == "/api/campaigns")
             {
-
                 ListPageResult<CampaignDto> page = new(
                     Available ? [Campaign(CampaignName)] : [],
                     false,
@@ -317,12 +297,10 @@ public sealed class CliContextCrossGenerationTests
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<ListPageResult<CampaignDto>>(page, true, null),
                             ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto)));
-
             }
 
             if (path == "/api/workspaces")
             {
-
                 WorkspaceInfo[] workspaces = Available
                     ? [Workspace(WorkspacePath)]
                     : [];
@@ -332,12 +310,10 @@ public sealed class CliContextCrossGenerationTests
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<WorkspaceInfo[]>(workspaces, true, null),
                             ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray)));
-
             }
 
             if (path == "/api/models")
             {
-
                 ModelInfoDto[] models = Available ? [Model()] : [];
 
                 return Task.FromResult(
@@ -345,12 +321,10 @@ public sealed class CliContextCrossGenerationTests
                         JsonSerializer.SerializeToUtf8Bytes(
                             new ApiResponse<ModelInfoDto[]>(models, true, null),
                             ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray)));
-
             }
 
             if (path == $"/api/sessions/{SessionId:D}")
             {
-
                 Result<SessionDetailDto> result = Available
                     ? Result<SessionDetailDto>.Success(Session())
                     : Result<SessionDetailDto>.Failure(
@@ -364,11 +338,9 @@ public sealed class CliContextCrossGenerationTests
                             ApiResponse<SessionDetailDto>.FromResult(result),
                             ArcanumJsonContext.Default.ApiResponseSessionDetailDto),
                         Available ? HttpStatusCode.OK : HttpStatusCode.NotFound));
-
             }
 
             throw new InvalidOperationException($"Unexpected request to {path}.");
-
         }
 
         private static HttpResponseMessage Json(
@@ -378,24 +350,20 @@ public sealed class CliContextCrossGenerationTests
             {
                 Content = new ByteArrayContent(payload),
             };
-
     }
 
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -409,7 +377,6 @@ public sealed class CliContextCrossGenerationTests
 
         public Task SaveGrimoireEncryptionSecretAsync(
             string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private static CampaignDto Campaign(string name) =>
@@ -450,5 +417,4 @@ public sealed class CliContextCrossGenerationTests
             DateTimeOffset.UnixEpoch,
             null,
             0);
-
 }

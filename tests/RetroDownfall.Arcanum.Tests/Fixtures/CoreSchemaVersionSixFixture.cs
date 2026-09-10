@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </summary>
 internal static class CoreSchemaVersionSixFixture
 {
-
     private const string SagaExtractionWatermarksSql =
         """
         CREATE TABLE IF NOT EXISTS saga_extraction_watermarks (
@@ -58,7 +57,7 @@ internal static class CoreSchemaVersionSixFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionSevenFixture.Objects
             .Where(static definition =>
                 definition.Name is not "saga_extraction_watermarks_validate_insert"
                 and not "saga_extraction_watermarks_validate_update")
@@ -98,5 +97,4 @@ internal static class CoreSchemaVersionSixFixture
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
         ]);
-
 }

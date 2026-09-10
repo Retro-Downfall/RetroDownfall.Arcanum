@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Primitives;
 
 public sealed class ArcanumErrorMapperTests
 {
-
     [Theory]
     [InlineData(ErrorCodes.Validation.InvalidPrompt, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Validation.AttachedFiles, StatusCodes.Status400BadRequest)]
@@ -76,9 +75,12 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.RateLimit.TooManyRequests, StatusCodes.Status429TooManyRequests)]
     [InlineData(ErrorCodes.Connection.Timeout, StatusCodes.Status504GatewayTimeout)]
     // Auth.Unauthorized is the code ApiKeyEndpointFilter actually puts on the wire (DESIGN §11.3);
-    // Security.MissingApiKey is client-synthesized. Both must resolve to 401, never the 500 default.
+    // the Security codes are client-synthesized before an authenticated request is sent. Every
+    // authentication-bound result must resolve to 401, never the 500 default.
     [InlineData(ErrorCodes.Auth.Unauthorized, StatusCodes.Status401Unauthorized)]
     [InlineData(ErrorCodes.Security.MissingApiKey, StatusCodes.Status401Unauthorized)]
+    [InlineData(ErrorCodes.Security.CredentialUnreadable, StatusCodes.Status401Unauthorized)]
+    [InlineData(ErrorCodes.Security.UnverifiedLocalApi, StatusCodes.Status401Unauthorized)]
     [InlineData(ErrorCodes.Security.BlockedOutboundUrl, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Security.IdempotencyInProgress, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Security.IdempotencyConflict, StatusCodes.Status409Conflict)]
@@ -135,6 +137,8 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.ClientTools.Disabled, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ClientTools.TooMany, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ClientTools.InvalidSchema, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ClientTools.ModelUnsupported, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ClientTools.ToolChoiceUnavailable, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Guardrails.PiiDetected, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Guardrails.Blocked, StatusCodes.Status400BadRequest)]
     // The durable-operation, perception and codex routes each spelled their code out as a literal and
@@ -152,31 +156,25 @@ public sealed class ArcanumErrorMapperTests
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {
-
         int actual = ArcanumErrorMapper.ResolveStatusCode(code);
 
         Assert.Equal(expected, actual);
-
     }
 
     [Fact]
     public void ResolveStatusCodeDefaultBadRequest_UnknownCode_Returns400()
     {
-
         int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest("Unknown.Code");
 
         Assert.Equal(StatusCodes.Status400BadRequest, actual);
-
     }
 
     [Fact]
     public void ResolveStatusCodeDefaultBadRequest_InferenceFailed_Returns500()
     {
-
         int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.ProvingGrounds.InferenceFailed);
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
-
     }
 
     /// <summary>
@@ -187,11 +185,8 @@ public sealed class ArcanumErrorMapperTests
     [Fact]
     public void ResolveStatusCodeDefaultBadRequest_SpellWriteFailed_IsNotDowngradedTo400()
     {
-
         int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.Spell.WriteFailed);
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
-
     }
-
 }

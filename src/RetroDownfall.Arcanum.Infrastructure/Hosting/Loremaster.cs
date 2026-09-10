@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -24,10 +25,10 @@ internal sealed class Loremaster(
     IServiceScopeFactory scopeFactory,
     CampaignLoggerQueue queue,
     IOptionsMonitor<ArcanumSettings> options,
+    IGrimoireConnectionAdmissionGate admission,
     ILogger<Loremaster> hostLogger)
     : BackgroundService
 {
-
     private int _sweepRunning;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -97,7 +98,7 @@ internal sealed class Loremaster(
         }
     }
 
-    private async Task RunSweepAsync(int threshold, CancellationToken cancellationToken)
+    internal async Task RunSweepAsync(int threshold, CancellationToken cancellationToken)
     {
         if (Interlocked.CompareExchange(ref _sweepRunning, 1, 0) != 0)
         {
@@ -109,6 +110,15 @@ internal sealed class Loremaster(
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (!admission.TryAcquireWorkLease(
+                    GrimoireWorkKind.LoremasterSummarization,
+                    out IGrimoireWorkLease? admitted))
+            {
+                return;
+            }
+
+            await using IGrimoireWorkLease lease = admitted!;
 
             int idleMinutes = ArcanumSettingClamps.CampaignLogIdleTimeoutMinutes(
                 options.CurrentValue.ResolveIntelligence().CampaignLogIdleTimeoutMinutes);
@@ -148,169 +158,30 @@ internal sealed class Loremaster(
             await foreach (
                 Guid sessionId in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))
             {
+                long observedGeneration = admission.CurrentGeneration;
+
+                if (!admission.TryAcquireWorkLease(
+                        GrimoireWorkKind.LoremasterSummarization,
+                        out IGrimoireWorkLease? admitted))
+                {
+                    await WaitForReopenAndResignalAsync(
+                        sessionId,
+                        observedGeneration,
+                        stoppingToken).ConfigureAwait(false);
+
+                    continue;
+                }
+
+                LoremasterSessionDisposition disposition;
+
                 try
                 {
-                    await using AsyncServiceScope iterationScope = scopeFactory.CreateAsyncScope();
-
-                    IGrimoireRepository grimoire =
-                        iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
-
-                    IArcanumIntelligenceProvider intelligence =
-                        iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
-
-                    IAttachmentMemoryProvenanceStore attachmentProvenance =
-                        iterationScope.ServiceProvider.GetRequiredService<IAttachmentMemoryProvenanceStore>();
-
-                    Session? session = await grimoire
-                        .GetSessionHeaderAsync(sessionId, stoppingToken)
-                        .ConfigureAwait(false);
-
-                    if (session is null)
+                    await using (IGrimoireWorkLease lease = admitted!)
                     {
-                        hostLogger.LogWarning(
-                            "Campaign Logger: Session {SessionId} no longer exists; skipping.",
-                            sessionId);
-
-                        continue;
-                    }
-
-                    DateTime watermark = session.LastSummarizedMessageAt ?? DateTime.MinValue;
-
-                    int batchSize = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-                        ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
-
-                    List<Entry> batch = await grimoire
-                        .GetUnsummarizedEntriesAsync(sessionId, watermark, batchSize, stoppingToken)
-                        .ConfigureAwait(false);
-
-                    if (batch.Count == 0)
-                    {
-                        hostLogger.LogInformation(
-                            "Campaign Logger: No entries to summarize for session {SessionId}; skipping.",
-                            sessionId);
-
-                        continue;
-                    }
-
-                    DateTime batchEndUtc = batch[^1].CreatedAt.UtcDateTime;
-
-                    StringBuilder userPayload = new();
-
-                    DateTimeOffset provenanceWatermark = session.LastSummarizedMessageAt is { } summarizedAt
-                        ? new DateTimeOffset(
-                            DateTime.SpecifyKind(summarizedAt, DateTimeKind.Utc),
-                            TimeSpan.Zero)
-                        : DateTimeOffset.MinValue;
-
-                    IReadOnlyList<AttachmentMemoryProvenance> consultations =
-                        await attachmentProvenance
-                            .ListConsultationsAsync(
-                                sessionId,
-                                provenanceWatermark,
-                                new DateTimeOffset(batchEndUtc, TimeSpan.Zero),
-                                stoppingToken)
-                            .ConfigureAwait(false);
-
-                    if (!string.IsNullOrWhiteSpace(session.Summary))
-                    {
-                        _ = userPayload.AppendLine("## Previous Summary");
-
-                        _ = userPayload.AppendLine(session.Summary.Trim());
-
-                        _ = userPayload.AppendLine();
-                    }
-
-                    string consultedReferences =
-                        CampaignSummaryAttachmentPolicy.BuildConsultedReferences(consultations);
-
-                    if (consultedReferences.Length > 0)
-                    {
-
-                        _ = userPayload.AppendLine(consultedReferences);
-
-                        _ = userPayload.AppendLine();
-
-                    }
-
-                    foreach (Entry m in batch)
-                    {
-                        stoppingToken.ThrowIfCancellationRequested();
-
-                        _ = userPayload.Append('[');
-
-                        _ = userPayload.Append(m.Role.ToString());
-
-                        _ = userPayload.Append("]: ");
-
-                        _ = userPayload.AppendLine(m.Content);
-                    }
-
-                    const string systemPersona =
-                        "You are an AI tasked with maintaining a rolling campaign summary of a technical workspace conversation. Combine the previous summary (if any) with the new messages into a single, cohesive, highly condensed summary. Preserve decisions and consulted attachment references by logical key and version, but never reproduce attachment excerpts or turn the summary into a document archive. Discard conversational filler.";
-
-                    List<CoreChatMessage> statelessMessages =
-                    [
-                        new CoreChatMessage("system", systemPersona),
-
-                        new CoreChatMessage("user", userPayload.ToString().TrimEnd()),
-                    ];
-
-                    ArcanumSettings arc = options.CurrentValue;
-
-                    string? model = null;
-
-                    if (!string.IsNullOrWhiteSpace(arc.FastModel))
-                    {
-                        model = arc.FastModel.Trim();
-                    }
-                    else if (!string.IsNullOrWhiteSpace(arc.DefaultModel))
-                    {
-                        model = arc.DefaultModel.Trim();
-                    }
-
-                    PingRequest ping = new(
-                        Prompt: string.Empty,
-                        Model: model,
-                        WorkingDirectory: string.Empty,
-                        UnattendedMode: true,
-                        DisableMcpTools: true,
-                        StatelessMessages: statelessMessages,
-                        SkipSpellRouting: true);
-
-                    try
-                    {
-                        Result<PromptTurnResult> result = await intelligence
-                            .ExecutePromptAsync(ping, ArcanumInvocationContext.None, stoppingToken)
-                            .ConfigureAwait(false);
-
-                        if (result.IsFailure)
-                        {
-                            hostLogger.LogWarning(
-                                "Campaign Logger: Summarization failed for session {SessionId}: {Code} {Message}",
-                                sessionId,
-                                result.Error.Code,
-                                result.Error.Message);
-
-                            continue;
-                        }
-
-                        string summaryText = result.Value.Text.Trim();
-
-                        await grimoire
-                            .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, stoppingToken)
-                            .ConfigureAwait(false);
-
-                        hostLogger.LogInformation(
-                            "Campaign Logger: Updated campaign summary for session {SessionId} through {BatchEndUtc:o}.",
+                        disposition = await ProcessSessionAsync(
                             sessionId,
-                            batchEndUtc);
-                    }
-                    catch (Exception inferEx)
-                    {
-                        hostLogger.LogWarning(
-                            inferEx,
-                            "Campaign Logger: Summarization threw for session {SessionId}.",
-                            sessionId);
+                            lease,
+                            stoppingToken).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -323,7 +194,21 @@ internal sealed class Loremaster(
                         ex,
                         "Campaign Logger: Failed processing session {SessionId}",
                         sessionId);
+
+                    disposition = LoremasterSessionDisposition.Concluded;
                 }
+
+                if (disposition == LoremasterSessionDisposition.DeferredForMaintenance)
+                {
+                    await WaitForReopenAndResignalAsync(
+                        sessionId,
+                        observedGeneration,
+                        stoppingToken).ConfigureAwait(false);
+
+                    continue;
+                }
+
+                _ = queue.Conclude(sessionId);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -331,4 +216,210 @@ internal sealed class Loremaster(
         }
     }
 
+    private async Task<LoremasterSessionDisposition> ProcessSessionAsync(
+        Guid sessionId,
+        IGrimoireWorkLease lease,
+        CancellationToken stoppingToken)
+    {
+        await using AsyncServiceScope iterationScope = scopeFactory.CreateAsyncScope();
+
+        IGrimoireRepository grimoire =
+            iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+        IArcanumIntelligenceProvider intelligence =
+            iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
+
+        IAttachmentMemoryProvenanceStore attachmentProvenance =
+            iterationScope.ServiceProvider.GetRequiredService<IAttachmentMemoryProvenanceStore>();
+
+        Session? session = await grimoire
+            .GetSessionHeaderAsync(sessionId, stoppingToken)
+            .ConfigureAwait(false);
+
+        if (session is null)
+        {
+            hostLogger.LogWarning(
+                "Campaign Logger: Session {SessionId} no longer exists; skipping.",
+                sessionId);
+
+            return LoremasterSessionDisposition.Concluded;
+        }
+
+        DateTime watermark = session.LastSummarizedMessageAt ?? DateTime.MinValue;
+
+        int batchSize = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
+
+        List<Entry> batch = await grimoire
+            .GetUnsummarizedEntriesAsync(sessionId, watermark, batchSize, stoppingToken)
+            .ConfigureAwait(false);
+
+        if (batch.Count == 0)
+        {
+            hostLogger.LogInformation(
+                "Campaign Logger: No entries to summarize for session {SessionId}; skipping.",
+                sessionId);
+
+            return LoremasterSessionDisposition.Concluded;
+        }
+
+        DateTime batchEndUtc = batch[^1].CreatedAt.UtcDateTime;
+
+        StringBuilder userPayload = new();
+
+        DateTimeOffset provenanceWatermark = session.LastSummarizedMessageAt is { } summarizedAt
+            ? new DateTimeOffset(
+                DateTime.SpecifyKind(summarizedAt, DateTimeKind.Utc),
+                TimeSpan.Zero)
+            : DateTimeOffset.MinValue;
+
+        IReadOnlyList<AttachmentMemoryProvenance> consultations =
+            await attachmentProvenance
+                .ListConsultationsAsync(
+                    sessionId,
+                    provenanceWatermark,
+                    new DateTimeOffset(batchEndUtc, TimeSpan.Zero),
+                    stoppingToken)
+                .ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(session.Summary))
+        {
+            _ = userPayload.AppendLine("## Previous Summary");
+
+            _ = userPayload.AppendLine(session.Summary.Trim());
+
+            _ = userPayload.AppendLine();
+        }
+
+        string consultedReferences =
+            CampaignSummaryAttachmentPolicy.BuildConsultedReferences(consultations);
+
+        if (consultedReferences.Length > 0)
+        {
+            _ = userPayload.AppendLine(consultedReferences);
+
+            _ = userPayload.AppendLine();
+        }
+
+        foreach (Entry m in batch)
+        {
+            stoppingToken.ThrowIfCancellationRequested();
+
+            _ = userPayload.Append('[');
+
+            _ = userPayload.Append(m.Role.ToString());
+
+            _ = userPayload.Append("]: ");
+
+            _ = userPayload.AppendLine(m.Content);
+        }
+
+        const string systemPersona =
+            "You are an AI tasked with maintaining a rolling campaign summary of a technical workspace conversation. Combine the previous summary (if any) with the new messages into a single, cohesive, highly condensed summary. Preserve decisions and consulted attachment references by logical key and version, but never reproduce attachment excerpts or turn the summary into a document archive. Discard conversational filler.";
+
+        List<CoreChatMessage> statelessMessages =
+        [
+            new CoreChatMessage("system", systemPersona),
+            new CoreChatMessage("user", userPayload.ToString().TrimEnd()),
+        ];
+
+        ArcanumSettings arc = options.CurrentValue;
+
+        string? model = null;
+
+        if (!string.IsNullOrWhiteSpace(arc.FastModel))
+        {
+            model = arc.FastModel.Trim();
+        }
+        else if (!string.IsNullOrWhiteSpace(arc.DefaultModel))
+        {
+            model = arc.DefaultModel.Trim();
+        }
+
+        PingRequest ping = new(
+            Prompt: string.Empty,
+            Model: model,
+            WorkingDirectory: string.Empty,
+            UnattendedMode: true,
+            DisableMcpTools: true,
+            StatelessMessages: statelessMessages,
+            SkipSpellRouting: true);
+
+        if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admittedGroup))
+        {
+            return LoremasterSessionDisposition.DeferredForMaintenance;
+        }
+
+        await using IGrimoireExternalEffectGroup group = admittedGroup!;
+
+        try
+        {
+            Result<PromptTurnResult> result = await intelligence
+                .ExecutePromptAsync(ping, ArcanumInvocationContext.None, stoppingToken)
+                .ConfigureAwait(false);
+
+            if (result.IsFailure)
+            {
+                hostLogger.LogWarning(
+                    "Campaign Logger: Summarization failed for session {SessionId}: {Code} {Message}",
+                    sessionId,
+                    result.Error.Code,
+                    result.Error.Message);
+
+                return LoremasterSessionDisposition.Concluded;
+            }
+
+            string summaryText = result.Value.Text.Trim();
+
+            await grimoire
+                .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, stoppingToken)
+                .ConfigureAwait(false);
+
+            hostLogger.LogInformation(
+                "Campaign Logger: Updated campaign summary for session {SessionId} through {BatchEndUtc:o}.",
+                sessionId,
+                batchEndUtc);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception inferEx)
+        {
+            hostLogger.LogWarning(
+                inferEx,
+                "Campaign Logger: Summarization threw for session {SessionId}.",
+                sessionId);
+        }
+
+        return LoremasterSessionDisposition.Concluded;
+    }
+
+    private async Task WaitForReopenAndResignalAsync(
+        Guid sessionId,
+        long observedGeneration,
+        CancellationToken cancellationToken)
+    {
+        long waitAfterGeneration = observedGeneration > 0
+            ? observedGeneration - 1
+            : 0;
+
+        _ = await admission.WaitForNextOpenGenerationAsync(
+            waitAfterGeneration,
+            cancellationToken).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!queue.TryResignalHeld(sessionId))
+        {
+            throw new InvalidOperationException(
+                $"Campaign Logger could not re-signal held session {sessionId} after maintenance reopened.");
+        }
+    }
+
+    private enum LoremasterSessionDisposition : byte
+    {
+        Concluded = 1,
+        DeferredForMaintenance = 2,
+    }
 }

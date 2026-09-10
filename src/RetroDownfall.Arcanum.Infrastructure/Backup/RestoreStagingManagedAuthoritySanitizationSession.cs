@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -16,11 +17,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </summary>
 internal enum RestoredManagedFileAuthoritySourceKind
 {
-
     ManagedWriteIntent = 1,
 
     LocalErasureWorkItem = 2,
-
 }
 
 /// <summary>
@@ -28,11 +27,9 @@ internal enum RestoredManagedFileAuthoritySourceKind
 /// </summary>
 internal enum RestoredManagedFileLabelDisposition
 {
-
     NoLiveLabel = 1,
 
     ExactLabelRemoved = 2,
-
 }
 
 /// <summary>
@@ -51,7 +48,6 @@ internal enum RestoredManagedFileLabelDisposition
 /// </remarks>
 internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 {
-
     internal const string TombstoneVectorDomain =
         "Arcanum.BackupRestore.ManagedAuthorityTombstones.v1";
 
@@ -90,7 +86,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         Guid stagedDatasetGeneration,
         TimeProvider timeProvider)
     {
-
         _connection = connection;
 
         _transaction = transaction;
@@ -102,7 +97,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         _stagedDatasetGeneration = stagedDatasetGeneration;
 
         _timeProvider = timeProvider;
-
     }
 
     /// <summary>Ends the session before control returns to the caller.</summary>
@@ -169,30 +163,23 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity run,
         CancellationToken cancellationToken)
     {
-
         Result guarded = Guard(run, 7);
 
         if (guarded.IsFailure)
         {
-
             return guarded.Error;
-
         }
 
         _ordinal++;
 
         foreach (string table in (string[])["managed_file_write_intents", "local_erasure_work_items"])
         {
-
             if (await CountAsync(table, cancellationToken).ConfigureAwait(false) != 0)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     $"Staged {table} still holds authority after sanitation.");
-
             }
-
         }
 
         long tombstones = await CountAsync(
@@ -201,11 +188,9 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 
         if (tombstones != _tombstones.Count)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The tombstone count does not match the rows this sanitation enumerated.");
-
         }
 
         return new BackupRestoreManagedAuthoritySanitizationReceipt(
@@ -214,7 +199,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
             checked((ulong)_workItems.Count),
             _removedLabels,
             ComputeVectorDigest());
-
     }
 
     /// <summary>
@@ -227,7 +211,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
     /// </remarks>
     private CovenantDigest ComputeVectorDigest()
     {
-
         TombstoneItem[] ordered = [.. _tombstones
             .OrderBy(static item => (int)item.SourceKind)
             .ThenBy(static item => item.SourceRowId, StringComparer.Ordinal)];
@@ -250,7 +233,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 
         foreach (TombstoneItem item in ordered)
         {
-
             hash.AppendData([(byte)item.SourceKind]);
 
             hash.AppendData(Encoding.UTF8.GetBytes(item.SourceRowId));
@@ -272,36 +254,29 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
             hash.AppendData([(byte)item.LabelDisposition]);
 
             hash.AppendData(item.StrippedAuthorityDigest.Bytes);
-
         }
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
 
     private Result Guard(
         RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity run,
         int expectedOrdinal)
     {
-
         if (_invalidated)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This sanitation session has already ended."));
-
         }
 
         if (!ReferenceEquals(run, _run))
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "A sanitation operation must present this session's own run identity."));
-
         }
 
         return _ordinal == expectedOrdinal
@@ -310,7 +285,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
                 new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "A sanitation operation was skipped, repeated, or reordered."));
-
     }
 
     private async Task<Result> StepAsync(
@@ -318,27 +292,21 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         int expectedOrdinal,
         Func<Task<Result>> operation)
     {
-
         Result guarded = Guard(run, expectedOrdinal);
 
         if (guarded.IsFailure)
         {
-
             return guarded;
-
         }
 
         Result executed = await operation().ConfigureAwait(false);
 
         if (executed.IsSuccess)
         {
-
             _ordinal++;
-
         }
 
         return executed;
-
     }
 
     private async Task<Result> InventoryAsync(
@@ -346,7 +314,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         bool managed,
         CancellationToken cancellationToken)
     {
-
         destination.Clear();
 
         await using SqliteCommand command = _connection.CreateCommand();
@@ -376,7 +343,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             destination.Add(new SourceRow(
                 reader.GetString(0),
                 reader.GetString(1),
@@ -384,11 +350,9 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
                 reader.GetString(3),
                 reader.GetInt32(4),
                 reader.IsDBNull(5) ? null : Guid.Parse(reader.GetString(5))));
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<Result> InsertTombstonesAsync(
@@ -396,14 +360,10 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         RestoredManagedFileAuthoritySourceKind kind,
         CancellationToken cancellationToken)
     {
-
-        string now = _timeProvider.GetUtcNow().UtcDateTime.ToString(
-            "yyyy-MM-ddTHH:mm:ss.fffffffZ",
-            CultureInfo.InvariantCulture);
+        string now = UtcInstantText.Format(_timeProvider.GetUtcNow());
 
         foreach (SourceRow row in rows)
         {
-
             // A local-erasure tombstone copies its artifact, label, owner scope, and label
             // disposition from the source tombstone that was already inserted, never from its own
             // row. Otherwise a local row could invent a disposition its producer never recorded, and
@@ -419,31 +379,25 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 
             if (kind == RestoredManagedFileAuthoritySourceKind.LocalErasureWorkItem && linked is null)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A staged erasure work item names a managed write this sanitation never enumerated.");
-
             }
 
             RestoredManagedFileLabelDisposition disposition;
 
             if (linked is not null)
             {
-
                 disposition = linked.LabelDisposition;
-
             }
             else
             {
-
                 bool hasLabel = await LabelExistsAsync(row.SensitivityLabelId, cancellationToken)
                     .ConfigureAwait(false);
 
                 disposition = hasLabel
                     ? RestoredManagedFileLabelDisposition.ExactLabelRemoved
                     : RestoredManagedFileLabelDisposition.NoLiveLabel;
-
             }
 
             CovenantDigest stripped = StrippedAuthority(row, kind);
@@ -511,11 +465,9 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             _tombstones.Add(item);
-
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -532,10 +484,8 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         List<SourceRow> rows,
         CancellationToken cancellationToken)
     {
-
         foreach (SourceRow row in rows)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.Transaction = _transaction;
@@ -546,27 +496,21 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     $"A staged {table} row changed between its inventory and its removal.");
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<Result> DeleteLabelsAsync(CancellationToken cancellationToken)
     {
-
         foreach (TombstoneItem item in _tombstones
             .Where(static item => item.LabelDisposition == RestoredManagedFileLabelDisposition.ExactLabelRemoved)
             .DistinctBy(static item => item.SensitivityLabelId))
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.Transaction = _transaction;
@@ -578,16 +522,13 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
             _removedLabels += checked((ulong)await command
                 .ExecuteNonQueryAsync(cancellationToken)
                 .ConfigureAwait(false));
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<bool> LabelExistsAsync(string labelId, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = _transaction;
@@ -597,12 +538,10 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         _ = command.Parameters.AddWithValue("$label", labelId);
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
-
     }
 
     private async Task<long> CountAsync(string table, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = _transaction;
@@ -612,7 +551,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -651,7 +589,6 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
         Guid? OwnerCampaignId,
         RestoredManagedFileLabelDisposition LabelDisposition,
         CovenantDigest StrippedAuthorityDigest);
-
 }
 
 /// <summary>
@@ -665,46 +602,81 @@ internal sealed class RestoreStagingManagedAuthoritySanitizationSession
 /// </remarks>
 internal static class BackupRestoreManagedAuthoritySanitizer
 {
-
     internal static async Task<Result<BackupRestoreManagedAuthoritySanitizationReceipt>> ExecuteInSessionAsync(
         RestoreStagingManagedAuthoritySanitizationSession session,
         RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity run,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(session);
 
         ArgumentNullException.ThrowIfNull(run);
 
         // Source tombstones before linked local tombstones, both before any delete, local rows before
-        // labels, and labels before the managed sources that referenced them.
-        Func<Task<Result>>[] ladder =
-        [
-            () => session.InventoryManagedWriteIntentsAsync(run, cancellationToken),
-            () => session.InsertAndValidateManagedSourceTombstonesAsync(run, cancellationToken),
-            () => session.InventoryLocalErasureWorkItemsAsync(run, cancellationToken),
-            () => session.InsertAndValidateLinkedLocalTombstonesAsync(run, cancellationToken),
-            () => session.GuardDeleteLocalErasureWorkItemsAsync(run, cancellationToken),
-            () => session.DeleteExactAdoptedLabelsAsync(run, cancellationToken),
-            () => session.GuardDeleteManagedWriteIntentsAsync(run, cancellationToken),
-        ];
+        // labels, and labels before the managed sources that referenced them. Keep the sequence
+        // explicit: each step is part of the sanitation protocol, not a generic callback pipeline.
+        Result executed = await session
+            .InventoryManagedWriteIntentsAsync(run, cancellationToken)
+            .ConfigureAwait(false);
 
-        foreach (Func<Task<Result>> step in ladder)
+        if (executed.IsFailure)
         {
+            return executed.Error;
+        }
 
-            Result executed = await step().ConfigureAwait(false);
+        executed = await session
+            .InsertAndValidateManagedSourceTombstonesAsync(run, cancellationToken)
+            .ConfigureAwait(false);
 
-            if (executed.IsFailure)
-            {
+        if (executed.IsFailure)
+        {
+            return executed.Error;
+        }
 
-                return executed.Error;
+        executed = await session
+            .InventoryLocalErasureWorkItemsAsync(run, cancellationToken)
+            .ConfigureAwait(false);
 
-            }
+        if (executed.IsFailure)
+        {
+            return executed.Error;
+        }
 
+        executed = await session
+            .InsertAndValidateLinkedLocalTombstonesAsync(run, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (executed.IsFailure)
+        {
+            return executed.Error;
+        }
+
+        executed = await session
+            .GuardDeleteLocalErasureWorkItemsAsync(run, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (executed.IsFailure)
+        {
+            return executed.Error;
+        }
+
+        executed = await session
+            .DeleteExactAdoptedLabelsAsync(run, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (executed.IsFailure)
+        {
+            return executed.Error;
+        }
+
+        executed = await session
+            .GuardDeleteManagedWriteIntentsAsync(run, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (executed.IsFailure)
+        {
+            return executed.Error;
         }
 
         return await session.VerifyCompleteAsync(run, cancellationToken).ConfigureAwait(false);
-
     }
-
 }

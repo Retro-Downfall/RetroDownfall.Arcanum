@@ -27,7 +27,6 @@ internal sealed class CovenantIndexRebuilder(
     ICovenantConnectionSource connections,
     ICovenantSqliteConnectionInitializer initializer)
 {
-
     internal CovenantIndexRebuilder(ICovenantConnectionSource connections)
         : this(connections, CovenantSqliteConnectionInitializer.Instance)
     {
@@ -38,25 +37,20 @@ internal sealed class CovenantIndexRebuilder(
         CovenantAcceleratorLease acceleratorLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(acceleratorLease);
 
         if (progress is { IsTerminal: true })
         {
-
             // Both terminal phases are idempotent: asking again returns the same answer rather than
             // restarting work whose identity is already known to be finished or stale.
             return progress;
-
         }
 
         Result revalidated = await acceleratorLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return revalidated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -79,17 +73,14 @@ internal sealed class CovenantIndexRebuilder(
 
         if (advanced.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return advanced;
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return advanced;
-
     }
 
     /// <summary>
@@ -101,7 +92,6 @@ internal sealed class CovenantIndexRebuilder(
         RebuildState state,
         CancellationToken cancellationToken)
     {
-
         await ExecuteAsync(transaction, "DELETE FROM covenant_search_documents;", cancellationToken)
             .ConfigureAwait(false);
 
@@ -136,7 +126,6 @@ internal sealed class CovenantIndexRebuilder(
             BaseHeadsProcessed: 0,
             BaseHeadsTotal: total,
             DeltaRowsProcessed: 0);
-
     }
 
     private static async ValueTask<Result<CovenantIndexRebuildProgress>> ResumeAsync(
@@ -145,18 +134,15 @@ internal sealed class CovenantIndexRebuilder(
         CovenantIndexRebuildProgress progress,
         CancellationToken cancellationToken)
     {
-
         if (state.DatasetGeneration != progress.DatasetGeneration
             || state.AcceleratorEpoch != progress.AcceleratorEpoch
             || state.RebuildStateCode != 3
             || state.RebuildTargetSequence != progress.BaseTargetSearchSequence
             || state.CoreCampaignDeletionSequence != progress.CapturedCoreCampaignDeletionSequence)
         {
-
             // The ground moved. The partial generation is unpublished, so discarding it costs
             // nothing; publishing it would cost correctness.
             return progress with { Phase = CovenantIndexRebuildPhase.RestartRequired };
-
         }
 
         return progress.Phase switch
@@ -169,7 +155,6 @@ internal sealed class CovenantIndexRebuilder(
 
             _ => await VerifyAsync(transaction, state, progress, cancellationToken).ConfigureAwait(false),
         };
-
     }
 
     private static async ValueTask<Result<CovenantIndexRebuildProgress>> AdvanceBaseScanAsync(
@@ -178,7 +163,6 @@ internal sealed class CovenantIndexRebuilder(
         CovenantIndexRebuildProgress progress,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         // Ordered by the stable projection row ID, which never moves within a generation, so a batch
@@ -210,9 +194,7 @@ internal sealed class CovenantIndexRebuilder(
 
         if (written == 0)
         {
-
             return progress with { Phase = CovenantIndexRebuildPhase.DeltaCatchUp };
-
         }
 
         long cursor = await ScalarAsync(
@@ -231,13 +213,10 @@ internal sealed class CovenantIndexRebuilder(
 
         return progress with
         {
-
             BaseScanAfterSearchRowId = cursor,
 
             BaseHeadsProcessed = checked(progress.BaseHeadsProcessed + written),
-
         };
-
     }
 
     /// <summary>
@@ -250,12 +229,9 @@ internal sealed class CovenantIndexRebuilder(
         CovenantIndexRebuildProgress progress,
         CancellationToken cancellationToken)
     {
-
         if (progress.LastContiguousAppliedSequence >= state.CanonicalSearchSequence)
         {
-
             return progress with { Phase = CovenantIndexRebuildPhase.Verifying };
-
         }
 
         long next = checked(progress.LastContiguousAppliedSequence + 1);
@@ -268,11 +244,9 @@ internal sealed class CovenantIndexRebuilder(
 
         if (rows == 0)
         {
-
             // A gap means the outbox overflowed or was truncated, so the deltas that would have
             // reconciled this generation no longer exist.
             return progress with { Phase = CovenantIndexRebuildPhase.RestartRequired };
-
         }
 
         await ExecuteAsync(
@@ -322,13 +296,10 @@ internal sealed class CovenantIndexRebuilder(
 
         return progress with
         {
-
             LastContiguousAppliedSequence = next,
 
             DeltaRowsProcessed = checked(progress.DeltaRowsProcessed + rows),
-
         };
-
     }
 
     /// <summary>
@@ -341,29 +312,22 @@ internal sealed class CovenantIndexRebuilder(
         CovenantIndexRebuildProgress progress,
         CancellationToken cancellationToken)
     {
-
         if (progress.LastContiguousAppliedSequence != state.CanonicalSearchSequence)
         {
-
             return progress with { Phase = CovenantIndexRebuildPhase.DeltaCatchUp };
-
         }
 
         try
         {
-
             await ExecuteAsync(
                     transaction,
                     "INSERT INTO covenant_fts(covenant_fts, rank) VALUES('integrity-check', 1);",
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (SqliteException exception)
         {
-
             return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
-
         }
 
         await ExecuteAsync(
@@ -394,14 +358,12 @@ internal sealed class CovenantIndexRebuilder(
             .ConfigureAwait(false);
 
         return progress with { Phase = CovenantIndexRebuildPhase.Completed };
-
     }
 
     private static async ValueTask<RebuildState> ReadStateAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -424,7 +386,6 @@ internal sealed class CovenantIndexRebuilder(
             reader.GetInt32(3),
             reader.IsDBNull(4) ? null : reader.GetInt64(4),
             reader.GetInt64(5));
-
     }
 
     private static async ValueTask<int> ExecuteAsync(
@@ -433,20 +394,16 @@ internal sealed class CovenantIndexRebuilder(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             Bind(command, name, value);
-
         }
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask<long> ScalarAsync(
@@ -454,7 +411,6 @@ internal sealed class CovenantIndexRebuilder(
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = sql;
@@ -462,14 +418,13 @@ internal sealed class CovenantIndexRebuilder(
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static void Bind(SqliteCommand command, string name, object value) =>
         _ = command.Parameters.AddWithValue(name, value);
 
     private static string NowIso() =>
-        DateTimeOffset.UtcNow.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(DateTimeOffset.UtcNow);
 
     private readonly record struct RebuildState(
         Guid DatasetGeneration,
@@ -478,5 +433,4 @@ internal sealed class CovenantIndexRebuilder(
         int RebuildStateCode,
         long? RebuildTargetSequence,
         long CoreCampaignDeletionSequence);
-
 }

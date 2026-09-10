@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -12,20 +13,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class SessionAttachmentStore
 {
-
     private const int ForkAttachmentPageSize = 128;
 
     public async Task DeleteRowsForSessionInAmbientTransactionAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-
         if (_db.Database.CurrentTransaction is null)
         {
-
             throw new InvalidOperationException(
                 "DeleteRowsForSessionInAmbientTransactionAsync requires an ambient EF transaction.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -43,54 +40,43 @@ internal sealed partial class SessionAttachmentStore
         AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
 
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     public bool TryDeleteSessionDirectory(Guid sessionId)
     {
-
         string sessionSegment = sessionId.ToString("N");
 
         string dir = Path.GetFullPath(Path.Combine(_attachmentsRoot, sessionSegment));
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, dir, out _))
         {
-
             _logger.LogWarning(
                 "Refusing to delete session attachment directory that escapes root: {SessionId}",
                 sessionId);
 
             return false;
-
         }
 
         if (!Directory.Exists(dir))
         {
-
             return true;
-
         }
 
         try
         {
-
             Directory.Delete(dir, recursive: true);
 
             return true;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             _logger.LogWarning(
                 ex,
                 "Failed to delete session attachment directory for {SessionId}; reconcile will retry.",
                 sessionId);
 
             return false;
-
         }
-
     }
 
     public async Task ClearEntryIdsInAmbientTransactionAsync(
@@ -98,29 +84,23 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlyList<Guid> entryIds,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(entryIds);
 
         if (entryIds.Count == 0)
         {
-
             return;
-
         }
 
         if (_db.Database.CurrentTransaction is null)
         {
-
             throw new InvalidOperationException(
                 "ClearEntryIdsInAmbientTransactionAsync requires an ambient EF transaction.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (Guid entryId in entryIds)
         {
-
             await using DbCommand cmd = connection.CreateCommand();
 
             EnlistAmbientTransaction(cmd);
@@ -138,9 +118,7 @@ internal sealed partial class SessionAttachmentStore
             AddParameter(cmd, "@entryId", entryId.ToString().ToUpperInvariant());
 
             _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
@@ -148,33 +126,25 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlySet<Guid>? copiedSourceEntryIds,
         CancellationToken cancellationToken = default)
     {
-
         IReadOnlyList<SessionAttachmentRecord> bound = await ListBoundAsync(sourceSessionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (copiedSourceEntryIds is null)
         {
-
             return bound;
-
         }
 
         List<SessionAttachmentRecord> selected = [];
 
         foreach (SessionAttachmentRecord row in bound)
         {
-
             if (row.EntryId is Guid entryId && copiedSourceEntryIds.Contains(entryId))
             {
-
                 selected.Add(row);
-
             }
-
         }
 
         return selected;
-
     }
 
     public async IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundForForkPagesAsync(
@@ -183,12 +153,10 @@ internal sealed partial class SessionAttachmentStore
         bool includeEntrylessAttachments,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-
         Guid? afterAttachmentId = null;
 
         while (true)
         {
-
             IReadOnlyList<SessionAttachmentRecord> page = await ReadBoundForForkPageAsync(
                     sourceSessionId,
                     maximumSourceEntrySequence,
@@ -199,17 +167,13 @@ internal sealed partial class SessionAttachmentStore
 
             if (page.Count == 0)
             {
-
                 yield break;
-
             }
 
             yield return page;
 
             afterAttachmentId = page[^1].Id;
-
         }
-
     }
 
     private async Task<IReadOnlyList<SessionAttachmentRecord>> ReadBoundForForkPageAsync(
@@ -219,11 +183,9 @@ internal sealed partial class SessionAttachmentStore
         Guid? afterAttachmentId,
         CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -282,9 +244,7 @@ internal sealed partial class SessionAttachmentStore
 
                 if (afterAttachmentId is Guid cursor)
                 {
-
                     AddParameter(cmd, "@afterAttachmentId", cursor.ToString().ToUpperInvariant());
-
                 }
 
                 List<SessionAttachmentRecord> rows = new(ForkAttachmentPageSize);
@@ -295,16 +255,12 @@ internal sealed partial class SessionAttachmentStore
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     rows.Add(ReadRecord(reader));
-
                 }
 
                 return (IReadOnlyList<SessionAttachmentRecord>)rows;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task CopyBytesForForkAsync(
@@ -312,33 +268,26 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(plans);
 
         if (plans.Count == 0)
         {
-
             return;
-
         }
 
         try
         {
-
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 string sourceAbsolute = ResolveUnderRoot(plan.Source.RelativePath);
 
                 if (!File.Exists(sourceAbsolute))
                 {
-
                     throw new FileNotFoundException(
                         "Source attachment bytes missing for fork copy.",
                         sourceAbsolute);
-
                 }
 
                 string newRelative = BuildRelativePath(
@@ -359,10 +308,8 @@ internal sealed partial class SessionAttachmentStore
                         FileSystemObjectKind.RegularFile,
                         out IdentityOwnedFileSystemArtifact blobAuthority))
                 {
-
                     throw new IOException(
                         "Fork copy could not capture the owned attachment blob identity.");
-
                 }
 
                 _forkBlobAuthorities.Remove(plan);
@@ -370,26 +317,19 @@ internal sealed partial class SessionAttachmentStore
                 _forkBlobAuthorities.Add(
                     plan,
                     new ForkBlobAuthority(blobAuthority));
-
             }
-
         }
         catch
         {
-
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
-
                 _forkBlobAuthorities.Remove(plan);
-
             }
 
             _ = TryDeleteSessionDirectory(forkSessionId);
 
             throw;
-
         }
-
     }
 
     public async Task InsertForkRowsInAmbientTransactionAsync(
@@ -397,20 +337,16 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(plans);
 
         if (_db.Database.CurrentTransaction is null)
         {
-
             throw new InvalidOperationException(
                 "InsertForkRowsInAmbientTransactionAsync requires an ambient EF transaction.");
-
         }
 
         try
         {
-
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
                 string relativePath = NormalizeRelativePath(BuildRelativePath(
@@ -426,13 +362,10 @@ internal sealed partial class SessionAttachmentStore
                         plan,
                         out ForkBlobAuthority? retainedAuthority))
                 {
-
                     authority = retainedAuthority;
-
                 }
                 else
                 {
-
                     string absolutePath = ResolveUnderRoot(relativePath);
 
                     await VerifyCopiedFileAsync(
@@ -445,14 +378,11 @@ internal sealed partial class SessionAttachmentStore
                             FileSystemObjectKind.RegularFile,
                             out IdentityOwnedFileSystemArtifact recapturedArtifact))
                     {
-
                         throw new IOException(
                             "Fork attachment row insertion could not recapture the copied blob identity.");
-
                     }
 
                     authority = new ForkBlobAuthority(recapturedArtifact);
-
                 }
 
                 SessionAttachmentRecord row = new(
@@ -478,27 +408,19 @@ internal sealed partial class SessionAttachmentStore
                     row,
                     authority.Artifact,
                     cancellationToken).ConfigureAwait(false);
-
             }
-
         }
         finally
         {
-
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
-
                 _forkBlobAuthorities.Remove(plan);
-
             }
-
         }
-
     }
 
     private async Task ReconcileCoreAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken)
     {
-
         await DeleteStalePendingAsync(pendingOlderThan, cancellationToken).ConfigureAwait(false);
 
         await SweepMissingSessionRowsAndDirectoriesAsync(cancellationToken).ConfigureAwait(false);
@@ -510,7 +432,6 @@ internal sealed partial class SessionAttachmentStore
         await RevalidateAttachmentSourcesAsync(cancellationToken).ConfigureAwait(false);
 
         await SweepOrphanAttachmentFilesAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task ValidateEncryptedFilesAsync(CancellationToken cancellationToken)
@@ -598,13 +519,11 @@ internal sealed partial class SessionAttachmentStore
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>> RevalidateBoundSourcesAsync(
-
         Guid sessionId,
 
         CancellationToken cancellationToken = default)
 
     {
-
         IReadOnlyList<SessionAttachmentRecord> rows = await ListBoundAsync(sessionId, cancellationToken)
 
             .ConfigureAwait(false);
@@ -612,9 +531,7 @@ internal sealed partial class SessionAttachmentStore
         if (_sourceResolver is null)
 
         {
-
             return rows;
-
         }
 
         List<SessionAttachmentRecord> revalidated = new(rows.Count);
@@ -629,59 +546,46 @@ internal sealed partial class SessionAttachmentStore
         foreach (SessionAttachmentRecord row in rows)
 
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (row.Source is not { Kind: AttachmentSourceKind.WorkspaceFile } source)
 
             {
-
                 revalidated.Add(row);
 
                 continue;
-
             }
 
             if (!observed.TryGetValue(source, out AttachmentSourceMetadata? current))
 
             {
-
                 try
 
                 {
-
                     current = await _sourceResolver
 
                         .RevalidateAsync(source, cancellationToken)
 
                         .ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException)
 
                 {
-
                     throw;
-
                 }
                 catch (Exception)
 
                 {
-
                     current = source with
 
                     {
-
                         Status = AttachmentSourceStatus.CorruptMetadata,
 
                         DiagnosticReason = "Source metadata could not be safely revalidated.",
-
                     };
-
                 }
 
                 observed[source] = current;
-
             }
 
             // Persist only a real change. Revalidating an unchanged source is the overwhelmingly common
@@ -690,36 +594,28 @@ internal sealed partial class SessionAttachmentStore
             if (current != source)
 
             {
-
                 await UpdateSourceAsync(row.Id, current, cancellationToken).ConfigureAwait(false);
-
             }
 
             revalidated.Add(row with { Source = current });
-
         }
 
         return revalidated;
-
     }
 
     private async Task SweepMissingSessionRowsAndDirectoriesAsync(CancellationToken cancellationToken)
     {
-
         HashSet<Guid> liveSessions = await ListLiveSessionIdsAsync(cancellationToken).ConfigureAwait(false);
 
         List<Guid> orphanSessionIds = await ListDistinctBoundSessionIdsAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (Guid sessionId in orphanSessionIds)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (liveSessions.Contains(sessionId))
             {
-
                 continue;
-
             }
 
             using IDisposable gate = await AttachmentGates
@@ -729,15 +625,12 @@ internal sealed partial class SessionAttachmentStore
             if (liveSessions.Contains(sessionId)
                 || await SessionExistsAsync(sessionId, cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -758,57 +651,44 @@ internal sealed partial class SessionAttachmentStore
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
                 },
                 cancellationToken).ConfigureAwait(false);
 
             _ = TryDeleteSessionDirectory(sessionId);
-
         }
 
         if (!Directory.Exists(_attachmentsRoot))
         {
-
             return;
-
         }
 
         foreach (string dir in Directory.EnumerateDirectories(_attachmentsRoot))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string name = Path.GetFileName(dir);
 
             if (string.Equals(name, "_pending", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             if (!Guid.TryParseExact(name, "N", out Guid sessionId))
             {
-
                 continue;
-
             }
 
             string absoluteDir = Path.GetFullPath(dir);
 
             if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, absoluteDir, out _))
             {
-
                 continue;
-
             }
 
             if (liveSessions.Contains(sessionId)
                 || await SessionExistsAsync(sessionId, cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             using IDisposable gate = await AttachmentGates
@@ -817,77 +697,57 @@ internal sealed partial class SessionAttachmentStore
 
             if (await SessionExistsAsync(sessionId, cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             _ = TryDeleteSessionDirectory(sessionId);
-
         }
-
     }
 
     private async Task SweepMissingFileRowsAsync(CancellationToken cancellationToken)
     {
-
         List<SessionAttachmentRecord> all = await ListAllRowsAsync(cancellationToken).ConfigureAwait(false);
 
         if (AfterMissingFileSnapshotForTesting is not null)
         {
-
             await AfterMissingFileSnapshotForTesting(cancellationToken).ConfigureAwait(false);
-
         }
 
         foreach (SessionAttachmentRecord row in all)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string absolute;
 
             try
             {
-
                 absolute = ResolveUnderRoot(row.RelativePath);
-
             }
             catch (InvalidOperationException)
             {
-
                 if (await DeleteSweptRowAsync(row, cancellationToken).ConfigureAwait(false))
                 {
-
                     _logger.LogWarning(
                         "Deleted SessionAttachments row {AttachmentId} with escaping RelativePath.",
                         row.Id);
-
                 }
 
                 continue;
-
             }
 
             if (File.Exists(absolute))
             {
-
                 continue;
-
             }
 
             if (await DeleteSweptRowAsync(row, cancellationToken).ConfigureAwait(false))
             {
-
                 _logger.LogWarning(
                     "Deleted SessionAttachments row {AttachmentId} whose file is missing ({RelativePath}).",
                     row.Id,
                     row.RelativePath);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -907,7 +767,6 @@ internal sealed partial class SessionAttachmentStore
     /// </remarks>
     private async Task<bool> DeleteSweptRowAsync(SessionAttachmentRecord row, CancellationToken cancellationToken)
     {
-
         string? gateKey = row.SessionId is Guid sessionId
             ? SessionGateKey(sessionId)
             : row.PendingTurnId is { } turn
@@ -926,7 +785,6 @@ internal sealed partial class SessionAttachmentStore
         await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -946,12 +804,10 @@ internal sealed partial class SessionAttachmentStore
                 AddParameter(cmd, "@relativePath", row.RelativePath);
 
                 affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken).ConfigureAwait(false);
 
         return affected > 0;
-
     }
 
     private async Task VerifyCopiedFileAsync(
@@ -991,35 +847,51 @@ internal sealed partial class SessionAttachmentStore
 
     private async Task<HashSet<Guid>> ListLiveSessionIdsAsync(CancellationToken cancellationToken)
     {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "Id"
+            FROM "Sessions";
+            """,
+            cancellationToken).ConfigureAwait(false);
 
         HashSet<Guid> ids = [];
 
-        List<Guid> listed = await _db.Sessions
-            .AsNoTracking()
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken)
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (Guid id in listed)
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
-            ids.Add(id);
-
+            ids.Add(GrimoireEntitySql.ReadGuid(reader, 0));
         }
 
         return ids;
-
     }
 
-    private async Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken) =>
-        await _db.Sessions
-            .AsNoTracking()
-            .AnyAsync(s => s.Id == sessionId, cancellationToken)
-            .ConfigureAwait(false);
+    private async Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT 1
+            FROM "Sessions"
+            WHERE "Id" = $sessionId
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$sessionId",
+            GrimoireEntitySql.Format(sessionId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is not null and not DBNull;
+    }
 
     private async Task<List<Guid>> ListDistinctBoundSessionIdsAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1037,18 +909,14 @@ internal sealed partial class SessionAttachmentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             ids.Add(Guid.Parse(reader.GetString(0)));
-
         }
 
         return ids;
-
     }
 
     private async Task<List<SessionAttachmentRecord>> ListAllRowsAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -1069,13 +937,9 @@ internal sealed partial class SessionAttachmentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(ReadRecord(reader));
-
         }
 
         return rows;
-
     }
-
 }

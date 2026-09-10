@@ -37,7 +37,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 [ExcludeFromCodeCoverage] // System.CommandLine wiring factory; covered via CliApplicationFactoryTests.
 internal static class CliApplicationFactory
 {
-
     /// <summary>
     /// The persisted file is the authority, parsed through <c>ConfigurationJsonContext</c> exactly as
     /// the host does (<c>AddArcanumInfrastructure</c>). The configuration binder is a missing-file
@@ -49,27 +48,20 @@ internal static class CliApplicationFactory
     /// </summary>
     private static ArcanumSettings LoadSettingsSnapshot(IConfiguration configuration)
     {
-
         try
         {
-
             return ConfigurationBootstrapper.LoadArcanumSettings(
                 () => configuration.GetSection("Arcanum").Get<ArcanumSettings>() ?? new ArcanumSettings());
-
         }
         catch (Exception exception) when (
             exception is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-
             return configuration.GetSection("Arcanum").Get<ArcanumSettings>() ?? new ArcanumSettings();
-
         }
-
     }
 
     public static void ConfigureCliServices(IServiceCollection services, IConfiguration configuration)
     {
-
         ArcanumSettings settingsSnapshot = LoadSettingsSnapshot(configuration);
 
         services.Configure<ArcanumSettings>(settings =>
@@ -160,7 +152,8 @@ internal static class CliApplicationFactory
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(host));
 
                 client.Timeout = Timeout.InfiniteTimeSpan;
-            });
+            })
+            .ConfigurePrimaryHttpMessageHandler(CreateLocalApiHttpMessageHandler);
 
         services.AddHttpClient(
             ArcanumApiClient.RequestHttpClientName,
@@ -171,7 +164,10 @@ internal static class CliApplicationFactory
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
                 client.Timeout = Timeout.InfiniteTimeSpan;
-            });
+            })
+            .ConfigurePrimaryHttpMessageHandler(CreateLocalApiHttpMessageHandler);
+
+        services.AddSingleton<ArcanumApiCredentialLease>();
 
         services.AddSingleton<ArcanumApiClient>();
 
@@ -198,6 +194,8 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IServeProcessLauncher, ServeProcessLauncher>();
 
+        services.AddSingleton<ISecureStorageNotice, SecureStorageNotice>();
+
         services.AddSingleton<IArcanumServeLauncher, ArcanumServeLauncher>();
 
         services.AddSingleton<ILastSessionStore, CliLastSessionStore>();
@@ -223,6 +221,8 @@ internal static class CliApplicationFactory
         services.AddArcanumEyeOfTheWorld();
 
         services.AddArcanumDaemonManagement();
+
+        services.AddSingleton<IDnsResolver, SystemDnsResolver>();
 
         services.AddSingleton<ISetupProbeHandlerFactory, SetupProbeHandlerFactory>();
 
@@ -344,8 +344,14 @@ internal static class CliApplicationFactory
         services.AddTransient<PresetCommands>();
 
         services.AddTransient<OpenCommands>();
-
     }
+
+    internal static HttpMessageHandler CreateLocalApiHttpMessageHandler() =>
+        new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+        };
 
     /// <summary>
     /// Runs the CLI end-to-end with System.CommandLine 2.0.
@@ -353,14 +359,12 @@ internal static class CliApplicationFactory
     /// </summary>
     public static async Task<int> RunAsync(string[] args, IServiceProvider serviceProvider)
     {
-
         CliInvocationOptions activeOptions = default;
 
         DeferredJsonTextWriter? activeJsonOutput = null;
 
         try
         {
-
             CommandCenterDeepLinkIntake deepLinkIntake =
                 ParseCommandCenterDeepLink(args);
 
@@ -368,13 +372,11 @@ internal static class CliApplicationFactory
 
             if (deepLinkIntake.Status != CommandCenterDeepLinkStatus.Absent)
             {
-
                 using IDisposable deepLinkInvocationScope =
                     CliInvocationContext.Push(default);
 
                 if (deepLinkIntake.Status != CommandCenterDeepLinkStatus.Valid)
                 {
-
                     IConsoleDispatcher dispatcher =
                         serviceProvider.GetRequiredService<IConsoleDispatcher>();
 
@@ -384,7 +386,6 @@ internal static class CliApplicationFactory
                             : "Command Center application link is invalid.");
 
                     return (int)CliExitCode.ConfigurationError;
-
                 }
 
                 ICommandCenterHost host =
@@ -397,7 +398,6 @@ internal static class CliApplicationFactory
                     .ConfigureAwait(false);
 
                 return NormalizeExitCode(hostExitCode);
-
             }
 
             if (args.Length == 0)
@@ -430,9 +430,7 @@ internal static class CliApplicationFactory
                 args,
                 new ParserConfiguration
                 {
-
                     ResponseFileTokenReplacer = null,
-
                 });
             string? requestedFormat = ReadGlobalOption(parseResult, globalOptions.OutputFormat);
 
@@ -456,7 +454,6 @@ internal static class CliApplicationFactory
             if (jsonShorthand
                 && string.Equals(requestedFormat, "text", StringComparison.Ordinal))
             {
-
                 IConsoleDispatcher dispatcher =
                     serviceProvider.GetRequiredService<IConsoleDispatcher>();
 
@@ -464,7 +461,6 @@ internal static class CliApplicationFactory
                     "--json is shorthand for --output-format json and cannot be combined with --output-format text.");
 
                 return (int)CliExitCode.ConfigurationError;
-
             }
 
             // A removed spelling or a typo must name the canonical command. With no alias layer,
@@ -481,22 +477,18 @@ internal static class CliApplicationFactory
 
                 if (suggestion is not null)
                 {
-
                     dispatcher.WriteDiagnostic(suggestion);
-
                 }
 
                 dispatcher.WriteDiagnostic("The command line is invalid.");
 
                 if (!IsJsonStreamInvocation(parseResult))
                 {
-
                     dispatcher.WriteJson(
                         new CliErrorPayload(
                             suggestion ?? "The command line is invalid.",
                             (int)CliExitCode.ConfigurationError),
                         CliJsonContext.Default.CliErrorPayload);
-
                 }
 
                 return (int)CliExitCode.ConfigurationError;
@@ -509,13 +501,11 @@ internal static class CliApplicationFactory
             // exit 2 is the whole contract.
             if (suggestion is not null)
             {
-
                 serviceProvider
                     .GetRequiredService<IConsoleDispatcher>()
                     .WriteDiagnostic(suggestion);
 
                 return (int)CliExitCode.ConfigurationError;
-
             }
 
             IAnsiConsole originalAnsiConsole = AnsiConsole.Console;
@@ -528,9 +518,7 @@ internal static class CliApplicationFactory
 
             if (capturedOutput is not null)
             {
-
                 CliInvocationContext.AttachJsonOutput(capturedOutput);
-
             }
 
             try
@@ -606,7 +594,6 @@ internal static class CliApplicationFactory
 
             return (int)failure.ExitCode;
         }
-
     }
 
     private static void FlushJsonOutput(
@@ -614,7 +601,6 @@ internal static class CliApplicationFactory
         string capturedOutput,
         int exitCode)
     {
-
         if (CliInvocationContext.StructuredPayloadWritten)
         {
             output.Write(capturedOutput);
@@ -629,7 +615,6 @@ internal static class CliApplicationFactory
             CliJsonContext.Default.CliTextPayload);
 
         output.WriteLine(json);
-
     }
 
     /// <summary>
@@ -690,12 +675,9 @@ internal static class CliApplicationFactory
     /// </remarks>
     private static bool OwnsCancelKeyPress(ParseResult parseResult)
     {
-
         if (SelfManagedTerminationCommands.Length == 0)
         {
-
             return false;
-
         }
 
         string? topLevelVerb = null;
@@ -704,20 +686,15 @@ internal static class CliApplicationFactory
             current is not null;
             current = current.Parent)
         {
-
             if (current is CommandResult { Command: not RootCommand } commandResult)
             {
-
                 topLevelVerb = commandResult.Command.Name;
-
             }
-
         }
 
         return topLevelVerb is not null
             && SelfManagedTerminationCommands.Contains(topLevelVerb, StringComparer.Ordinal)
             && ClaimsTheKeypress(parseResult, topLevelVerb);
-
     }
 
     /// <summary>
@@ -730,17 +707,13 @@ internal static class CliApplicationFactory
     /// </remarks>
     private static bool ClaimsTheKeypress(ParseResult parseResult, string topLevelVerb)
     {
-
         if (!string.Equals(topLevelVerb, "run", StringComparison.Ordinal))
         {
-
             return true;
-
         }
 
         foreach (Option option in parseResult.CommandResult.Command.Options)
         {
-
             // Trimmed because an option's name carries its prefix, and a list written without one
             // would match nothing and silently opt the route out again.
             if (option is Option<bool> flag
@@ -749,30 +722,22 @@ internal static class CliApplicationFactory
                     StringComparer.Ordinal)
                 && parseResult.GetValue(flag))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool IsJsonStreamInvocation(ParseResult parseResult)
     {
-
         for (SymbolResult? current = parseResult.CommandResult;
             current is not null;
             current = current.Parent)
         {
-
             if (current is not CommandResult commandResult)
             {
-
                 continue;
-
             }
 
             if (string.Equals(
@@ -786,9 +751,7 @@ internal static class CliApplicationFactory
                         "session",
                         StringComparison.Ordinal)))
             {
-
                 return true;
-
             }
 
             if (string.Equals(
@@ -801,15 +764,11 @@ internal static class CliApplicationFactory
                     "apprentice",
                     StringComparison.Ordinal))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -823,20 +782,14 @@ internal static class CliApplicationFactory
     /// </summary>
     private static T? ReadGlobalOption<T>(ParseResult parseResult, Option<T> option)
     {
-
         try
         {
-
             return parseResult.GetValue(option);
-
         }
         catch (InvalidOperationException)
         {
-
             return default;
-
         }
-
     }
 
     /// <summary>
@@ -855,27 +808,22 @@ internal static class CliApplicationFactory
     private static CommandCenterDeepLinkIntake ParseCommandCenterDeepLink(
         IReadOnlyList<string> arguments)
     {
-
         if (arguments.Count == 0
             || !string.Equals(
                 arguments[0],
                 ApplicationDeepLinkCodec.ArgumentName,
                 StringComparison.Ordinal))
         {
-
             return new CommandCenterDeepLinkIntake(
                 CommandCenterDeepLinkStatus.Absent,
                 [.. arguments]);
-
         }
 
         if (arguments.Count == 1)
         {
-
             return new CommandCenterDeepLinkIntake(
                 CommandCenterDeepLinkStatus.Invalid,
                 []);
-
         }
 
         string[] remainingArguments = [.. arguments.Skip(2)];
@@ -884,41 +832,32 @@ internal static class CliApplicationFactory
 
         try
         {
-
             deepLink = ApplicationDeepLinkCodec.Decode(
                 arguments[1]);
-
         }
         catch
         {
-
             return new CommandCenterDeepLinkIntake(
                 CommandCenterDeepLinkStatus.Invalid,
                 remainingArguments);
-
         }
 
         if (deepLink.TargetApplication != DesktopApplication.CommandCenter)
         {
-
             return new CommandCenterDeepLinkIntake(
                 CommandCenterDeepLinkStatus.Invalid,
                 remainingArguments);
-
         }
 
         if (deepLink.ResourceKind == ApplicationResourceKind.None)
         {
-
             return new CommandCenterDeepLinkIntake(
                 CommandCenterDeepLinkStatus.Valid,
                 remainingArguments);
-
         }
 
         if (deepLink.ResourceKind == ApplicationResourceKind.Session)
         {
-
             return Guid.TryParse(deepLink.ResourceId, out Guid sessionId)
                 && sessionId != Guid.Empty
                 ? new CommandCenterDeepLinkIntake(
@@ -928,18 +867,15 @@ internal static class CliApplicationFactory
                 : new CommandCenterDeepLinkIntake(
                     CommandCenterDeepLinkStatus.Invalid,
                     remainingArguments);
-
         }
 
         return new CommandCenterDeepLinkIntake(
             CommandCenterDeepLinkStatus.Unsupported,
             remainingArguments);
-
     }
 
     private enum CommandCenterDeepLinkStatus
     {
-
         Absent = 0,
 
         Valid = 1,
@@ -947,7 +883,6 @@ internal static class CliApplicationFactory
         Invalid = 2,
 
         Unsupported = 3,
-
     }
 
     private sealed record CommandCenterDeepLinkIntake(
@@ -985,7 +920,6 @@ internal static class CliApplicationFactory
 
     public static void ConfigureAnsiConsoleForEnvironment(IConfiguration configuration)
     {
-
         bool noColor = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))
             || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ARCANUM_NO_COLOR"));
 
@@ -1012,18 +946,14 @@ internal static class CliApplicationFactory
         });
 
         _ = configuration;
-
     }
 
     private static void ConfigureAnsiConsoleForInvocation(
         CliInvocationOptions options)
     {
-
         if (!options.Plain && !options.Json)
         {
-
             return;
-
         }
 
         AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
@@ -1033,7 +963,5 @@ internal static class CliApplicationFactory
             Interactive = InteractionSupport.No,
             Out = new AnsiConsoleOutput(Console.Out),
         });
-
     }
-
 }

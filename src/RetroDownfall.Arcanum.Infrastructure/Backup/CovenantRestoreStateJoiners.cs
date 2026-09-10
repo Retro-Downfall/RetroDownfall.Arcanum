@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -17,13 +18,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </remarks>
 internal enum CovenantHostToolsState
 {
-
     Clean = 1,
 
     PendingHostToolsTaint = 2,
 
     HostToolsTainted = 3,
-
 }
 
 /// <summary>
@@ -52,7 +51,6 @@ internal sealed record CovenantAuthorityStateRow(
 /// </remarks>
 internal static class CovenantAuthorityStateJoiner
 {
-
     /// <summary>
     /// Computes the row the staged database must carry before it becomes live.
     /// </summary>
@@ -61,23 +59,18 @@ internal static class CovenantAuthorityStateJoiner
         CovenantAuthorityStateRow source,
         string stagedInstallationIdentity)
     {
-
         if (destination is null || source is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "An authority join requires both the destination and the archived row.");
-
         }
 
         if (string.IsNullOrWhiteSpace(stagedInstallationIdentity))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A restored installation requires an established identity of its own.");
-
         }
 
         // Maximum, not the archive's value. Clean < Pending < Tainted, so the destination's own
@@ -109,7 +102,6 @@ internal static class CovenantAuthorityStateJoiner
                 : destinationWins
                     ? destination.TransitionId
                     : source.TransitionId);
-
     }
 
     internal static async Task<CovenantAuthorityStateRow?> ReadAsync(
@@ -117,7 +109,6 @@ internal static class CovenantAuthorityStateJoiner
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -133,18 +124,14 @@ internal static class CovenantAuthorityStateJoiner
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         if (!HostProcessToolsTaintVersionStorage.TryDecode(
             reader.GetValue(3),
             out ulong? taintTimeMasterVersion))
         {
-
             throw new InvalidDataException("The restored authority row carries a malformed taint version.");
-
         }
 
         return new CovenantAuthorityStateRow(
@@ -154,12 +141,10 @@ internal static class CovenantAuthorityStateJoiner
             taintTimeMasterVersion,
             reader.IsDBNull(4) ? null : ReadBlob(reader, 4),
             reader.IsDBNull(5) ? null : reader.GetString(5));
-
     }
 
     private static byte[] ReadBlob(SqliteDataReader reader, int ordinal)
     {
-
         using System.IO.Stream stream = reader.GetStream(ordinal);
 
         using System.IO.MemoryStream buffer = new();
@@ -167,9 +152,7 @@ internal static class CovenantAuthorityStateJoiner
         stream.CopyTo(buffer);
 
         return buffer.ToArray();
-
     }
-
 }
 
 /// <summary>
@@ -188,7 +171,6 @@ internal static class CovenantAuthorityStateJoiner
 /// </remarks>
 internal static class CovenantDisclosureStateJoiner
 {
-
     internal static async Task<Result<int>> JoinIntoStagedAsync(
         SqliteConnection staged,
         SqliteTransaction transaction,
@@ -196,21 +178,17 @@ internal static class CovenantDisclosureStateJoiner
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (staged is null || transaction is null || destinationBuckets is null || timeProvider is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A disclosure join requires the staged transaction and the destination buckets.");
-
         }
 
         int joined = 0;
 
         foreach (CovenantDisclosureState destination in destinationBuckets)
         {
-
             CovenantDisclosureState? archived = await ReadBucketAsync(
                 staged,
                 transaction,
@@ -226,11 +204,9 @@ internal static class CovenantDisclosureStateJoiner
                 .ConfigureAwait(false);
 
             joined++;
-
         }
 
         return joined;
-
     }
 
     internal static async Task<List<CovenantDisclosureState>> ReadAllAsync(
@@ -238,7 +214,6 @@ internal static class CovenantDisclosureStateJoiner
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         List<CovenantDisclosureState> buckets = [];
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -256,13 +231,10 @@ internal static class CovenantDisclosureStateJoiner
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             buckets.Add(Materialize(reader));
-
         }
 
         return buckets;
-
     }
 
     private static async Task<CovenantDisclosureState?> ReadBucketAsync(
@@ -272,7 +244,6 @@ internal static class CovenantDisclosureStateJoiner
         CovenantDisclosureRevocability revocability,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -294,7 +265,6 @@ internal static class CovenantDisclosureStateJoiner
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? Materialize(reader)
             : null;
-
     }
 
     private static async Task WriteBucketAsync(
@@ -304,7 +274,6 @@ internal static class CovenantDisclosureStateJoiner
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -340,17 +309,13 @@ internal static class CovenantDisclosureStateJoiner
 
         _ = command.Parameters.AddWithValue(
             "$now",
-            timeProvider.GetUtcNow().UtcDateTime.ToString(
-                "yyyy-MM-ddTHH:mm:ss.fffffffZ",
-                CultureInfo.InvariantCulture));
+            UtcInstantText.Format(timeProvider.GetUtcNow()));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static CovenantDisclosureState Materialize(SqliteDataReader reader)
     {
-
         using System.IO.Stream stream = reader.GetStream(6);
 
         using System.IO.MemoryStream buffer = new();
@@ -365,7 +330,5 @@ internal static class CovenantDisclosureStateJoiner
             checked((ulong)reader.GetInt64(4)),
             reader.GetInt64(5),
             buffer.ToArray());
-
     }
-
 }

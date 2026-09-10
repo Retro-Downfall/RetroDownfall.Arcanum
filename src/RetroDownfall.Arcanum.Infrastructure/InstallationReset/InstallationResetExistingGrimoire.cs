@@ -45,7 +45,6 @@ internal sealed class InstallationResetExistingGrimoire(
       IInstallationResetDatabaseIdentityReader,
       IInstallationResetHostProcessToolsDatabaseEvidenceReader
 {
-
     private static readonly LongRunningOperationState[] RecoverableFactoryStates =
     [
         LongRunningOperationState.Running,
@@ -65,20 +64,16 @@ internal sealed class InstallationResetExistingGrimoire(
         InstallationResetDataPlanRequest request,
         CancellationToken cancellationToken = default)
     {
-
         DataRetentionRequest? dataRequest = ToDataRequest(request);
 
         if (dataRequest is null)
         {
-
             return Task.FromResult(InvalidDataPlan());
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(Unavailable<DataRetentionPlan>());
-
     }
 
     public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
@@ -86,14 +81,11 @@ internal sealed class InstallationResetExistingGrimoire(
         IStoppedHostGrimoireAuthorityIssuer issuer,
         CancellationToken cancellationToken)
     {
-
         DataRetentionRequest? dataRequest = ToDataRequest(request);
 
         if (dataRequest is null)
         {
-
             return Task.FromResult(InvalidDataPlan());
-
         }
 
         return ExecuteUnderStoppedHostAuthorityAsync(
@@ -104,29 +96,24 @@ internal sealed class InstallationResetExistingGrimoire(
                 .OpenStoppedHostInstallationResetPlanReadAsync(authority, token),
             async (retention, _, _, token) =>
             {
-
                 DataRetentionPlan plan = await retention.PlanAsync(
                     dataRequest,
                     token).ConfigureAwait(false);
 
                 return Result<DataRetentionPlan>.Success(plan);
-
             },
             cancellationToken);
-
     }
 
     public Task<Result<DataRetentionApplyResult>> ApplyAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(Unavailable<DataRetentionApplyResult>());
-
     }
 
     public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
@@ -134,7 +121,6 @@ internal sealed class InstallationResetExistingGrimoire(
         IStoppedHostGrimoireAuthorityIssuer issuer,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         return ExecuteUnderStoppedHostAuthorityAsync(
@@ -145,10 +131,8 @@ internal sealed class InstallationResetExistingGrimoire(
                 .OpenStoppedHostInstallationResetApplyAsync(authority, token),
             async (retention, operations, _, token) =>
             {
-
                 if (request.Request.Operation is DataRetentionOperation.ResetWorkspace)
                 {
-
                     Result<DataRetentionApplyResult?> recovered =
                         await RecoverWorkspaceResetAsync(
                             retention,
@@ -158,24 +142,18 @@ internal sealed class InstallationResetExistingGrimoire(
 
                     if (recovered.IsFailure)
                     {
-
                         return Result<DataRetentionApplyResult>.Failure(
                             recovered.Error);
-
                     }
 
                     if (recovered.Value is { } completed)
                     {
-
                         return Result<DataRetentionApplyResult>.Success(completed);
-
                     }
-
                 }
 
                 if (request.Request.Operation is DataRetentionOperation.FactoryReset)
                 {
-
                     Result<DataRetentionApplyResult?> recovered =
                         await RecoverFactoryResetAsync(
                             retention,
@@ -185,38 +163,29 @@ internal sealed class InstallationResetExistingGrimoire(
 
                     if (recovered.IsFailure)
                     {
-
                         return Result<DataRetentionApplyResult>.Failure(
                             recovered.Error);
-
                     }
 
                     if (recovered.Value is { } completed)
                     {
-
                         return Result<DataRetentionApplyResult>.Success(completed);
-
                     }
-
                 }
 
                 return await retention.ApplyAsync(request, token)
                     .ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     public Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
         string invocationDirectory,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(Unavailable<InstallationResetWorkspaceResolution>());
-
     }
 
     public Task<Result<InstallationResetWorkspaceResolution>>
@@ -234,28 +203,49 @@ internal sealed class InstallationResetExistingGrimoire(
                     token),
             async (_, _, context, token) =>
             {
-
-                Campaign[] campaigns = await context.Campaigns
-                    .AsNoTracking()
-                    .OrderBy(static campaign => campaign.Name)
-                    .ToArrayAsync(token)
-                    .ConfigureAwait(false);
+                Campaign[] campaigns = await ReadCampaignsAsync(
+                    (SqliteConnection)context.Database.GetDbConnection(),
+                    token).ConfigureAwait(false);
 
                 return InstallationResetWorkspaceResolver.Resolve(
                     invocationDirectory,
                     campaigns);
-
             },
             cancellationToken);
+
+    private static async Task<Campaign[]> ReadCampaignsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+            throw new InvalidOperationException(
+                "Stopped-host Campaign reads require the already admitted reset connection.");
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" ORDER BY \"Name\";";
+
+        List<Campaign> campaigns = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            campaigns.Add(GrimoireEntitySql.ReadCampaign(reader));
+        }
+
+        return [.. campaigns];
+    }
 
     public Task<Result<Guid>> ReadAsync(
         CancellationToken cancellationToken = default)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(Unavailable<Guid>());
-
     }
 
     public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
@@ -279,11 +269,9 @@ internal sealed class InstallationResetExistingGrimoire(
         IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(HostProcessToolsEvidenceUnavailable());
-
     }
 
     public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
@@ -300,7 +288,6 @@ internal sealed class InstallationResetExistingGrimoire(
                     token),
             static async (_, _, context, token) =>
             {
-
                 Result<HostProcessToolsDatabaseMarkerEvidence> evidence =
                     await HostToolsDatabaseMarkerProjectionReader
                         .ReadAsync(
@@ -311,7 +298,6 @@ internal sealed class InstallationResetExistingGrimoire(
                 return evidence.IsSuccess
                     ? evidence
                     : HostProcessToolsEvidenceUnavailable();
-
             },
             cancellationToken);
 
@@ -333,7 +319,6 @@ internal sealed class InstallationResetExistingGrimoire(
             Task<Result<T>>> action,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(issuer);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -342,14 +327,11 @@ internal sealed class InstallationResetExistingGrimoire(
 
         if (!File.Exists(databasePath))
         {
-
             return Unavailable<T>();
-
         }
 
         try
         {
-
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(
                 databasePath);
 
@@ -360,9 +342,7 @@ internal sealed class InstallationResetExistingGrimoire(
             if (secret.Status is not SecretStoreReadStatus.Ok
                 || string.IsNullOrEmpty(secret.Value))
             {
-
                 return Unavailable<T>();
-
             }
 
             string passphrase = GrimoireKeyDerivation
@@ -376,9 +356,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             if (issued.IsFailure)
             {
-
                 return Result<T>.Failure(issued.Error);
-
             }
 
             await using IStoppedHostGrimoireConnectionAuthority authority =
@@ -391,9 +369,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             if (opened.IsFailure)
             {
-
                 return Result<T>.Failure(opened.Error);
-
             }
 
             await using IStoppedHostGrimoireConnectionLease lease = opened.Value;
@@ -436,13 +412,10 @@ internal sealed class InstallationResetExistingGrimoire(
                 operations,
                 context,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -453,11 +426,8 @@ internal sealed class InstallationResetExistingGrimoire(
                 or SqliteException
                 or CryptographicException)
         {
-
             return Unavailable<T>();
-
         }
-
     }
 
     private async Task<Result<DataRetentionApplyResult?>> RecoverFactoryResetAsync(
@@ -466,7 +436,6 @@ internal sealed class InstallationResetExistingGrimoire(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         string expectedSummary = FactoryResetSummary(
             request.ExpectedPlanId ?? string.Empty);
 
@@ -474,7 +443,6 @@ internal sealed class InstallationResetExistingGrimoire(
 
         foreach (LongRunningOperationState state in RecoverableFactoryStates)
         {
-
             IReadOnlyList<LongRunningOperation> rows = await operations.ListAsync(
                 new LongRunningOperationQuery(
                     LongRunningOperationKinds.DataRetentionFactoryReset,
@@ -483,18 +451,15 @@ internal sealed class InstallationResetExistingGrimoire(
                 cancellationToken).ConfigureAwait(false);
 
             recoverable.AddRange(rows);
-
         }
 
         if (recoverable.Count == 0)
         {
-
             return await FindCompletedFactoryResetAsync(
                 operations,
                 request,
                 expectedSummary,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (recoverable.Count != 1
@@ -502,9 +467,7 @@ internal sealed class InstallationResetExistingGrimoire(
                 recoverable[0],
                 expectedSummary))
         {
-
             return RecoveryFailure();
-
         }
 
         LongRunningOperation operation = recoverable[0];
@@ -513,7 +476,6 @@ internal sealed class InstallationResetExistingGrimoire(
 
         if (operation.State is LongRunningOperationState.Running)
         {
-
             bool released = await operations.TryTransitionAsync(
                 operation.Id,
                 operation.Revision,
@@ -525,9 +487,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             if (!released)
             {
-
                 return RecoveryFailure();
-
             }
 
             operation = await operations.GetAsync(
@@ -535,14 +495,11 @@ internal sealed class InstallationResetExistingGrimoire(
                 cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException(
                     "The factory-reset operation disappeared during recovery.");
-
         }
 
         if (operation.TerminalErrorCode != ErrorCodes.Data.ReconciliationFailed)
         {
-
             return RecoveryFailure();
-
         }
 
         string ownerId = "installation-reset-recovery:"
@@ -557,9 +514,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
         if (!lease.Acquired)
         {
-
             return RecoveryFailure();
-
         }
 
         LongRunningOperationRecoveryResult outcome = await retention
@@ -585,9 +540,7 @@ internal sealed class InstallationResetExistingGrimoire(
         if (!transitioned
             || outcome.State is not LongRunningOperationState.Completed)
         {
-
             return RecoveryFailure();
-
         }
 
         return Result<DataRetentionApplyResult?>.Success(
@@ -601,7 +554,6 @@ internal sealed class InstallationResetExistingGrimoire(
                 Reconciled: true,
                 Blockers: [],
                 Conflicts: []));
-
     }
 
     private static async Task<Result<DataRetentionApplyResult?>>
@@ -611,14 +563,12 @@ internal sealed class InstallationResetExistingGrimoire(
             string expectedSummary,
             CancellationToken cancellationToken)
     {
-
         const int pageSize = 500;
 
         LongRunningOperation? match = null;
 
         for (int offset = 0; ; offset += pageSize)
         {
-
             IReadOnlyList<LongRunningOperation> rows = await operations.ListAsync(
                 new LongRunningOperationQuery(
                     LongRunningOperationKinds.DataRetentionFactoryReset,
@@ -629,39 +579,28 @@ internal sealed class InstallationResetExistingGrimoire(
 
             foreach (LongRunningOperation row in rows)
             {
-
                 if (!MatchesFactoryResetOperation(row, expectedSummary))
                 {
-
                     continue;
-
                 }
 
                 if (match is not null)
                 {
-
                     return RecoveryFailure();
-
                 }
 
                 match = row;
-
             }
 
             if (rows.Count < pageSize)
             {
-
                 break;
-
             }
-
         }
 
         if (match is null)
         {
-
             return Result<DataRetentionApplyResult?>.Success(null);
-
         }
 
         return Result<DataRetentionApplyResult?>.Success(
@@ -675,7 +614,6 @@ internal sealed class InstallationResetExistingGrimoire(
                 Reconciled: true,
                 Blockers: [],
                 Conflicts: []));
-
     }
 
     private static bool MatchesFactoryResetOperation(
@@ -697,12 +635,10 @@ internal sealed class InstallationResetExistingGrimoire(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         List<LongRunningOperation> recoverable = [];
 
         foreach (LongRunningOperationState state in RecoverableMutationStates)
         {
-
             IReadOnlyList<LongRunningOperation> rows = await operations.ListAsync(
                 new LongRunningOperationQuery(
                     LongRunningOperationKinds.DataRetentionMutation,
@@ -711,24 +647,19 @@ internal sealed class InstallationResetExistingGrimoire(
                 cancellationToken).ConfigureAwait(false);
 
             recoverable.AddRange(rows);
-
         }
 
         if (recoverable.Count == 0)
         {
-
             return await FindCompletedWorkspaceResetAsync(
                 operations,
                 request,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (recoverable.Count != 1)
         {
-
             return RecoveryFailure();
-
         }
 
         LongRunningOperation operation = recoverable[0];
@@ -742,16 +673,13 @@ internal sealed class InstallationResetExistingGrimoire(
             || operation.State is LongRunningOperationState.ReconciliationRequired
                 && operation.TerminalErrorCode != ErrorCodes.Data.ReconciliationFailed)
         {
-
             return RecoveryFailure();
-
         }
 
         DateTimeOffset now = timeProvider.GetUtcNow();
 
         if (operation.State is LongRunningOperationState.Running)
         {
-
             bool released = await operations.TryTransitionAsync(
                 operation.Id,
                 operation.Revision,
@@ -763,9 +691,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             if (!released)
             {
-
                 return RecoveryFailure();
-
             }
 
             operation = await operations.GetAsync(
@@ -773,14 +699,11 @@ internal sealed class InstallationResetExistingGrimoire(
                 cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException(
                     "The workspace-reset operation disappeared during recovery.");
-
         }
 
         if (operation.TerminalErrorCode != ErrorCodes.Data.ReconciliationFailed)
         {
-
             return RecoveryFailure();
-
         }
 
         string ownerId = "installation-reset-workspace-recovery:"
@@ -795,9 +718,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
         if (!lease.Acquired)
         {
-
             return RecoveryFailure();
-
         }
 
         LongRunningOperationRecoveryResult outcome = await retention
@@ -822,23 +743,17 @@ internal sealed class InstallationResetExistingGrimoire(
 
         if (!transitioned)
         {
-
             return RecoveryFailure();
-
         }
 
         if (outcome.State is LongRunningOperationState.Failed)
         {
-
             return Result<DataRetentionApplyResult?>.Success(null);
-
         }
 
         if (outcome.State is not LongRunningOperationState.Completed)
         {
-
             return RecoveryFailure();
-
         }
 
         return Result<DataRetentionApplyResult?>.Success(
@@ -852,7 +767,6 @@ internal sealed class InstallationResetExistingGrimoire(
                 Reconciled: true,
                 Blockers: [],
                 Conflicts: []));
-
     }
 
     private static async Task<Result<DataRetentionApplyResult?>>
@@ -861,14 +775,11 @@ internal sealed class InstallationResetExistingGrimoire(
             DataRetentionApplyRequest request,
             CancellationToken cancellationToken)
     {
-
         DataRetentionWorkspaceBinding? binding = request.Request.Workspace;
 
         if (binding is null)
         {
-
             return RecoveryFailure();
-
         }
 
         string expectedSummary = $"Applying ResetWorkspace data-retention plan "
@@ -880,7 +791,6 @@ internal sealed class InstallationResetExistingGrimoire(
 
         for (int offset = 0; ; offset += pageSize)
         {
-
             IReadOnlyList<LongRunningOperation> rows = await operations.ListAsync(
                 new LongRunningOperationQuery(
                     LongRunningOperationKinds.DataRetentionMutation,
@@ -891,43 +801,32 @@ internal sealed class InstallationResetExistingGrimoire(
 
             foreach (LongRunningOperation row in rows)
             {
-
                 if (!DataRetentionService.MatchesWorkspaceResetMutation(row, binding)
                     || !string.Equals(
                         row.PublicSummary,
                         expectedSummary,
                         StringComparison.Ordinal))
                 {
-
                     continue;
-
                 }
 
                 if (match is not null)
                 {
-
                     return RecoveryFailure();
-
                 }
 
                 match = row;
-
             }
 
             if (rows.Count < pageSize)
             {
-
                 break;
-
             }
-
         }
 
         if (match is null)
         {
-
             return Result<DataRetentionApplyResult?>.Success(null);
-
         }
 
         return Result<DataRetentionApplyResult?>.Success(
@@ -941,14 +840,12 @@ internal sealed class InstallationResetExistingGrimoire(
                 Reconciled: true,
                 Blockers: [],
                 Conflicts: []));
-
     }
 
     private static async Task ApplyReadOnlyPragmasAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -956,7 +853,6 @@ internal sealed class InstallationResetExistingGrimoire(
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static DataRetentionRequest? ToDataRequest(
@@ -995,7 +891,6 @@ internal sealed class InstallationResetExistingGrimoire(
     private sealed class FixedArcanumSettingsMonitor(ArcanumSettings value)
         : IOptionsMonitor<ArcanumSettings>
     {
-
         public ArcanumSettings CurrentValue => value;
 
         public ArcanumSettings Get(string? name) => value;
@@ -1003,7 +898,6 @@ internal sealed class InstallationResetExistingGrimoire(
         public IDisposable OnChange(
             Action<ArcanumSettings, string?> listener) =>
             NoopDisposable.Instance;
-
     }
 
     /// <summary>
@@ -1034,38 +928,29 @@ internal sealed class InstallationResetExistingGrimoire(
     private sealed class StoppedHostCovenantConnectionSource(SqliteConnection connection)
         : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(
             CancellationToken cancellationToken)
         {
-
             CovenantProcessResidence.MarkOpened();
 
             return GetOpenCoreConnectionAsync(cancellationToken);
-
         }
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(connection);
-
         }
-
     }
 
     private sealed class NoopDisposable : IDisposable
     {
-
         public static NoopDisposable Instance { get; } = new();
 
         public void Dispose()
         {
         }
-
     }
-
 }

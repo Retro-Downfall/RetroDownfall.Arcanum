@@ -10,24 +10,18 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.WebResearch;
 
-[Collection("OutboundUrlGuardDns")]
-public sealed class NativeWebResearchProviderTests : IDisposable
+public sealed class NativeWebResearchProviderTests
 {
-    private readonly IDnsResolver _originalResolver;
+    private readonly IDnsResolver _dns;
 
     public NativeWebResearchProviderTests()
     {
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
         FakeDnsResolver dns = new();
         dns.Add("example.test", IPAddress.Parse("93.184.216.34"));
         dns.Add("other.test", IPAddress.Parse("93.184.216.35"));
         dns.Add("private.test", IPAddress.Parse("127.0.0.1"));
-        OutboundUrlGuard.DnsResolver = dns;
+        _dns = dns;
     }
-
-    public void Dispose() =>
-        OutboundUrlGuard.DnsResolver = _originalResolver;
 
     [Fact]
     public void Catalog_is_case_insensitive_and_rejects_duplicates()
@@ -590,11 +584,12 @@ public sealed class NativeWebResearchProviderTests : IDisposable
             new StubApiKeyResolver(apiKey),
             NullLogger<PerplexityWebProvider>.Instance);
 
-    private static LocalHttpWebProvider CreateLocal(
+    private LocalHttpWebProvider CreateLocal(
         HttpMessageHandler handler) =>
         new(
             new FakeHttpClientFactory(handler),
             new WebPageContentExtractor(),
+            _dns,
             NullLogger<LocalHttpWebProvider>.Instance);
 
     private static HttpResponseMessage JsonResponse(

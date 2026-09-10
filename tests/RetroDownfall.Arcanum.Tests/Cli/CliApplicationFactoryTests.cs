@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -77,7 +79,7 @@ public sealed class CliApplicationFactoryTests
 
         CliTestResult result = await CliTestHarness.RunAsync(services, []);
 
-            Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, result.ExitCode);
         Assert.Equal(0, host.RunCount);
         Assert.Contains("Command Center", result.Output, StringComparison.OrdinalIgnoreCase);
     }
@@ -112,7 +114,6 @@ public sealed class CliApplicationFactoryTests
     [Fact]
     public async Task Command_center_deep_link_enters_current_host_without_command_parsing_or_process_launch()
     {
-
         FakeCommandCenterHost host = new(exitCode: 0);
 
         ThrowingApplicationLauncher launcher = new();
@@ -140,13 +141,11 @@ public sealed class CliApplicationFactoryTests
         Assert.Equal(0, launcher.CallCount);
 
         Assert.DoesNotContain(payload, result.Output + result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Command_center_session_deep_link_resumes_the_canonical_session_in_current_host()
     {
-
         Guid sessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
         FakeCommandCenterHost host = new(exitCode: 0);
@@ -177,14 +176,12 @@ public sealed class CliApplicationFactoryTests
         Assert.Equal(0, launcher.CallCount);
 
         Assert.DoesNotContain(payload, result.Output + result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public async Task Command_center_empty_session_id_is_rejected_without_entering_the_host()
     {
-
         ApplicationDeepLink deepLink = new(
             ApplicationDeepLink.CurrentSchemaVersion,
             DesktopApplication.CommandCenter,
@@ -205,13 +202,11 @@ public sealed class CliApplicationFactoryTests
         Assert.Equal(0, host.RunCount);
 
         Assert.DoesNotContain(payload, result.Output + result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Malformed_command_center_deep_link_fails_without_echoing_private_payload()
     {
-
         const string SecretMarker = "api-key=must-not-surface";
 
         string payload = $"{{not-json:{SecretMarker}";
@@ -236,13 +231,11 @@ public sealed class CliApplicationFactoryTests
         Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
 
         Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Wrong_target_command_center_deep_link_fails_without_echoing_private_payload()
     {
-
         const string SecretMarker = "private-marker-must-not-surface";
 
         ApplicationDeepLink deepLink = new(
@@ -274,13 +267,11 @@ public sealed class CliApplicationFactoryTests
         Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
 
         Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Unsupported_command_center_resource_fails_with_fixed_safe_diagnostic()
     {
-
         const string SecretMarker = "private-resource-must-not-surface";
 
         ApplicationDeepLink deepLink = new(
@@ -312,7 +303,6 @@ public sealed class CliApplicationFactoryTests
         Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
 
         Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -321,7 +311,6 @@ public sealed class CliApplicationFactoryTests
     [InlineData("--output-format json --output-format text doctor")]
     public async Task Malformed_output_format_is_an_invalid_command_line(string commandLine)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -338,13 +327,11 @@ public sealed class CliApplicationFactoryTests
             "An unexpected CLI error occurred.",
             result.Output + result.Error,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Invalid_output_format_names_the_rejected_value_and_the_legal_ones()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -362,13 +349,11 @@ public sealed class CliApplicationFactoryTests
         Assert.Contains("bogus", combined, StringComparison.Ordinal);
 
         Assert.Contains("json", combined, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Invalid_output_format_under_json_still_emits_exactly_one_error_document()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -396,7 +381,6 @@ public sealed class CliApplicationFactoryTests
         Assert.False(
             string.IsNullOrWhiteSpace(
                 document.RootElement.GetProperty("error").GetString()));
-
     }
 
     [Fact]
@@ -423,7 +407,6 @@ public sealed class CliApplicationFactoryTests
     [Fact]
     public void Help_exposes_context_bypass_and_management_commands()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -457,7 +440,6 @@ public sealed class CliApplicationFactoryTests
         Assert.Contains("--workspace", run.Output, StringComparison.Ordinal);
 
         Assert.Contains("--session", run.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -622,6 +604,25 @@ public sealed class CliApplicationFactoryTests
     }
 
     [Fact]
+    public void Local_api_http_clients_never_follow_redirects_with_a_process_capability()
+    {
+        using HttpMessageHandler handler =
+            CliApplicationFactory.CreateLocalApiHttpMessageHandler();
+
+        HttpClientHandler primary = Assert.IsType<HttpClientHandler>(handler);
+        ProductionSource composition = ProductionSourceInventory.Sources()
+            .Single(static source => source.IsExactOwner(
+                "src/RetroDownfall.Arcanum.Cli/Infrastructure/CliApplicationFactory.cs"));
+
+        Assert.False(primary.AllowAutoRedirect);
+        Assert.False(primary.UseProxy);
+        Assert.Equal(
+            2,
+            composition.Occurrences(
+                ".ConfigurePrimaryHttpMessageHandler(CreateLocalApiHttpMessageHandler)"));
+    }
+
+    [Fact]
     public void ConfigureCliServices_registers_api_key_digest_cache_so_secret_store_resolves()
     {
         ServiceCollection services = new();
@@ -636,6 +637,23 @@ public sealed class CliApplicationFactoryTests
         Assert.NotNull(webResearchCredentials);
         AskCommand askCommand = provider.GetRequiredService<AskCommand>();
         Assert.NotNull(askCommand);
+    }
+
+    [Fact]
+    public async Task Cli_test_harness_replaces_the_production_os_credential_store()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["--help"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            provider.GetRequiredService<IOsCredentialStore>());
     }
 
     [Fact]
@@ -698,11 +716,9 @@ public sealed class CliApplicationFactoryTests
             Guid? startupSessionId,
             CancellationToken cancellationToken)
         {
-
             StartupSessionId = startupSessionId;
 
             return RunAsync(cancellationToken);
-
         }
     }
 
@@ -710,7 +726,6 @@ public sealed class CliApplicationFactoryTests
         ICommandCenterHost host,
         IApplicationLauncher launcher)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -731,24 +746,19 @@ public sealed class CliApplicationFactoryTests
         services.AddSingleton(launcher);
 
         return services;
-
     }
 
     private sealed class ThrowingApplicationLauncher : IApplicationLauncher
     {
-
         public int CallCount { get; private set; }
 
         public ApplicationLaunchResult TryLaunch(ApplicationLaunchRequest request)
         {
-
             CallCount++;
 
             throw new InvalidOperationException(
                 "A Command Center deep link must not create a process.");
-
         }
-
     }
 
     private sealed class FakeCliEnvironment(bool interactive, bool colorEnabled) : ICliEnvironment
@@ -781,7 +791,6 @@ public sealed class CliApplicationFactoryTests
     [Fact]
     public void Every_option_and_argument_in_the_tree_carries_help_text()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -805,47 +814,31 @@ public sealed class CliApplicationFactoryTests
 
         static void Walk(Command command, string path, List<string> undescribed)
         {
-
             foreach (Option option in command.Options)
             {
-
                 if (option.Name is "--help" or "--version")
                 {
-
                     continue;
-
                 }
 
                 if (string.IsNullOrWhiteSpace(option.Description))
                 {
-
                     undescribed.Add($"{path} {option.Name}");
-
                 }
-
             }
 
             foreach (Argument argument in command.Arguments)
             {
-
                 if (string.IsNullOrWhiteSpace(argument.Description))
                 {
-
                     undescribed.Add($"{path} <{argument.Name}>");
-
                 }
-
             }
 
             foreach (Command child in command.Subcommands)
             {
-
                 Walk(child, $"{path} {child.Name}", undescribed);
-
             }
-
         }
-
     }
-
 }

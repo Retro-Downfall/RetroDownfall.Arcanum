@@ -12,7 +12,6 @@ namespace RetroDownfall.Compendium.Ux.Models;
 /// </summary>
 public static class SettingDescriptors
 {
-
     public static IReadOnlyList<SettingDescriptor> All { get; } =
     [
         // Edition
@@ -124,6 +123,7 @@ public static class SettingDescriptors
         new("integrations.embeddings.dimensions", ConfigSection.Integrations, "Search vector size", "Size of search vectors. Changing this requires rebuilding the search index.", SettingKind.Int, 64, 4_096, 8, ClampName: nameof(ArcanumSettingClamps.EmbeddingsDimensions), Group: "Semantic search", Placeholder: "1536"),
         new("integrations.embeddings.tapestry.retrievalMode", ConfigSection.Integrations, "Layered memory search style", "How the AI reads its layered summary memory: search every level at once, or start from the broadest summary and drill down.", SettingKind.Enum, EnumType: typeof(TapestryRetrievalMode), Group: "Semantic search"),
         new("integrations.embeddings.tapestry.summaryModel", ConfigSection.Integrations, "Layered memory summary model", "AI model used to write the layered memory summaries. Leave blank to use the fast model.", SettingKind.String, Group: "Semantic search", Placeholder: "gpt-4o-mini"),
+        new("integrations.mcp.bootstrapBlocksStartup", ConfigSection.Integrations, "Wait for MCP tools at startup", "Keep startup waiting until always-on MCP servers finish connecting. Turn this off to let Arcanum become ready while they connect in the background.", SettingKind.Bool, Group: "MCP tools"),
         new("integrations.mcp.allowedHttpHosts", ConfigSection.Integrations, "Allowed HTTP hosts", "Hosts allowed to use unencrypted HTTP (not recommended).", SettingKind.StringArray, Group: "Security", Placeholder: "localhost, 127.0.0.1"),
         new("integrations.webResearch.searchProvider", ConfigSection.Integrations, "Web search provider", "Native provider used by web_search.", SettingKind.String, Group: "Web research", Placeholder: "perplexity"),
         new("integrations.webResearch.perplexityModel", ConfigSection.Integrations, "Perplexity model", "Sonar model used for synthesized web search: sonar or sonar-pro.", SettingKind.String, Group: "Web research", Placeholder: "sonar"),
@@ -219,7 +219,6 @@ public static class SettingDescriptors
         string subject,
         string group)
     {
-
         string titleSubject = char.ToUpperInvariant(subject[0]) + subject[1..];
 
         return
@@ -245,7 +244,5 @@ public static class SettingDescriptors
                 Group: group,
                 Placeholder: "30"),
         ];
-
     }
-
 }

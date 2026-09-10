@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text;
+using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.Options;
@@ -15,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 
 public sealed class ApiKeyEndpointFilterTests
 {
-
   private const string ValidKey = "test-api-key-12345";
 
   [Fact]
@@ -80,7 +81,6 @@ public sealed class ApiKeyEndpointFilterTests
   [Fact]
   public async Task InvokeAsync_InvalidatesDigestWhenCacheIsClearedAfterRotation()
   {
-
     FakeSecretStore store = new(ValidKey);
 
     ApiKeyDigestCache cache = new(new FakeTimeProvider());
@@ -108,7 +108,6 @@ public sealed class ApiKeyEndpointFilterTests
     await filter.InvokeAsync(CreateContext(second), _ => ValueTask.FromResult<object?>(Results.Ok()));
 
     Assert.Equal(1, store.GetCallCount);
-
   }
 
   [Fact]
@@ -217,6 +216,310 @@ public sealed class ApiKeyEndpointFilterTests
       await filter.InvokeAsync(CreateContext(httpContext), _ => ValueTask.FromResult<object?>(Results.Ok())));
 
     Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+  }
+
+  [Fact]
+  public async Task InvokeAsync_ValidProcessCapability_AllowsWithoutReadingTheMasterKey()
+  {
+    FakeSecretStore store = new(ValidKey);
+
+    using ArcanumProcessCapabilityService capabilities = new();
+
+    byte[] token = capabilities.Issue();
+
+    try
+    {
+      ApiKeyEndpointFilter filter = new(
+        store,
+        new ApiKeyDigestCache(new FakeTimeProvider()),
+        capabilities);
+
+      DefaultHttpContext httpContext = new();
+
+      SetTransportPeer(httpContext, IPAddress.Loopback);
+
+      httpContext.Request.Headers[ArcanumApiHeaders.ProcessCapability] =
+        ArcanumPresenceProofProtocol.Encode(token);
+
+      bool nextCalled = false;
+
+      await filter.InvokeAsync(
+        CreateContext(httpContext),
+        _ =>
+        {
+          nextCalled = true;
+
+          return ValueTask.FromResult<object?>(Results.Ok());
+        });
+
+      Assert.True(nextCalled);
+      Assert.Equal(0, store.GetCallCount);
+    }
+    finally
+    {
+      System.Security.Cryptography.CryptographicOperations.ZeroMemory(token);
+    }
+  }
+
+  [Fact]
+  public async Task InvokeAsync_ValidProcessCapabilityFromRemotePeer_Returns401WithoutReadingTheMasterKey()
+  {
+    FakeSecretStore store = new(ValidKey);
+
+    using ArcanumProcessCapabilityService capabilities = new();
+
+    byte[] token = capabilities.Issue();
+
+    try
+    {
+      ApiKeyEndpointFilter filter = new(
+        store,
+        new ApiKeyDigestCache(new FakeTimeProvider()),
+        capabilities);
+
+      DefaultHttpContext httpContext = new();
+
+      SetTransportPeer(httpContext, IPAddress.Parse("192.0.2.1"));
+
+      httpContext.Request.Headers[ArcanumApiHeaders.ProcessCapability] =
+        ArcanumPresenceProofProtocol.Encode(token);
+
+      bool nextCalled = false;
+
+      IResult result = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+        await filter.InvokeAsync(
+          CreateContext(httpContext),
+          _ =>
+          {
+            nextCalled = true;
+
+            return ValueTask.FromResult<object?>(Results.Ok());
+          }));
+
+      Assert.False(nextCalled);
+      Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+      Assert.Equal(0, store.GetCallCount);
+    }
+    finally
+    {
+      System.Security.Cryptography.CryptographicOperations.ZeroMemory(token);
+    }
+  }
+
+  [Fact]
+  public async Task InvokeAsync_ValidProcessCapabilityWithoutRawPeer_Returns401WithoutReadingTheMasterKey()
+  {
+    FakeSecretStore store = new(ValidKey);
+
+    using ArcanumProcessCapabilityService capabilities = new();
+
+    byte[] token = capabilities.Issue();
+
+    try
+    {
+      ApiKeyEndpointFilter filter = new(
+        store,
+        new ApiKeyDigestCache(new FakeTimeProvider()),
+        capabilities);
+
+      DefaultHttpContext httpContext = new();
+
+      httpContext.Request.Headers[ArcanumApiHeaders.ProcessCapability] =
+        ArcanumPresenceProofProtocol.Encode(token);
+
+      IResult result = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+        await filter.InvokeAsync(
+          CreateContext(httpContext),
+          _ => ValueTask.FromResult<object?>(Results.Ok())));
+
+      Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+      Assert.Equal(0, store.GetCallCount);
+    }
+    finally
+    {
+      System.Security.Cryptography.CryptographicOperations.ZeroMemory(token);
+    }
+  }
+
+  [Fact]
+  public async Task InvokeAsync_ValidProcessCapabilityWithDisposedRawPeer_Returns401WithoutReadingTheMasterKey()
+  {
+    FakeSecretStore store = new(ValidKey);
+
+    using ArcanumProcessCapabilityService capabilities = new();
+
+    byte[] token = capabilities.Issue();
+
+    try
+    {
+      ApiKeyEndpointFilter filter = new(
+        store,
+        new ApiKeyDigestCache(new FakeTimeProvider()),
+        capabilities);
+
+      DefaultHttpContext httpContext = new();
+
+      httpContext.Features.Set<IConnectionEndPointFeature>(
+        new DisposedConnectionEndPointFeature());
+
+      httpContext.Request.Headers[ArcanumApiHeaders.ProcessCapability] =
+        ArcanumPresenceProofProtocol.Encode(token);
+
+      IResult result = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+        await filter.InvokeAsync(
+          CreateContext(httpContext),
+          _ => ValueTask.FromResult<object?>(Results.Ok())));
+
+      Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+      Assert.Equal(0, store.GetCallCount);
+    }
+    finally
+    {
+      System.Security.Cryptography.CryptographicOperations.ZeroMemory(token);
+    }
+  }
+
+  [Fact]
+  public async Task InvokeAsync_ValidApiKeyFromRemotePeer_AllowsRequest()
+  {
+    ApiKeyEndpointFilter filter = CreateFilter(ValidKey);
+
+    DefaultHttpContext httpContext = new();
+
+    SetTransportPeer(httpContext, IPAddress.Parse("192.0.2.1"));
+
+    httpContext.Request.Headers[ArcanumApiHeaders.ApiKey] = ValidKey;
+
+    bool nextCalled = false;
+
+    await filter.InvokeAsync(
+      CreateContext(httpContext),
+      _ =>
+      {
+        nextCalled = true;
+
+        return ValueTask.FromResult<object?>(Results.Ok());
+      });
+
+    Assert.True(nextCalled);
+  }
+
+  [Fact]
+  public void TransportPeer_SameHostProxyForRemoteClient_IsNotLocal()
+  {
+    bool isLocal = ArcanumTransportPeer.IsLoopback(
+      new IPEndPoint(IPAddress.Loopback, 43123),
+      IPAddress.Parse("192.0.2.1"));
+
+    Assert.False(isLocal);
+  }
+
+  [Fact]
+  public void TransportPeer_IPv4MappedLoopback_IsLocal()
+  {
+    IPAddress mappedLoopback = IPAddress.Parse("::ffff:127.0.0.1");
+
+    bool isLocal = ArcanumTransportPeer.IsLoopback(
+      new IPEndPoint(mappedLoopback, 43123),
+      mappedLoopback);
+
+    Assert.True(isLocal);
+  }
+
+  [Theory]
+  [InlineData(true, false)]
+  [InlineData(false, true)]
+  public async Task InvokeAsync_ProcessCapabilityMixedWithReusableCredential_Returns401(
+    bool includeApiKey,
+    bool includeAuthorization)
+  {
+    FakeSecretStore store = new(ValidKey);
+
+    using ArcanumProcessCapabilityService capabilities = new();
+
+    byte[] token = capabilities.Issue();
+
+    try
+    {
+      ApiKeyEndpointFilter filter = new(
+        store,
+        new ApiKeyDigestCache(new FakeTimeProvider()),
+        capabilities);
+
+      DefaultHttpContext httpContext = new();
+
+      SetTransportPeer(httpContext, IPAddress.Loopback);
+
+      httpContext.Request.Headers[ArcanumApiHeaders.ProcessCapability] =
+        ArcanumPresenceProofProtocol.Encode(token);
+
+      if (includeApiKey)
+      {
+        httpContext.Request.Headers[ArcanumApiHeaders.ApiKey] = ValidKey;
+      }
+
+      if (includeAuthorization)
+      {
+        httpContext.Request.Headers.Authorization = $"Bearer {ValidKey}";
+      }
+
+      IResult result = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+        await filter.InvokeAsync(
+          CreateContext(httpContext),
+          _ => ValueTask.FromResult<object?>(Results.Ok())));
+
+      Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+      Assert.Equal(0, store.GetCallCount);
+    }
+    finally
+    {
+      System.Security.Cryptography.CryptographicOperations.ZeroMemory(token);
+    }
+  }
+
+  [Fact]
+  public async Task InvokeAsync_DuplicateOrPreviousProcessCapability_Returns401()
+  {
+    using ArcanumProcessCapabilityService previousProcess = new();
+    using ArcanumProcessCapabilityService currentProcess = new();
+
+    byte[] token = previousProcess.Issue();
+
+    try
+    {
+      ApiKeyEndpointFilter filter = new(
+        new FakeSecretStore(ValidKey),
+        new ApiKeyDigestCache(new FakeTimeProvider()),
+        currentProcess);
+
+      string encoded = ArcanumPresenceProofProtocol.Encode(token);
+      DefaultHttpContext previous = new();
+      SetTransportPeer(previous, IPAddress.Loopback);
+      previous.Request.Headers[ArcanumApiHeaders.ProcessCapability] = encoded;
+
+      IResult previousResult = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+        await filter.InvokeAsync(
+          CreateContext(previous),
+          _ => ValueTask.FromResult<object?>(Results.Ok())));
+
+      Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(previousResult));
+
+      DefaultHttpContext duplicate = new();
+      SetTransportPeer(duplicate, IPAddress.Loopback);
+      duplicate.Request.Headers[ArcanumApiHeaders.ProcessCapability] =
+        new[] { encoded, encoded };
+
+      IResult duplicateResult = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+        await filter.InvokeAsync(
+          CreateContext(duplicate),
+          _ => ValueTask.FromResult<object?>(Results.Ok())));
+
+      Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(duplicateResult));
+    }
+    finally
+    {
+      System.Security.Cryptography.CryptographicOperations.ZeroMemory(token);
+    }
   }
 
   [Fact]
@@ -480,7 +783,9 @@ public sealed class ApiKeyEndpointFilterTests
 
     string oversizedKey = new('k', maxChars + 1);
 
-    ApiKeyEndpointFilter filter = CreateFilter(oversizedKey);
+    FakeSecretStore store = new(oversizedKey);
+
+    ApiKeyEndpointFilter filter = CreateFilter(store);
 
     DefaultHttpContext httpContext = new();
 
@@ -501,6 +806,38 @@ public sealed class ApiKeyEndpointFilterTests
     Assert.False(nextCalled);
 
     Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+    Assert.Equal(0, store.GetCallCount);
+  }
+
+  [Fact]
+  public async Task InvokeAsync_ZeroesTheDefensiveExpectedDigestAfterAuthentication()
+  {
+    TrackingDigestCache cache = new(ValidKey);
+
+    ApiKeyEndpointFilter filter = new(
+      new FakeSecretStore(apiKey: null),
+      cache);
+
+    DefaultHttpContext httpContext = new();
+
+    httpContext.Request.Headers[ArcanumApiHeaders.ApiKey] = ValidKey;
+
+    bool nextCalled = false;
+
+    await filter.InvokeAsync(
+      CreateContext(httpContext),
+      _ =>
+      {
+        nextCalled = true;
+
+        return ValueTask.FromResult<object?>(Results.Ok());
+      });
+
+    Assert.True(nextCalled);
+
+    byte[] returned = Assert.IsType<byte[]>(cache.LastReturnedDigest);
+
+    Assert.All(returned, static value => Assert.Equal(0, value));
   }
 
   [Fact]
@@ -547,9 +884,19 @@ public sealed class ApiKeyEndpointFilterTests
   private static EndpointFilterInvocationContext CreateContext(HttpContext httpContext) =>
     new TestEndpointFilterInvocationContext(httpContext);
 
+  private static void SetTransportPeer(
+    DefaultHttpContext httpContext,
+    IPAddress address)
+  {
+    httpContext.Connection.RemoteIpAddress = address;
+
+    httpContext.Features.Set<IConnectionEndPointFeature>(
+      new TestConnectionEndPointFeature(
+        new IPEndPoint(address, 43123)));
+  }
+
   private sealed class FakeSecretStore : ISecretStore
   {
-
     public FakeSecretStore(string? apiKey) => ApiKey = apiKey;
 
     public string? ApiKey { get; set; }
@@ -577,18 +924,80 @@ public sealed class ApiKeyEndpointFilterTests
     public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
     public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
   }
 
   private sealed class TestEndpointFilterInvocationContext(HttpContext httpContext) : EndpointFilterInvocationContext
   {
-
     public override HttpContext HttpContext { get; } = httpContext;
 
     public override IList<object?> Arguments { get; } = [];
 
     public override T GetArgument<T>(int index) => default!;
-
   }
 
+  private sealed class TestConnectionEndPointFeature(EndPoint remoteEndPoint) :
+    IConnectionEndPointFeature
+  {
+    public EndPoint? LocalEndPoint { get; set; } =
+      new IPEndPoint(IPAddress.Loopback, 5001);
+
+    public EndPoint? RemoteEndPoint { get; set; } = remoteEndPoint;
+  }
+
+  private sealed class DisposedConnectionEndPointFeature : IConnectionEndPointFeature
+  {
+    public EndPoint? LocalEndPoint { get; set; }
+
+    public EndPoint? RemoteEndPoint
+    {
+      get => throw new ObjectDisposedException(nameof(DisposedConnectionEndPointFeature));
+      set => throw new ObjectDisposedException(nameof(DisposedConnectionEndPointFeature));
+    }
+  }
+
+  private sealed class TrackingDigestCache : IApiKeyDigestCache
+  {
+    private readonly byte[] _digest;
+
+    internal TrackingDigestCache(string apiKey) =>
+      _digest = System.Security.Cryptography.SHA256.HashData(
+        Encoding.UTF8.GetBytes(apiKey));
+
+    internal byte[]? LastReturnedDigest { get; private set; }
+
+    public bool TryGetDigest(out byte[]? digest)
+    {
+      return TryGetDigest(out digest, out _);
+    }
+
+    public bool TryGetDigest(out byte[]? digest, out long generation)
+    {
+      digest = _digest.ToArray();
+      LastReturnedDigest = digest;
+      generation = 0;
+
+      return true;
+    }
+
+    public void StoreDigest(byte[] digest, int ttlSeconds)
+    {
+      throw new InvalidOperationException(
+        "The cache-hit zeroization test must not publish a digest.");
+    }
+
+    public bool TryStoreDigest(
+      byte[] digest,
+      int ttlSeconds,
+      long expectedGeneration)
+    {
+      throw new InvalidOperationException(
+        "The cache-hit zeroization test must not publish a digest.");
+    }
+
+    public void Invalidate()
+    {
+      throw new InvalidOperationException(
+        "The cache-hit zeroization test must not invalidate its digest.");
+    }
+  }
 }

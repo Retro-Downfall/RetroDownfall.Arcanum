@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -22,15 +23,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// <para>Registered on the long-running host alone, through the installation-reset-recovery-aware
 /// helper, for the same reasons the Covenant maintenance service is: the CLI composition is
 /// short-lived, and a pass must not open a transaction against a dataset the installation is in the
-/// middle of replacing.</para>
+/// middle of replacing. The journal makes a pass recoverable, but it remains ordinary live-catalog
+/// work and holds one admission lease through its final scope disposal.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class GrimoireSchemaTransitionHostedService(
     IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate admissionGate,
     TimeProvider timeProvider,
     ILogger<GrimoireSchemaTransitionHostedService> logger) : BackgroundService
 {
-
     /// <summary>How long a pass waits before the next one while a run is still advancing.</summary>
     internal static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
 
@@ -39,78 +41,74 @@ internal sealed class GrimoireSchemaTransitionHostedService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         while (!stoppingToken.IsCancellationRequested)
         {
-
             bool advanced = false;
 
             try
             {
-
-                await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-                Result<GrimoireSchemaTransitionPassOutcome> outcome = await scope.ServiceProvider
-                    .GetRequiredService<GrimoireSchemaTransitionCoordinator>()
-                    .RunOnceAsync(stoppingToken)
-                    .ConfigureAwait(false);
-
-                if (outcome.IsFailure)
-                {
-
-                    logger.LogWarning(
-                        "A Grimoire schema transition pass reported {Error}.",
-                        outcome.Error.Message);
-
-                }
-                else
-                {
-
-                    advanced = outcome.Value.Advanced;
-
-                    if (advanced)
-                    {
-
-                        logger.LogInformation(
-                            "A Grimoire schema transition pass advanced {Runs} run(s) through {Batches} batch(es) and {Rows} row(s).",
-                            outcome.Value.RunsSeen,
-                            outcome.Value.BatchesRun,
-                            outcome.Value.RowsProcessed);
-
-                    }
-
-                }
-
+                advanced = await RunOnceAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(ex, "A Grimoire schema transition pass failed before it could report a result.");
-
             }
 
             try
             {
-
                 await Task.Delay(advanced ? Interval : IdleInterval, timeProvider, stoppingToken)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
-
         }
-
     }
 
+    /// <summary>
+    /// Runs one bounded schema-transition pass when ordinary Grimoire work is admitted.
+    /// </summary>
+    internal async Task<bool> RunOnceAsync(CancellationToken cancellationToken)
+    {
+        if (!admissionGate.TryAcquireWorkLease(
+                GrimoireWorkKind.GrimoireSchemaTransition,
+                out IGrimoireWorkLease? admitted))
+        {
+            return false;
+        }
+
+        await using IGrimoireWorkLease lease = admitted!;
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        Result<GrimoireSchemaTransitionPassOutcome> outcome = await scope.ServiceProvider
+            .GetRequiredService<GrimoireSchemaTransitionCoordinator>()
+            .RunOnceAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (outcome.IsFailure)
+        {
+            logger.LogWarning(
+                "A Grimoire schema transition pass reported {Error}.",
+                outcome.Error.Message);
+
+            return false;
+        }
+
+        if (outcome.Value.Advanced)
+        {
+            logger.LogInformation(
+                "A Grimoire schema transition pass advanced {Runs} run(s) through {Batches} batch(es) and {Rows} row(s).",
+                outcome.Value.RunsSeen,
+                outcome.Value.BatchesRun,
+                outcome.Value.RowsProcessed);
+        }
+
+        return outcome.Value.Advanced;
+    }
 }

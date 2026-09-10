@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -13,13 +14,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 /// <summary>What the pre-bootstrap pass did about the journal it was handed.</summary>
 internal enum GrimoireOfflineTransitionStartupRecoveryOutcome : byte
 {
-
     /// <summary>No journal was active, so this pass did nothing at all.</summary>
     NoActiveJournal = 1,
 
     /// <summary>The transition reached a durable verdict and ordinary bootstrap may proceed.</summary>
     Resumed = 2,
-
 }
 
 /// <summary>
@@ -33,7 +32,6 @@ internal enum GrimoireOfflineTransitionStartupRecoveryOutcome : byte
 /// </remarks>
 internal interface IGrimoireOfflineTransitionStartupRecovery
 {
-
     Task<Result<GrimoireOfflineTransitionStartupRecoveryOutcome>> RecoverBeforeBootstrapAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
@@ -41,7 +39,6 @@ internal interface IGrimoireOfflineTransitionStartupRecovery
         InstallationResetNestedTransitionEvidenceOutcome? evidence,
         GrimoireOfflineTransitionRecoveryEvidence? journal,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -54,13 +51,11 @@ internal interface IGrimoireOfflineTransitionStartupRecovery
 /// </remarks>
 internal interface IGrimoireOfflineTransitionHandlerDispatch
 {
-
     Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        Guid operationId,
+        LongRunningRecoveryOwnerEvidence ownerEvidence,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>The production dispatch, over one scope per resumed operation.</summary>
@@ -68,7 +63,6 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
     IServiceScopeFactory scopeFactory,
     TimeProvider timeProvider) : IGrimoireOfflineTransitionHandlerDispatch
 {
-
     /// <summary>
     /// The same recovery lease the periodic pass takes, and for the same reason.
     /// </summary>
@@ -89,13 +83,33 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
     public async Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        Guid operationId,
+        LongRunningRecoveryOwnerEvidence ownerEvidence,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
+        ArgumentNullException.ThrowIfNull(ownerEvidence);
+
         await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+        LongRunningOperationRecoveryFingerprint expected = ownerEvidence.ExpectedOperation;
+
+        LongRunningOperation? candidate = await scope.ServiceProvider
+            .GetRequiredService<ILongRunningOperationStore>()
+            .GetAsync(expected.OperationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (candidate is null
+            || candidate.Id != expected.OperationId
+            || !string.Equals(candidate.Kind, expected.Kind, StringComparison.Ordinal)
+            || candidate.CheckpointVersion != expected.CheckpointVersion
+            || candidate.Revision != expected.Revision
+            || LongRunningOperationRecoveryAdmission.Classify(candidate, ownerEvidence).Kind
+                is not LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+        {
+            return Result<LongRunningOperationSettlementOutcome>.Failure(
+                GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
+        }
 
         ILongRunningOperationMaintenanceLeaseAdoption adoption = scope.ServiceProvider
             .GetRequiredService<ILongRunningOperationMaintenanceLeaseAdoption>();
@@ -111,7 +125,7 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
         LongRunningOperationLeaseResult adopted = await adoption.AdoptUnderInstallationLockAsync(
             heldInstallationLock,
             guardedDirectory,
-            operationId,
+            expected,
             ownerId,
             now,
             now.Add(RecoveryLease),
@@ -119,21 +133,21 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
 
         if (!adopted.Acquired)
         {
-
             return Result<LongRunningOperationSettlementOutcome>.Failure(
                 GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
-
         }
 
         LongRunningOperationSettlementOutcome settled = await scope.ServiceProvider
             .GetRequiredService<LongRunningOperationReconciler>()
-            .SettleExactlyAsync(operationId, ownerId, cancellationToken)
+            .SettleExactlyAsync(
+                expected.OperationId,
+                ownerId,
+                ownerEvidence,
+                cancellationToken)
             .ConfigureAwait(false);
 
         return Result<LongRunningOperationSettlementOutcome>.Success(settled);
-
     }
-
 }
 
 /// <summary>The production pre-bootstrap recovery pass.</summary>
@@ -142,7 +156,6 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
     ICovenantRecoveryAuthorityBootstrapper authority,
     IGrimoireOfflineTransitionHandlerDispatch dispatch) : IGrimoireOfflineTransitionStartupRecovery
 {
-
     private readonly IGrimoireRecoveryOnlyUnlock _unlock =
         unlock ?? throw new ArgumentNullException(nameof(unlock));
 
@@ -160,7 +173,6 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         GrimoireOfflineTransitionRecoveryEvidence? journal,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
@@ -171,7 +183,6 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
         switch (evidence)
         {
-
             case null:
             case InstallationResetNestedTransitionEvidenceOutcome.NeitherActive:
             case InstallationResetNestedTransitionEvidenceOutcome.NestedNotStarted:
@@ -190,16 +201,13 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
                 // Every fail-closed arm of the pair matrix, and any value a future build adds without
                 // deciding what it means here.
                 return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
-
         }
 
         // A journal-active answer with no journal to act on is the pair disagreeing with itself one
         // layer further in. The matrix computed its outcome from a publication this pass was not given.
         if (journal is null)
         {
-
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
-
         }
 
         Result<GrimoireRecoveryUnlockedCatalog> unlocked = await _unlock
@@ -208,12 +216,10 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
         if (unlocked.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(unlocked.Error);
-
         }
 
-        Result<Guid> prepared = await PrepareAsync(
+        Result<LongRunningRecoveryOwnerEvidence> prepared = await PrepareAsync(
             heldInstallationLock,
             guardedDirectory,
             journal,
@@ -222,9 +228,7 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
         if (prepared.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(prepared.Error);
-
         }
 
         // Physically gone before the handler enters its own maintenance lane. The handler closes the
@@ -236,9 +240,7 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
         if (dispatched.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(dispatched.Error);
-
         }
 
         // Only a durable verdict is a resumption. A parked transition has closed admission behind it,
@@ -249,7 +251,6 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             or LongRunningOperationSettlementOutcome.Abandoned
                 ? GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed
                 : Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
-
     }
 
     /// <summary>
@@ -260,14 +261,13 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
     /// remember. Both of the failing exits below leave the catalog exactly as they found it, which is
     /// the property that lets a refused start be retried.
     /// </remarks>
-    private async Task<Result<Guid>> PrepareAsync(
+    private async Task<Result<LongRunningRecoveryOwnerEvidence>> PrepareAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence journal,
         GrimoireRecoveryUnlockedCatalog catalog,
         CancellationToken cancellationToken)
     {
-
         await using GrimoireRecoveryUnlockedCatalog owned = catalog;
 
         Result<ICovenantClosedRecoveryHandoff> handoff = await _authority
@@ -281,19 +281,26 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
         if (handoff.IsFailure)
         {
-
-            return Result<Guid>.Failure(handoff.Error);
-
+            return Result<LongRunningRecoveryOwnerEvidence>.Failure(handoff.Error);
         }
 
         Result consumed = await handoff.Value
             .ConsumeAsync(heldInstallationLock, guardedDirectory, journal, owned.Connection, cancellationToken)
             .ConfigureAwait(false);
 
-        return consumed.IsFailure
-            ? Result<Guid>.Failure(consumed.Error)
-            : Result<Guid>.Success(handoff.Value.OperationId);
+        if (consumed.IsFailure
+            || handoff.Value.OperationId != journal.Binding.OperationId)
+        {
+            return Result<LongRunningRecoveryOwnerEvidence>.Failure(
+                consumed.IsFailure ? consumed.Error : Refusal().Error);
+        }
 
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        return Result<LongRunningRecoveryOwnerEvidence>.Success(
+            new AuthenticatedJournalOwnerEvidence(
+                handoff.Value.Owner,
+                handoff.Value.ExpectedOperation));
     }
 
     /// <summary>
@@ -308,4 +315,8 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "The authenticated offline Grimoire transition could not be recovered before bootstrap.");
 
+    private sealed class AuthenticatedJournalOwnerEvidence(
+        CovenantExclusiveRecoveryOwner owner,
+        LongRunningOperationRecoveryFingerprint expectedOperation)
+        : LongRunningRecoveryOwnerEvidence(owner, expectedOperation);
 }

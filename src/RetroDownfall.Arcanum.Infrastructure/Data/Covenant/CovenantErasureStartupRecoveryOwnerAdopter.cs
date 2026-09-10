@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -22,6 +23,45 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGate gate)
 {
+    private sealed record AdoptedCandidate(
+        CovenantExclusiveRecoveryOwner Owner,
+        LongRunningOperationRecoveryFingerprint ExpectedOperation);
+
+    internal sealed class AdoptedOwner
+    {
+        private AdoptedOwner(
+            CovenantExclusiveRecoveryOwner owner,
+            LongRunningOperationRecoveryFingerprint expectedOperation)
+        {
+            Owner = owner;
+
+            ExpectedOperation = expectedOperation;
+        }
+
+        internal CovenantExclusiveRecoveryOwner Owner { get; }
+
+        internal LongRunningOperationRecoveryFingerprint ExpectedOperation { get; }
+
+        internal static async Task<Result<AdoptedOwner?>> CompleteAuthenticatedAdoptionAsync(
+            CovenantErasureStartupRecoveryOwnerAdopter adopter,
+            DbConnection connection,
+            CancellationToken cancellationToken)
+        {
+            Result<AdoptedCandidate?> adopted = await adopter
+                .AdoptCandidateBeforeReadinessAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (adopted.IsFailure)
+            {
+                return Result<AdoptedOwner?>.Failure(adopted.Error);
+            }
+
+            return Result<AdoptedOwner?>.Success(
+                adopted.Value is { } candidate
+                    ? new AdoptedOwner(candidate.Owner, candidate.ExpectedOperation)
+                    : null);
+        }
+    }
 
     private const int MaximumPayloadBytes = 4096;
 
@@ -41,32 +81,32 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
     private readonly CovenantOperationGate _gate =
         gate ?? throw new ArgumentNullException(nameof(gate));
 
-    internal async Task<Result<CovenantExclusiveRecoveryOwner?>> AdoptBeforeReadinessAsync(
+    internal Task<Result<AdoptedOwner?>> AdoptBeforeReadinessAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken) =>
+        AdoptedOwner.CompleteAuthenticatedAdoptionAsync(this, connection, cancellationToken);
+
+    private async Task<Result<AdoptedCandidate?>> AdoptCandidateBeforeReadinessAsync(
         DbConnection connection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         if (connection.State != ConnectionState.Open)
         {
-
             throw new ArgumentException(
                 "Startup recovery adoption requires the already-open installation connection.",
                 nameof(connection));
-
         }
 
-        CovenantExclusiveRecoveryOwner? retained = null;
+        AdoptedCandidate? retained = null;
 
         try
         {
-
             await using (DbCommand command = connection.CreateCommand())
             {
-
                 command.CommandText =
                     """
                     SELECT
@@ -87,7 +127,8 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
                             ELSE NULL
                         END,
                         typeof("CheckpointPayload"),
-                        length("CheckpointPayload")
+                        length("CheckpointPayload"),
+                        "Revision"
                     FROM "LongRunningOperations"
                     WHERE "Kind" IN (@mutation, @factory)
                       AND "State" NOT IN (@completed, @failed, @abandoned)
@@ -116,84 +157,60 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
-                    Result<CovenantExclusiveRecoveryOwner?> parsed = Parse(reader);
+                    Result<AdoptedCandidate?> parsed = Parse(reader);
 
                     if (parsed.IsFailure)
                     {
-
                         return parsed;
-
                     }
 
                     if (parsed.Value is not { } owner)
                     {
-
                         continue;
-
                     }
 
                     if (retained is not null)
                     {
-
                         return Refusal();
-
                     }
 
                     retained = owner;
-
                 }
-
             }
 
             if (retained is { } adopted)
             {
-
                 try
                 {
-
                     _gate.AdoptDurableRecoveryOwner(
-                        adopted,
+                        adopted.Owner,
                         scope: null,
                         cleanupOnlyHistoricalCampaign: false);
-
                 }
                 catch (ArgumentException)
                 {
-
                     return Refusal();
-
                 }
                 catch (InvalidOperationException)
                 {
-
                     return Refusal();
-
                 }
-
             }
 
-            return Result<CovenantExclusiveRecoveryOwner?>.Success(retained);
-
+            return Result<AdoptedCandidate?>.Success(retained);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             return Refusal();
-
         }
-
     }
 
-    private static Result<CovenantExclusiveRecoveryOwner?> Parse(DbDataReader reader)
+    private static Result<AdoptedCandidate?> Parse(DbDataReader reader)
     {
-
         if (reader.GetValue(0) is not string rawId
             || !Guid.TryParseExact(rawId, "N", out Guid operationId)
             || !string.Equals(rawId, operationId.ToString("N"), StringComparison.Ordinal)
@@ -207,9 +224,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || reader.GetValue(4) is not long rawVersion
             || rawVersion is < int.MinValue or > int.MaxValue)
         {
-
             return Refusal();
-
         }
 
         LongRunningOperationState state = (LongRunningOperationState)(int)rawState;
@@ -233,17 +248,13 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || mutation && policy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete
             || factory && policy != LongRunningOperationRecoveryPolicy.RestartIdempotently)
         {
-
             return Refusal();
-
         }
 
         if (mutation && version is >= 0 and <= LastOrdinaryMutationCheckpointVersion
             || factory && version == 0)
         {
-
-            return Result<CovenantExclusiveRecoveryOwner?>.Success(null);
-
+            return Result<AdoptedCandidate?>.Success(null);
         }
 
         if (state is not LongRunningOperationState.Running
@@ -251,9 +262,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             and not LongRunningOperationState.Cancelling
             and not LongRunningOperationState.ReconciliationRequired)
         {
-
             return Refusal();
-
         }
 
         int expectedVersion = mutation
@@ -273,16 +282,13 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || payloadLength is < 1 or > MaximumPayloadBytes
             || payload.Length != payloadLength)
         {
-
             return Refusal();
-
         }
 
         Result<CovenantErasureCheckpointState> checkpoint;
 
         if (mutation)
         {
-
             checkpoint = CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operationId,
                 version,
@@ -291,43 +297,47 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
             if (!describesCovenantErasure)
             {
-
-                return Result<CovenantExclusiveRecoveryOwner?>.Success(null);
-
+                return Result<AdoptedCandidate?>.Success(null);
             }
-
         }
         else
         {
-
             checkpoint = CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operationId,
                 version,
                 payload);
-
         }
 
         CovenantExclusiveOperation expectedOperation = mutation
             ? CovenantExclusiveOperation.CovenantReset
             : CovenantExclusiveOperation.HealthyCatalogFactoryErasure;
 
-        return checkpoint.IsSuccess
-            && checkpoint.Value.Operation == expectedOperation
-            && CovenantResetPhaseMachine.IsDeclared(checkpoint.Value.Phase)
-                ? Result<CovenantExclusiveRecoveryOwner?>.Success(checkpoint.Value.Owner)
-                : Refusal();
+        if (checkpoint.IsFailure
+            || checkpoint.Value.Operation != expectedOperation
+            || !CovenantResetPhaseMachine.IsDeclared(checkpoint.Value.Phase)
+            || reader.GetValue(9) is not long revision)
+        {
+            return Refusal();
+        }
 
+        return Result<AdoptedCandidate?>.Success(
+            new AdoptedCandidate(
+                checkpoint.Value.Owner,
+                new LongRunningOperationRecoveryFingerprint(
+                    operationId,
+                    kind,
+                    version,
+                    revision)));
     }
 
-    private static Result<CovenantExclusiveRecoveryOwner?> Refusal() =>
-        Result<CovenantExclusiveRecoveryOwner?>.Failure(
+    private static Result<AdoptedCandidate?> Refusal() =>
+        Result<AdoptedCandidate?>.Failure(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "Durable Covenant erasure ownership could not be reconstructed safely."));
 
     private static void Add(DbCommand command, string name, object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -335,7 +345,5 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
-
 }

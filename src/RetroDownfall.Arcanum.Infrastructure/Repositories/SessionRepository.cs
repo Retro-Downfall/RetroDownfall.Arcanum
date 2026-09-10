@@ -2,7 +2,9 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -32,7 +34,6 @@ internal sealed class SessionRepository(
     IGrimoireOrdinaryConnectionFactory connections,
     ISessionAttachmentIndexQueue? attachmentIndexQueue = null) : ISessionRepository
 {
-
     /// <summary>
     /// Ceiling on how far a session-list page may widen to keep a one-timestamp tie group whole.
     /// </summary>
@@ -63,17 +64,15 @@ internal sealed class SessionRepository(
             UpdatedAt = now,
         };
 
-        db.Sessions.Add(session);
-
-        _ = await EfSaveChangesRetry
-            .ExecuteAsync(db, ct)
-            .ConfigureAwait(false);
+        await SqliteBusyRetry.ExecuteAsync(
+            () => InsertSessionAsync(session, ct),
+            ct).ConfigureAwait(false);
 
         return session;
     }
 
     public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
-        db.Sessions.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct);
+        ReadSessionAsync(id, ct);
 
     public async Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct)
     {
@@ -112,17 +111,13 @@ internal sealed class SessionRepository(
             }
         }
 
-        // The EF Core SQLite provider cannot ORDER BY or compare a DateTimeOffset column in
-        // LINQ, so the session list is composed as parameterized SQL over the sortable UTC
-        // text columns. Every {n} placeholder is bound to the positional parameter array
-        // (injection-safe); no user-supplied value is ever concatenated into the SQL text.
-        List<object> parameters = [];
+        List<(string Name, object Value)> parameters = [];
 
         string Bind(object value)
         {
-            string placeholder = string.Concat("{", parameters.Count.ToString(CultureInfo.InvariantCulture), "}");
+            string placeholder = "$p" + parameters.Count.ToString(CultureInfo.InvariantCulture);
 
-            parameters.Add(value);
+            parameters.Add((placeholder, value));
 
             return placeholder;
         }
@@ -136,17 +131,17 @@ internal sealed class SessionRepository(
 
         if (request.CampaignId is Guid campaignId)
         {
-            conditions.Add($"\"CampaignId\" = {Bind(campaignId)}");
+            conditions.Add($"\"CampaignId\" = {Bind(Format(campaignId))}");
         }
 
         if (request.From is DateTimeOffset from)
         {
-            conditions.Add($"\"UpdatedAt\" >= {Bind(from.ToUniversalTime())}");
+            conditions.Add($"\"UpdatedAt\" >= {Bind(GrimoireEntitySql.Format(from.ToUniversalTime()))}");
         }
 
         if (request.To is DateTimeOffset to)
         {
-            conditions.Add($"\"UpdatedAt\" <= {Bind(to.ToUniversalTime())}");
+            conditions.Add($"\"UpdatedAt\" <= {Bind(GrimoireEntitySql.Format(to.ToUniversalTime()))}");
         }
 
         if (!string.IsNullOrWhiteSpace(request.Title))
@@ -193,12 +188,16 @@ internal sealed class SessionRepository(
 
         if (request.BeforeUpdatedAt is DateTimeOffset before)
         {
-            conditions.Add($"\"UpdatedAt\" < {Bind(before.ToUniversalTime())}");
+            conditions.Add($"\"UpdatedAt\" < {Bind(GrimoireEntitySql.Format(before.ToUniversalTime()))}");
         }
 
         StringBuilder sqlBuilder = new();
 
-        sqlBuilder.Append("SELECT * FROM \"Sessions\"");
+        sqlBuilder.Append("SELECT ");
+
+        sqlBuilder.Append(GrimoireEntitySql.SessionColumns);
+
+        sqlBuilder.Append(" FROM \"Sessions\"");
 
         if (conditions.Count > 0)
         {
@@ -209,7 +208,7 @@ internal sealed class SessionRepository(
 
         // Snapshotted before the LIMIT parameter is bound, so the tie-completion query below can reuse
         // exactly the filter placeholders and nothing else.
-        List<object> conditionParameters = [.. parameters];
+        List<(string Name, object Value)> conditionParameters = [.. parameters];
 
         // "Id" is the identity tie-breaker. Without it the sort is undefined among sessions sharing an
         // "UpdatedAt" (a burst of creations, or a backup import that replays original timestamps
@@ -217,11 +216,10 @@ internal sealed class SessionRepository(
         // the keyset cursor below could not reason about it at all.
         sqlBuilder.Append($" ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC LIMIT {Bind(limit + 1)}");
 
-        List<Session> page = await db.Sessions
-            .FromSqlRaw(sqlBuilder.ToString(), parameters.ToArray())
-            .AsNoTracking()
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        List<Session> page = await ReadSessionsAsync(
+            sqlBuilder.ToString(),
+            parameters,
+            ct).ConfigureAwait(false);
 
         bool hasMore = page.Count > limit;
 
@@ -241,9 +239,22 @@ internal sealed class SessionRepository(
             // return nothing and leave the cursor exactly where it started. Widen to the complete tie
             // group instead — the page exceeds the requested limit, but it is whole and the cursor still
             // advances past it.
-            page = kept.Count > 0
-                ? kept
-                : await LoadTieGroupAsync(conditions, conditionParameters, boundary, ct).ConfigureAwait(false);
+            if (kept.Count > 0)
+            {
+                page = kept;
+            }
+            else
+            {
+                SessionTieGroup tieGroup = await LoadTieGroupAsync(
+                    conditions,
+                    conditionParameters,
+                    boundary,
+                    ct).ConfigureAwait(false);
+
+                page = tieGroup.Sessions;
+
+                hasMore = tieGroup.HasOlderSessions;
+            }
         }
 
         Guid[] sessionIds = page.Select(s => s.Id).ToArray();
@@ -252,19 +263,7 @@ internal sealed class SessionRepository(
 
         if (sessionIds.Length > 0)
         {
-
-            // Aggregated server-side: EF translates this to a single GROUP BY covered by
-            // IX_Entries_SessionId_CreatedAt, returning one row per session. Counting in managed memory
-            // instead would stream one Guid per Entry of every listed session — work proportional to the
-            // sessions' whole transcript history rather than to the page size.
-            entryCounts = await db.Entries
-                .AsNoTracking()
-                .Where(e => sessionIds.Contains(e.SessionId))
-                .GroupBy(e => e.SessionId)
-                .Select(g => new SessionEntryCountRow(g.Key, g.Count()))
-                .ToDictionaryAsync(x => x.SessionId, x => x.Count, ct)
-                .ConfigureAwait(false);
-
+            entryCounts = await ReadEntryCountsAsync(sessionIds, ct).ConfigureAwait(false);
         }
 
         SessionSummaryDto[] summaries = page
@@ -295,37 +294,65 @@ internal sealed class SessionRepository(
     /// that rare case and guarantees the strict <c>"UpdatedAt" &lt; @before</c> cursor advances past it
     /// without skipping a sibling.
     /// </remarks>
-    private async Task<List<Session>> LoadTieGroupAsync(
+    private async Task<SessionTieGroup> LoadTieGroupAsync(
         List<string> conditions,
-        List<object> parameters,
+        List<(string Name, object Value)> parameters,
         DateTimeOffset boundary,
         CancellationToken ct)
     {
-        List<object> tieParameters = [.. parameters];
+        List<(string Name, object Value)> tieParameters = [.. parameters];
+
+        string boundaryParameter = "$p" + tieParameters.Count.ToString(CultureInfo.InvariantCulture);
 
         List<string> tieConditions =
         [
             .. conditions,
-            $"\"UpdatedAt\" = {{{tieParameters.Count.ToString(CultureInfo.InvariantCulture)}}}",
+            $"\"UpdatedAt\" = {boundaryParameter}",
         ];
 
-        tieParameters.Add(boundary.ToUniversalTime());
+        tieParameters.Add((
+            boundaryParameter,
+            GrimoireEntitySql.Format(boundary.ToUniversalTime())));
 
         // One more than the bound, so an oversized group is detected rather than silently clipped.
         // Clipping would leave the cursor on the boundary timestamp and make the rest of the group
         // permanently unreachable through the strict "UpdatedAt" < @before predicate, so the bound
         // has to fail loudly instead.
+        string originalConditions = conditions.Count == 0
+            ? string.Empty
+            : string.Join(" AND ", conditions) + " AND ";
+
         string sql =
-            "SELECT * FROM \"Sessions\" WHERE "
+            $"SELECT {GrimoireEntitySql.SessionColumns}, "
+            + "EXISTS (SELECT 1 FROM \"Sessions\" WHERE "
+            + originalConditions
+            + $"\"UpdatedAt\" < {boundaryParameter}) FROM \"Sessions\" WHERE "
             + string.Join(" AND ", tieConditions)
             + " ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC LIMIT "
             + (MaxTieGroupWidening + 1).ToString(CultureInfo.InvariantCulture);
 
-        List<Session> group = await db.Sessions
-            .FromSqlRaw(sql, tieParameters.ToArray())
-            .AsNoTracking()
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            sql,
+            ct).ConfigureAwait(false);
+
+        foreach ((string name, object value) in tieParameters)
+        {
+            GrimoireEntitySql.AddParameter(command, name, value);
+        }
+
+        List<Session> group = [];
+
+        bool hasOlderSessions = false;
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            group.Add(GrimoireEntitySql.ReadSession(reader));
+
+            hasOlderSessions = reader.GetBoolean(12);
+        }
 
         if (group.Count > MaxTieGroupWidening)
         {
@@ -336,63 +363,33 @@ internal sealed class SessionRepository(
                 + "narrow the query with a status, campaign, or date filter.");
         }
 
-        return group;
+        return new SessionTieGroup(group, hasOlderSessions);
     }
 
     public async Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct)
     {
+        SessionStatsRow sessionStats = await ReadSessionStatsAsync(ct).ConfigureAwait(false);
 
-        var sessionStats = await db.Sessions
-            .AsNoTracking()
-            .GroupBy(_ => 1)
-            .Select(g => new SessionStatsRow(
-                g.Count(),
-                g.Sum(s => s.Status == "active" ? 1 : 0),
-                g.Sum(s => s.Status == "archived" ? 1 : 0),
-                g.Sum(s => s.TotalTokensUsed)))
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
+        EntryStatsRow entryStats = await ReadEntryStatsAsync(ct).ConfigureAwait(false);
 
-        var entryStats = await db.Entries
-            .AsNoTracking()
-            .GroupBy(_ => 1)
-            .Select(g => new EntryStatsRow(
-                g.Count(),
-                g.Sum(e => e.Role == MessageRole.User ? 1 : 0),
-                g.Sum(e => e.Role == MessageRole.Assistant ? 1 : 0),
-                g.Sum(e => e.Role == MessageRole.Tool ? 1 : 0),
-                g.Sum(e => e.Role == MessageRole.System ? 1 : 0)))
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
-
-        Dictionary<string, int> entriesByModel = await db.Entries
-            .AsNoTracking()
-            .Where(e => e.ModelUsed != "")
-            .GroupBy(e => e.ModelUsed)
-            .Select(g => new ModelEntryCountRow(g.Key, g.Count()))
-            .ToDictionaryAsync(x => x.Model, x => x.Count, StringComparer.OrdinalIgnoreCase, ct)
-            .ConfigureAwait(false);
+        Dictionary<string, int> entriesByModel = await ReadEntryCountsByModelAsync(ct).ConfigureAwait(false);
 
         return new SessionAnalytics(
-            sessionStats?.TotalSessions ?? 0,
-            sessionStats?.ActiveSessions ?? 0,
-            sessionStats?.ArchivedSessions ?? 0,
-            entryStats?.TotalEntries ?? 0,
-            entryStats?.UserEntries ?? 0,
-            entryStats?.AssistantEntries ?? 0,
-            entryStats?.ToolEntries ?? 0,
-            entryStats?.SystemEntries ?? 0,
-            sessionStats?.TotalTokensUsed ?? 0L,
+            sessionStats.TotalSessions,
+            sessionStats.ActiveSessions,
+            sessionStats.ArchivedSessions,
+            entryStats.TotalEntries,
+            entryStats.UserEntries,
+            entryStats.AssistantEntries,
+            entryStats.ToolEntries,
+            entryStats.SystemEntries,
+            sessionStats.TotalTokensUsed,
             entriesByModel);
-
     }
 
     public async Task<Result<SessionExportResult>> ExportAsync(Guid id, SessionExportFormat format, CancellationToken ct)
     {
-        Session? session = await db.Sessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == id, ct)
-            .ConfigureAwait(false);
+        Session? session = await ReadSessionAsync(id, ct).ConfigureAwait(false);
 
         if (session is null)
         {
@@ -421,24 +418,19 @@ internal sealed class SessionRepository(
 
     public async Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct)
     {
-
         using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, ct).ConfigureAwait(false);
 
-        Session? session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct).ConfigureAwait(false);
+        Session? session = await ReadSessionAsync(sessionId, ct).ConfigureAwait(false);
 
         if (session is null)
         {
-
             return Result<Entry>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found."));
-
         }
 
         if (string.Equals(session.Status, "archived", StringComparison.OrdinalIgnoreCase))
         {
-
             return Result<Entry>.Failure(
                 new Error(ErrorCodes.Session.Archived, "Cannot append entries to an archived session."));
-
         }
 
         int entryCount = await _entryPersistence.GetEntryCountAsync(sessionId, ct).ConfigureAwait(false);
@@ -449,9 +441,7 @@ internal sealed class SessionRepository(
 
         if (limitError is not null)
         {
-
             return Result<Entry>.Failure(limitError.Value);
-
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -460,52 +450,42 @@ internal sealed class SessionRepository(
 
         if (entry.CreatedAt == default)
         {
-
             entry.CreatedAt = now;
-
         }
 
         entry.Sequence = await _entryPersistence
             .ReserveSequenceRangeAsync(sessionId, count: 1, ct)
             .ConfigureAwait(false);
 
-        db.Entries.Add(entry);
-
         session.UpdatedAt = now;
+
+        string? automaticTitle = null;
 
         if (string.IsNullOrWhiteSpace(session.Title)
             && entry.Role == MessageRole.User
             && !string.IsNullOrWhiteSpace(entry.Content))
         {
-
-            session.Title = TruncateTitle(entry.Content);
-
+            automaticTitle = TruncateTitle(entry.Content);
         }
 
-        // Maintain the unsummarized-entry counter so The Forge append path no longer drifts
-        // it (the inference path already does this). -1 means "unknown legacy"; leave it.
-        // Both statements share one transaction so a crash between them cannot leave the entry
-        // durable with the counter unbumped — the shape every sibling append path already uses.
-        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+        await using IDbContextTransaction tx =
             await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
         try
         {
+            await _entryPersistence.InsertEntryAsync(entry, ct).ConfigureAwait(false);
 
-            await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
-
-            await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, ct).ConfigureAwait(false);
+            await SqliteBusyRetry.ExecuteAsync(
+                () => UpdateSessionAfterEntryAsync(session, automaticTitle, ct),
+                ct).ConfigureAwait(false);
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
-
         }
         catch
         {
-
             await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
-
         }
 
         return Result<Entry>.Success(entry);
@@ -513,7 +493,6 @@ internal sealed class SessionRepository(
 
     public async Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct)
     {
-
         Guid forkSessionId = Guid.NewGuid();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -527,49 +506,31 @@ internal sealed class SessionRepository(
 
         using IDisposable gate2 = await attachments.AcquireSessionGateAsync(secondGate, ct).ConfigureAwait(false);
 
-        Session? source = await db.Sessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == sourceId, ct)
-            .ConfigureAwait(false);
+        Session? source = await ReadSessionAsync(sourceId, ct).ConfigureAwait(false);
 
         if (source is null)
         {
-
             return Result<Session>.Failure(new Error(
                 ErrorCodes.Session.NotFound,
                 "No session exists with that id."));
-
         }
 
         Entry? cutoffEntry = null;
 
         if (request.UpToEntryId is Guid cutoffId)
         {
-
-            cutoffEntry = await db.Entries
-                .AsNoTracking()
-                .FirstOrDefaultAsync(e => e.SessionId == sourceId && e.Id == cutoffId, ct)
-                .ConfigureAwait(false);
+            cutoffEntry = await ReadEntryAsync(sourceId, cutoffId, ct).ConfigureAwait(false);
 
             if (cutoffEntry is null)
             {
-
                 return Result<Session>.Failure(new Error(
                     ErrorCodes.Session.EntryNotFound,
                     "upToEntryId does not identify an entry in the source session."));
-
             }
-
         }
 
         long maximumSourceEntrySequence = cutoffEntry?.Sequence
-            ?? await db.Entries
-                .AsNoTracking()
-                .Where(entry => entry.SessionId == sourceId)
-                .Select(entry => (long?)entry.Sequence)
-                .MaxAsync(ct)
-                .ConfigureAwait(false)
-            ?? 0L;
+            ?? await ReadMaximumSequenceAsync(sourceId, ct).ConfigureAwait(false);
 
         Session fork = new()
         {
@@ -588,7 +549,6 @@ internal sealed class SessionRepository(
 
         try
         {
-
             await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
                                .ReadBoundForForkPagesAsync(
                                    sourceId,
@@ -597,7 +557,6 @@ internal sealed class SessionRepository(
                                    ct)
                                .ConfigureAwait(false))
             {
-
                 List<SessionAttachmentForkCopyPlan> copyPlans = BuildForkAttachmentPlans(
                     forkSessionId,
                     sourcePage);
@@ -605,18 +564,16 @@ internal sealed class SessionRepository(
                 await attachments
                     .CopyBytesForForkAsync(forkSessionId, copyPlans, ct)
                     .ConfigureAwait(false);
-
             }
 
-            await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await using IDbContextTransaction tx =
                 await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
             try
             {
-
-                db.Sessions.Add(fork);
-
-                await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+                await SqliteBusyRetry.ExecuteAsync(
+                    () => InsertSessionAsync(fork, ct),
+                    ct).ConfigureAwait(false);
 
                 int copiedEntryCount = 0;
 
@@ -626,12 +583,10 @@ internal sealed class SessionRepository(
                                    ForkEntryBatchSize,
                                    maximumSourceEntrySequence).ConfigureAwait(false))
                 {
-
                     List<Entry> entryCopies = new(sourcePage.Count);
 
                     foreach (Entry sourceEntry in sourcePage)
                     {
-
                         entryCopies.Add(new Entry
                         {
                             Id = CreateForkEntryId(forkSessionId, sourceEntry.Id),
@@ -645,27 +600,18 @@ internal sealed class SessionRepository(
                             ToolName = sourceEntry.ToolName,
                             ToolArguments = sourceEntry.ToolArguments,
                         });
-
                     }
 
-                    db.Entries.AddRange(entryCopies);
-
-                    await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+                    await _entryPersistence
+                        .InsertEntriesAsync(entryCopies, ct)
+                        .ConfigureAwait(false);
 
                     copiedEntryCount = checked(copiedEntryCount + entryCopies.Count);
-
-                    foreach (Entry entryCopy in entryCopies)
-                    {
-
-                        db.Entry(entryCopy).State = EntityState.Detached;
-
-                    }
-
                 }
 
                 fork.UnsummarizedEntryCount = copiedEntryCount;
 
-                await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+                await UpdateForkEntryCountAsync(fork.Id, copiedEntryCount, ct).ConfigureAwait(false);
 
                 await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
                                    .ReadBoundForForkPagesAsync(
@@ -675,7 +621,6 @@ internal sealed class SessionRepository(
                                        ct)
                                    .ConfigureAwait(false))
                 {
-
                     List<SessionAttachmentForkCopyPlan> insertPlans = BuildForkAttachmentPlans(
                         forkSessionId,
                         sourcePage);
@@ -686,36 +631,26 @@ internal sealed class SessionRepository(
                             insertPlans,
                             ct)
                         .ConfigureAwait(false);
-
                 }
 
                 await tx.CommitAsync(ct).ConfigureAwait(false);
-
             }
             catch
             {
-
                 await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
-                DetachFailedForkEntities(forkSessionId, fork);
-
                 throw;
-
             }
-
         }
         catch
         {
-
             _ = attachments.TryDeleteSessionDirectory(forkSessionId);
 
             throw;
-
         }
 
         if (attachmentIndexQueue is not null)
         {
-
             await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
                                .ReadBoundForForkPagesAsync(
                                    sourceId,
@@ -724,34 +659,26 @@ internal sealed class SessionRepository(
                                    CancellationToken.None)
                                .ConfigureAwait(false))
             {
-
                 foreach (SessionAttachmentRecord sourceAttachment in sourcePage)
                 {
-
                     _ = attachmentIndexQueue.TryEnqueue(new SessionAttachmentIndexRequest(
                         CreateForkAttachmentId(forkSessionId, sourceAttachment.Id),
                         forkSessionId));
-
                 }
-
             }
-
         }
 
         return Result<Session>.Success(fork);
-
     }
 
     private static List<SessionAttachmentForkCopyPlan> BuildForkAttachmentPlans(
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentRecord> sourcePage)
     {
-
         List<SessionAttachmentForkCopyPlan> plans = new(sourcePage.Count);
 
         foreach (SessionAttachmentRecord sourceAttachment in sourcePage)
         {
-
             Guid? newEntryId = sourceAttachment.EntryId is Guid sourceEntryId
                 ? CreateForkEntryId(forkSessionId, sourceEntryId)
                 : null;
@@ -760,11 +687,9 @@ internal sealed class SessionRepository(
                 sourceAttachment,
                 CreateForkAttachmentId(forkSessionId, sourceAttachment.Id),
                 newEntryId));
-
         }
 
         return plans;
-
     }
 
     private static Guid CreateForkEntryId(Guid forkSessionId, Guid sourceEntryId) =>
@@ -778,7 +703,6 @@ internal sealed class SessionRepository(
         Guid sourceId,
         byte discriminator)
     {
-
         Span<byte> material = stackalloc byte[33];
 
         _ = forkSessionId.TryWriteBytes(material[..16]);
@@ -792,32 +716,6 @@ internal sealed class SessionRepository(
         _ = SHA256.HashData(material, digest);
 
         return new Guid(digest[..16]);
-
-    }
-
-    private void DetachFailedForkEntities(Guid forkSessionId, Session fork)
-    {
-
-        foreach (Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<Entry> trackedEntry in db
-                     .ChangeTracker
-                     .Entries<Entry>()
-                     .Where(entry => entry.Entity.SessionId == forkSessionId)
-                     .ToArray())
-        {
-
-            trackedEntry.State = EntityState.Detached;
-
-        }
-
-        Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<Session> forkEntry = db.Entry(fork);
-
-        if (forkEntry.State != EntityState.Detached)
-        {
-
-            forkEntry.State = EntityState.Detached;
-
-        }
-
     }
 
     private static string BuildForkTitle(string? sourceTitle) =>
@@ -831,9 +729,7 @@ internal sealed class SessionRepository(
             requestedTake: takeLast);
 
         List<Entry> recentDescending = await EntryTemporalQueries
-            .LoadRecentDescending(db, sessionId, clampedTake)
-            .AsNoTracking()
-            .ToListAsync(ct)
+            .LoadRecentDescendingAsync(db, sessionId, clampedTake, ct)
             .ConfigureAwait(false);
 
         recentDescending.Reverse();
@@ -841,11 +737,8 @@ internal sealed class SessionRepository(
         return recentDescending;
     }
 
-    public async Task<Entry?> GetEntryAsync(Guid sessionId, Guid entryId, CancellationToken ct = default) =>
-        await db.Entries
-            .AsNoTracking()
-            .FirstOrDefaultAsync(e => e.SessionId == sessionId && e.Id == entryId, ct)
-            .ConfigureAwait(false);
+    public Task<Entry?> GetEntryAsync(Guid sessionId, Guid entryId, CancellationToken ct = default) =>
+        ReadEntryAsync(sessionId, entryId, ct);
 
     public async Task<List<Entry>> GetEntriesAfterAsync(
         Guid sessionId,
@@ -856,9 +749,7 @@ internal sealed class SessionRepository(
         int clampedLimit = ArcanumSettingClamps.SessionStreamReplayLimit(limit);
 
         return await EntryTemporalQueries
-            .LoadAfterSequence(db, sessionId, afterSequence, clampedLimit)
-            .AsNoTracking()
-            .ToListAsync(ct)
+            .LoadAfterSequenceAsync(db, sessionId, afterSequence, clampedLimit, ct)
             .ConfigureAwait(false);
     }
 
@@ -874,51 +765,55 @@ internal sealed class SessionRepository(
 
         if (beforeCreatedAt is DateTimeOffset beforeAt && beforeId is Guid beforeEntryId)
         {
-
             long? beforeSequence = await EntryTemporalQueries
-                .SequenceOf(db, sessionId, beforeEntryId)
-                .FirstOrDefaultAsync(ct)
+                .SequenceOfAsync(db, sessionId, beforeEntryId, ct)
                 .ConfigureAwait(false);
 
             // A cursor entry deleted since the client read it has no sequence to page from, so fall
             // back to its timestamp/id position rather than reporting the end of the transcript.
-            IQueryable<Entry> page = beforeSequence is long cursorSequence
-                ? EntryTemporalQueries.LoadBeforeSequence(db, sessionId, cursorSequence, clampedLimit)
-                : EntryTemporalQueries.LoadBeforeDeletedKeyset(db, sessionId, beforeAt, beforeEntryId, clampedLimit);
-
-            return await page
-                .AsNoTracking()
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-
+            return beforeSequence is long cursorSequence
+                ? await EntryTemporalQueries
+                    .LoadBeforeSequenceAsync(db, sessionId, cursorSequence, clampedLimit, ct)
+                    .ConfigureAwait(false)
+                : await EntryTemporalQueries
+                    .LoadBeforeDeletedKeysetAsync(
+                        db,
+                        sessionId,
+                        beforeAt,
+                        beforeEntryId,
+                        clampedLimit,
+                        ct)
+                    .ConfigureAwait(false);
         }
 
         int clampedOffset = Math.Max(0, offset);
 
         return await EntryTemporalQueries
-            .LoadDescendingPaged(db, sessionId, clampedLimit, clampedOffset)
-            .AsNoTracking()
-            .ToListAsync(ct)
+            .LoadDescendingPagedAsync(db, sessionId, clampedLimit, clampedOffset, ct)
             .ConfigureAwait(false);
     }
 
     public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
-        db.Entries.CountAsync(e => e.SessionId == sessionId, ct);
+        _entryPersistence.GetEntryCountAsync(sessionId, ct);
 
     public async Task UpdateSessionAsync(Session session, CancellationToken ct)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        // Patch only Forge-owned scalar fields; Grimoire-owned counters and rollups are excluded.
-        _ = await db.Sessions
-            .Where(s => s.Id == session.Id)
-            .ExecuteUpdateAsync(
-                s => s
-                    .SetProperty(x => x.Title, session.Title)
-                    .SetProperty(x => x.Status, session.Status)
-                    .SetProperty(x => x.UpdatedAt, now),
-                ct)
-            .ConfigureAwait(false);
+        await ExecuteNonQueryAsync(
+            """
+            UPDATE "Sessions"
+            SET "Title" = $title, "Status" = $status, "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$title", session.Title);
+                GrimoireEntitySql.AddParameter(command, "$status", session.Status);
+                GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(now));
+                GrimoireEntitySql.AddParameter(command, "$id", Format(session.Id));
+            },
+            ct).ConfigureAwait(false);
 
         session.UpdatedAt = now;
     }
@@ -927,14 +822,18 @@ internal sealed class SessionRepository(
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        _ = await db.Sessions
-            .Where(s => s.Id == id)
-            .ExecuteUpdateAsync(
-                s => s
-                    .SetProperty(x => x.Status, "archived")
-                    .SetProperty(x => x.UpdatedAt, now),
-                ct)
-            .ConfigureAwait(false);
+        await ExecuteNonQueryAsync(
+            """
+            UPDATE "Sessions"
+            SET "Status" = 'archived', "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(now));
+                GrimoireEntitySql.AddParameter(command, "$id", Format(id));
+            },
+            ct).ConfigureAwait(false);
     }
 
     private async Task<string> SerializeJsonExportAsync(Session session, Guid sessionId, CancellationToken ct)
@@ -964,14 +863,10 @@ internal sealed class SessionRepository(
 
         await foreach (List<Entry> batch in ReadEntryBatchesAsync(sessionId, ct).ConfigureAwait(false))
         {
-
             foreach (Entry entry in batch)
             {
-
                 JsonSerializer.Serialize(writer, entry, ArcanumCoreJsonContext.Default.Entry);
-
             }
-
         }
 
         writer.WriteEndArray();
@@ -1012,10 +907,13 @@ internal sealed class SessionRepository(
         while (true)
         {
             List<Entry> batch = await EntryTemporalQueries
-                .LoadAfterSequence(db, sessionId, cursorSequence, batchSize)
-                .Where(entry => entry.Sequence <= maximumSequence)
-                .AsNoTracking()
-                .ToListAsync(ct)
+                .LoadAfterSequenceAsync(
+                    db,
+                    sessionId,
+                    cursorSequence,
+                    batchSize,
+                    ct,
+                    maximumSequence)
                 .ConfigureAwait(false);
 
             if (batch.Count == 0)
@@ -1035,6 +933,315 @@ internal sealed class SessionRepository(
             }
         }
     }
+
+    private async Task InsertSessionAsync(Session session, CancellationToken cancellationToken)
+    {
+        await ExecuteNonQueryAsync(
+            """
+            INSERT INTO "Sessions"
+                ("Id", "CampaignId", "Title", "Status", "CreatedAt", "UpdatedAt", "Summary",
+                 "LastSummarizedMessageAt", "TotalTokensUsed", "TotalCostUsd",
+                 "UnsummarizedEntryCount", "ForkedFromSessionId")
+            VALUES
+                ($id, $campaignId, $title, $status, $createdAt, $updatedAt, $summary,
+                 $lastSummarizedAt, $totalTokens, $totalCost, $unsummarizedCount, $forkedFrom);
+            """,
+            command => BindSession(command, session),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Session?> ReadSessionAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            $"SELECT {GrimoireEntitySql.SessionColumns} FROM \"Sessions\" WHERE \"Id\" = $id LIMIT 1;",
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$id", Format(id));
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadSession(reader)
+            : null;
+    }
+
+    private async Task<List<Session>> ReadSessionsAsync(
+        string commandText,
+        IReadOnlyList<(string Name, object Value)> parameters,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+
+        foreach ((string name, object value) in parameters)
+        {
+            GrimoireEntitySql.AddParameter(command, name, value);
+        }
+
+        List<Session> sessions = [];
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            sessions.Add(GrimoireEntitySql.ReadSession(reader));
+        }
+
+        return sessions;
+    }
+
+    private async Task<Dictionary<Guid, int>> ReadEntryCountsAsync(
+        IReadOnlyList<Guid> sessionIds,
+        CancellationToken cancellationToken)
+    {
+        string[] placeholders = new string[sessionIds.Count];
+
+        for (int index = 0; index < sessionIds.Count; index++)
+        {
+            string name = "$id" + index.ToString(CultureInfo.InvariantCulture);
+            placeholders[index] = name;
+        }
+
+        string commandText =
+            "SELECT \"SessionId\", COUNT(*) FROM \"Entries\" WHERE \"SessionId\" IN ("
+            + string.Join(", ", placeholders)
+            + ") GROUP BY \"SessionId\";";
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+
+        for (int index = 0; index < sessionIds.Count; index++)
+        {
+            GrimoireEntitySql.AddParameter(command, placeholders[index], Format(sessionIds[index]));
+        }
+
+        Dictionary<Guid, int> counts = [];
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            counts.Add(
+                GrimoireEntitySql.ReadGuid(reader, 0),
+                reader.GetInt32(1));
+        }
+
+        return counts;
+    }
+
+    private async Task<SessionStatsRow> ReadSessionStatsAsync(CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(CASE WHEN "Status" = 'active' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN "Status" = 'archived' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM("TotalTokensUsed"), 0)
+            FROM "Sessions";
+            """,
+            cancellationToken).ConfigureAwait(false);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        return new SessionStatsRow(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2),
+            reader.GetInt64(3));
+    }
+
+    private async Task<EntryStatsRow> ReadEntryStatsAsync(CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(CASE WHEN "Role" = $user THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN "Role" = $assistant THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN "Role" = $tool THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN "Role" = $system THEN 1 ELSE 0 END), 0)
+            FROM "Entries";
+            """,
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$user", (int)MessageRole.User);
+        GrimoireEntitySql.AddParameter(command, "$assistant", (int)MessageRole.Assistant);
+        GrimoireEntitySql.AddParameter(command, "$tool", (int)MessageRole.Tool);
+        GrimoireEntitySql.AddParameter(command, "$system", (int)MessageRole.System);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        return new EntryStatsRow(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            reader.GetInt32(4));
+    }
+
+    private async Task<Dictionary<string, int>> ReadEntryCountsByModelAsync(
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            """
+            SELECT "ModelUsed", COUNT(*)
+            FROM "Entries"
+            WHERE "ModelUsed" <> ''
+            GROUP BY "ModelUsed"
+            ORDER BY "ModelUsed" COLLATE BINARY;
+            """,
+            cancellationToken).ConfigureAwait(false);
+        Dictionary<string, int> counts = new(StringComparer.OrdinalIgnoreCase);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            string model = reader.GetString(0);
+
+            int count = reader.GetInt32(1);
+
+            counts[model] = checked(counts.GetValueOrDefault(model) + count);
+        }
+
+        return counts;
+    }
+
+    private async Task<Entry?> ReadEntryAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            $"SELECT {GrimoireEntitySql.EntryColumns} FROM \"Entries\" "
+            + "WHERE \"SessionId\" = $sessionId AND \"Id\" = $entryId LIMIT 1;",
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$sessionId", Format(sessionId));
+        GrimoireEntitySql.AddParameter(command, "$entryId", Format(entryId));
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadEntry(reader)
+            : null;
+    }
+
+    private async Task<long> ReadMaximumSequenceAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            "SELECT COALESCE(MAX(\"Sequence\"), 0) FROM \"Entries\" WHERE \"SessionId\" = $sessionId;",
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$sessionId", Format(sessionId));
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    private Task UpdateSessionAfterEntryAsync(
+        Session session,
+        string? automaticTitle,
+        CancellationToken cancellationToken) =>
+        ExecuteNonQueryAsync(
+            """
+            UPDATE "Sessions"
+            SET "Title" =
+                    CASE
+                        WHEN $automaticTitle IS NOT NULL
+                             AND "Title" IS $observedTitle
+                            THEN $automaticTitle
+                        ELSE "Title"
+                    END,
+                "UpdatedAt" = $updatedAt,
+                "UnsummarizedEntryCount" =
+                    CASE
+                        WHEN "UnsummarizedEntryCount" >= 0 THEN "UnsummarizedEntryCount" + 1
+                        ELSE "UnsummarizedEntryCount"
+                    END
+            WHERE "Id" = $id;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$automaticTitle", automaticTitle);
+                GrimoireEntitySql.AddParameter(command, "$observedTitle", session.Title);
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$updatedAt",
+                    GrimoireEntitySql.Format(session.UpdatedAt));
+                GrimoireEntitySql.AddParameter(command, "$id", Format(session.Id));
+            },
+            cancellationToken);
+
+    private Task UpdateForkEntryCountAsync(
+        Guid sessionId,
+        int copiedEntryCount,
+        CancellationToken cancellationToken) =>
+        ExecuteNonQueryAsync(
+            "UPDATE \"Sessions\" SET \"UnsummarizedEntryCount\" = $count WHERE \"Id\" = $id;",
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$count", copiedEntryCount);
+                GrimoireEntitySql.AddParameter(command, "$id", Format(sessionId));
+            },
+            cancellationToken);
+
+    private async Task ExecuteNonQueryAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void BindSession(SqliteCommand command, Session session)
+    {
+        GrimoireEntitySql.AddParameter(command, "$id", Format(session.Id));
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$campaignId",
+            session.CampaignId is { } campaignId ? Format(campaignId) : null);
+        GrimoireEntitySql.AddParameter(command, "$title", session.Title);
+        GrimoireEntitySql.AddParameter(command, "$status", session.Status);
+        GrimoireEntitySql.AddParameter(command, "$createdAt", GrimoireEntitySql.Format(session.CreatedAt));
+        GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(session.UpdatedAt));
+        GrimoireEntitySql.AddParameter(command, "$summary", session.Summary);
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$lastSummarizedAt",
+            session.LastSummarizedMessageAt is { } lastSummarizedAt
+                ? GrimoireEntitySql.Format(lastSummarizedAt)
+                : null);
+        GrimoireEntitySql.AddParameter(command, "$totalTokens", session.TotalTokensUsed);
+        _ = ExactUsdText.AddParameter(command, "$totalCost", session.TotalCostUsd);
+        GrimoireEntitySql.AddParameter(command, "$unsummarizedCount", session.UnsummarizedEntryCount);
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$forkedFrom",
+            session.ForkedFromSessionId is { } sourceId ? Format(sourceId) : null);
+    }
+
+    private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 
     private static void AppendMarkdownEntries(StringBuilder builder, IReadOnlyList<Entry> entries)
     {
@@ -1077,21 +1284,9 @@ internal sealed class SessionRepository(
         return trimmed[..cut].TrimEnd() + "...";
     }
 
-    /// <summary>
-    /// Named shapes for the aggregate projections above.
-    /// </summary>
-    /// <remarks>
-    /// Not anonymous types, and not merely for style. <c>Select(g =&gt; new { ... })</c> compiles to
-    /// the <c>Expression.New(ConstructorInfo, IEnumerable&lt;Expression&gt;, MemberInfo[])</c>
-    /// overload, which carries <c>RequiresUnreferencedCode</c> because the member metadata it maps
-    /// through can be trimmed — four IL2026 warnings out of this one file, and the reason the
-    /// repository could not pass the Native AOT IL gate. Projecting into a named record uses the
-    /// plain constructor overload instead, which has no such attribute. It is also what convention 1
-    /// in AGENTS.md already required: no anonymous DTOs.
-    /// </remarks>
-    private sealed record SessionEntryCountRow(Guid SessionId, int Count);
-
-    private sealed record ModelEntryCountRow(string Model, int Count);
+    private sealed record SessionTieGroup(
+        List<Session> Sessions,
+        bool HasOlderSessions);
 
     private sealed record SessionStatsRow(
         int TotalSessions,

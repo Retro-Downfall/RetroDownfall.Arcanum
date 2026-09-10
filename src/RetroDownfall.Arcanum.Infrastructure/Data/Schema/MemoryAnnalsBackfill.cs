@@ -36,7 +36,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
 {
-
     /// <summary>Recorded in the transition journal, so a resumed run can prove it is this sweep.</summary>
     public string Name => "memory-annals-claims";
 
@@ -52,7 +51,6 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
         string? cursor,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -65,16 +63,13 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
 
         if (pending.Count == 0)
         {
-
             return new GrimoireSchemaBackfillBatch(NextCursor: null, RowsProcessed: 0, IsComplete: true);
-
         }
 
         int written = 0;
 
         foreach (PendingClaim claim in pending)
         {
-
             if (await AnnalsClaimWriter.AppendAssertAsync(
                     connection,
                     transaction,
@@ -90,15 +85,11 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
                     sourceSessionId: null,
                     cancellationToken).ConfigureAwait(false))
             {
-
                 written++;
-
             }
-
         }
 
         return new GrimoireSchemaBackfillBatch(NextCursor: null, written, IsComplete: false);
-
     }
 
     /// <summary>
@@ -110,12 +101,10 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         List<PendingClaim> pending = [];
 
         await using (SqliteCommand saga = connection.CreateCommand())
         {
-
             saga.Transaction = transaction;
 
             saga.CommandText = """
@@ -135,7 +124,6 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 pending.Add(
                     new PendingClaim(
                         AnnalSubjectStore.Saga,
@@ -144,18 +132,14 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
                         ParseTimestamp(reader.GetString(2)),
                         (SagaMemoryScopeKind)reader.GetInt64(3),
                         reader.IsDBNull(4) ? null : reader.GetString(4)));
-
             }
-
         }
 
         int remaining = MaxRowsPerBatch - pending.Count;
 
         if (remaining <= 0)
         {
-
             return pending;
-
         }
 
         await using SqliteCommand lexicon = connection.CreateCommand();
@@ -179,7 +163,6 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
 
         while (await entries.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             // The Lexicon's empty-string scope is the global tier, not an absent one: the column is
             // NOT NULL DEFAULT '', so every row has always had an unambiguous tier and none of them is
             // unresolved. Reading it as Global is therefore not laundering, it is what the row says.
@@ -195,11 +178,9 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
                     ParseTimestamp(entries.GetString(3)),
                     global ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign,
                     global ? null : scopeCampaignId));
-
         }
 
         return pending;
-
     }
 
     /// <summary>
@@ -213,11 +194,7 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
     /// one.
     /// </remarks>
     private static DateTimeOffset ParseTimestamp(string value) =>
-        DateTimeOffset.TryParse(
-            value,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind,
-            out DateTimeOffset parsed)
+        UtcInstantText.TryParse(value, out DateTimeOffset parsed)
             ? parsed
             : DateTimeOffset.UnixEpoch;
 
@@ -229,5 +206,4 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
         DateTimeOffset Timestamp,
         SagaMemoryScopeKind ScopeKind,
         string? CampaignId);
-
 }

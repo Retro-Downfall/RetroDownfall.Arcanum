@@ -57,24 +57,20 @@ public sealed class GrimoireCliInitialization(
             Task<T>> operation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         return RunExclusiveCoreAsync(
             (provider, heldInstallationLock, token) =>
             {
-
                 StoppedHostGrimoireAuthorityIssuer issuer = new(
                     heldInstallationLock,
                     ArcanumPaths.GrimoireDirectory,
                     ArcanumPaths.GrimoireDatabaseFile);
 
                 return operation(provider, issuer, token);
-
             },
             bootstrapGrimoire: false,
             cancellationToken);
-
     }
 
     private async Task<T> RunExclusiveCoreAsync<T>(
@@ -95,19 +91,15 @@ public sealed class GrimoireCliInitialization(
             if (acquisition.Disposition
                 is ArcanumMaintenanceLockAcquisitionDisposition.Unsafe)
             {
-
                 throw new InvalidOperationException(
                     "The Arcanum maintenance lock could not be acquired safely because its topology, identity, or owner-only permissions could not be validated.");
-
             }
 
             if (acquisition.Disposition
                 is ArcanumMaintenanceLockAcquisitionDisposition.Contended)
             {
-
                 throw new InvalidOperationException(
                     "The exclusive Grimoire operation cannot begin while a running host, backup restore, or installation reset owns the maintenance lock.");
-
             }
 
             using ArcanumMaintenanceLock cliLock = acquisition.BorrowAcquiredLock();
@@ -125,14 +117,12 @@ public sealed class GrimoireCliInitialization(
 
             if (!mutation.IsCompleted)
             {
-
                 throw new InvalidOperationException(
                     mutation.Disposition is ArcanumClientMutationDisposition.Blocked
                         ? "The exclusive Grimoire operation is blocked by active client mutation or installation maintenance evidence. "
                             + mutation.Error.Message
                         : "The exclusive Grimoire operation could not validate client-mutation coordination safely. "
                             + mutation.Error.Message);
-
             }
 
             return mutation.Value;
@@ -151,7 +141,6 @@ public sealed class GrimoireCliInitialization(
         ArcanumMaintenanceLock cliLock,
         CancellationToken cancellationToken)
     {
-
         GrimoireGuardedRootTopology.EnsureOwnedRootIsSafe(
             cliLock,
             ArcanumPaths.GrimoireDirectory);
@@ -162,24 +151,19 @@ public sealed class GrimoireCliInitialization(
 
         if (activeRead.IsFailure)
         {
-
             throw new InvalidOperationException(
                 "Installation reset recovery state could not be read safely. "
                 + activeRead.Error.Message);
-
         }
 
         if (activeRead.Value is not null)
         {
-
             throw new InvalidOperationException(
                 "An installation factory reset is active. Resume it before running a direct Grimoire operation.");
-
         }
 
         if (bootstrapGrimoire)
         {
-
             await GrimoireDatabaseBootstrapper
                 .EnsureInitializedAsync(
                     secretStore,
@@ -191,34 +175,28 @@ public sealed class GrimoireCliInitialization(
                     expectedInstallationId: null,
                     postRestoreTopology: _ =>
                     {
-
                         ArcanumMaintenanceLock borrowed =
                             acquisition.BorrowAcquiredLock();
 
                         if (!ReferenceEquals(borrowed, cliLock))
                         {
-
                             throw new InvalidOperationException(
                                 "Post-restore CLI bootstrap requires the exact acquired maintenance lock.");
-
                         }
 
                         GrimoireGuardedRootTopology.EnsureOwnedRootIsSafe(
                             borrowed,
                             ArcanumPaths.GrimoireDirectory);
 
-                        return Task.CompletedTask;
-
+                        return Task.FromResult<MasterApiKeyBootstrapResult?>(null);
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         return await operation(scope.ServiceProvider, cliLock, cancellationToken)
             .ConfigureAwait(false);
-
     }
 }

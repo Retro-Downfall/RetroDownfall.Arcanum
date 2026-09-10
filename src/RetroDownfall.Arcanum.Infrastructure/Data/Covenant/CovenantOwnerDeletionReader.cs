@@ -12,11 +12,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </summary>
 public enum CovenantOwnerKind : byte
 {
-
     Campaign = 1,
 
     Session = 2,
-
 }
 
 /// <summary>
@@ -46,14 +44,12 @@ public sealed record CovenantCleanupCursor(
 /// </remarks>
 internal sealed class CovenantOwnerDeletionReader
 {
-
     private const int CovenantFamilyCode = (int)GrimoireSchemaFamily.Covenant;
 
     public async ValueTask<Result<CovenantCleanupCursor>> ReadCursorAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(transaction);
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -74,7 +70,6 @@ internal sealed class CovenantOwnerDeletionReader
             : new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant family has no cleanup cursor, so it cannot consume owner deletions.");
-
     }
 
     /// <summary>
@@ -91,16 +86,13 @@ internal sealed class CovenantOwnerDeletionReader
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(cursor);
 
         ArgumentNullException.ThrowIfNull(transaction);
 
         if (maxEvents < 1)
         {
-
             throw new ArgumentOutOfRangeException(nameof(maxEvents));
-
         }
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -128,17 +120,14 @@ internal sealed class CovenantOwnerDeletionReader
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             events.Add(
                 new CovenantOwnerDeletionEvent(
                     reader.GetInt64(0),
                     (CovenantOwnerKind)reader.GetInt32(1),
                     Guid.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));
-
         }
 
         return Result<ImmutableArray<CovenantOwnerDeletionEvent>>.Success([.. events]);
-
     }
 
     public async ValueTask<Result> AdvanceCursorAsync(
@@ -147,7 +136,6 @@ internal sealed class CovenantOwnerDeletionReader
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(transaction);
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -168,14 +156,12 @@ internal sealed class CovenantOwnerDeletionReader
 
         _ = command.Parameters.AddWithValue(
             "$updated",
-            DateTimeOffset.UtcNow.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(DateTimeOffset.UtcNow));
 
         _ = command.Parameters.AddWithValue("$family", CovenantFamilyCode);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1
             ? Result.Success()
             : new Error(ErrorCodes.Covenant.Unavailable, "The Covenant cleanup cursor row is missing.");
-
     }
-
 }

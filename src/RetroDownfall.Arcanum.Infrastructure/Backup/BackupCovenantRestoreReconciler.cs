@@ -6,6 +6,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -28,7 +29,6 @@ internal sealed record BackupCovenantRestoreDestinationState(
     CovenantAuthorityStateRow? Authority,
     IReadOnlyList<CovenantDisclosureState> DisclosureBuckets)
 {
-
     /// <summary>What a destination with no readable Covenant state contributes to the join.</summary>
     internal static BackupCovenantRestoreDestinationState None { get; } = new(null, []);
 
@@ -44,7 +44,6 @@ internal sealed record BackupCovenantRestoreDestinationState(
         SqliteConnection destination,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(destination);
 
         CovenantAuthorityStateRow? authority =
@@ -68,9 +67,7 @@ internal sealed record BackupCovenantRestoreDestinationState(
                 : [];
 
         return new BackupCovenantRestoreDestinationState(authority, buckets);
-
     }
-
 }
 
 /// <summary>
@@ -107,7 +104,6 @@ internal sealed record BackupCovenantRestoreReconciliationReceipt(
 /// </remarks>
 internal static class BackupCovenantRestoreReconciler
 {
-
     /// <summary>
     /// The parameter payload every claim this phase terminalizes carries.
     /// </summary>
@@ -147,18 +143,15 @@ internal static class BackupCovenantRestoreReconciler
         bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
-
         if (staged is null
             || transaction is null
             || destination is null
             || initializer is null
             || timeProvider is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A staged Covenant reconciliation requires its connection, transaction, and destination state.");
-
         }
 
         // Before anything is rewritten. A generation that still holds managed-file authority is a
@@ -169,9 +162,7 @@ internal static class BackupCovenantRestoreReconciler
 
         if (absent.IsFailure)
         {
-
             return absent.Error;
-
         }
 
         Result<ulong> labels = await ValidateRemainingLabelsAsync(staged, transaction, cancellationToken)
@@ -179,9 +170,7 @@ internal static class BackupCovenantRestoreReconciler
 
         if (labels.IsFailure)
         {
-
             return labels.Error;
-
         }
 
         Result<CovenantHostToolsState> authority = await JoinAuthorityAsync(
@@ -193,9 +182,7 @@ internal static class BackupCovenantRestoreReconciler
 
         if (authority.IsFailure)
         {
-
             return authority.Error;
-
         }
 
         Result<int> disclosure = await JoinDisclosureAsync(
@@ -207,9 +194,7 @@ internal static class BackupCovenantRestoreReconciler
 
         if (disclosure.IsFailure)
         {
-
             return disclosure.Error;
-
         }
 
         // After both joins and before the reissue. The joins are what carry this machine's own taint and
@@ -220,7 +205,6 @@ internal static class BackupCovenantRestoreReconciler
 
         if (purgeProtectedState)
         {
-
             Result<BackupRestoreProtectedStatePurgeReceipt> purge =
                 await BackupRestoreProtectedStatePurger.PurgeStagedAsync(
                     staged,
@@ -231,13 +215,10 @@ internal static class BackupCovenantRestoreReconciler
 
             if (purge.IsFailure)
             {
-
                 return purge.Error;
-
             }
 
             purged = purge.Value;
-
         }
 
         Result<CanonicalReissue> canonical = await ReissueCanonicalIdentitiesAsync(
@@ -249,9 +230,7 @@ internal static class BackupCovenantRestoreReconciler
 
         if (canonical.IsFailure)
         {
-
             return canonical.Error;
-
         }
 
         ulong unresolved = await UnresolveCampaignPathsAsync(staged, transaction, cancellationToken)
@@ -280,7 +259,6 @@ internal static class BackupCovenantRestoreReconciler
             disclosure.Value,
             authority.Value,
             purged);
-
     }
 
     /// <summary>
@@ -296,35 +274,27 @@ internal static class BackupCovenantRestoreReconciler
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         foreach (string table in (string[])["managed_file_write_intents", "local_erasure_work_items"])
         {
-
             if (!await BackupRestoreDatabaseWorker
                     .TableExistsAsync(staged, table, cancellationToken, transaction)
                     .ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             if (await CountAsync(staged, transaction, $"SELECT COUNT(*) FROM {table};", cancellationToken)
                     .ConfigureAwait(false) != 0)
             {
-
                 return Result.Failure(
                     new Error(
                         ErrorCodes.Covenant.ForbiddenAuthority,
                         "The staged generation still holds managed-file authority, so it cannot be "
                         + "validated or opened against this installation."));
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -341,14 +311,11 @@ internal static class BackupCovenantRestoreReconciler
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "artifact_sensitivity", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return 0UL;
-
         }
 
         if (await BackupRestoreDatabaseWorker
@@ -359,7 +326,6 @@ internal static class BackupCovenantRestoreReconciler
                     transaction)
                 .ConfigureAwait(false))
         {
-
             long revived = await CountAsync(
                 staged,
                 transaction,
@@ -374,13 +340,10 @@ internal static class BackupCovenantRestoreReconciler
 
             if (revived != 0)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A sensitivity label this restore recorded as removed is still present in staging.");
-
             }
-
         }
 
         return checked((ulong)await CountAsync(
@@ -388,7 +351,6 @@ internal static class BackupCovenantRestoreReconciler
             transaction,
             "SELECT COUNT(*) FROM artifact_sensitivity;",
             cancellationToken).ConfigureAwait(false));
-
     }
 
     /// <summary>
@@ -401,14 +363,11 @@ internal static class BackupCovenantRestoreReconciler
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "covenant_authority_state", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return CovenantHostToolsState.Clean;
-
         }
 
         CovenantAuthorityStateRow? source = await CovenantAuthorityStateJoiner
@@ -417,11 +376,9 @@ internal static class BackupCovenantRestoreReconciler
 
         if (source is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The staged generation carries the authority table without the row it exists to hold.");
-
         }
 
         // A destination with no row of its own contributes a clean lineage at epoch zero. It is not a
@@ -442,9 +399,7 @@ internal static class BackupCovenantRestoreReconciler
 
         if (joined.IsFailure)
         {
-
             return joined.Error;
-
         }
 
         await using SqliteCommand command = staged.CreateCommand();
@@ -488,7 +443,6 @@ internal static class BackupCovenantRestoreReconciler
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return joined.Value.HostToolsState;
-
     }
 
     private static async Task<Result<int>> JoinDisclosureAsync(
@@ -498,15 +452,12 @@ internal static class BackupCovenantRestoreReconciler
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (destinationBuckets.Count == 0
             || !await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "external_disclosure_state", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         return await CovenantDisclosureStateJoiner.JoinIntoStagedAsync(
@@ -515,7 +466,6 @@ internal static class BackupCovenantRestoreReconciler
             destinationBuckets,
             timeProvider,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -544,14 +494,11 @@ internal static class BackupCovenantRestoreReconciler
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "covenant_state", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return CanonicalReissue.Absent;
-
         }
 
         long accelerator;
@@ -560,7 +507,6 @@ internal static class BackupCovenantRestoreReconciler
 
         await using (SqliteCommand read = staged.CreateCommand())
         {
-
             read.Transaction = transaction;
 
             read.CommandText = """
@@ -573,29 +519,24 @@ internal static class BackupCovenantRestoreReconciler
 
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The staged canonical tier is installed without the singleton it exists to hold.");
-
             }
 
             accelerator = reader.GetInt64(0);
 
             envelope = reader.GetInt64(1);
-
         }
 
         if (accelerator >= EpochCeiling || envelope >= EpochCeiling)
         {
-
             // A saturated epoch cannot advance, and the schema refuses to change it at all. Adopting
             // the generation anyway would publish a dataset whose epochs no longer separate it from
             // the one it replaced.
             return new Error(
                 ErrorCodes.Covenant.CapacityExceeded,
                 "A staged Covenant epoch is saturated and cannot be advanced for this restore.");
-
         }
 
         Guid generation = Guid.NewGuid();
@@ -651,7 +592,6 @@ internal static class BackupCovenantRestoreReconciler
             checked(accelerator + 1),
             checked(envelope + 1),
             checked((ulong)outbox));
-
     }
 
     /// <summary>
@@ -669,14 +609,11 @@ internal static class BackupCovenantRestoreReconciler
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "campaign_path_identities", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         return checked((ulong)await ExecuteAsync(
@@ -684,7 +621,6 @@ internal static class BackupCovenantRestoreReconciler
             transaction,
             "DELETE FROM campaign_path_identities;",
             cancellationToken).ConfigureAwait(false));
-
     }
 
     /// <summary>
@@ -703,14 +639,11 @@ internal static class BackupCovenantRestoreReconciler
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "session_turn_claims", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         byte[] parameters = Encoding.ASCII.GetBytes(TurnClaimTerminalizationDomain);
@@ -747,7 +680,6 @@ internal static class BackupCovenantRestoreReconciler
         _ = command.Parameters.AddWithValue("$now", Timestamp(timeProvider));
 
         return checked((ulong)await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
-
     }
 
     /// <summary>
@@ -759,13 +691,11 @@ internal static class BackupCovenantRestoreReconciler
     /// </remarks>
     private static byte[] CanonicalGenerationBytes(Guid generation)
     {
-
         byte[] bytes = new byte[16];
 
         _ = generation.TryWriteBytes(bytes, bigEndian: true, out _);
 
         return bytes;
-
     }
 
     private static async Task<long> ExecuteAsync(
@@ -774,7 +704,6 @@ internal static class BackupCovenantRestoreReconciler
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -782,7 +711,6 @@ internal static class BackupCovenantRestoreReconciler
         command.CommandText = sql;
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<long> CountAsync(
@@ -791,7 +719,6 @@ internal static class BackupCovenantRestoreReconciler
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -803,13 +730,10 @@ internal static class BackupCovenantRestoreReconciler
         return value is null or DBNull
             ? 0
             : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static string Timestamp(TimeProvider timeProvider) =>
-        timeProvider.GetUtcNow().UtcDateTime.ToString(
-            "yyyy-MM-ddTHH:mm:ss.fffffffZ",
-            CultureInfo.InvariantCulture);
+        UtcInstantText.Format(timeProvider.GetUtcNow());
 
     /// <summary>What the canonical tier looked like after its identities were reissued.</summary>
     private sealed record CanonicalReissue(
@@ -819,9 +743,6 @@ internal static class BackupCovenantRestoreReconciler
         long EnvelopeKeyEpoch,
         ulong ClearedOutboxRows)
     {
-
         internal static CanonicalReissue Absent { get; } = new(false, Guid.Empty, 0, 0, 0);
-
     }
-
 }

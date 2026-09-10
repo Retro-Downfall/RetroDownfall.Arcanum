@@ -14,10 +14,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseenServantWatermarkStore
 {
-
     public async Task<UnseenServantWatermark?> GetAsync(string jobKey, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -45,16 +43,24 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
                 return ReadWatermark(reader);
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task SaveAsync(
         string jobKey,
         DateTimeOffset lastRunAt,
         int effectiveIntervalMinutes,
-        CancellationToken cancellationToken = default)
-    {
+        CancellationToken cancellationToken = default) =>
+        SaveFieldsAsync(jobKey, lastRunAt, effectiveIntervalMinutes,
+            "\"LastRunAt\" = @lastRunAt, \"EffectiveIntervalMinutes\" = @interval", cancellationToken);
 
+    public Task SaveLastRunAsync(string jobKey, DateTimeOffset lastRunAt, int initialIntervalMinutes, CancellationToken cancellationToken = default) =>
+        SaveFieldsAsync(jobKey, lastRunAt, initialIntervalMinutes, "\"LastRunAt\" = @lastRunAt", cancellationToken);
+
+    public Task SaveIntervalAsync(string jobKey, DateTimeOffset initialLastRunAt, int effectiveIntervalMinutes, CancellationToken cancellationToken = default) =>
+        SaveFieldsAsync(jobKey, initialLastRunAt, effectiveIntervalMinutes, "\"EffectiveIntervalMinutes\" = @interval", cancellationToken);
+
+    private Task SaveFieldsAsync(string jobKey, DateTimeOffset lastRunAt, int effectiveIntervalMinutes, string updateClause, CancellationToken cancellationToken)
+    {
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -63,29 +69,25 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
                 await using DbCommand cmd = connection.CreateCommand();
 
                 cmd.CommandText =
-                    """
+                    $"""
                     INSERT INTO "UnseenServantWatermarks" ("JobKey", "LastRunAt", "EffectiveIntervalMinutes")
                     VALUES (@jobKey, @lastRunAt, @interval)
-                    ON CONFLICT("JobKey") DO UPDATE SET
-                        "LastRunAt" = @lastRunAt,
-                        "EffectiveIntervalMinutes" = @interval
+                    ON CONFLICT("JobKey") DO UPDATE SET {updateClause}
                     """;
 
                 AddParameter(cmd, "@jobKey", jobKey);
 
-                AddParameter(cmd, "@lastRunAt", lastRunAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@lastRunAt", UtcInstantText.Format(lastRunAt));
 
                 AddParameter(cmd, "@interval", effectiveIntervalMinutes);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
-
     }
 
     public async Task<IReadOnlyList<UnseenServantWatermark>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -112,12 +114,10 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
                 return (IReadOnlyList<UnseenServantWatermark>)watermarks;
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task DeleteAsync(string jobKey, CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -136,12 +136,10 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -150,12 +148,10 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -163,20 +159,16 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static UnseenServantWatermark ReadWatermark(DbDataReader reader)
     {
-
         string jobKey = reader.GetString(0);
 
-        DateTimeOffset lastRunAt = DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture);
+        DateTimeOffset lastRunAt = UtcInstantText.Parse(reader.GetString(1));
 
         int effectiveIntervalMinutes = reader.GetInt32(2);
 
         return new UnseenServantWatermark(jobKey, lastRunAt, effectiveIntervalMinutes);
-
     }
-
 }

@@ -1,9 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -17,6 +19,7 @@ internal sealed class LongRunningOperationStartupHostedService(
     IServiceScopeFactory scopeFactory,
     TimeProvider timeProvider,
     LongRunningOperationReconciliationStatus status,
+    IGrimoireConnectionAdmissionGate admissionGate,
     ILogger<LongRunningOperationStartupHostedService> logger) : IHostedService
 {
     internal const int ReconciliationPageSize = 100;
@@ -40,14 +43,9 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         try
         {
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-            LongRunningOperationReconciler reconciler =
-                scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
-            var summary = await reconciler.ReconcileAsync(
+            LongRunningOperationReconciliationSummary summary = await RunStartupPassAsync(
                 startedAt,
                 ownerId,
-                ReconciliationPageSize,
-                MaxStartupConcurrency,
                 budget.Token).ConfigureAwait(false);
             status.Record(startedAt, summary);
         }
@@ -69,89 +67,303 @@ internal sealed class LongRunningOperationStartupHostedService(
             CancellationToken.None);
     }
 
+    private async Task<LongRunningOperationReconciliationSummary> RunStartupPassAsync(
+        DateTimeOffset startedAt,
+        string ownerId,
+        CancellationToken cancellationToken)
+    {
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+        LongRunningOperationReconciler reconciler =
+            scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
+
+        return await reconciler.ReconcileAsync(
+            startedAt,
+            ownerId,
+            ReconciliationPageSize,
+            MaxStartupConcurrency,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        _ = cancellationToken;
 
-        await _shutdown.CancelAsync().ConfigureAwait(false);
-
-        if (_backgroundTask is null)
-        {
-
-            return;
-
-        }
+        Exception? cancellationFailure = null;
 
         try
         {
+            await _shutdown.CancelAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            cancellationFailure = exception;
+        }
 
-            await _backgroundTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (_backgroundTask is null)
+        {
+            Rethrow(cancellationFailure);
 
+            return;
+        }
+
+        Exception? backgroundFailure = null;
+
+        try
+        {
+            await _backgroundTask.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
-            cancellationToken.IsCancellationRequested
-            || _shutdown.IsCancellationRequested)
+            _shutdown.IsCancellationRequested)
         {
-
+        }
+        catch (Exception exception)
+        {
+            backgroundFailure = exception;
         }
 
+        if (cancellationFailure is not null
+            && backgroundFailure is not null)
+        {
+            throw new AggregateException(cancellationFailure, backgroundFailure);
+        }
+
+        Rethrow(cancellationFailure ?? backgroundFailure);
+    }
+
+    private static void Rethrow(Exception? exception)
+    {
+        if (exception is not null)
+        {
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
     }
 
     private async Task ContinueInBackgroundAsync(CancellationToken cancellationToken)
     {
-
         while (!cancellationToken.IsCancellationRequested)
         {
-
             try
             {
                 DateTimeOffset now = timeProvider.GetUtcNow();
 
-                await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-                LongRunningOperationReconciler reconciler =
-                    scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
-
-                LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+                LongRunningOperationReconciliationSummary summary = await RunBackgroundPassAsync(
                     now,
                     $"background-{Environment.ProcessId}-{Guid.NewGuid():N}",
-                    ReconciliationPageSize,
-                    MaxStartupConcurrency,
                     cancellationToken).ConfigureAwait(false);
 
                 status.Record(now, summary);
 
                 await Task.Delay(BackgroundInterval, timeProvider, cancellationToken)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 return;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(ex, "Background durable-operation reconciliation failed; it will retry.");
 
                 try
                 {
-
                     await Task.Delay(BackgroundInterval, timeProvider, cancellationToken)
                         .ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
+                    return;
+                }
+            }
+        }
+    }
+
+    internal async Task<LongRunningOperationReconciliationSummary> RunBackgroundPassAsync(
+        DateTimeOffset utcNow,
+        string ownerId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        IReadOnlyList<LongRunningOperation> discovered = await DiscoverPageAsync(
+            utcNow,
+            cancellationToken).ConfigureAwait(false);
+
+        int claimed = 0;
+        int completed = 0;
+        int failed = 0;
+        int abandoned = 0;
+        int attention = 0;
+        int skipped = 0;
+
+        await Parallel.ForEachAsync(
+            discovered,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = MaxStartupConcurrency,
+            },
+            async (operation, ct) =>
+            {
+                LongRunningRecoveryAdmissionDecision decision =
+                    LongRunningOperationRecoveryAdmission.Classify(operation, ownerEvidence: null);
+
+                if (decision.Kind is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner)
+                {
+                    Interlocked.Increment(ref skipped);
 
                     return;
-
                 }
 
+                LongRunningOperationSettlementOutcome outcome = await SettleAdmittedAsync(
+                    operation,
+                    ownerId,
+                    decision,
+                    ct).ConfigureAwait(false);
+
+                if (outcome is not LongRunningOperationSettlementOutcome.ConcurrencyLost
+                    and not LongRunningOperationSettlementOutcome.OwnedInProcess)
+                {
+                    Interlocked.Increment(ref claimed);
+                }
+
+                switch (outcome)
+                {
+                    case LongRunningOperationSettlementOutcome.Completed:
+                        Interlocked.Increment(ref completed);
+                        break;
+                    case LongRunningOperationSettlementOutcome.Failed:
+                        Interlocked.Increment(ref failed);
+                        break;
+                    case LongRunningOperationSettlementOutcome.Abandoned:
+                        Interlocked.Increment(ref abandoned);
+                        break;
+                    case LongRunningOperationSettlementOutcome.RequiresAttention:
+                        Interlocked.Increment(ref attention);
+                        break;
+                    default:
+                        Interlocked.Increment(ref skipped);
+                        break;
+                }
+            }).ConfigureAwait(false);
+
+        return new LongRunningOperationReconciliationSummary(
+            discovered.Count,
+            claimed,
+            completed,
+            failed,
+            abandoned,
+            attention,
+            skipped);
+    }
+
+    private async Task<IReadOnlyList<LongRunningOperation>> DiscoverPageAsync(
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken)
+    {
+        IGrimoireWorkLease lease = await AcquireWorkLeaseAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+            ILongRunningOperationGenericRecoveryDiscovery discovery = scope.ServiceProvider
+                .GetRequiredService<ILongRunningOperationGenericRecoveryDiscovery>();
+
+            return await discovery.FindExpiredForGenericRecoveryAsync(
+                utcNow,
+                ReconciliationPageSize,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await lease.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async Task<LongRunningOperationSettlementOutcome> SettleAdmittedAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        LongRunningRecoveryAdmissionDecision decision,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IGrimoireWorkLease lease = await AcquireWorkLeaseAsync(cancellationToken).ConfigureAwait(false);
+            IGrimoireExternalEffectGroup? group = null;
+            AsyncServiceScope scope = default;
+            bool scopeCreated = false;
+            long? refusedGeneration = null;
+
+            try
+            {
+                if (decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect
+                    && !lease.TryBeginExternalEffectGroup(out group))
+                {
+                    refusedGeneration = lease.Generation;
+                }
+                else
+                {
+                    scope = scopeFactory.CreateAsyncScope();
+                    scopeCreated = true;
+                    LongRunningOperationReconciler reconciler = scope.ServiceProvider
+                        .GetRequiredService<LongRunningOperationReconciler>();
+
+                    return await reconciler.SettleDiscoveredRuntimeAsync(
+                        operation,
+                        ownerId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                try
+                {
+                    try
+                    {
+                        if (scopeCreated)
+                        {
+                            await scope.DisposeAsync().ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        if (group is not null)
+                        {
+                            await group.DisposeAsync().ConfigureAwait(false);
+                        }
+                    }
+                }
+                finally
+                {
+                    await lease.DisposeAsync().ConfigureAwait(false);
+                }
             }
 
+            await admissionGate.WaitForOpenGenerationAfterRefusalAsync(
+                refusedGeneration!.Value,
+                cancellationToken).ConfigureAwait(false);
         }
+    }
 
+    private async Task<IGrimoireWorkLease> AcquireWorkLeaseAsync(
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            long observedGeneration = admissionGate.CurrentGeneration;
+
+            if (admissionGate.TryAcquireWorkLease(
+                    GrimoireWorkKind.LongRunningOperationRecovery,
+                    out IGrimoireWorkLease? lease))
+            {
+                return lease!;
+            }
+
+            await admissionGate.WaitForOpenGenerationAfterRefusalAsync(
+                observedGeneration,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 }

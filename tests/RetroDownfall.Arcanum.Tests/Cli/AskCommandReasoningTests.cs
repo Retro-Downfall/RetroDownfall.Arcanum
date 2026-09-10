@@ -1,10 +1,12 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
@@ -26,13 +28,60 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class AskCommandReasoningTests
 {
+    [Fact]
+    public async Task Ask_launch_failure_stops_before_remote_inference()
+    {
+        NdjsonHandler handler = new(
+            SerializeFrames(
+                new IntelligenceEvent(
+                    IntelligenceEventType.Result,
+                    "must not run",
+                    "must not run")));
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(
+            services,
+            new ConfigurationManager());
+
+        services.RemoveAll<IHttpClientFactory>();
+        services.AddSingleton<IHttpClientFactory>(
+            new FakeHttpClientFactory(handler));
+
+        services.RemoveAll<IArcanumServeLauncher>();
+        services.AddSingleton<IArcanumServeLauncher>(
+            new FixedServeLauncher(
+                new ServeLaunchResult(
+                    ServeLaunchStatus.Failed,
+                    HealthProbeState.ConnectionRefused,
+                    TimeSpan.Zero,
+                    null,
+                    "server launch failed safely")));
+
+        RecordingConsole console = new();
+        services.RemoveAll<IConsoleDispatcher>();
+        services.AddSingleton<IConsoleDispatcher>(console);
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+        AskCommand command = provider.GetRequiredService<AskCommand>();
+
+        int exitCode = await command.Ask(
+            CancellationToken.None,
+            prompt: ["question"]);
+
+        Assert.Equal((int)CliExitCode.NetworkError, exitCode);
+        Assert.Contains(
+            "server launch failed safely",
+            console.Diagnostics);
+        Assert.Empty(handler.RequestPaths);
+    }
+
     [Theory]
     [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
     [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
     public async Task New_session_refusal_fails_before_the_remote_turn_and_retains_the_prior_binding(
         byte dispositionValue)
     {
-
         Guid priorSessionId = Guid.Parse(
             "17171717-1717-1717-1717-171717171717");
 
@@ -64,6 +113,10 @@ public sealed class AskCommandReasoningTests
             new FakeHttpClientFactory(handler));
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
         services.AddSingleton<IEyeOfTheWorld, FakeEye>();
 
@@ -110,7 +163,6 @@ public sealed class AskCommandReasoningTests
         Assert.DoesNotContain(
             "/api/intelligence/ping-stream",
             handler.RequestPaths);
-
     }
 
     [Theory]
@@ -119,7 +171,6 @@ public sealed class AskCommandReasoningTests
     public async Task Session_bound_refusal_warns_but_keeps_the_successful_remote_turn(
         byte dispositionValue)
     {
-
         Guid priorSessionId = Guid.Parse(
             "18181818-1818-1818-1818-181818181818");
 
@@ -158,6 +209,10 @@ public sealed class AskCommandReasoningTests
             new FakeHttpClientFactory(handler));
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
         services.AddSingleton<IEyeOfTheWorld, FakeEye>();
 
@@ -202,13 +257,11 @@ public sealed class AskCommandReasoningTests
         Assert.Contains(
             "/api/intelligence/ping-stream",
             handler.RequestPaths);
-
     }
 
     [Fact]
     public async Task Session_bound_does_not_repopulate_context_when_missing_at_client_admission()
     {
-
         Guid priorSessionId = Guid.Parse(
             "20212223-2425-2627-2829-303132333435");
 
@@ -251,6 +304,10 @@ public sealed class AskCommandReasoningTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         services.AddSingleton<IEyeOfTheWorld, FakeEye>();
 
         services.AddSingleton<IGrimoireCliInitialization, NoopGrimoireInitialization>();
@@ -287,7 +344,6 @@ public sealed class AskCommandReasoningTests
         Assert.Contains(
             $"/api/sessions/{remoteSessionId:D}",
             handler.RequestPaths);
-
     }
 
     [Fact]
@@ -309,6 +365,11 @@ public sealed class AskCommandReasoningTests
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
         services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(handler));
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         services.AddSingleton<IEyeOfTheWorld, FakeEye>();
         services.AddSingleton<IGrimoireCliInitialization, NoopGrimoireInitialization>();
         services.AddSingleton<IChronosyncEngine, NoopChronosyncEngine>();
@@ -348,6 +409,11 @@ public sealed class AskCommandReasoningTests
         services.AddSingleton<IHttpClientFactory>(
             new FakeHttpClientFactory(handler));
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         services.AddSingleton<IEyeOfTheWorld, FakeEye>();
         services.AddSingleton<IGrimoireCliInitialization, NoopGrimoireInitialization>();
         services.AddSingleton<IChronosyncEngine, NoopChronosyncEngine>();
@@ -368,7 +434,6 @@ public sealed class AskCommandReasoningTests
     [Fact]
     public async Task Ask_fails_closed_before_inference_when_host_chronosync_fails()
     {
-
         Error failure = new(
             "Chronosync.Unavailable",
             "The host could not synchronize the workspace pattern.");
@@ -384,6 +449,10 @@ public sealed class AskCommandReasoningTests
         services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(handler));
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
         services.AddSingleton<IEyeOfTheWorld, FakeEye>();
 
@@ -404,7 +473,6 @@ public sealed class AskCommandReasoningTests
         Assert.Contains("/api/perception/chronosync", handler.RequestPaths);
 
         Assert.DoesNotContain("/api/intelligence/ping-stream", handler.RequestPaths);
-
     }
 
     private static string SerializeFrames(params IntelligenceEvent[] frames) =>
@@ -450,7 +518,6 @@ public sealed class AskCommandReasoningTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             string path = request.RequestUri?.AbsolutePath ?? string.Empty;
 
             RequestPaths.Add(path);
@@ -460,7 +527,6 @@ public sealed class AskCommandReasoningTests
                     "/api/perception/chronosync",
                     StringComparison.Ordinal))
             {
-
                 Result<ChronosyncReport> result = chronosyncError is null
                     ? Result<ChronosyncReport>.Success(
                         new ChronosyncReport(null, [], [], false))
@@ -475,11 +541,8 @@ public sealed class AskCommandReasoningTests
                         ? HttpStatusCode.OK
                         : HttpStatusCode.ServiceUnavailable)
                 {
-
                     Content = new StringContent(json, Encoding.UTF8, "application/json"),
-
                 });
-
             }
 
             if (boundSessionId is { } sessionId
@@ -488,7 +551,6 @@ public sealed class AskCommandReasoningTests
                     $"/api/sessions/{sessionId:D}",
                     StringComparison.Ordinal))
             {
-
                 Result<SessionDetailDto> result = BoundSessionAvailable
                     ? Result<SessionDetailDto>.Success(
                         new SessionDetailDto(
@@ -515,23 +577,17 @@ public sealed class AskCommandReasoningTests
                         ? HttpStatusCode.OK
                         : HttpStatusCode.NotFound)
                 {
-
                     Content = new StringContent(
                         json,
                         Encoding.UTF8,
                         "application/json"),
-
                 });
-
             }
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson"),
-
             });
-
         }
     }
 
@@ -559,7 +615,6 @@ public sealed class AskCommandReasoningTests
 
     private sealed class FixedContextResolver : ICliInferenceContextResolver
     {
-
         public Task<CliInferenceContextResult> ResolveAsync(
             CliInferenceContextRequest request,
             CancellationToken cancellationToken) =>
@@ -578,7 +633,6 @@ public sealed class AskCommandReasoningTests
                             null,
                             NoContext: false)),
                     []));
-
     }
 
     private sealed class RecordingContextStore(
@@ -586,7 +640,6 @@ public sealed class AskCommandReasoningTests
         ICliContextStore,
         ICliContextExclusiveWriter
     {
-
         private CliContextDocument _document =
             CliContextDocument.Empty with { SessionId = sessionId };
 
@@ -601,13 +654,10 @@ public sealed class AskCommandReasoningTests
 
         public void SaveUnderExclusive(CliContextDocument document)
         {
-
             ExclusiveSaves++;
 
             _document = document;
-
         }
-
     }
 
     private sealed class NoopGrimoireInitialization :
@@ -642,5 +692,44 @@ public sealed class AskCommandReasoningTests
                 TimeSpan.Zero,
                 null,
                 null));
+    }
+
+    private sealed class FixedServeLauncher(ServeLaunchResult result)
+        : IArcanumServeLauncher
+    {
+        public Task<ServeLaunchResult> EnsureRunningAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(result);
+        }
+    }
+
+    private sealed class RecordingConsole : IConsoleDispatcher
+    {
+        internal List<string> Diagnostics { get; } = [];
+
+        public void WritePayload(string value)
+        {
+        }
+
+        public void WriteDiagnostic(string value) => Diagnostics.Add(value);
+
+        public void WriteVerbose(string value)
+        {
+        }
+
+        public void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo)
+        {
+        }
+
+        public void WriteJson(JsonElement value)
+        {
+        }
+
+        public void BeginJsonStream()
+        {
+        }
     }
 }

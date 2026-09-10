@@ -8,13 +8,9 @@ using System.Text.Json.Serialization.Metadata;
 
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
-using RetroDownfall.Arcanum.Api.Security;
-
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Primitives;
-
-using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -24,9 +20,8 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 /// </summary>
 public sealed class FileBatchApiClient(
     IHttpClientFactory httpClientFactory,
-    ISecretStore secretStore)
+    ArcanumApiCredentialLease credentialLease)
 {
-
     private const long MaxJsonResponseBytes = 64 * 1024 * 1024;
 
     public Task<Result<OpenAiFileListResponse>> ListFilesAsync(
@@ -55,54 +50,23 @@ public sealed class FileBatchApiClient(
         string? contentType,
         CancellationToken cancellationToken)
     {
+        string mediaType = string.IsNullOrWhiteSpace(contentType)
+            ? InferContentType(filePath)
+            : contentType.Trim();
 
-        try
-        {
-
-            await using FileStream stream = new(
-                filePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 81_920,
-                options: FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-            using MultipartFormDataContent form = new();
-
-            using StreamContent file = new(stream);
-
-            file.Headers.ContentType = new MediaTypeHeaderValue(
-                string.IsNullOrWhiteSpace(contentType)
-                    ? InferContentType(filePath)
-                    : contentType.Trim());
-
-            form.Add(file, "file", Path.GetFileName(filePath));
-
-            form.Add(new StringContent(purpose, Encoding.UTF8), "purpose");
-
-            return await SendJsonAsync(
-                    HttpMethod.Post,
-                    "/v1/files",
-                    form,
-                    ArcanumJsonContext.Default.OpenAiFileObject,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-
-            throw;
-
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-
-            return Result<OpenAiFileObject>.Failure(
-                new Error("Files.ReadFailed", "The local upload file could not be read."));
-
-        }
-
+        return await SendJsonAsync(
+                HttpMethod.Post,
+                "/v1/files",
+                () => CreateFileUploadContent(
+                    filePath,
+                    purpose,
+                    mediaType),
+                ArcanumJsonContext.Default.OpenAiFileObject,
+                cancellationToken,
+                new Error(
+                    "Files.ReadFailed",
+                    "The local upload file could not be read."))
+            .ConfigureAwait(false);
     }
 
     public Task<Result<OpenAiFileDeleteResponse>> DeleteFileAsync(
@@ -140,7 +104,6 @@ public sealed class FileBatchApiClient(
         string inputFileId,
         CancellationToken cancellationToken)
     {
-
         OpenAiBatchRequest request = new(
             inputFileId,
             "/v1/chat/completions",
@@ -153,10 +116,9 @@ public sealed class FileBatchApiClient(
         return SendJsonAsync(
             HttpMethod.Post,
             "/v1/batches",
-            new StringContent(json, Encoding.UTF8, "application/json"),
+            () => new StringContent(json, Encoding.UTF8, "application/json"),
             ArcanumJsonContext.Default.OpenAiBatchObject,
             cancellationToken);
-
     }
 
     public Task<Result<OpenAiBatchObject>> CancelBatchAsync(
@@ -175,7 +137,6 @@ public sealed class FileBatchApiClient(
         bool overwrite,
         CancellationToken cancellationToken)
     {
-
         string fullDestination = Path.GetFullPath(destinationPath);
 
         string directory = Path.GetDirectoryName(fullDestination)
@@ -189,34 +150,32 @@ public sealed class FileBatchApiClient(
 
         try
         {
-
-            string? apiKey = await PeekApiKeyAsync().ConfigureAwait(false);
-
-            if (string.IsNullOrWhiteSpace(apiKey))
-            {
-
-                return Result<long>.Failure(MissingApiKey());
-
-            }
-
             HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.StreamingHttpClientName);
 
-            using HttpRequestMessage request = new(
-                HttpMethod.Get,
-                "/v1/files/" + Uri.EscapeDataString(fileId) + "/content");
-
-            _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            using ArcanumAuthenticatedHttpResponse sent =
+                await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () => new HttpRequestMessage(
+                        HttpMethod.Get,
+                        "/v1/files/" + Uri.EscapeDataString(fileId) + "/content"),
+                    HttpCompletionOption.ResponseHeadersRead,
+                    canReplayAfterUnauthorized: true,
+                    cancellationToken)
                 .ConfigureAwait(false);
+
+            if (!sent.IsAuthenticated)
+            {
+                return Result<long>.Failure(
+                    ArcanumApiCredentialFailureMapper.ToError(sent.Credentials));
+            }
+
+            HttpResponseMessage response = sent.Response!;
 
             if (!response.IsSuccessStatusCode)
             {
-
                 return Result<long>.Failure(
                     await ReadErrorAsync(response, cancellationToken).ConfigureAwait(false));
-
             }
 
             await using Stream network = await response.Content
@@ -233,24 +192,20 @@ public sealed class FileBatchApiClient(
                              bufferSize: 81_920,
                              options: FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-
                 byte[] buffer = new byte[81_920];
 
                 int read;
 
                 while ((read = await network.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
                 {
-
                     await destination
                         .WriteAsync(buffer.AsMemory(0, read), cancellationToken)
                         .ConfigureAwait(false);
 
                     bytes += read;
-
                 }
 
                 await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             File.Move(temporaryPath, fullDestination, overwrite);
@@ -258,47 +213,33 @@ public sealed class FileBatchApiClient(
             temporaryPath = string.Empty;
 
             return Result<long>.Success(bytes);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
         {
-
             return Result<long>.Failure(
                 new Error(ErrorCodes.Connection.Timeout, "The file download timed out."));
-
         }
         catch (HttpRequestException)
         {
-
             return Result<long>.Failure(
                 new Error(ErrorCodes.Connection.Unreachable, "The Arcanum API is unreachable."));
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
             return Result<long>.Failure(
                 new Error("Files.WriteFailed", "The downloaded file could not be written safely."));
-
         }
         finally
         {
-
             if (!string.IsNullOrEmpty(temporaryPath))
             {
-
                 TryDelete(temporaryPath);
-
             }
-
         }
-
     }
 
     private Task<Result<OpenAiBatchObject>> PostBatchMutationAsync(
@@ -315,46 +256,40 @@ public sealed class FileBatchApiClient(
     private async Task<Result<T>> SendJsonAsync<T>(
         HttpMethod method,
         string path,
-        HttpContent? content,
+        Func<HttpContent?>? content,
         JsonTypeInfo<T> responseType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Error? requestContentError = null)
     {
-
         try
         {
-
-            string? apiKey = await PeekApiKeyAsync().ConfigureAwait(false);
-
-            if (string.IsNullOrWhiteSpace(apiKey))
-            {
-
-                content?.Dispose();
-
-                return Result<T>.Failure(MissingApiKey());
-
-            }
-
             HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
-            using HttpRequestMessage request = new(method, path)
-            {
-
-                Content = content,
-
-            };
-
-            _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            using ArcanumAuthenticatedHttpResponse sent =
+                await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () => new HttpRequestMessage(method, path)
+                    {
+                        Content = content?.Invoke(),
+                    },
+                    HttpCompletionOption.ResponseHeadersRead,
+                    canReplayAfterUnauthorized: true,
+                    cancellationToken)
                 .ConfigureAwait(false);
+
+            if (!sent.IsAuthenticated)
+            {
+                return Result<T>.Failure(
+                    ArcanumApiCredentialFailureMapper.ToError(sent.Credentials));
+            }
+
+            HttpResponseMessage response = sent.Response!;
 
             if (!response.IsSuccessStatusCode)
             {
-
                 return Result<T>.Failure(
                     await ReadErrorAsync(response, cancellationToken).ConfigureAwait(false));
-
             }
 
             byte[]? bytes = await ReadCappedAsync(
@@ -365,10 +300,8 @@ public sealed class FileBatchApiClient(
 
             if (bytes is null)
             {
-
                 return Result<T>.Failure(
                     new Error("Api.ResponseTooLarge", "The API response exceeded the maximum allowed size."));
-
             }
 
             T? value = JsonSerializer.Deserialize(bytes, responseType);
@@ -376,43 +309,38 @@ public sealed class FileBatchApiClient(
             return value is null
                 ? Result<T>.Failure(new Error("Api.InvalidResponse", "The API returned an invalid response."))
                 : Result<T>.Success(value);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
         {
-
             return Result<T>.Failure(
                 new Error(ErrorCodes.Connection.Timeout, "The request to the Arcanum API timed out."));
-
         }
         catch (HttpRequestException)
         {
-
             return Result<T>.Failure(
                 new Error(ErrorCodes.Connection.Unreachable, "The Arcanum API is unreachable."));
-
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException
+            && requestContentError is not null)
+        {
+            return Result<T>.Failure(requestContentError.Value);
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
-
             return Result<T>.Failure(
                 new Error("Api.InvalidResponse", "The API returned an invalid response."));
-
         }
-
     }
 
     private static async Task<Error> ReadErrorAsync(
         HttpResponseMessage response,
         CancellationToken cancellationToken)
     {
-
         byte[]? bytes = await ReadCappedAsync(
                 response.Content,
                 MaxJsonResponseBytes,
@@ -421,15 +349,12 @@ public sealed class FileBatchApiClient(
 
         if (bytes is not null)
         {
-
             try
             {
-
                 using JsonDocument document = JsonDocument.Parse(bytes);
 
                 if (document.RootElement.TryGetProperty("error", out JsonElement error))
                 {
-
                     string code = TryString(error, "code")
                         ?? TryString(error, "type")
                         ?? $"Http.{(int)response.StatusCode}";
@@ -439,21 +364,16 @@ public sealed class FileBatchApiClient(
                         ?? "Request failed.";
 
                     return new Error(code, message);
-
                 }
-
             }
             catch (JsonException)
             {
-
             }
-
         }
 
         return new Error(
             $"Http.{(int)response.StatusCode}",
             response.ReasonPhrase ?? "Request failed.");
-
     }
 
     private static async Task<byte[]?> ReadCappedAsync(
@@ -461,12 +381,9 @@ public sealed class FileBatchApiClient(
         long maxBytes,
         CancellationToken cancellationToken)
     {
-
         if (content.Headers.ContentLength is { } length && length > maxBytes)
         {
-
             return null;
-
         }
 
         await using Stream stream = await content
@@ -483,24 +400,19 @@ public sealed class FileBatchApiClient(
 
         while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
         {
-
             total += read;
 
             if (total > maxBytes)
             {
-
                 return null;
-
             }
 
             await buffer
                 .WriteAsync(chunk.AsMemory(0, read), cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         return buffer.ToArray();
-
     }
 
     private static string BuildQuery(
@@ -512,29 +424,23 @@ public sealed class FileBatchApiClient(
             : $"{path}?{key}={Uri.EscapeDataString(value.Trim())}";
 
     private static string BuildBatchListQuery(
-
         string? status,
 
         string? cursor)
 
     {
-
         List<string> fields = [];
 
         if (!string.IsNullOrWhiteSpace(status))
 
         {
-
             fields.Add("status=" + Uri.EscapeDataString(status.Trim()));
-
         }
 
         if (!string.IsNullOrWhiteSpace(cursor))
 
         {
-
             fields.Add("after=" + Uri.EscapeDataString(cursor.Trim()));
-
         }
 
         return fields.Count == 0
@@ -542,7 +448,6 @@ public sealed class FileBatchApiClient(
             ? "/v1/batches"
 
             : "/v1/batches?" + string.Join('&', fields);
-
     }
 
     private static string InferContentType(string path) =>
@@ -562,6 +467,42 @@ public sealed class FileBatchApiClient(
             _ => "application/octet-stream",
         };
 
+    private static HttpContent CreateFileUploadContent(
+        string filePath,
+        string purpose,
+        string mediaType)
+    {
+        FileStream? stream = null;
+        MultipartFormDataContent? form = null;
+
+        try
+        {
+            stream = new FileStream(
+                filePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 81_920,
+                options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+            form = new MultipartFormDataContent();
+            StreamContent file = new(stream);
+            file.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+
+            form.Add(file, "file", Path.GetFileName(filePath));
+            form.Add(new StringContent(purpose, Encoding.UTF8), "purpose");
+
+            return form;
+        }
+        catch
+        {
+            form?.Dispose();
+            stream?.Dispose();
+
+            throw;
+        }
+    }
+
     private static string? TryString(
         JsonElement element,
         string property) =>
@@ -570,36 +511,14 @@ public sealed class FileBatchApiClient(
                 ? value.GetString()
                 : null;
 
-    private async Task<string?> PeekApiKeyAsync()
-    {
-
-        SecretStoreReadResult result = await secretStore
-            .PeekApiKeyReadResultAsync()
-            .ConfigureAwait(false);
-
-        return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
-
-    }
-
-    private static Error MissingApiKey() =>
-        new(
-            ErrorCodes.Security.MissingApiKey,
-            "No API key found. Run 'arcanum serve' once to generate and store a key.");
-
     private static void TryDelete(string path)
     {
-
         try
         {
-
             File.Delete(path);
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
         }
-
     }
-
 }

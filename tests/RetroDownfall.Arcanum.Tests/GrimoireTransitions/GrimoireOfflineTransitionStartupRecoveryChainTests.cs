@@ -58,7 +58,6 @@ namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 [Trait("Category", "Integration")]
 public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncLifetime
 {
-
     private static readonly CancellationToken Token = CancellationToken.None;
 
     private readonly GrimoireFixture _fixture;
@@ -75,14 +74,11 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
     public GrimoireOfflineTransitionStartupRecoveryChainTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public async Task InitializeAsync()
     {
-
         await _workspace.InitializeAsync();
 
         _root = _workspace.CreateSubdir("startup-chain");
@@ -93,7 +89,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
         if (GrimoireFixture.SqlCipherAvailable)
         {
-
             string source = _fixture.CopyDatabase();
 
             File.Copy(source, _databasePath, overwrite: true);
@@ -103,29 +98,23 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             _db = _fixture.CreateContext(_databasePath);
 
             await _db.Database.OpenConnectionAsync(Token);
-
         }
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         _lock?.Dispose();
 
         await _workspace.DisposeAsync();
-
     }
 
     /// <summary>
@@ -140,7 +129,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
     [SkippableFact]
     public async Task The_chain_reconstructs_real_authority_and_then_dispatches()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -177,7 +165,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
         Assert.True(
             (await composition.Gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).IsFailure);
-
     }
 
     /// <summary>
@@ -191,7 +178,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
     [SkippableFact]
     public async Task A_catalog_this_installation_cannot_open_refuses_before_authority_moves()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -220,7 +206,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
         Assert.Null(dispatch.Dispatched);
 
         Assert.Null(composition.Runtime.Current.ActiveAuthority);
-
     }
 
     /// <summary>
@@ -248,7 +233,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
     [InlineData(7, false)]
     public async Task Every_named_case_resolves_before_readiness_or_fails_closed(int arm, bool resumes)
     {
-
         RequireSqlCipher();
 
         InstallationResetNestedTransitionEvidenceOutcome evidence =
@@ -271,28 +255,22 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
         if (resumes)
         {
-
             Assert.Equal(GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed, recovered.Value);
 
             Assert.Equal(seeded.OperationId, dispatch.Dispatched);
-
         }
         else
         {
-
             Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, recovered.Error.Code);
 
             Assert.Null(dispatch.Dispatched);
-
         }
-
     }
 
     /// <summary>The launch-gap case: a committed launch, no journal, resolved before readiness.</summary>
     [SkippableFact]
     public async Task A_launch_with_no_journal_is_finished_before_readiness()
     {
-
         RequireSqlCipher();
 
         Seeded seeded = await SeedAsync();
@@ -317,13 +295,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
         // The adopter finds the row the crash left behind, and the resumption spends it before the
         // readiness this bootstrap is about to publish.
-        Result<CovenantExclusiveRecoveryOwner?> adopted = await new
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
             CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
             .AdoptBeforeReadinessAsync(Connection, Token);
 
         Assert.True(adopted.IsSuccess, adopted.IsFailure ? adopted.Error.Message : null);
 
-        Assert.Equal(seeded.Owner, adopted.Value);
+        Assert.Equal(seeded.Owner, adopted.Value?.Owner);
 
         Result resumed = await CovenantOfflineTransitionLaunchGapResumption
             .ResumeBeforeReadinessAsync(dispatch, _lock!, _root, adopted.Value, Token);
@@ -331,7 +309,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
         Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
 
         Assert.Equal(seeded.OperationId, dispatch.Dispatched);
-
     }
 
     private SqliteConnection Connection => (SqliteConnection)_db!.Database.GetDbConnection();
@@ -357,12 +334,9 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
     private async Task CloseSeedingConnectionAsync()
     {
-
         if (_db is null)
         {
-
             return;
-
         }
 
         SqliteConnection connection = Connection;
@@ -372,7 +346,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
         _db = null;
 
         SqliteConnection.ClearPool(connection);
-
     }
 
     private sealed record Seeded(
@@ -382,7 +355,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
     private async Task<Seeded> SeedAsync()
     {
-
         LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
 
         LongRunningOperation created = await store.CreateAsync(
@@ -458,12 +430,10 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
                 SlotEpoch: 1,
                 Revision: 3,
                 new CovenantDigest(Convert.FromHexString(new string('d', 64)))));
-
     }
 
     private async Task<CovenantOfflineTransitionSourceState> CurrentSourceAsync()
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -481,16 +451,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             (ulong)reader.GetInt64(1),
             (ulong)reader.GetInt64(2),
             (ulong)reader.GetInt64(3));
-
     }
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
         return result.Value;
-
     }
 
     private static void RequireSqlCipher() =>
@@ -499,7 +466,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
     /// <summary>One uninitialized runtime and the three things that share it.</summary>
     private sealed class RecoveryComposition
     {
-
         internal CovenantRuntimeGenerationProvider Runtime { get; } = new();
 
         internal CovenantAvailability Availability { get; }
@@ -510,7 +476,6 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
 
         internal RecoveryComposition()
         {
-
             Availability = new CovenantAvailability(Runtime);
 
             Keys = new CovenantEnvelopeMasterKeyProvider(Runtime);
@@ -519,14 +484,11 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
                 Runtime,
                 new FakeCovenantCampaignScopeProbe(),
                 TimeSpan.FromSeconds(5));
-
         }
-
     }
 
     private sealed class PermittedHostTools : IHostProcessToolsRuntimePolicy
     {
-
         internal static PermittedHostTools Instance { get; } = new();
 
         public bool IsPublished => true;
@@ -539,31 +501,25 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             HostProcessToolsMarkerPairDisposition.Clean;
 
         public HostProcessToolsStartupBlocker Blocker => HostProcessToolsStartupBlocker.None;
-
     }
 
     private sealed class RecordingDispatch(LongRunningOperationSettlementOutcome verdict)
         : IGrimoireOfflineTransitionHandlerDispatch
     {
-
         internal Guid? Dispatched { get; private set; }
 
         public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             string guardedDirectory,
-            Guid operationId,
+            LongRunningRecoveryOwnerEvidence ownerEvidence,
             CancellationToken cancellationToken)
         {
-
             heldInstallationLock.AssertHeldFor(guardedDirectory);
 
-            Dispatched = operationId;
+            Dispatched = ownerEvidence.ExpectedOperation.OperationId;
 
             return Task.FromResult(
                 Result<LongRunningOperationSettlementOutcome>.Success(verdict));
-
         }
-
     }
-
 }

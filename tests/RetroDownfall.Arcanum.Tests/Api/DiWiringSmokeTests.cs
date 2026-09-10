@@ -1,18 +1,39 @@
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Api.Intelligence;
+
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
+
 using RetroDownfall.Arcanum.Api.ProvingGrounds;
+
 using RetroDownfall.Arcanum.Api.Security;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Sanctum;
+
 using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Core.Tower;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+
+using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -20,20 +41,67 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class DiWiringSmokeTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public DiWiringSmokeTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
+    }
 
+    [SkippableFact]
+    public void Test_host_uses_the_explicit_in_memory_credential_boundary()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            _factory.Services.GetRequiredService<IOsCredentialStore>());
+    }
+
+    [SkippableFact]
+    public void ProductionRegistrationConfiguresAdmission()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        McpConnectionManager concrete =
+            _factory.Services.GetRequiredService<McpConnectionManager>();
+
+        Assert.Same(
+            concrete,
+            _factory.Services.GetRequiredService<IMcpConnectionManager>());
+
+        Assert.Same(
+            concrete,
+            _factory.Services.GetRequiredService<IMcpGlobalInitializationCoordinator>());
+
+        System.Reflection.FieldInfo? admissionField = typeof(McpConnectionManager).GetField(
+            "_globalAdmission",
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.NotNull(admissionField);
+
+        Assert.IsAssignableFrom<IGrimoireConnectionAdmissionGate>(
+            admissionField!.GetValue(concrete));
+
+        System.Reflection.ConstructorInfo managerConstructor = Assert.Single(
+            typeof(McpConnectionManager).GetConstructors(
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.Public));
+
+        Assert.All(
+            managerConstructor.GetParameters(),
+            static parameter => Assert.True(
+                parameter.ParameterType.IsVisible,
+                $"Public MCP manager constructor exposes non-public '{parameter.ParameterType}'."));
+
+        Assert.Single(typeof(McpServerBootstrapHostedService).GetConstructors(
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.Public));
     }
 
     [SkippableFact]
     public void Host_ResolvesKeyRegisteredServices()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using IServiceScope scope = _factory.Services.CreateScope();
@@ -71,13 +139,11 @@ public sealed class DiWiringSmokeTests
         Assert.NotNull(services.GetRequiredService<IDataRetentionService>());
 
         Assert.NotNull(services.GetRequiredService<IDataRetentionPolicyStore>());
-
     }
 
     [SkippableFact]
     public async Task Host_ModelCallExecutorProviderFailure_UsesDiLoggerSafely()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const string canary = "CANARY_DI_PROVIDER_RESPONSE_BODY";
@@ -115,12 +181,10 @@ public sealed class DiWiringSmokeTests
         Assert.Null(entry.Exception);
         Assert.Contains(nameof(InvalidOperationException), entry.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(canary, entry.Message, StringComparison.Ordinal);
-
     }
 
     private sealed class ThrowingChatClient(string canary) : IChatClient
     {
-
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> chatMessages,
             ChatOptions? options = null,
@@ -138,7 +202,5 @@ public sealed class DiWiringSmokeTests
         public void Dispose()
         {
         }
-
     }
-
 }

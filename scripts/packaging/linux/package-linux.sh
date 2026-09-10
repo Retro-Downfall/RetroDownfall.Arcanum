@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package Arcanum (Native AOT) + The Forge + Compendium for Linux private beta.
+# Package Native AOT Arcanum + The Forge + Compendium for a future Linux private beta.
 #
 # Defaults to the current host RID (linux-x64 or linux-arm64). Cross-OS packaging
 # is handled by GitHub Actions — do not require foreign toolchains locally.
@@ -118,20 +118,26 @@ require_cmd() {
 }
 
 require_cmd dotnet
+require_cmd rg
 require_cmd tar
 require_cmd sha256sum
 
 # Arcanum builds its own SQLCipher and delivers exactly one verified library per shipping runtime
-# identifier. Linux is not currently one of them, so a linux-* publish would fail mid-build with
-# ARCSQLC002 rather than fall back to an unverified SQLite. Detect that here and say why.
-#
-# This check is deliberately written against the asset rather than hard-coded to "Linux is
-# unsupported": adding a verified linux-* asset to the manifest re-enables packaging with no edit
-# here.
+# identifier. Linux is not currently one of them: the delivery targets do not map a linux-* RID to
+# a library filename (ARCSQLC001), and no verified asset exists. Both must land before this dormant
+# packager can run; Arcanum never falls back to ambient SQLite.
 require_native_sqlcipher_asset() {
   local rid="$1"
 
   local asset="$REPO_ROOT/src/RetroDownfall.Arcanum.NativeSqlCipher/runtimes/$rid/native/libe_sqlcipher.so"
+  local targets="$REPO_ROOT/src/RetroDownfall.Arcanum.NativeSqlCipher/buildTransitive/RetroDownfall.Arcanum.NativeSqlCipher.targets"
+
+  if ! rg --no-config -q "StartsWith\\('linux-'\\)" "$targets"; then
+    echo "No linux-* SQLCipher filename mapping exists, so Linux packaging cannot produce a" >&2
+    echo "working archive. Add the mapping beside the osx-* and win-* mappings only with a" >&2
+    echo "verified native asset and manifest record; see docs/Arcanum.DESIGN.md 5.4.4a." >&2
+    exit 2
+  fi
 
   if [ -f "$asset" ]; then
     return 0
@@ -146,11 +152,10 @@ require_native_sqlcipher_asset() {
   exit 2
 }
 
-# The Native AOT image does NOT absorb the P/Invoke shared libraries. SQLitePCLRaw only
-# static-links e_sqlcipher for browser-wasm, so every linux-* publish emits
-# libe_sqlcipher.so (and libonigwrap.so) beside the host. Shipping an archive without them
-# produces a CLI that dies with DllNotFoundException the moment it opens the Grimoire, and
-# nothing downstream launches the binary — so assert here and fail the build loudly.
+# The Native AOT image does not absorb P/Invoke shared libraries. SQLitePCLRaw only static-links
+# e_sqlcipher for browser-wasm, so a future linux-* publish must emit libe_sqlcipher.so and
+# libonigwrap.so beside the host. Shipping an archive without them produces a CLI that dies with
+# DllNotFoundException the moment it opens the Grimoire, so assert here and fail loudly.
 require_staged_natives() {
   local stage_dir="$1"
   shift
@@ -174,19 +179,75 @@ require_staged_natives() {
   echo "==> Verified native sidecars in $stage_dir: $*"
 }
 
+require_native_aot_publish() {
+  local stage_dir="$1"
+  local forbidden=(
+    RetroDownfall.Arcanum.Cli.dll
+    libhostfxr.so
+    libhostpolicy.so
+  )
+  local present=()
+  local name
+
+  for name in "${forbidden[@]}"; do
+    if [[ -f "$stage_dir/$name" ]]; then
+      present+=("$name")
+    fi
+  done
+
+  if [[ ${#present[@]} -gt 0 ]]; then
+    echo "error: Native AOT package contains managed runtime files: ${present[*]}" >&2
+    ls -la "$stage_dir" >&2 || true
+    exit 1
+  fi
+
+  echo "==> Verified Native AOT publish"
+}
+
 publish_cli() {
   local publish_dir="$WORK/cli-publish"
   local stage_dir="$WORK/stage/arcanum-linux-${ARCH_SUFFIX}"
   local archive="$OUTPUT_DIR/arcanum-linux-${ARCH_SUFFIX}.tar.gz"
   local project="$REPO_ROOT/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj"
+  local publish_log="$WORK/cli-publish.log"
+  local publish_aot
+  local warning_scan_status
+
+  publish_aot="$(dotnet msbuild "$project" \
+    -nologo \
+    -getProperty:PublishAot \
+    -p:Configuration="$CONFIGURATION" \
+    -p:RuntimeIdentifier="$RID" \
+    | tr -d '\r')"
+
+  if [[ "$publish_aot" != "true" ]]; then
+    echo "error: PublishAot resolved to '$publish_aot' for $RID; expected true" >&2
+    exit 1
+  fi
 
   echo "==> Publishing Arcanum Native AOT ($RID, Version=$VERSION)"
-  dotnet publish "$project" \
-    -c "$CONFIGURATION" \
-    -r "$RID" \
-    --self-contained true \
-    -p:Version="$VERSION" \
-    -o "$publish_dir"
+  if ! dotnet publish "$project" \
+      -c "$CONFIGURATION" \
+      -r "$RID" \
+      --self-contained true \
+      -p:Version="$VERSION" \
+      -o "$publish_dir" \
+      2>&1 | tee "$publish_log"; then
+    echo "error: dotnet publish Cli failed" >&2
+    exit 1
+  fi
+
+  if rg --no-config -n -i '(^|[[:space:]:])warning([[:space:]:]|$)' "$publish_log"; then
+    echo "error: Arcanum publish emitted warning output" >&2
+    exit 1
+  else
+    warning_scan_status=$?
+  fi
+
+  if [[ "$warning_scan_status" -ne 1 ]]; then
+    echo "error: could not scan Arcanum publish output (ripgrep exit $warning_scan_status)" >&2
+    exit 1
+  fi
 
   local published=""
   if [[ -f "$publish_dir/RetroDownfall.Arcanum.Cli" ]]; then
@@ -213,6 +274,7 @@ publish_cli() {
   cp "$REPO_ROOT/README.md" "$stage_dir/README.md"
 
   require_staged_natives "$stage_dir" libe_sqlcipher.so libonigwrap.so
+  require_native_aot_publish "$stage_dir"
 
   echo "==> Creating $archive"
   tar -C "$WORK/stage" -czf "$archive" "arcanum-linux-${ARCH_SUFFIX}"
@@ -223,19 +285,37 @@ publish_gui() {
   local project="$2"
   local folder_name="$3"
   local publish_dir="$WORK/${product}-publish"
+  local publish_log="$WORK/${product}-publish.log"
   local stage_dir="$WORK/stage/${folder_name}"
   local archive="$OUTPUT_DIR/${folder_name}.tar.gz"
+  local warning_scan_status
 
   echo "==> Publishing $product self-contained Avalonia folder ($RID, Version=$VERSION)"
-  # Multi-file self-contained — not Native AOT, not single-file.
-  dotnet publish "$project" \
-    -c "$CONFIGURATION" \
-    -r "$RID" \
-    --self-contained true \
-    -p:Version="$VERSION" \
-    -p:UseAppHost=true \
-    -p:PublishSingleFile=false \
-    -o "$publish_dir"
+  # Multi-file self-contained, not single-file.
+  if ! dotnet publish "$project" \
+      -c "$CONFIGURATION" \
+      -r "$RID" \
+      --self-contained true \
+      -p:Version="$VERSION" \
+      -p:UseAppHost=true \
+      -p:PublishSingleFile=false \
+      -o "$publish_dir" \
+      2>&1 | tee "$publish_log"; then
+    echo "error: dotnet publish $product failed" >&2
+    exit 1
+  fi
+
+  if rg --no-config -n -i '(^|[[:space:]:])warning([[:space:]:]|$)' "$publish_log"; then
+    echo "error: GUI publish emitted warning output" >&2
+    exit 1
+  else
+    warning_scan_status=$?
+  fi
+
+  if [[ "$warning_scan_status" -ne 1 ]]; then
+    echo "error: could not scan GUI publish output (ripgrep exit $warning_scan_status)" >&2
+    exit 1
+  fi
 
   mkdir -p "$stage_dir"
   cp -a "$publish_dir/." "$stage_dir/"

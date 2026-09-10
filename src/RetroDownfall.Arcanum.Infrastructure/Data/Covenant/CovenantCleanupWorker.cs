@@ -32,7 +32,6 @@ internal sealed class CovenantCleanupWorker(
     ICovenantSqliteConnectionInitializer initializer,
     CovenantOwnerDeletionReader reader)
 {
-
     internal const int DefaultBatchSize = 64;
 
     internal CovenantCleanupWorker()
@@ -55,7 +54,6 @@ internal sealed class CovenantCleanupWorker(
         CancellationToken cancellationToken,
         int maxEvents)
     {
-
         ArgumentNullException.ThrowIfNull(cleanupLease);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -64,9 +62,7 @@ internal sealed class CovenantCleanupWorker(
 
         if (revalidated.IsFailure)
         {
-
             return revalidated.Error;
-
         }
 
         using CovenantSqliteAuthorizationScope authorization = initializer.Authorize(
@@ -80,18 +76,14 @@ internal sealed class CovenantCleanupWorker(
 
         if (generation.IsFailure)
         {
-
             return generation.Error;
-
         }
 
         if (expectedGeneration is { } captured && captured != generation.Value)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this cleanup batch could apply.");
-
         }
 
         Result<CovenantCleanupCursor> cursor = await reader.ReadCursorAsync(transaction, cancellationToken)
@@ -99,9 +91,7 @@ internal sealed class CovenantCleanupWorker(
 
         if (cursor.IsFailure)
         {
-
             return cursor.Error;
-
         }
 
         Result<ImmutableArray<CovenantOwnerDeletionEvent>> pending = await reader
@@ -110,9 +100,7 @@ internal sealed class CovenantCleanupWorker(
 
         if (pending.IsFailure)
         {
-
             return pending.Error;
-
         }
 
         long campaignCursor = cursor.Value.AppliedCampaignSequence;
@@ -135,12 +123,10 @@ internal sealed class CovenantCleanupWorker(
 
         foreach (CovenantOwnerDeletionEvent owner in pending.Value)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (owner.Kind == CovenantOwnerKind.Campaign)
             {
-
                 int removed = await CleanCampaignAsync(
                         transaction,
                         owner.OwnerId,
@@ -155,19 +141,15 @@ internal sealed class CovenantCleanupWorker(
                 campaigns = checked(campaigns + 1);
 
                 campaignCursor = Math.Max(campaignCursor, owner.Sequence);
-
             }
             else
             {
-
                 await CleanSessionAsync(transaction, owner.OwnerId, cancellationToken).ConfigureAwait(false);
 
                 sessions = checked(sessions + 1);
 
                 sessionCursor = Math.Max(sessionCursor, owner.Sequence);
-
             }
-
         }
 
         // A deletion that removed no head produced no projection delta, so it must not advance the
@@ -176,9 +158,7 @@ internal sealed class CovenantCleanupWorker(
 
         if (advanced)
         {
-
             await AdvanceSearchSequenceAsync(transaction, cancellationToken).ConfigureAwait(false);
-
         }
 
         Result cursorAdvanced = await reader
@@ -194,7 +174,6 @@ internal sealed class CovenantCleanupWorker(
                 sessionCursor,
                 headsRemoved,
                 advanced);
-
     }
 
     /// <summary>
@@ -210,7 +189,6 @@ internal sealed class CovenantCleanupWorker(
         int firstOrdinal,
         CancellationToken cancellationToken)
     {
-
         string campaign = campaignId.ToString("D");
 
         ImmutableArray<HeadIdentity> heads = await ReadCampaignHeadsAsync(
@@ -225,7 +203,6 @@ internal sealed class CovenantCleanupWorker(
 
         foreach (HeadIdentity head in heads)
         {
-
             await ExecuteAsync(
                     transaction,
                     """
@@ -239,7 +216,6 @@ internal sealed class CovenantCleanupWorker(
                     ("$entry", head.EntryId),
                     ("$lane", head.LaneCode))
                 .ConfigureAwait(false);
-
         }
 
         // Children before parents: provenance, heads, versions, entries. A different order would
@@ -321,7 +297,6 @@ internal sealed class CovenantCleanupWorker(
             .ConfigureAwait(false);
 
         return heads.Length;
-
     }
 
     private static async ValueTask CleanSessionAsync(
@@ -329,7 +304,6 @@ internal sealed class CovenantCleanupWorker(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         string session = sessionId.ToString("D");
 
         await ExecuteAsync(
@@ -345,7 +319,6 @@ internal sealed class CovenantCleanupWorker(
                 cancellationToken,
                 ("$session", session))
             .ConfigureAwait(false);
-
     }
 
     private static async ValueTask<ImmutableArray<HeadIdentity>> ReadCampaignHeadsAsync(
@@ -354,7 +327,6 @@ internal sealed class CovenantCleanupWorker(
         int firstOrdinal,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -373,7 +345,6 @@ internal sealed class CovenantCleanupWorker(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             heads.Add(
                 new HeadIdentity(
                     checked(firstOrdinal + heads.Count),
@@ -381,18 +352,15 @@ internal sealed class CovenantCleanupWorker(
                     reader.GetInt32(1),
                     reader.GetInt64(2),
                     reader.GetString(3)));
-
         }
 
         return [.. heads];
-
     }
 
     private static async ValueTask<Result<Guid>> ReadDatasetGenerationAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
@@ -402,7 +370,6 @@ internal sealed class CovenantCleanupWorker(
         return value is byte[] bytes
             ? new Guid(bytes)
             : new Error(ErrorCodes.Covenant.Unavailable, "The Covenant canonical tier has no state row.");
-
     }
 
     private static async ValueTask AdvanceSearchSequenceAsync(
@@ -425,24 +392,20 @@ internal sealed class CovenantCleanupWorker(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static string NowIso() =>
-        DateTimeOffset.UtcNow.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(DateTimeOffset.UtcNow);
 
     /// <summary>
     /// One head this batch will remove, with its position in the batch-wide outbox ordinal space.
@@ -453,5 +416,4 @@ internal sealed class CovenantCleanupWorker(
         int LaneCode,
         long SearchRowId,
         string NormalizedKey);
-
 }

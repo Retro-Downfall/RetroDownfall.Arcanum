@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -17,7 +18,6 @@ namespace RetroDownfall.Arcanum.Api.Configuration;
 
 internal static class ConfigurationEndpoints
 {
-
     public static RouteGroupBuilder MapConfigurationEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet("/config", (
@@ -42,6 +42,7 @@ internal static class ConfigurationEndpoints
             ConfigurationWriter writer,
             ConfigurationValidator validator,
             IOptionsSnapshot<ArcanumSettings> currentSettings,
+            IDnsResolver dnsResolver,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
@@ -69,7 +70,6 @@ internal static class ConfigurationEndpoints
                     ResolveCurrentSettings(writer, currentSettings),
                     async (latest, token) =>
                     {
-
                         ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(
                             request,
                             latest);
@@ -80,20 +80,16 @@ internal static class ConfigurationEndpoints
 
                         if (residualMask.IsFailure)
                         {
-
                             return Result<ArcanumSettings>.Failure(residualMask.Error);
-
                         }
 
                         Result outbound = await OutboundUrlGuard
-                            .ValidateArcanumSettingsAsync(merged, token)
+                            .ValidateArcanumSettingsAsync(merged, dnsResolver, token)
                             .ConfigureAwait(false);
 
                         if (outbound.IsFailure)
                         {
-
                             return Result<ArcanumSettings>.Failure(outbound.Error);
-
                         }
 
                         Result validation = validator.Validate(merged);
@@ -101,22 +97,18 @@ internal static class ConfigurationEndpoints
                         return validation.IsSuccess
                             ? Result<ArcanumSettings>.Success(merged)
                             : Result<ArcanumSettings>.Failure(validation.Error);
-
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
 
             if (writeResult.IsFailure)
             {
-
                 if (IsConfigurationRequestFailure(writeResult.Error))
                 {
-
                     Result<bool> invalid = Result<bool>.Failure(writeResult.Error);
 
                     return Results.BadRequest(
                         ApiResponse<bool>.FromResult(invalid, traceId));
-
                 }
 
                 return Results.Json(
@@ -134,6 +126,7 @@ internal static class ConfigurationEndpoints
             ConfigurationWriter writer,
             ConfigurationValidator validator,
             IOptionsSnapshot<ArcanumSettings> currentSettings,
+            IDnsResolver dnsResolver,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
@@ -165,14 +158,15 @@ internal static class ConfigurationEndpoints
 
             if (residualMask.IsFailure)
             {
-
                 Result<bool> invalid = Result<bool>.Failure(residualMask.Error);
 
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
-
             }
 
-            Result outbound = await OutboundUrlGuard.ValidateArcanumSettingsAsync(merged, cancellationToken).ConfigureAwait(false);
+            Result outbound = await OutboundUrlGuard.ValidateArcanumSettingsAsync(
+                merged,
+                dnsResolver,
+                cancellationToken).ConfigureAwait(false);
 
             if (outbound.IsFailure)
             {
@@ -185,13 +179,11 @@ internal static class ConfigurationEndpoints
 
             if (validation.IsFailure)
             {
-
                 // API.md §8.12: semantic failure is 400, matching the sibling branches above and PUT /api/config.
                 // A 200 here lets status-code-driven scripts treat an invalid configuration as validated.
                 Result<bool> invalid = Result<bool>.Failure(validation.Error);
 
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
-
             }
 
             return Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
@@ -321,14 +313,11 @@ internal static class ConfigurationEndpoints
         ConfigurationValidator validator,
         CancellationToken cancellationToken)
     {
-
         // This helper needs the raw JsonDocument tree for RejectObsoleteJsonKeys, so it cannot route through
         // ApiRequestJson.ReadAsync — but it still owes callers the same documented 415 media-type gate.
         if (!httpContext.Request.HasJsonContentType())
         {
-
             return (null, ApiRequestJson.UnsupportedMediaTypeResult(httpContext));
-
         }
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
@@ -337,22 +326,17 @@ internal static class ConfigurationEndpoints
 
         try
         {
-
             document = await JsonDocument.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (JsonException)
         {
-
             return (null, ApiRequestJson.InvalidBodyResult(
                 httpContext,
                 "Request body must be a valid ArcanumSettings JSON object."));
-
         }
         catch (BadHttpRequestException failure)
         {
-
             // The same fault ApiRequestJson.ReadAsync answers for the routes that can use it. This
             // method reads the raw JsonDocument tree for RejectObsoleteJsonKeys and so cannot route
             // through that helper, which is exactly how PUT /api/config and POST /api/config/validate
@@ -361,47 +345,36 @@ internal static class ConfigurationEndpoints
             // Sharing the helper's own result keeps the two in step. Other routes read JSON by hand
             // too, and a hand reader that catches only JsonException still has this hole.
             return (null, ApiRequestJson.UnreadableBodyResult(httpContext, failure));
-
         }
 
         using (document)
         {
-
             Result rawTree = validator.RejectObsoleteJsonKeys(document.RootElement);
 
             if (rawTree.IsFailure)
             {
-
                 return (null, Results.BadRequest(ApiResponse<bool>.FromResult(
                     Result<bool>.Failure(rawTree.Error),
                     traceId)));
-
             }
 
             ArcanumSettings? request;
 
             try
             {
-
                 request = document.RootElement.Deserialize(ArcanumJsonContext.Default.ArcanumSettings);
-
             }
             catch (JsonException)
             {
-
                 return (null, ApiRequestJson.InvalidBodyResult(
                     httpContext,
                     "Request body must be a valid ArcanumSettings JSON object."));
-
             }
 
             return (request, null);
-
         }
-
     }
 
     private static string RedactRequired(string value) =>
         string.IsNullOrEmpty(value) ? value : "***";
-
 }

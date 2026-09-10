@@ -1,5 +1,6 @@
 using System.Net;
 using RetroDownfall.Arcanum.Api.Models;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -11,16 +12,18 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiClientPeekTests
 {
-
     [Fact]
     public async Task Buffered_api_request_uses_non_migrating_peek_authentication()
     {
-
         RecordingHandler handler = new();
 
         PeekOnlySecretStore secrets = new();
 
-        ArcanumApiClient client = new(new StubHttpClientFactory(handler), secrets);
+        ArcanumApiClient client = new(
+            new StubHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                secrets,
+                "peek-only-key"));
 
         _ = await client.GetBudgetAsync(CancellationToken.None);
 
@@ -28,38 +31,51 @@ public sealed class ArcanumApiClientPeekTests
 
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
-        Assert.Equal("peek-only-key", request.Headers.GetValues("X-Arcanum-Key").Single());
-
+        Assert.False(request.Headers.Contains(ArcanumApiHeaders.ApiKey));
+        Assert.Single(request.Headers.GetValues(
+            ArcanumApiHeaders.ProcessCapability));
     }
 
     [Theory]
     [InlineData(PeekOutcome.Missing)]
     [InlineData(PeekOutcome.Corrupted)]
     [InlineData(PeekOutcome.Unavailable)]
-    public async Task Buffered_api_request_maps_an_unusable_peek_to_missing_key_without_sending(
+    public async Task Buffered_api_request_preserves_the_typed_credential_failure_without_sending(
         PeekOutcome outcome)
     {
-
         RecordingHandler handler = new();
 
         ConfigurablePeekSecretStore secrets = new(outcome);
 
-        ArcanumApiClient client = new(new StubHttpClientFactory(handler), secrets);
+        ArcanumApiClient client = new(
+            new StubHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                secrets,
+                "peek-only-key"));
 
         Result<BudgetSummaryDto> result = await client.GetBudgetAsync(CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal(ErrorCodes.Security.MissingApiKey, result.Error.Code);
-
-        Assert.Equal(
-            "No API key found. Run 'arcanum serve' once to generate and store a key.",
-            result.Error.Message);
+        if (outcome == PeekOutcome.Missing)
+        {
+            Assert.Equal(ErrorCodes.Security.MissingApiKey, result.Error.Code);
+            Assert.Equal(
+                "No local API credential was found. Run `arcanum serve` once to create it.",
+                result.Error.Message);
+        }
+        else
+        {
+            Assert.Equal(ErrorCodes.Security.CredentialUnreadable, result.Error.Code);
+            Assert.Contains(
+                "could not be read",
+                result.Error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
 
         Assert.Equal(1, secrets.PeekCalls);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Theory]
@@ -69,36 +85,46 @@ public sealed class ArcanumApiClientPeekTests
     [InlineData(DirectStreamPath.ApprenticeChronicle, PeekOutcome.Missing)]
     [InlineData(DirectStreamPath.ApprenticeChronicle, PeekOutcome.Corrupted)]
     [InlineData(DirectStreamPath.ApprenticeChronicle, PeekOutcome.Unavailable)]
-    public async Task Direct_stream_maps_an_unusable_peek_to_missing_key_without_sending(
+    public async Task Direct_stream_preserves_the_typed_credential_failure_without_sending(
         DirectStreamPath path,
         PeekOutcome outcome)
     {
-
         RecordingHandler handler = new();
 
         ConfigurablePeekSecretStore secrets = new(outcome);
 
-        ArcanumApiClient client = new(new StubHttpClientFactory(handler), secrets);
+        ArcanumApiClient client = new(
+            new StubHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                secrets,
+                "peek-only-key"));
 
         string message = path switch
         {
-
             DirectStreamPath.Ask => await ReadAskErrorAsync(client),
 
             DirectStreamPath.ApprenticeChronicle => await ReadChronicleErrorAsync(client),
 
             _ => throw new ArgumentOutOfRangeException(nameof(path)),
-
         };
 
-        Assert.Equal(
-            "No API key found. Run 'arcanum serve' once to generate and store a key.",
-            message);
+        if (outcome == PeekOutcome.Missing)
+        {
+            Assert.Equal(
+                "No local API credential was found. Run `arcanum serve` once to create it.",
+                message);
+        }
+        else
+        {
+            Assert.Contains(
+                "could not be read",
+                message,
+                StringComparison.OrdinalIgnoreCase);
+        }
 
         Assert.Equal(1, secrets.PeekCalls);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Theory]
@@ -109,24 +135,23 @@ public sealed class ArcanumApiClientPeekTests
         HttpMethodName method,
         string expectedPath)
     {
-
         RecordingHandler handler = new();
 
         ConfigurablePeekSecretStore secrets = new(PeekOutcome.Ok);
 
-        ArcanumApiClient client = new(new StubHttpClientFactory(handler), secrets);
+        ArcanumApiClient client = new(
+            new StubHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                secrets,
+                "peek-only-key"));
 
         if (path == DirectStreamPath.Ask)
         {
-
             _ = await ReadAskErrorAsync(client);
-
         }
         else
         {
-
             _ = await ReadChronicleErrorAsync(client);
-
         }
 
         Assert.Equal(1, secrets.PeekCalls);
@@ -137,19 +162,23 @@ public sealed class ArcanumApiClientPeekTests
 
         Assert.Equal(expectedPath, request.RequestUri?.AbsolutePath);
 
-        Assert.Equal("peek-only-key", request.Headers.GetValues("X-Arcanum-Key").Single());
-
+        Assert.False(request.Headers.Contains(ArcanumApiHeaders.ApiKey));
+        Assert.Single(request.Headers.GetValues(
+            ArcanumApiHeaders.ProcessCapability));
     }
 
     [Fact]
     public async Task Buffered_api_request_propagates_cancellation_while_waiting_for_peek()
     {
-
         RecordingHandler handler = new();
 
         BlockingPeekSecretStore secrets = new();
 
-        ArcanumApiClient client = new(new StubHttpClientFactory(handler), secrets);
+        ArcanumApiClient client = new(
+            new StubHttpClientFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                secrets,
+                "peek-only-key"));
 
         using CancellationTokenSource cancellation = new();
 
@@ -162,16 +191,13 @@ public sealed class ArcanumApiClientPeekTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
-    public void Every_Arcanum_api_client_authentication_path_uses_the_shared_peek_helper()
+    public void Every_Arcanum_api_client_authentication_path_uses_the_shared_credential_lease()
     {
-
         ProductionSource[] sources =
         [
-
             .. ProductionSourceInventory.Sources()
                 .Where(static candidate =>
                     candidate.RelativePath
@@ -179,7 +205,6 @@ public sealed class ArcanumApiClientPeekTests
                         .StartsWith(
                             "src/RetroDownfall.Arcanum.Cli/Services/ArcanumApiClient",
                             StringComparison.Ordinal)),
-
         ];
 
         Assert.NotEmpty(sources);
@@ -196,25 +221,31 @@ public sealed class ArcanumApiClientPeekTests
             source,
             StringComparison.Ordinal);
 
-        Assert.Contains(
+        Assert.DoesNotContain(
             ".PeekApiKeyReadResultAsync()",
             source,
             StringComparison.Ordinal);
 
+        Assert.Contains(
+            "ArcanumApiCredentialLease credentialLease",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "ArcanumAuthenticatedHttpSender.SendAsync(",
+            source,
+            StringComparison.Ordinal);
     }
 
     private static async Task<string> ReadAskErrorAsync(ArcanumApiClient client)
     {
-
         List<IntelligenceEvent> events = [];
 
         await foreach (IntelligenceEvent frame in client.AskStreamAsync(
             new PingRequest("test"),
             CancellationToken.None))
         {
-
             events.Add(frame);
-
         }
 
         IntelligenceEvent error = Assert.Single(events);
@@ -222,21 +253,17 @@ public sealed class ArcanumApiClientPeekTests
         Assert.Equal(IntelligenceEventType.Error, error.Type);
 
         return error.Message;
-
     }
 
     private static async Task<string> ReadChronicleErrorAsync(ArcanumApiClient client)
     {
-
         List<ChronicleFrame> frames = [];
 
         await foreach (ChronicleFrame frame in client.StreamApprenticeChronicleAsync(
             Guid.Parse("11111111-1111-1111-1111-111111111111"),
             CancellationToken.None))
         {
-
             frames.Add(frame);
-
         }
 
         ChronicleFrame error = Assert.Single(frames);
@@ -244,21 +271,17 @@ public sealed class ArcanumApiClientPeekTests
         Assert.Equal("error", error.Type);
 
         return error.Message;
-
     }
 
     public enum DirectStreamPath
     {
-
         Ask,
 
         ApprenticeChronicle,
-
     }
 
     public enum PeekOutcome
     {
-
         Ok,
 
         Missing,
@@ -266,50 +289,40 @@ public sealed class ArcanumApiClientPeekTests
         Corrupted,
 
         Unavailable,
-
     }
 
     public enum HttpMethodName
     {
-
         Get,
 
         Post,
-
     }
 
     private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
-
         }
-
     }
 
     private sealed class PeekOnlySecretStore : ISecretStore
     {
-
         public int PeekCalls { get; private set; }
 
         public Task<string?> GetApiKeyAsync() =>
@@ -320,11 +333,9 @@ public sealed class ArcanumApiClientPeekTests
 
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
         {
-
             PeekCalls++;
 
             return Task.FromResult(SecretStoreReadResult.Ok("peek-only-key"));
-
         }
 
         public Task SaveApiKeyAsync(string apiKey) =>
@@ -335,12 +346,10 @@ public sealed class ArcanumApiClientPeekTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class ConfigurablePeekSecretStore(PeekOutcome outcome) : ISecretStore
     {
-
         public int PeekCalls { get; private set; }
 
         public Task<string?> GetApiKeyAsync() =>
@@ -351,12 +360,10 @@ public sealed class ArcanumApiClientPeekTests
 
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
         {
-
             PeekCalls++;
 
             return outcome switch
             {
-
                 PeekOutcome.Ok => Task.FromResult(SecretStoreReadResult.Ok("peek-only-key")),
 
                 PeekOutcome.Missing => Task.FromResult(SecretStoreReadResult.Missing()),
@@ -368,9 +375,7 @@ public sealed class ArcanumApiClientPeekTests
                     new IOException("credential backend is unavailable")),
 
                 _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
-
             };
-
         }
 
         public Task SaveApiKeyAsync(string apiKey) =>
@@ -381,12 +386,10 @@ public sealed class ArcanumApiClientPeekTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class BlockingPeekSecretStore : ISecretStore
     {
-
         private readonly TaskCompletionSource<SecretStoreReadResult> _release = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -395,12 +398,10 @@ public sealed class ArcanumApiClientPeekTests
 
         public Task<string?> GetApiKeyAsync()
         {
-
             Started.TrySetResult();
 
             return Task.FromException<string?>(
                 new InvalidOperationException("Thin API clients must use Peek."));
-
         }
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -408,11 +409,9 @@ public sealed class ArcanumApiClientPeekTests
 
         public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
         {
-
             Started.TrySetResult();
 
             return await _release.Task.ConfigureAwait(false);
-
         }
 
         public Task SaveApiKeyAsync(string apiKey) =>
@@ -423,7 +422,5 @@ public sealed class ArcanumApiClientPeekTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
-
 }

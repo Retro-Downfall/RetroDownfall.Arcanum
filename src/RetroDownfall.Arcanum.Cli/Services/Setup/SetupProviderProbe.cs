@@ -8,6 +8,7 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services.Setup;
@@ -19,7 +20,6 @@ namespace RetroDownfall.Arcanum.Cli.Services.Setup;
 /// </summary>
 public enum SetupConnectivityStatus
 {
-
     NotAttempted,
 
     Reachable,
@@ -38,7 +38,6 @@ public enum SetupConnectivityStatus
     Timeout,
 
     Unreachable,
-
 }
 
 /// <summary>
@@ -47,7 +46,6 @@ public enum SetupConnectivityStatus
 /// </summary>
 public enum SetupEndpointClass
 {
-
     Unknown,
 
     Loopback,
@@ -55,7 +53,6 @@ public enum SetupEndpointClass
     PrivateNetwork,
 
     Public,
-
 }
 
 public sealed record SetupConnectivityResult(
@@ -65,13 +62,11 @@ public sealed record SetupConnectivityResult(
     bool SelectedModelAdvertised,
     string Detail)
 {
-
     public static SetupConnectivityResult NotAttempted { get; } =
         new(SetupConnectivityStatus.NotAttempted, 0, 0, false, "Provider validation was not run.");
 
     public bool IsUsable =>
         Status is SetupConnectivityStatus.Reachable or SetupConnectivityStatus.NotAttempted;
-
 }
 
 /// <summary>
@@ -80,27 +75,22 @@ public sealed record SetupConnectivityResult(
 /// </summary>
 public interface ISetupProbeHandlerFactory
 {
-
     HttpMessageHandler Create();
-
 }
 
-public sealed class SetupProbeHandlerFactory : ISetupProbeHandlerFactory
+public sealed class SetupProbeHandlerFactory(
+    IDnsResolver dnsResolver) : ISetupProbeHandlerFactory
 {
-
-    public HttpMessageHandler Create() => OutboundUrlGuard.CreateProviderEgressHandler();
-
+    public HttpMessageHandler Create() => OutboundUrlGuard.CreateProviderEgressHandler(dnsResolver);
 }
 
 public interface ISetupProviderProbe
 {
-
     Task<SetupConnectivityResult> ProbeAsync(
         string? endpoint,
         string? model,
         string? apiKey,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -110,9 +100,9 @@ public interface ISetupProviderProbe
 /// has ever started.
 /// </summary>
 public sealed class SetupProviderProbe(
-    ISetupProbeHandlerFactory handlerFactory) : ISetupProviderProbe
+    ISetupProbeHandlerFactory handlerFactory,
+    IDnsResolver dnsResolver) : ISetupProviderProbe
 {
-
     /// <summary>Strict boundary from issue #19: a bad network must not hang the wizard.</summary>
     public static TimeSpan ProbeTimeout { get; } = TimeSpan.FromSeconds(5);
 
@@ -124,26 +114,22 @@ public sealed class SetupProviderProbe(
         string? apiKey,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(endpoint))
         {
-
             return new SetupConnectivityResult(
                 SetupConnectivityStatus.EndpointRejected,
                 0,
                 0,
                 false,
                 "The provider endpoint is empty.");
-
         }
 
         Result guard = await OutboundUrlGuard
-            .ValidateProviderEndpointAsync(endpoint, cancellationToken)
+            .ValidateProviderEndpointAsync(endpoint, dnsResolver, cancellationToken)
             .ConfigureAwait(false);
 
         if (guard.IsFailure)
         {
-
             return new SetupConnectivityResult(
                 SetupConnectivityStatus.EndpointRejected,
                 0,
@@ -151,7 +137,6 @@ public sealed class SetupProviderProbe(
                 false,
                 "The endpoint URL failed validation (invalid, unresolvable, or blocked by the "
                 + "outbound guard). Nothing was sent.");
-
         }
 
         string probeUrl = endpoint.Trim().TrimEnd('/') + "/models";
@@ -160,24 +145,19 @@ public sealed class SetupProviderProbe(
         // without disposeHandler the handler and its connection pool would outlive every probe.
         using HttpClient client = new(handlerFactory.Create(), disposeHandler: true)
         {
-
             Timeout = ProbeTimeout,
-
         };
 
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
-
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", apiKey.Trim());
-
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
 
         try
         {
-
             // ResponseHeadersRead, not the default: with ResponseContentRead the whole body is
             // buffered inside GetAsync — pre-allocated to the declared Content-Length, up to
             // HttpClient's ~2 GiB default — before ReadCappedAsync is ever consulted, which turns
@@ -190,26 +170,22 @@ public sealed class SetupProviderProbe(
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
-
                 return new SetupConnectivityResult(
                     SetupConnectivityStatus.AuthenticationFailed,
                     stopwatch.ElapsedMilliseconds,
                     0,
                     false,
                     $"The endpoint rejected the credential with HTTP {(int)response.StatusCode}.");
-
             }
 
             if (!response.IsSuccessStatusCode)
             {
-
                 return new SetupConnectivityResult(
                     SetupConnectivityStatus.Unreachable,
                     stopwatch.ElapsedMilliseconds,
                     0,
                     false,
                     $"The endpoint returned HTTP {(int)response.StatusCode}.");
-
             }
 
             string? payload = await ReadCappedAsync(response.Content, cancellationToken)
@@ -217,31 +193,26 @@ public sealed class SetupProviderProbe(
 
             if (payload is null)
             {
-
                 return new SetupConnectivityResult(
                     SetupConnectivityStatus.MalformedResponse,
                     stopwatch.ElapsedMilliseconds,
                     0,
                     false,
                     "The endpoint response exceeded the maximum allowed size and was not read.");
-
             }
 
             if (!TryParseModels(payload, out string[] models))
             {
-
                 return new SetupConnectivityResult(
                     SetupConnectivityStatus.MalformedResponse,
                     stopwatch.ElapsedMilliseconds,
                     0,
                     false,
                     "The endpoint responded successfully but the body is not an OpenAI model list.");
-
             }
 
             if (models.Length == 0)
             {
-
                 return new SetupConnectivityResult(
                     SetupConnectivityStatus.Reachable,
                     stopwatch.ElapsedMilliseconds,
@@ -249,7 +220,6 @@ public sealed class SetupProviderProbe(
                     false,
                     "The endpoint is reachable but advertises no models, so the selected model "
                     + "could not be confirmed.");
-
             }
 
             bool advertised = !string.IsNullOrWhiteSpace(model)
@@ -269,11 +239,9 @@ public sealed class SetupProviderProbe(
                     models.Length,
                     false,
                     $"The endpoint is reachable but does not advertise '{model.Trim()}'.");
-
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-
             stopwatch.Stop();
 
             return new SetupConnectivityResult(
@@ -282,17 +250,13 @@ public sealed class SetupProviderProbe(
                 0,
                 false,
                 $"The provider probe timed out after {ProbeTimeout.TotalSeconds:0} seconds.");
-
         }
         catch (HttpRequestException exception)
         {
-
             stopwatch.Stop();
 
             return Classify(exception, stopwatch.ElapsedMilliseconds);
-
         }
-
     }
 
     /// <summary>
@@ -301,52 +265,39 @@ public sealed class SetupProviderProbe(
     /// </summary>
     public static SetupEndpointClass ClassifyEndpoint(string? endpoint)
     {
-
         if (!Uri.TryCreate(endpoint?.Trim(), UriKind.Absolute, out Uri? uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-
             return SetupEndpointClass.Unknown;
-
         }
 
         if (uri.IsLoopback)
         {
-
             return SetupEndpointClass.Loopback;
-
         }
 
         if (!IPAddress.TryParse(uri.Host.Trim('[', ']'), out IPAddress? address))
         {
-
             return SetupEndpointClass.Public;
-
         }
 
         if (IPAddress.IsLoopback(address))
         {
-
             return SetupEndpointClass.Loopback;
-
         }
 
         return IsPrivate(address)
             ? SetupEndpointClass.PrivateNetwork
             : SetupEndpointClass.Public;
-
     }
 
     private static bool IsPrivate(IPAddress address)
     {
-
         if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
-
             return address.IsIPv6LinkLocal
                 || address.IsIPv6SiteLocal
                 || address.IsIPv6UniqueLocal;
-
         }
 
         Span<byte> octets = stackalloc byte[4];
@@ -356,7 +307,6 @@ public sealed class SetupProviderProbe(
                 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
                 || (octets[0] == 192 && octets[1] == 168)
                 || (octets[0] == 169 && octets[1] == 254));
-
     }
 
     private static SetupConnectivityResult Classify(
@@ -386,21 +336,17 @@ public sealed class SetupProviderProbe(
 
     private static bool TryParseModels(string json, out string[] models)
     {
-
         try
         {
-
             OpenAiModelListResponse? response = JsonSerializer.Deserialize(
                 json,
                 ArcanumJsonContext.Default.OpenAiModelListResponse);
 
             if (response is null)
             {
-
                 models = [];
 
                 return false;
-
             }
 
             models = response.Data is not { Count: > 0 } data
@@ -410,36 +356,28 @@ public sealed class SetupProviderProbe(
                     .Where(static id => !string.IsNullOrWhiteSpace(id))];
 
             return true;
-
         }
         catch (JsonException)
         {
-
             models = [];
 
             return false;
-
         }
-
     }
 
     private static async Task<string?> ReadCappedAsync(
         HttpContent content,
         CancellationToken cancellationToken)
     {
-
         if (content.Headers.ContentLength is { } declared && declared > MaxProbeResponseBytes)
         {
-
             return null;
-
         }
 
         Stream stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
         await using (stream.ConfigureAwait(false))
         {
-
             using MemoryStream buffer = new();
 
             byte[] chunk = new byte[81_920];
@@ -450,25 +388,18 @@ public sealed class SetupProviderProbe(
 
             while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
             {
-
                 total += read;
 
                 if (total > MaxProbeResponseBytes)
                 {
-
                     return null;
-
                 }
 
                 await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             return Encoding.UTF8.GetString(buffer.ToArray());
-
         }
-
     }
-
 }

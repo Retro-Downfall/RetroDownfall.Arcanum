@@ -18,13 +18,11 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class SagaExtractionCursorEvolutionTests
 {
-
     static SagaExtractionCursorEvolutionTests() => SqliteNativeRuntime.Instance.Initialize();
 
     [Fact]
     public async Task A_current_installation_refuses_a_timestamp_only_cursor_insert()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -45,13 +43,11 @@ public sealed class SagaExtractionCursorEvolutionTests
                 """));
 
         Assert.Equal(19, exception.SqliteErrorCode);
-
     }
 
     [Fact]
     public async Task Timestamp_watermarks_backfill_to_the_last_contiguous_paid_sequence_without_losing_tick_precision()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -99,7 +95,6 @@ public sealed class SagaExtractionCursorEvolutionTests
             .Instance
             .Authorize(connection, CovenantSqliteAuthorizationKind.TurnCapacityMutation))
         {
-
             await ExecuteAsync(
                 connection,
                 """
@@ -126,7 +121,6 @@ public sealed class SagaExtractionCursorEvolutionTests
                 ("$sessionId", sessionId.ToString("D").ToUpperInvariant()),
                 ("$assistantEntryId", inheritedFinalizationId.ToString("D").ToUpperInvariant()),
                 ("$createdAtUtc", watermark.ToString("o", CultureInfo.InvariantCulture)));
-
         }
 
         await ExecuteAsync(
@@ -265,19 +259,18 @@ public sealed class SagaExtractionCursorEvolutionTests
 
         GrimoireSchemaInstallResult converged = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
+            CoreSchemaVersionSevenFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, converged.Core.Health);
 
         Assert.Equal(7, converged.Core.SchemaVersion);
-
     }
 
     [Fact]
     public async Task A_large_watermark_is_checkpointed_and_resumed_across_bounded_transition_passes()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -311,8 +304,11 @@ public sealed class SagaExtractionCursorEvolutionTests
             ("$sessionId", sessionId.ToString()),
             ("$watermark", watermark.ToString("o", CultureInfo.InvariantCulture)));
 
+        GrimoireSchemaVersionChainSet target = CoreSchemaVersionSevenFixture.ChainSet();
+
         GrimoireSchemaInstallResult staged = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
+            target,
             1536,
             CancellationToken.None);
 
@@ -327,11 +323,11 @@ public sealed class SagaExtractionCursorEvolutionTests
         await using ServiceProvider services = collection.BuildServiceProvider();
 
         GrimoireSchemaInstaller installer =
-            GrimoireSchemaTestInstaller.Create(GrimoireSchemaVersionChains.Default);
+            GrimoireSchemaTestInstaller.Create(target);
 
         GrimoireSchemaTransitionCoordinator coordinator = new(
             new FixedCoreConnectionSource(connection),
-            GrimoireSchemaVersionChains.Default,
+            target,
             installer,
             new GrimoireSchemaBackfillRunner(installer, TimeProvider.System),
             services,
@@ -381,22 +377,22 @@ public sealed class SagaExtractionCursorEvolutionTests
 
         GrimoireSchemaInstallResult converged = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
+            target,
             1536,
             CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, converged.Core.Health);
 
         Assert.Equal(7, converged.Core.SchemaVersion);
-
     }
 
     private static async Task<GrimoireSchemaInstallResult> UpgradeToHeadAsync(
         SqliteConnection connection,
         long expectedUnresolvedCursorCount)
     {
-
         GrimoireSchemaInstallResult staged = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
+            CoreSchemaVersionSevenFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
@@ -416,12 +412,14 @@ public sealed class SagaExtractionCursorEvolutionTests
 
         await using ServiceProvider services = collection.BuildServiceProvider();
 
+        GrimoireSchemaVersionChainSet target = CoreSchemaVersionSevenFixture.ChainSet();
+
         GrimoireSchemaInstaller installer =
-            GrimoireSchemaTestInstaller.Create(GrimoireSchemaVersionChains.Default);
+            GrimoireSchemaTestInstaller.Create(target);
 
         GrimoireSchemaTransitionCoordinator coordinator = new(
             new FixedCoreConnectionSource(connection),
-            GrimoireSchemaVersionChains.Default,
+            target,
             installer,
             new GrimoireSchemaBackfillRunner(installer, TimeProvider.System),
             services,
@@ -429,14 +427,10 @@ public sealed class SagaExtractionCursorEvolutionTests
 
         for (int pass = 0; pass < 4; pass++)
         {
-
             if (!(await coordinator.RunOnceAsync(CancellationToken.None)).Value.Advanced)
             {
-
                 break;
-
             }
-
         }
 
         Assert.Equal(
@@ -445,7 +439,7 @@ public sealed class SagaExtractionCursorEvolutionTests
                 connection,
                 "SELECT COUNT(*) FROM saga_extraction_watermarks WHERE LastExtractedEntrySequence IS NULL;"));
 
-        string expectedDefinition = GrimoireSchemaCatalog.CoreObjects
+        string expectedDefinition = CoreSchemaVersionSevenFixture.Objects
             .Single(static definition => definition.Name == "saga_extraction_watermarks")
             .Sql;
 
@@ -459,9 +453,9 @@ public sealed class SagaExtractionCursorEvolutionTests
 
         return await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
+            target,
             1536,
             CancellationToken.None);
-
     }
 
     private static Task SeedSessionAsync(
@@ -503,7 +497,6 @@ public sealed class SagaExtractionCursorEvolutionTests
         int count,
         DateTimeOffset createdAt)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(CancellationToken.None);
 
@@ -532,7 +525,6 @@ public sealed class SagaExtractionCursorEvolutionTests
 
         for (int value = 1; value <= count; value++)
         {
-
             id.Value = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
             content.Value = $"entry {value}";
@@ -540,11 +532,9 @@ public sealed class SagaExtractionCursorEvolutionTests
             sequence.Value = value;
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-
         }
 
         await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
-
     }
 
     private static async Task ExecuteAsync(
@@ -552,20 +542,16 @@ public sealed class SagaExtractionCursorEvolutionTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-
     }
 
     private static async Task<long> ScalarInt64Async(
@@ -573,11 +559,9 @@ public sealed class SagaExtractionCursorEvolutionTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         object? value = await ScalarAsync(connection, sql, parameters).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<string> ScalarStringAsync(
@@ -585,11 +569,9 @@ public sealed class SagaExtractionCursorEvolutionTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         object? value = await ScalarAsync(connection, sql, parameters).ConfigureAwait(false);
 
         return Assert.IsType<string>(value);
-
     }
 
     private static async Task<object?> ScalarAsync(
@@ -597,31 +579,24 @@ public sealed class SagaExtractionCursorEvolutionTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         return await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
-
     }
 
     private sealed class FixedCoreConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
-
     }
-
 }

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 
@@ -25,13 +26,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <c>a2a.inbound_parked_awaiting_answer</c> is exactly what keeps it answerable after a restart
 /// (docs/Arcanum.DESIGN.md &#167;5.7.1.5).
 /// </para>
+/// <para>
+/// Each non-empty renewal pass is ordinary Grimoire work. Maintenance refusal leaves every held
+/// Sending registered so the next scheduled pass renews the same identities after reopening.
+/// </para>
 /// </remarks>
 internal sealed class A2ASendingLeaseRenewer(
     IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate admissionGate,
     TimeProvider timeProvider,
     ILogger<A2ASendingLeaseRenewer> logger) : BackgroundService
 {
-
     /// <summary>How far ahead each renewal pushes a held Sending's lease.</summary>
     internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(15);
 
@@ -47,31 +52,23 @@ internal sealed class A2ASendingLeaseRenewer(
     /// <summary>Starts renewing a Sending's lease, from the moment this process takes it.</summary>
     internal void Track(A2ASendingLedgerEntry entry)
     {
-
         if (!entry.IsRecorded)
         {
-
             return;
-
         }
 
         _held[entry.OperationId] = entry.OwnerId;
-
     }
 
     /// <summary>Stops renewing a Sending's lease, because it settled or is no longer this process's work.</summary>
     internal void Forget(A2ASendingLedgerEntry entry)
     {
-
         if (!entry.IsRecorded)
         {
-
             return;
-
         }
 
         _held.TryRemove(entry.OperationId, out _);
-
     }
 
     /// <summary>
@@ -84,15 +81,21 @@ internal sealed class A2ASendingLeaseRenewer(
     /// </remarks>
     internal async Task<int> RenewHeldAsync(CancellationToken cancellationToken)
     {
-
         if (_held.IsEmpty)
         {
-
             return 0;
+        }
 
+        if (!admissionGate.TryAcquireWorkLease(
+                GrimoireWorkKind.A2ASendingLeaseRenewal,
+                out IGrimoireWorkLease? admitted))
+        {
+            return 0;
         }
 
         int renewed = 0;
+
+        await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
@@ -102,18 +105,15 @@ internal sealed class A2ASendingLeaseRenewer(
 
         foreach (KeyValuePair<Guid, string> held in _held)
         {
-
             bool ok = await store
                 .HeartbeatAsync(held.Key, held.Value, now, now.Add(LeaseDuration), cancellationToken)
                 .ConfigureAwait(false);
 
             if (ok)
             {
-
                 renewed++;
 
                 continue;
-
             }
 
             _held.TryRemove(held.Key, out _);
@@ -121,47 +121,34 @@ internal sealed class A2ASendingLeaseRenewer(
             logger.LogDebug(
                 "A2A: Sending {OperationId} no longer holds its durable lease; it will not be renewed again.",
                 held.Key);
-
         }
 
         return renewed;
-
     }
 
     [ExcludeFromCodeCoverage] // Reason: BackgroundService scheduling loop; RenewHeldAsync carries the logic.
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         await Task.Yield();
 
         while (!stoppingToken.IsCancellationRequested)
         {
-
             try
             {
-
                 await Task.Delay(RenewalInterval, timeProvider, stoppingToken).ConfigureAwait(false);
 
                 await RenewHeldAsync(stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
             catch (Exception ex)
             {
-
                 // Best-effort like every other ledger path: a failed pass costs one renewal, and the next
                 // one is five minutes away with ten minutes of lease still in hand.
                 logger.LogWarning(ex, "A2A: a Sending lease renewal pass failed; continuing.");
-
             }
-
         }
-
     }
-
 }

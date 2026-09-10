@@ -15,15 +15,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// type answers "is the tier I am about to use the one this binary declares", per tier, so a damaged
 /// capability fails closed instead of being guessed at.
 ///
-/// <para>Every identifier reaching a <c>PRAGMA</c> here originates in a trusted manifest or the
-/// ownership registry, never in a row read from the database and never from an API value. That
-/// matters because <c>PRAGMA index_list(x)</c> takes no parameters and has to be built by
-/// interpolation; quoting is applied through one dedicated method as defense in depth.</para>
+/// <para>Index and table names are passed to SQLite's table-valued PRAGMA functions as bound values.
+/// This includes autoindex names read from the installed catalog, so a stored identifier never
+/// becomes executable SQL text.</para>
 /// </remarks>
 internal sealed class GrimoireSchemaManifestInspector(
     GrimoireSchemaTierOwnershipRegistry ownershipRegistry)
 {
-
     private const char FieldSeparator = '\u001F';
 
     private const char RowSeparator = '\u001E';
@@ -37,7 +35,6 @@ internal sealed class GrimoireSchemaManifestInspector(
         GrimoireSchemaManifest manifest,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(manifest);
@@ -46,43 +43,34 @@ internal sealed class GrimoireSchemaManifestInspector(
 
         try
         {
-
             installed = await ReadCatalogAsync(connection, transaction, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (SqliteException)
         {
-
             return GrimoireSchemaInspectionResult.Invalid(
                 GrimoireSchemaInspectionFailure.CatalogReadFailed,
                 manifest.TransactionTier.ToString());
-
         }
 
         StringBuilder frame = new();
 
         foreach (GrimoireSchemaManifestEntry entry in manifest.Entries)
         {
-
             if (!installed.TryGetValue(entry.Name, out InstalledObject found))
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     GrimoireSchemaInspectionFailure.MissingObject,
                     entry.Name);
-
             }
 
             if (!string.Equals(found.NormalizedSql, entry.NormalizedSql, StringComparison.Ordinal))
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     entry.IsSynthetic
                         ? GrimoireSchemaInspectionFailure.ShadowObjectDrift
                         : GrimoireSchemaInspectionFailure.DefinitionDrift,
                     entry.Name);
-
             }
 
             _ = frame
@@ -97,9 +85,7 @@ internal sealed class GrimoireSchemaManifestInspector(
 
             if (entry.Type is GrimoireSchemaObjectType.Trigger or GrimoireSchemaObjectType.View)
             {
-
                 continue;
-
             }
 
             GrimoireSchemaInspectionResult? indexFailure = await AppendIndexShapesAsync(
@@ -112,27 +98,21 @@ internal sealed class GrimoireSchemaManifestInspector(
 
             if (indexFailure is not null)
             {
-
                 return indexFailure;
-
             }
-
         }
 
         GrimoireSchemaInspectionResult? unexpected = DetectUnexpected(manifest, installed);
 
         if (unexpected is not null)
         {
-
             return unexpected;
-
         }
 
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(frame.ToString()));
 
         return GrimoireSchemaInspectionResult.Valid(
             GrimoireSchemaIdentity.Prefix + Convert.ToHexStringLower(hash));
-
     }
 
     /// <summary>
@@ -143,66 +123,50 @@ internal sealed class GrimoireSchemaManifestInspector(
         GrimoireSchemaManifest manifest,
         Dictionary<string, InstalledObject> installed)
     {
-
         HashSet<string> expected =
             new(manifest.Entries.Select(static entry => entry.Name), StringComparer.Ordinal);
 
         foreach (KeyValuePair<string, InstalledObject> pair in installed)
         {
-
             if (expected.Contains(pair.Key))
             {
-
                 continue;
-
             }
 
             if (pair.Value.Type == "index")
             {
-
                 // An implicit index has no SQL and is validated through its owning table's shape.
                 if (pair.Value.NormalizedSql.Length == 0)
                 {
-
                     continue;
-
                 }
 
                 if (!_ownershipRegistry.TryGetIndexOwner(pair.Key, out _))
                 {
-
                     return GrimoireSchemaInspectionResult.Invalid(
                         GrimoireSchemaInspectionFailure.UnexpectedObject,
                         pair.Key);
-
                 }
 
                 continue;
-
             }
 
             if (_ownershipRegistry.TryGetObjectOwner(pair.Key, out _))
             {
-
                 continue;
-
             }
 
             // A Covenant-prefixed object nobody declared is the dangerous case: it looks like ours
             // and would be trusted by name alone.
             if (pair.Key.StartsWith("covenant_", StringComparison.Ordinal))
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     GrimoireSchemaInspectionFailure.UnexpectedObject,
                     pair.Key);
-
             }
-
         }
 
         return null;
-
     }
 
     private static async Task<GrimoireSchemaInspectionResult?> AppendIndexShapesAsync(
@@ -213,7 +177,6 @@ internal sealed class GrimoireSchemaManifestInspector(
         StringBuilder frame,
         CancellationToken cancellationToken)
     {
-
         List<InstalledIndex> indexes = await ReadIndexListAsync(
             connection,
             transaction,
@@ -222,28 +185,23 @@ internal sealed class GrimoireSchemaManifestInspector(
 
         foreach (GrimoireExpectedIndex expected in entry.Indexes)
         {
-
             InstalledIndex? match = indexes
                 .FirstOrDefault(candidate => string.Equals(candidate.Name, expected.Name, StringComparison.Ordinal));
 
             if (match is null)
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     GrimoireSchemaInspectionFailure.MissingObject,
                     expected.Name);
-
             }
 
             if (match.IsUnique != expected.IsUnique
                 || !string.Equals(match.Origin, expected.Origin, StringComparison.Ordinal)
                 || match.IsPartial != expected.IsPartial)
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     GrimoireSchemaInspectionFailure.IndexShapeDrift,
                     expected.Name);
-
             }
 
             // Shape stops here. PRAGMA index_list reduces a partial index to a 0/1 flag and
@@ -256,11 +214,9 @@ internal sealed class GrimoireSchemaManifestInspector(
                 && declaration.NormalizedSql.Length != 0
                 && !string.Equals(declaration.NormalizedSql, expected.NormalizedSql, StringComparison.Ordinal))
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     GrimoireSchemaInspectionFailure.IndexShapeDrift,
                     expected.Name);
-
             }
 
             List<InstalledIndexColumn> columns = await ReadIndexColumnsAsync(
@@ -274,16 +230,13 @@ internal sealed class GrimoireSchemaManifestInspector(
 
             if (keyColumns.Count != expected.Columns.Count)
             {
-
                 return GrimoireSchemaInspectionResult.Invalid(
                     GrimoireSchemaInspectionFailure.IndexShapeDrift,
                     expected.Name);
-
             }
 
             for (int position = 0; position < keyColumns.Count; position++)
             {
-
                 InstalledIndexColumn actual = keyColumns[position];
 
                 GrimoireExpectedIndexColumn declared = expected.Columns[position];
@@ -292,15 +245,11 @@ internal sealed class GrimoireSchemaManifestInspector(
                     || actual.Descending != declared.Descending
                     || !string.Equals(actual.Collation, declared.Collation, StringComparison.OrdinalIgnoreCase))
                 {
-
                     return GrimoireSchemaInspectionResult.Invalid(
                         GrimoireSchemaInspectionFailure.IndexShapeDrift,
                         expected.Name);
-
                 }
-
             }
-
         }
 
         // Every index on an owned table is framed, implicit ones included. A primary key or unique
@@ -309,7 +258,6 @@ internal sealed class GrimoireSchemaManifestInspector(
         foreach (InstalledIndex index in indexes.OrderBy(static item => item.Origin, StringComparer.Ordinal)
             .ThenBy(static item => item.Name, StringComparer.Ordinal))
         {
-
             List<InstalledIndexColumn> columns = await ReadIndexColumnsAsync(
                 connection,
                 transaction,
@@ -331,21 +279,16 @@ internal sealed class GrimoireSchemaManifestInspector(
             // way it moves for a changed table definition.
             if (!index.Name.StartsWith("sqlite_autoindex_", StringComparison.Ordinal))
             {
-
                 _ = frame.Append(FieldSeparator).Append(index.Name);
 
                 if (installed.TryGetValue(index.Name, out InstalledObject declaration))
                 {
-
                     _ = frame.Append(FieldSeparator).Append(declaration.NormalizedSql);
-
                 }
-
             }
 
             foreach (InstalledIndexColumn column in columns)
             {
-
                 _ = frame
                     .Append(FieldSeparator)
                     .Append(column.Sequence.ToString(CultureInfo.InvariantCulture))
@@ -357,15 +300,12 @@ internal sealed class GrimoireSchemaManifestInspector(
                     .Append(column.Collation)
                     .Append(':')
                     .Append(column.IsKey ? '1' : '0');
-
             }
 
             _ = frame.Append(RowSeparator);
-
         }
 
         return null;
-
     }
 
     private static async Task<Dictionary<string, InstalledObject>> ReadCatalogAsync(
@@ -373,7 +313,6 @@ internal sealed class GrimoireSchemaManifestInspector(
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -392,18 +331,15 @@ internal sealed class GrimoireSchemaManifestInspector(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string sql = reader.GetString(3);
 
             installed[reader.GetString(1)] = new InstalledObject(
                 reader.GetString(0),
                 reader.GetString(2),
                 sql.Length == 0 ? string.Empty : GrimoireSqlNormalizer.Normalize(sql));
-
         }
 
         return installed;
-
     }
 
     private static async Task<List<InstalledIndex>> ReadIndexListAsync(
@@ -412,12 +348,13 @@ internal sealed class GrimoireSchemaManifestInspector(
         string tableName,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
 
-        command.CommandText = $"PRAGMA index_list({QuoteIdentifier(tableName)});";
+        command.CommandText = "SELECT * FROM pragma_index_list($table);";
+
+        _ = command.Parameters.AddWithValue("$table", tableName);
 
         List<InstalledIndex> indexes = [];
 
@@ -426,18 +363,15 @@ internal sealed class GrimoireSchemaManifestInspector(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             indexes.Add(
                 new InstalledIndex(
                     reader.GetString(1),
                     reader.GetInt64(2) != 0,
                     reader.GetString(3),
                     reader.GetInt64(4) != 0));
-
         }
 
         return indexes;
-
     }
 
     private static async Task<List<InstalledIndexColumn>> ReadIndexColumnsAsync(
@@ -446,12 +380,13 @@ internal sealed class GrimoireSchemaManifestInspector(
         string indexName,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
 
-        command.CommandText = $"PRAGMA index_xinfo({QuoteIdentifier(indexName)});";
+        command.CommandText = "SELECT * FROM pragma_index_xinfo($index);";
+
+        _ = command.Parameters.AddWithValue("$index", indexName);
 
         List<InstalledIndexColumn> columns = [];
 
@@ -460,7 +395,6 @@ internal sealed class GrimoireSchemaManifestInspector(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             columns.Add(
                 new InstalledIndexColumn(
                     (int)reader.GetInt64(0),
@@ -469,20 +403,10 @@ internal sealed class GrimoireSchemaManifestInspector(
                     reader.GetInt64(3) != 0,
                     reader.GetString(4),
                     reader.GetInt64(5) != 0));
-
         }
 
         return columns;
-
     }
-
-    /// <summary>
-    /// The single place an identifier becomes SQL text. Inputs are trusted manifest names; doubling
-    /// any embedded quote keeps that trust from being the only thing standing between a name and the
-    /// parser.
-    /// </summary>
-    private static string QuoteIdentifier(string name) =>
-        "\"" + name.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
     private readonly record struct InstalledObject(string Type, string TableName, string NormalizedSql);
 
@@ -495,5 +419,4 @@ internal sealed class GrimoireSchemaManifestInspector(
         bool Descending,
         string Collation,
         bool IsKey);
-
 }

@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -29,12 +30,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connections)
     : IArtifactSensitivityLedger
 {
-
     public async Task<Result<LabeledArtifactWriteReceipt>> LabelAsync(
         DerivedArtifactWrite write,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(write);
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
@@ -50,17 +49,14 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         if (receipt.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return receipt;
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return receipt;
-
     }
 
     public async Task<Result<ArtifactSensitivityLabel?>> TryReadLabelAsync(
@@ -68,7 +64,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         Guid artifactId,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -78,14 +73,12 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
             artifactKind,
             artifactId,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<SessionSensitivityProjection>> ReadSessionProjectionAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         // session_sensitivity_state is an always-present core table, and the Covenant dispatch gate
         // reads this projection on every session-backed turn — including on an installation whose
         // Covenant is disabled and whose canonical tier has never been opened. Taking the latching
@@ -96,7 +89,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         return await ReadProjectionWithinAsync(connection, transaction: null, sessionId, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -113,7 +105,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         DerivedArtifactWrite write,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -129,14 +120,11 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         if (existing.IsFailure)
         {
-
             return existing.Error;
-
         }
 
         if (existing.Value is { } current)
         {
-
             // The artifact already carries evidence. Repeating the exact same label is an idempotent
             // replay; anything else — including a clean relabel — would be a downgrade.
             return current.LabelDigest == BuildLabel(write, current.LabelId, current.CreatedAt).LabelDigest
@@ -149,50 +137,41 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
                 : new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "This artifact already carries different sensitivity evidence; a label is never rewritten.");
-
         }
 
         if (!write.RequiresLabel)
         {
-
             return Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
                 write.ArtifactKind,
                 write.ArtifactId,
                 ContentSensitivity.None,
                 LabelId: null,
                 LabelDigest: null));
-
         }
 
         ArtifactSensitivityLabel label = BuildLabel(write, Guid.NewGuid(), DateTimeOffset.UtcNow);
 
         try
         {
-
             await InsertLabelAsync(connection, transaction, label, cancellationToken).ConfigureAwait(false);
 
             if (label.SessionId is { } sessionId)
             {
-
                 await AdvanceProjectionAsync(
                     connection,
                     transaction,
                     sessionId,
                     label,
                     cancellationToken).ConfigureAwait(false);
-
             }
-
         }
         catch (SqliteException exception)
         {
-
             // A constraint or guard trigger refused the row. The caller's transaction is still open
             // and must not commit an artifact whose label did not land.
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 $"The sensitivity label for this artifact could not be persisted ({exception.SqliteErrorCode}).");
-
         }
 
         return Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
@@ -201,7 +180,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
             label.Sensitivity,
             label.LabelId,
             label.LabelDigest));
-
     }
 
     internal static async Task<Result<ArtifactSensitivityLabel?>> ReadLabelWithinAsync(
@@ -211,7 +189,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         Guid artifactId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -246,9 +223,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<ArtifactSensitivityLabel?>.Success(null);
-
         }
 
         Result<ArtifactSensitivityLabel> materialized = Materialize(reader);
@@ -256,7 +231,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         return materialized.IsFailure
             ? Result<ArtifactSensitivityLabel?>.Failure(materialized.Error)
             : Result<ArtifactSensitivityLabel?>.Success(materialized.Value);
-
     }
 
     /// <summary>
@@ -274,16 +248,13 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         int limit,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(callerOwnedConnection);
 
         if (afterLabelId == Guid.Empty || limit is < 1 or > CovenantProtectedArtifactErasurePage.MaxItems)
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidScope,
                 $"A sensitivity-label page carries between 1 and {CovenantProtectedArtifactErasurePage.MaxItems} rows and a nonempty cursor.");
-
         }
 
         await using SqliteCommand command = callerOwnedConnection.CreateCommand();
@@ -326,31 +297,24 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             Result<ArtifactSensitivityLabel> materialized = Materialize(reader);
 
             if (materialized.IsFailure)
             {
-
                 return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Failure(materialized.Error);
-
             }
 
             labels.Add(materialized.Value);
-
         }
 
         return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Success(labels);
-
     }
 
     /// <summary>The one decoder shared by point reads and bounded inventory pages.</summary>
     private static Result<ArtifactSensitivityLabel> Materialize(SqliteDataReader reader)
     {
-
         try
         {
-
             GenerationProvenance provenance = (GenerationProvenanceMode)reader.GetInt64(9)
                 is GenerationProvenanceMode.Exact
                 ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(10)))
@@ -370,21 +334,17 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
                 reader.IsDBNull(12) ? null : new CovenantDigest((byte[])reader.GetValue(12)),
                 reader.IsDBNull(13) ? null : new CovenantDigest((byte[])reader.GetValue(13)),
                 reader.IsDBNull(14) ? null : new CovenantDigest((byte[])reader.GetValue(14)),
-                DateTimeOffset.Parse(reader.GetString(15), CultureInfo.InvariantCulture));
-
+                UtcInstantText.Parse(reader.GetString(15)));
         }
         catch (Exception exception) when (
             exception is FormatException or OverflowException or ArgumentException)
         {
-
             // A label that cannot be reconstructed is not a missing label. Reporting absence here
             // would let a protected read proceed as though its artifact were clean.
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "This artifact's sensitivity label is malformed and cannot authorize any read.");
-
         }
-
     }
 
     internal static async Task<Result<SessionSensitivityProjection>> ReadProjectionWithinAsync(
@@ -393,7 +353,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -418,7 +377,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             // No row is the honest answer for a Session that has never produced a tainted artifact.
             return new SessionSensitivityProjection(
                 sessionId,
@@ -426,7 +384,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
                 ContentSensitivity.None,
                 CovenantDigests.Sensitivity(GenerationProvenance.CreateExact([]).ToDigestInput(ContentSensitivity.None)),
                 Revision: 0);
-
         }
 
         return new SessionSensitivityProjection(
@@ -435,7 +392,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
             (ContentSensitivity)reader.GetInt64(1),
             new CovenantDigest((byte[])reader.GetValue(2)),
             reader.GetInt64(3));
-
     }
 
     private static ArtifactSensitivityLabel BuildLabel(
@@ -450,7 +406,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -542,10 +497,9 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         _ = command.Parameters.AddWithValue(
             "$createdAtUtc",
-            label.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(label.CreatedAt));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -574,7 +528,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -616,10 +569,9 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
         _ = command.Parameters.AddWithValue(
             "$updatedAtUtc",
-            label.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(label.CreatedAt));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -642,7 +594,6 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -660,33 +611,24 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false))
         {
-
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 merged = merged.Merge(
                     (GenerationProvenanceMode)reader.GetInt64(0) is GenerationProvenanceMode.Exact
                         ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(1)))
                         : GenerationProvenance.CreateBloom((byte[])reader.GetValue(2)));
-
             }
-
         }
 
         return CovenantDigests.Sensitivity(merged.ToDigestInput(label.Sensitivity)).Bytes;
-
     }
 
     private static IEnumerable<Guid> ReadGenerations(byte[] packed)
     {
-
         for (int offset = 0; offset + 16 <= packed.Length; offset += 16)
         {
-
             yield return new Guid(packed.AsSpan(offset, 16), bigEndian: true);
-
         }
-
     }
 
     private static object OptionalDigest(CovenantDigest? digest) =>
@@ -696,5 +638,4 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
         value is { } present ? Format(present) : DBNull.Value;
 
     private static string Format(Guid value) => value.ToString().ToUpperInvariant();
-
 }

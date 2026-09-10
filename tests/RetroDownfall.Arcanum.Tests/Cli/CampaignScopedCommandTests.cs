@@ -17,13 +17,11 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class CampaignScopedCommandTests
 {
-
     private static readonly Guid SampleId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
     [Fact]
     public void Campaign_spells_calls_scoped_endpoint()
     {
-
         SpellSummary summary = new("campaign-spell", "A campaign spell", SpellSource.Campaign, []);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -39,13 +37,11 @@ public sealed class CampaignScopedCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}/spells", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Campaign_prompts_calls_scoped_endpoint()
     {
-
         PromptSummaryDto summary = new(Guid.NewGuid(), SampleId, "campaign-prompt", "1.0.0", null, [], DateTimeOffset.UtcNow);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -61,13 +57,11 @@ public sealed class CampaignScopedCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}/prompts", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Campaign_sessions_calls_scoped_endpoint_and_prints_pagination_note()
     {
-
         SessionSummaryDto summary = new(Guid.NewGuid(), SampleId, "Scoped session", "active", 3, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         SessionQueryResult queryResult = new([summary], summary.UpdatedAt, true);
@@ -85,13 +79,11 @@ public sealed class CampaignScopedCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal($"/api/campaigns/{SampleId:D}/sessions", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Campaign_spells_reports_missing_name_candidate_after_list_lookup()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<ListPageResult<CampaignDto>>(
                 new ListPageResult<CampaignDto>([], false),
@@ -105,7 +97,6 @@ public sealed class CampaignScopedCommandTests
 
         HttpRequestMessage request = Assert.Single(handler.Requests);
         Assert.Equal("/api/campaigns", request.RequestUri!.AbsolutePath);
-
     }
 
     /// <summary>
@@ -117,7 +108,6 @@ public sealed class CampaignScopedCommandTests
     [Fact]
     public void Campaign_sessions_reports_a_page_that_cannot_advance_instead_of_crashing()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<SessionQueryResult>(
                 new SessionQueryResult([], null, true),
@@ -138,12 +128,10 @@ public sealed class CampaignScopedCommandTests
             "An unexpected CLI error occurred.",
             result.Output + result.Error,
             StringComparison.Ordinal);
-
     }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -158,8 +146,11 @@ public sealed class CampaignScopedCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -167,19 +158,16 @@ public sealed class CampaignScopedCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -190,33 +178,27 @@ public sealed class CampaignScopedCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -225,7 +207,6 @@ public sealed class CampaignScopedCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -235,9 +216,6 @@ public sealed class CampaignScopedCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

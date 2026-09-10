@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     public Task InitializeAsync() => _workspace.InitializeAsync();
@@ -24,7 +23,6 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
     [Fact]
     public async Task Cleanup_deletes_selected_files_and_preserves_valid_backup_in_place()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string ordinary = Path.Combine(selected, "arcanum.json");
@@ -56,13 +54,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.Single(result.Value.PreservedBackups);
 
         Assert.True(result.Value.Verification.Succeeded);
-
     }
 
     [Fact]
     public async Task Backup_lookalike_is_an_ordinary_deletion_target()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string lookalike = Path.Combine(selected, "lookalike.arcbackup");
@@ -80,13 +76,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.False(File.Exists(lookalike));
 
         Assert.Empty(result.Value.PreservedBackups);
-
     }
 
     [Fact]
     public async Task Symlinked_entry_fails_closed_without_deleting_its_target()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string outside = _workspace.WriteFile("outside.txt", "keep");
@@ -104,13 +98,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(outside));
 
         Assert.Equal("keep", File.ReadAllText(outside));
-
     }
 
     [Fact]
     public async Task Symlinked_directory_fails_closed_without_deleting_external_contents()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string outside = _workspace.CreateSubdir("outside");
@@ -134,13 +126,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(sentinel));
 
         Assert.Equal("keep", File.ReadAllText(sentinel));
-
     }
 
     [Fact]
     public async Task Selected_root_with_a_symlinked_ancestor_fails_closed()
     {
-
         string outside = _workspace.CreateSubdir("outside-ancestor");
 
         string outsideState = Path.Combine(outside, ".arcanum");
@@ -169,13 +159,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(sentinel));
 
         Assert.Equal("keep", File.ReadAllText(sentinel));
-
     }
 
     [Fact]
     public async Task Unplanned_valid_backup_fails_before_deleting_neighboring_file()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string ordinary = Path.Combine(selected, "arcanum.json");
@@ -199,13 +187,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(ordinary));
 
         Assert.True(File.Exists(backup));
-
     }
 
     [Fact]
     public async Task Excluded_nested_root_remains_untouched_while_selected_neighbor_is_deleted()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string ordinary = Path.Combine(selected, "arcanum.json");
@@ -224,14 +210,10 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
         plan = plan with
         {
-
             AcceptedBinding = plan.AcceptedBinding with
             {
-
                 ExcludedRoots = [Path.GetFullPath(excluded)],
-
             },
-
         };
 
         InstallationResetOfflineCleanup cleanup = new();
@@ -247,13 +229,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(sentinel));
 
         Assert.Equal("keep", File.ReadAllText(sentinel));
-
     }
 
     [Fact]
     public async Task Planning_reports_exact_files_and_preserved_backups_without_writing()
     {
-
         string selected = _workspace.CreateSubdir("selected-plan");
 
         string ordinary = Path.Combine(selected, "arcanum.json");
@@ -302,13 +282,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(backup));
 
         Assert.True(File.Exists(excludedFile));
-
     }
 
     [Fact]
     public async Task Accepted_backup_replacement_fails_before_deleting_neighboring_file()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string outside = _workspace.CreateSubdir("outside");
@@ -340,13 +318,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(ordinary));
 
         Assert.True(File.Exists(backup));
-
     }
 
     [Fact]
     public async Task Accepted_backup_swap_after_capture_fails_before_deleting_neighboring_file()
     {
-
         string selected = _workspace.CreateSubdir("selected-capture-race");
 
         string outside = _workspace.CreateSubdir("outside-capture-race");
@@ -361,14 +337,13 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
         InstallationResetPlan plan = CreatePlan(selected, backup);
 
-        InstallationResetOfflineCleanup cleanup = new(() =>
-        {
+        InstallationResetOfflineCleanup cleanup = CreateObservedCleanup(
+            afterInitialCapture: () =>
+            {
+                File.Move(backup, Path.Combine(outside, "original.arcbackup"));
 
-            File.Move(backup, Path.Combine(outside, "original.arcbackup"));
-
-            WriteValidBackup(backup);
-
-        });
+                WriteValidBackup(backup);
+            });
 
         Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
             plan,
@@ -381,13 +356,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(ordinary));
 
         Assert.True(File.Exists(backup));
-
     }
 
     [Fact]
     public async Task Missing_accepted_backup_fails_before_deleting_neighboring_file()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string ordinary = Path.Combine(selected, "arcanum.json");
@@ -413,13 +386,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Data.PlanChanged, result.Error.Code);
 
         Assert.True(File.Exists(ordinary));
-
     }
 
     [Fact]
     public async Task Cleanup_rerun_preserves_accepted_backup_and_is_idempotent()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string ordinary = Path.Combine(selected, "arcanum.json");
@@ -453,22 +424,18 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(backup));
 
         Assert.Single(second.Value.PreservedBackups);
-
     }
 
     [SkippableFact]
     public async Task Failure_after_one_file_deletion_returns_progress_for_checkpointing()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what makes the root locked here.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string firstRoot = _workspace.CreateSubdir("a-deletable");
@@ -495,7 +462,6 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
         try
         {
-
             File.SetUnixFileMode(
                 lockedRoot,
                 UnixFileMode.UserRead | UnixFileMode.UserExecute);
@@ -519,21 +485,16 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
             Assert.False(File.Exists(first));
 
             Assert.True(File.Exists(locked));
-
         }
         finally
         {
-
             File.SetUnixFileMode(lockedRoot, originalMode);
-
         }
-
     }
 
     [Fact]
     public async Task File_created_after_capture_is_reported_as_unverified_with_prior_progress()
     {
-
         string selected = _workspace.CreateSubdir("selected-late-file");
 
         string initial = Path.Combine(selected, "initial.json");
@@ -544,8 +505,8 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
         long expectedBytes = new FileInfo(initial).Length;
 
-        InstallationResetOfflineCleanup cleanup = new(
-            () => File.WriteAllText(late, "late"));
+        InstallationResetOfflineCleanup cleanup = CreateObservedCleanup(
+            afterInitialCapture: () => File.WriteAllText(late, "late"));
 
         Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
             CreatePlan(selected),
@@ -569,13 +530,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.False(File.Exists(initial));
 
         Assert.True(File.Exists(late));
-
     }
 
     [Fact]
     public async Task Cancellation_after_one_file_deletion_returns_exact_resumable_progress()
     {
-
         string selected = _workspace.CreateSubdir("selected-cancelled");
 
         string first = Path.Combine(selected, "a-first.json");
@@ -590,21 +549,16 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
 
         using CancellationTokenSource cancellation = new();
 
-        InstallationResetOfflineCleanup cleanup = new(
-            afterInitialCapture: null,
+        InstallationResetOfflineCleanup cleanup = CreateObservedCleanup(
             afterFileDeleted: deletedPath =>
             {
-
                 if (string.Equals(
                     deletedPath,
                     Path.GetFullPath(first),
                     StringComparison.Ordinal))
                 {
-
                     cancellation.Cancel();
-
                 }
-
             });
 
         Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
@@ -626,7 +580,6 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.False(File.Exists(first));
 
         Assert.True(File.Exists(second));
-
     }
 
     /// <summary>
@@ -639,16 +592,13 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
     [Fact]
     public async Task Cancelling_after_a_directory_only_delete_is_reported_incomplete()
     {
-
         string selected = _workspace.CreateSubdir("selected-directory-only");
 
         _ = Directory.CreateDirectory(Path.Combine(selected, "nested"));
 
         using CancellationTokenSource cancellation = new();
 
-        InstallationResetOfflineCleanup cleanup = new(
-            afterInitialCapture: null,
-            afterFileDeleted: null,
+        InstallationResetOfflineCleanup cleanup = CreateObservedCleanup(
             afterDirectoryDeleted: _ => cancellation.Cancel());
 
         Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
@@ -666,7 +616,6 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
             Assert.Single(result.Value.Verification.RemainingIssues).Code);
 
         Assert.False(Directory.Exists(Path.Combine(selected, "nested")));
-
     }
 
     /// <summary>
@@ -679,17 +628,13 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
     [Fact]
     public async Task Directory_only_mutation_then_a_later_directory_failure_is_reported_incomplete()
     {
-
         string selected = _workspace.CreateSubdir("selected-directory-only-then-identity-changes");
 
         _ = Directory.CreateDirectory(Path.Combine(selected, "nested"));
 
-        InstallationResetOfflineCleanup cleanup = new(
-            afterInitialCapture: null,
-            afterFileDeleted: null,
+        InstallationResetOfflineCleanup cleanup = CreateObservedCleanup(
             afterDirectoryDeleted: _ =>
             {
-
                 // "nested" (the deeper path, processed first) is now gone. Delete and recreate the
                 // root itself so its identity (volume + file id) no longer matches what inventory
                 // captured, forcing the *next* directory in the loop - "selected" - into the
@@ -697,7 +642,6 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
                 Directory.Delete(selected);
 
                 Directory.CreateDirectory(selected);
-
             });
 
         Result<InstallationResetOfflineCleanupResult> result = await cleanup.ExecuteAsync(
@@ -715,13 +659,11 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, issue.Code);
 
         Assert.Contains("changed identity", issue.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Hard_linked_file_fails_closed_without_deleting_either_link()
     {
-
         string selected = _workspace.CreateSubdir("selected");
 
         string outside = _workspace.CreateSubdir("outside");
@@ -747,28 +689,24 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.True(File.Exists(outsideLink));
 
         Assert.Equal("keep", File.ReadAllText(outsideLink));
-
     }
 
     private static InstallationResetPlan CreatePlan(
         string selectedRoot,
         params string[] acceptedBackupPaths)
     {
-
         InstallationResetPreservedBackup[] acceptedBackups =
         [
             .. acceptedBackupPaths.Select(CreateAcceptedBackup),
         ];
 
         return CreatePlan([selectedRoot], acceptedBackups);
-
     }
 
     private static InstallationResetPlan CreatePlan(
         string[] selectedRoots,
         InstallationResetPreservedBackup[] acceptedBackups)
     {
-
         InstallationResetAcceptedBinding binding = new(
             "binding",
             selectedRoots,
@@ -793,12 +731,31 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
             Files: 1,
             EstimatedBytes: 5,
             binding);
+    }
 
+    private static InstallationResetOfflineCleanup CreateObservedCleanup(
+        Action? afterInitialCapture = null,
+        Action<string>? afterFileDeleted = null,
+        Action<string>? afterDirectoryDeleted = null) =>
+        new(new DelegateCleanupObserver(
+            afterInitialCapture,
+            afterFileDeleted,
+            afterDirectoryDeleted));
+
+    private sealed class DelegateCleanupObserver(
+        Action? afterInitialCapture,
+        Action<string>? afterFileDeleted,
+        Action<string>? afterDirectoryDeleted) : IInstallationResetOfflineCleanupTestObserver
+    {
+        public void AfterInitialCapture() => afterInitialCapture?.Invoke();
+
+        public void AfterFileDeleted(string path) => afterFileDeleted?.Invoke(path);
+
+        public void AfterDirectoryDeleted(string path) => afterDirectoryDeleted?.Invoke(path);
     }
 
     private static InstallationResetPreservedBackup CreateAcceptedBackup(string path)
     {
-
         Assert.True(FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
             path,
             out FileHandleMetadata metadata));
@@ -809,12 +766,10 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
                 $"{metadata.Identity.VolumeId:X16}:{metadata.Identity.FileId:X16}",
                 new FileInfo(path).Length,
                 metadata.HardLinkCount));
-
     }
 
     private static void WriteValidBackup(string path)
     {
-
         byte[] header = new byte[68];
 
         "ARCABACK"u8.CopyTo(header);
@@ -838,7 +793,5 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         File.WriteAllBytes(path, header);
-
     }
-
 }

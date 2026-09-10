@@ -40,13 +40,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal interface ICovenantConnectionDrain
 {
-
     /// <summary>
     /// Enrols one direct handle, until the returned registration is disposed.
     /// </summary>
     IDisposable Register(SqliteConnection connection);
 
-    IDisposable Register(SqliteConnection connection, Action afterPhysicalClose) => Register(connection);
+    IDisposable Register(
+        SqliteConnection connection,
+        ICovenantPhysicalCloseObserver observer) => Register(connection);
 
     /// <summary>
     /// Clears the exact pool of one physically closed handle and observes that it remains closed.
@@ -58,7 +59,15 @@ internal interface ICovenantConnectionDrain
     /// could not close.
     /// </summary>
     Task<Result> DrainAsync(CancellationToken cancellationToken);
+}
 
+/// <summary>
+/// Receives the one typed lifecycle transition produced when the drain physically closes an
+/// ordinary Grimoire connection.
+/// </summary>
+internal interface ICovenantPhysicalCloseObserver
+{
+    void OnPhysicalClose(SqliteConnection connection);
 }
 
 /// <summary>
@@ -87,138 +96,128 @@ internal interface ICovenantConnectionDrain
 /// </remarks>
 internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 {
+    private readonly Action? _beforeClearAllPools;
 
     private readonly Lock _gate = new();
 
     private readonly Dictionary<SqliteConnection, int> _handles = [];
 
-    private readonly Dictionary<SqliteConnection, List<Action>> _afterClose = [];
+    private readonly Dictionary<SqliteConnection, List<ICovenantPhysicalCloseObserver>>
+        _physicalCloseObservers = [];
+
+    public CovenantConnectionDrain()
+        : this(null)
+    {
+    }
+
+    internal CovenantConnectionDrain(Action? beforeClearAllPools)
+    {
+        _beforeClearAllPools = beforeClearAllPools;
+    }
 
     public IDisposable Register(SqliteConnection connection)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         lock (_gate)
         {
-
             _handles[connection] = _handles.TryGetValue(connection, out int enrolments)
                 ? enrolments + 1
                 : 1;
-
         }
 
         return new Enrolment(this, connection);
-
     }
 
-    public IDisposable Register(SqliteConnection connection, Action afterPhysicalClose)
+    public IDisposable Register(
+        SqliteConnection connection,
+        ICovenantPhysicalCloseObserver observer)
     {
-
-        ArgumentNullException.ThrowIfNull(afterPhysicalClose);
+        ArgumentNullException.ThrowIfNull(observer);
 
         IDisposable enrolment = Register(connection);
 
         lock (_gate)
         {
-
-            if (!_afterClose.TryGetValue(connection, out List<Action>? callbacks))
+            if (!_physicalCloseObservers.TryGetValue(
+                    connection,
+                    out List<ICovenantPhysicalCloseObserver>? observers))
             {
-
-                callbacks = [];
-                _afterClose.Add(connection, callbacks);
-
+                observers = [];
+                _physicalCloseObservers.Add(connection, observers);
             }
 
-            callbacks.Add(afterPhysicalClose);
-
+            observers.Add(observer);
         }
 
-        return new CallbackEnrolment(this, connection, afterPhysicalClose, enrolment);
-
+        return new ObservedEnrolment(this, connection, observer, enrolment);
     }
 
     public Result ClearExactPoolAfterClose(SqliteConnection connection)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         if (!IsClosed(connection))
         {
-
             return new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 "A Grimoire connection must be physically closed before its exact pool is cleared.");
-
         }
 
         SqliteConnection.ClearPool(connection);
 
         if (!IsClosed(connection))
         {
-
             return new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 "A Grimoire connection reopened while its exact pool was being cleared.");
-
         }
 
         return Result.Success();
-
     }
 
     public async Task<Result> DrainAsync(CancellationToken cancellationToken)
     {
-
         SqliteConnection[] enrolled = Snapshot();
 
         HashSet<SqliteConnection> closed = [];
 
         foreach (SqliteConnection handle in enrolled)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
-
                 await handle.CloseAsync().ConfigureAwait(false);
 
                 if (IsClosed(handle))
                 {
-
                     _ = closed.Add(handle);
 
                     NotifyPhysicalClose(handle);
-
                 }
-
             }
             catch (ObjectDisposedException)
             {
-
                 // A handle disposed without unregistering is already released. It is untidy rather
                 // than unsafe, and refusing here would block an erasure over bookkeeping.
                 _ = closed.Add(handle);
-
             }
             catch (SqliteException failed)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.MaintenanceFailed,
                     $"A Covenant connection handle did not close: {failed.Message}");
-
             }
-
         }
 
         // After the direct handles, never before: see the type remarks.
+        _beforeClearAllPools?.Invoke();
+
         SqliteConnection.ClearAllPools();
 
         foreach (SqliteConnection handle in enrolled)
         {
-
             // Open having never been observed closed is the one this owner may not pass on: nothing
             // downstream will let go of it, and the exclusive connection behind it spends a busy
             // timeout per lock before it reports a holder it cannot name. Open after a close read
@@ -226,149 +225,115 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
             // meets exactly as it meets a reopen after this call returns.
             if (!IsClosed(handle) && !closed.Contains(handle))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.MaintenanceFailed,
                     "A Covenant connection handle did not close, so no exclusive maintenance "
                     + "connection may be opened.");
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     private void NotifyPhysicalClose(SqliteConnection connection)
     {
-
-        Action[] callbacks;
+        ICovenantPhysicalCloseObserver[] observers;
 
         lock (_gate)
         {
-
-            callbacks = _afterClose.TryGetValue(connection, out List<Action>? registered)
+            observers = _physicalCloseObservers.TryGetValue(
+                    connection,
+                    out List<ICovenantPhysicalCloseObserver>? registered)
                 ? [.. registered]
                 : [];
-
         }
 
-        foreach (Action callback in callbacks)
+        foreach (ICovenantPhysicalCloseObserver observer in observers)
         {
-
-            callback();
-
+            observer.OnPhysicalClose(connection);
         }
-
     }
 
-    private void UnregisterCallback(SqliteConnection connection, Action callback)
+    private void UnregisterObserver(
+        SqliteConnection connection,
+        ICovenantPhysicalCloseObserver observer)
     {
-
         lock (_gate)
         {
-
-            if (_afterClose.TryGetValue(connection, out List<Action>? callbacks))
+            if (_physicalCloseObservers.TryGetValue(
+                    connection,
+                    out List<ICovenantPhysicalCloseObserver>? observers))
             {
+                _ = observers.Remove(observer);
 
-                _ = callbacks.Remove(callback);
-
-                if (callbacks.Count == 0)
+                if (observers.Count == 0)
                 {
-
-                    _ = _afterClose.Remove(connection);
-
+                    _ = _physicalCloseObservers.Remove(connection);
                 }
-
             }
-
         }
-
     }
 
-    private sealed class CallbackEnrolment(
+    private sealed class ObservedEnrolment(
         CovenantConnectionDrain owner,
         SqliteConnection connection,
-        Action callback,
+        ICovenantPhysicalCloseObserver observer,
         IDisposable inner) : IDisposable
     {
         private IDisposable? _inner = inner;
 
         public void Dispose()
         {
-
             IDisposable? current = Interlocked.Exchange(ref _inner, null);
 
             if (current is null)
             {
-
                 return;
-
             }
 
-            owner.UnregisterCallback(connection, callback);
+            owner.UnregisterObserver(connection, observer);
             current.Dispose();
-
         }
     }
 
     private static bool IsClosed(SqliteConnection handle)
     {
-
         try
         {
-
             return handle.State == ConnectionState.Closed;
-
         }
         catch (ObjectDisposedException)
         {
-
             return true;
-
         }
-
     }
 
     private SqliteConnection[] Snapshot()
     {
-
         lock (_gate)
         {
-
             return [.. _handles.Keys];
-
         }
-
     }
 
     private void Unregister(SqliteConnection connection)
     {
-
         lock (_gate)
         {
-
             if (!_handles.TryGetValue(connection, out int enrolments))
             {
-
                 return;
-
             }
 
             if (enrolments > 1)
             {
-
                 _handles[connection] = enrolments - 1;
 
                 return;
-
             }
 
             _ = _handles.Remove(connection);
-
         }
-
     }
 
     /// <summary>
@@ -378,25 +343,18 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
     /// </summary>
     private sealed class Enrolment(CovenantConnectionDrain owner, SqliteConnection connection) : IDisposable
     {
-
         private bool _disposed;
 
         public void Dispose()
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             _disposed = true;
 
             owner.Unregister(connection);
-
         }
-
     }
-
 }

@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
@@ -269,7 +271,9 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         string ndjson = JsonSerializer.Serialize(
             new IntelligenceEvent(IntelligenceEventType.Result, "done", "done"),
             ArcanumJsonContext.Default.IntelligenceEvent) + "\n";
-        ArcanumApiClient client = new(new Factory(new StaticNdjsonHandler(ndjson)), new FakeSecretStore());
+        ArcanumApiClient client = new(
+            new Factory(new StaticNdjsonHandler(ndjson)),
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         SessionWorkspaceService workspace = new(
             client,
             new NoopLastSessionStore(),
@@ -299,7 +303,7 @@ public sealed class CommandCenterTurnStartThreadingTests : IDisposable
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-                BaseAddress = new Uri("http://127.0.0.1:9"),
+                BaseAddress = new Uri("http://localhost:5001/"),
                 Timeout = Timeout.InfiniteTimeSpan,
             };
     }
@@ -445,13 +449,11 @@ public sealed class ShellCommandParserAttachTests
     public void Attachments_refresh_parses_logical_name(string input, string logicalName)
 
     {
-
         ParsedShellCommand parsed = _parser.Parse(input);
 
         Assert.Equal(ShellCommandKind.AttachmentsRefresh, parsed.Kind);
 
         Assert.Equal(logicalName, parsed.Argument);
-
     }
 }
 
@@ -575,7 +577,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     public async Task Attachments_list_renders_authoritative_snapshot_live_and_stale_badges_with_versions()
 
     {
-
         Guid sessionId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
         DateTimeOffset observed = DateTimeOffset.Parse("2026-08-01T15:04:05Z");
@@ -583,11 +584,9 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         SessionAttachmentDto[] payload =
 
         [
-
             Attachment(sessionId, "snapshot", "SNAPSHOT-HASH"),
 
             Attachment(
-
                 sessionId,
 
                 "live",
@@ -607,7 +606,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
                 observed),
 
             Attachment(
-
                 sessionId,
 
                 "stale",
@@ -625,7 +623,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
                 "DISK-CONTENT-HASH",
 
                 observed),
-
         ];
 
         ShellCommandDispatcher dispatcher = CreateDispatcher(_ => OkAttachments(payload));
@@ -649,7 +646,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         Assert.Contains("disk=DISK-CON", text, StringComparison.Ordinal);
 
         Assert.Contains("2026-08-01T15:04:05", text, StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -657,13 +653,11 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     public async Task Attachments_refresh_posts_selected_attachment_and_renders_backend_confirmation()
 
     {
-
         Guid sessionId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
         Guid attachmentId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 
         SessionAttachmentDto row = Attachment(
-
             sessionId,
 
             "notes",
@@ -689,27 +683,22 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         ShellCommandDispatcher dispatcher = CreateDispatcher(request =>
 
         {
-
             requests++;
 
             if (request.Method == HttpMethod.Get)
 
             {
-
                 return OkAttachments([row]);
-
             }
 
             Assert.Equal(HttpMethod.Post, request.Method);
 
             Assert.Equal(
-
                 $"/api/sessions/{sessionId:D}/attachments/{attachmentId:D}/refresh",
 
                 request.RequestUri!.AbsolutePath);
 
             return OkAttachmentRefresh(new AttachmentRefreshEvent(
-
                 Guid.Parse("bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"),
 
                 "notes",
@@ -727,7 +716,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
                 12,
 
                 DateTimeOffset.Parse("2026-08-01T15:05:00Z")));
-
         });
 
         CommandCenterState state = new(new SessionLogBuffer());
@@ -745,7 +733,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         Assert.Contains("v2", text, StringComparison.Ordinal);
 
         Assert.Contains("CURRENT-", text, StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -862,7 +849,7 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         RecordingHandler handler = new(respond);
         ArcanumApiClient client = new(
             new Factory(handler),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         SessionWorkspaceService workspace = new(
             client,
             new NoopLastSessionStore(),
@@ -889,7 +876,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     }
 
     private static SessionAttachmentDto Attachment(
-
         Guid sessionId,
 
         string logicalKey,
@@ -911,7 +897,6 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         Guid? id = null) =>
 
         new(
-
             id ?? Guid.NewGuid(),
 
             logicalKey,
@@ -949,9 +934,7 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     private static HttpResponseMessage OkAttachmentRefresh(AttachmentRefreshEvent payload)
 
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-
             new ApiResponse<AttachmentRefreshEvent>(payload, true, null),
 
             ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent);
@@ -959,15 +942,12 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         HttpResponseMessage response = new(HttpStatusCode.OK)
 
         {
-
             Content = new ByteArrayContent(json),
-
         };
 
         response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
         return response;
-
     }
 
     private static HttpResponseMessage Down() =>
@@ -987,7 +967,7 @@ public sealed class ShellCommandDispatcherAttachmentsTests
     private sealed class Factory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) =>
-            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://127.0.0.1:9") };
+            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost:5001/") };
     }
 
     private sealed class FakeSecretStore : ISecretStore
@@ -1031,31 +1011,24 @@ public sealed class ShellCommandDispatcherAttachmentsTests
 public sealed class CommandCenterAttachmentDriftMonitorTests
 
 {
-
     [Fact]
 
     public void Backend_snapshot_is_the_only_authority_for_live_to_stale_transition()
 
     {
-
         Guid id = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 
         CommandCenterState state = new(new SessionLogBuffer())
 
         {
-
             SessionAttachments =
 
             [
-
                 Attachment(id, AttachmentSourceStatus.Refreshable, true, "LOADED"),
-
             ],
-
         };
 
         IReadOnlyList<string> notices = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(
-
             state,
 
             [Attachment(id, AttachmentSourceStatus.PriorVersion, false, "DISK")]);
@@ -1067,11 +1040,9 @@ public sealed class CommandCenterAttachmentDriftMonitorTests
         Assert.Contains("DISK", notice, StringComparison.Ordinal);
 
         Assert.Equal(AttachmentSourceStatus.PriorVersion, state.SessionAttachments[0].SourceStatus);
-
     }
 
     private static SessionAttachmentDto Attachment(
-
         Guid id,
 
         AttachmentSourceStatus status,
@@ -1081,7 +1052,6 @@ public sealed class CommandCenterAttachmentDriftMonitorTests
         string observedHash) =>
 
         new(
-
             id,
 
             "notes",
@@ -1115,5 +1085,4 @@ public sealed class CommandCenterAttachmentDriftMonitorTests
             LastObservedSourceContentSha256: observedHash,
 
             LastObservedSourceWriteTime: DateTimeOffset.Parse("2026-08-01T15:00:00Z"));
-
 }

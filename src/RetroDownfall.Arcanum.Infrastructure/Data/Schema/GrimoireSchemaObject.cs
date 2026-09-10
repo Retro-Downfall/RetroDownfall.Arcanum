@@ -8,11 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </summary>
 internal enum GrimoireSchemaFamily
 {
-
     Core = 0,
 
     Covenant = 1,
-
 }
 
 /// <summary>
@@ -33,13 +31,11 @@ internal enum GrimoireSchemaFamily
 /// </summary>
 internal enum GrimoireSchemaTransactionTier
 {
-
     Core = 0,
 
     CovenantCanonical = 1,
 
     CovenantAccelerator = 2,
-
 }
 
 /// <summary>
@@ -53,7 +49,8 @@ internal enum GrimoireSchemaTransactionTier
 /// and before the triggers that write to them.</item>
 /// <item><see cref="Triggers"/> — the only objects that reference both a table and an FTS5 virtual
 /// table, so they come last.</item>
-/// <item><see cref="Views"/> — reserved for views; none exist yet.</item>
+/// <item><see cref="Views"/> — read-only diagnostic views, installed last so they can inventory
+/// the completed tier without joining any runtime write or query path.</item>
 /// </list>
 ///
 /// The retired <c>Accelerators</c> category is gone: it existed for dynamically loaded <c>vec0</c>
@@ -63,7 +60,6 @@ internal enum GrimoireSchemaTransactionTier
 /// </summary>
 internal enum GrimoireSchemaCategory
 {
-
     Tables = 0,
 
     FullTextSearch = 1,
@@ -71,7 +67,6 @@ internal enum GrimoireSchemaCategory
     Triggers = 2,
 
     Views = 3,
-
 }
 
 /// <summary>

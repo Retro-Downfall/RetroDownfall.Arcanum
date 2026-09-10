@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyClaimStore
 {
-
     public Task<IdempotencyClaim?> TryGetAsync(string claimKeyHash, CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(
@@ -163,10 +162,10 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                     AddParameter(cmd, "@fp", request.FingerprintHash);
                     AddParameter(cmd, "@state", (int)IdempotencyClaimState.Running);
                     AddParameter(cmd, "@owner", request.OwnerId);
-                    AddParameter(cmd, "@lease", request.LeaseExpiresAt.ToString("o", CultureInfo.InvariantCulture));
-                    AddParameter(cmd, "@heartbeat", request.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
-                    AddParameter(cmd, "@created", request.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
-                    AddParameter(cmd, "@updated", request.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(cmd, "@lease", UtcInstantText.Format(request.LeaseExpiresAt));
+                    AddParameter(cmd, "@heartbeat", UtcInstantText.Format(request.CreatedAt));
+                    AddParameter(cmd, "@created", UtcInstantText.Format(request.CreatedAt));
+                    AddParameter(cmd, "@updated", UtcInstantText.Format(request.CreatedAt));
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -233,8 +232,8 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                 DateTimeOffset now = DateTimeOffset.UtcNow;
                 AddParameter(cmd, "@id", claimId.ToString("N"));
                 AddParameter(cmd, "@owner", ownerId);
-                AddParameter(cmd, "@lease", leaseExpiresAt.ToString("o", CultureInfo.InvariantCulture));
-                AddParameter(cmd, "@heartbeat", now.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@lease", UtcInstantText.Format(leaseExpiresAt));
+                AddParameter(cmd, "@heartbeat", UtcInstantText.Format(now));
                 AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
 
                 int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -285,7 +284,7 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                 AddParameter(cmd, "@contentType", (object?)contentType ?? DBNull.Value);
                 AddParameter(cmd, "@body", responseBody);
                 AddParameter(cmd, "@runId", runId is Guid r ? r.ToString("N") : DBNull.Value);
-                AddParameter(cmd, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
                 AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -329,8 +328,8 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
 
                 AddParameter(cmd, "@id", claimId.ToString("N"));
                 AddParameter(cmd, "@owner", newOwnerId);
-                AddParameter(cmd, "@lease", leaseExpiresAt.ToString("o", CultureInfo.InvariantCulture));
-                AddParameter(cmd, "@now", now.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@lease", UtcInstantText.Format(leaseExpiresAt));
+                AddParameter(cmd, "@now", UtcInstantText.Format(now));
                 AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
                 AddParameter(cmd, "@runningState", (int)IdempotencyClaimState.Running);
                 AddParameter(cmd, "@claimed", (int)IdempotencyClaimState.Claimed);
@@ -362,7 +361,7 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
 
                 AddParameter(cmd, "@id", claimId.ToString("N"));
                 AddParameter(cmd, "@runId", runId.ToString("N"));
-                AddParameter(cmd, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -385,7 +384,7 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                       AND "State" IN (@completed, @failed, @abandoned)
                     """;
 
-                AddParameter(cmd, "@olderThan", olderThan.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@olderThan", UtcInstantText.Format(olderThan));
                 AddParameter(cmd, "@completed", (int)IdempotencyClaimState.Completed);
                 AddParameter(cmd, "@failed", (int)IdempotencyClaimState.Failed);
                 AddParameter(cmd, "@abandoned", (int)IdempotencyClaimState.Abandoned);
@@ -418,7 +417,7 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                 AddParameter(cmd, "@id", claimId.ToString("N"));
                 AddParameter(cmd, "@owner", ownerId);
                 AddParameter(cmd, "@state", (int)state);
-                AddParameter(cmd, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
                 AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
                 AddParameter(cmd, "@claimed", (int)IdempotencyClaimState.Claimed);
 
@@ -438,15 +437,15 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
             FingerprintHash: reader.GetString(2),
             State: (IdempotencyClaimState)reader.GetInt32(3),
             OwnerId: reader.GetString(4),
-            LeaseExpiresAt: DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
-            HeartbeatAt: DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture),
+            LeaseExpiresAt: UtcInstantText.Parse(reader.GetString(5)),
+            HeartbeatAt: UtcInstantText.Parse(reader.GetString(6)),
             RunId: runId,
             StatusCode: reader.IsDBNull(8) ? null : reader.GetInt32(8),
             ContentType: reader.IsDBNull(9) ? null : reader.GetString(9),
             ResponseBody: reader.IsDBNull(10) ? null : reader.GetString(10),
             TerminalStreamComplete: reader.GetInt32(11) != 0,
-            CreatedAt: DateTimeOffset.Parse(reader.GetString(12), CultureInfo.InvariantCulture),
-            UpdatedAt: DateTimeOffset.Parse(reader.GetString(13), CultureInfo.InvariantCulture));
+            CreatedAt: UtcInstantText.Parse(reader.GetString(12)),
+            UpdatedAt: UtcInstantText.Parse(reader.GetString(13)));
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
@@ -468,5 +467,4 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
         p.Value = value;
         cmd.Parameters.Add(p);
     }
-
 }

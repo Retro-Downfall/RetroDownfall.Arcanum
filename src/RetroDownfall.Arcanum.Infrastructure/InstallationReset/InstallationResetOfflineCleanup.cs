@@ -17,40 +17,31 @@ internal sealed record InstallationResetFileSystemInventory(
     long Files,
     long EstimatedBytes);
 
+internal interface IInstallationResetOfflineCleanupTestObserver
+{
+    void AfterInitialCapture();
+
+    void AfterFileDeleted(string path);
+
+    void AfterDirectoryDeleted(string path);
+}
+
 internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflineCleanup
 {
-
     private static ReadOnlySpan<byte> BackupMagic => "ARCABACK"u8;
 
-    private readonly Action? _afterInitialCapture;
-
-    private readonly Action<string>? _afterFileDeleted;
-
-    private readonly Action<string>? _afterDirectoryDeleted;
+    private readonly IInstallationResetOfflineCleanupTestObserver? _testObserver;
 
     public InstallationResetOfflineCleanup()
     {
-
-    }
-
-    internal InstallationResetOfflineCleanup(Action afterInitialCapture)
-        : this(afterInitialCapture, afterFileDeleted: null)
-    {
-
     }
 
     internal InstallationResetOfflineCleanup(
-        Action? afterInitialCapture,
-        Action<string>? afterFileDeleted,
-        Action<string>? afterDirectoryDeleted = null)
+        IInstallationResetOfflineCleanupTestObserver testObserver)
     {
+        ArgumentNullException.ThrowIfNull(testObserver);
 
-        _afterInitialCapture = afterInitialCapture;
-
-        _afterFileDeleted = afterFileDeleted;
-
-        _afterDirectoryDeleted = afterDirectoryDeleted;
-
+        _testObserver = testObserver;
     }
 
     public Task<Result<InstallationResetFileSystemInventory>> PlanAsync(
@@ -58,7 +49,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
         string[] excludedRoots,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(selectedRoots);
 
         ArgumentNullException.ThrowIfNull(excludedRoots);
@@ -71,7 +61,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
         try
         {
-
             HashSet<string> exclusions = new(
                 excludedRoots.Select(Path.GetFullPath),
                 PathComparer);
@@ -81,24 +70,19 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                          .Distinct(PathComparer)
                          .Order(PathComparer))
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (HasSymlinkedAncestor(selectedRoot))
                 {
-
                     return Task.FromResult(
                         Result<InstallationResetFileSystemInventory>.Failure(new Error(
                             ErrorCodes.Data.InventoryUnavailable,
                             "A selected reset root contains a symlinked ancestor.")));
-
                 }
 
                 if (exclusions.Contains(selectedRoot))
                 {
-
                     continue;
-
                 }
 
                 Result captured = CaptureSelectedRoot(
@@ -113,12 +97,9 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 if (captured.IsFailure)
                 {
-
                     return Task.FromResult(
                         Result<InstallationResetFileSystemInventory>.Failure(captured.Error));
-
                 }
-
             }
 
             InstallationResetTargetDescriptor[] targets =
@@ -158,13 +139,10 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     reportedExclusions,
                     files.Count,
                     bytes)));
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -173,21 +151,17 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 or ArgumentException
                 or OverflowException)
         {
-
             return Task.FromResult(Result<InstallationResetFileSystemInventory>.Failure(
                 new Error(
                     ErrorCodes.Data.InventoryUnavailable,
                     "The selected reset filesystem inventory is unavailable.")));
-
         }
-
     }
 
     public Task<Result<InstallationResetOfflineCleanupResult>> ExecuteAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(plan);
 
         long filesDeleted = 0;
@@ -207,17 +181,14 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
         try
         {
-
             Result<Dictionary<string, InstallationResetPreservedBackup>> acceptedResult =
                 CreateAcceptedBackupCatalog(plan.AcceptedBinding.PreservedBackups);
 
             if (acceptedResult.IsFailure)
             {
-
                 return Task.FromResult(Failure(
                     acceptedResult.Error.Code,
                     acceptedResult.Error.Message));
-
             }
 
             Dictionary<string, InstallationResetPreservedBackup> acceptedBackups =
@@ -231,25 +202,20 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
             foreach (string selectedRoot in plan.AcceptedBinding.SelectedRoots)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 string root = Path.GetFullPath(selectedRoot);
 
                 if (HasSymlinkedAncestor(root))
                 {
-
                     return Task.FromResult(Failure(
                         ErrorCodes.Data.PlanChanged,
                         "A selected reset root contains a symlinked ancestor."));
-
                 }
 
                 if (excludedRoots.Contains(root))
                 {
-
                     continue;
-
                 }
 
                 Result capture = CaptureSelectedRoot(
@@ -264,13 +230,10 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 if (capture.IsFailure)
                 {
-
                     return Task.FromResult(Failure(
                         capture.Error.Code,
                         capture.Error.Message));
-
                 }
-
             }
 
             string? missingBackup = acceptedBackups.Keys
@@ -278,36 +241,30 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
             if (missingBackup is not null)
             {
-
                 return Task.FromResult(Failure(
                     ErrorCodes.Data.PlanChanged,
                     "An accepted backup is missing or no longer a valid archive."));
-
             }
 
-            _afterInitialCapture?.Invoke();
+            _testObserver?.AfterInitialCapture();
 
             Result destructiveBoundaryVerification = VerifyAcceptedBackups(
                 acceptedBackups);
 
             if (destructiveBoundaryVerification.IsFailure)
             {
-
                 return Task.FromResult(Failure(
                     destructiveBoundaryVerification.Error.Code,
                     destructiveBoundaryVerification.Error.Message));
-
             }
 
             foreach (CleanupFile file in files
                          .OrderBy(static candidate => candidate.Artifact.Path, StringComparer.Ordinal))
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (!IdentityOwnedFileSystemCleanup.TryDelete(file.Artifact))
                 {
-
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
                         mutationCount,
@@ -315,7 +272,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset file could not be deleted safely."));
-
                 }
 
                 filesDeleted++;
@@ -324,28 +280,23 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
                 bytesDeleted += file.Length;
 
-                _afterFileDeleted?.Invoke(file.Artifact.Path);
-
+                _testObserver?.AfterFileDeleted(file.Artifact.Path);
             }
 
             foreach (IdentityOwnedFileSystemArtifact directory in directories
                          .OrderByDescending(static artifact => artifact.Path.Length)
                          .ThenBy(static artifact => artifact.Path, StringComparer.Ordinal))
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                         directory.Path,
                         out FileHandleMetadata current))
                 {
-
                     if (!Directory.Exists(directory.Path)
                         && !File.Exists(directory.Path))
                     {
-
                         continue;
-
                     }
 
                     return Task.FromResult(FailureOrIncomplete(
@@ -355,12 +306,10 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset directory could not be inspected safely."));
-
                 }
 
                 if (!MatchesDirectoryIdentity(current, directory.Metadata))
                 {
-
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
                         mutationCount,
@@ -368,7 +317,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset directory changed identity before deletion."));
-
                 }
 
                 if (Directory.EnumerateFileSystemEntries(
@@ -377,14 +325,11 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         SelectedEntryEnumeration)
                     .Any())
                 {
-
                     continue;
-
                 }
 
                 if (!IdentityOwnedFileSystemCleanup.TryDelete(directory))
                 {
-
                     return Task.FromResult(FailureOrIncomplete(
                         filesDeleted,
                         mutationCount,
@@ -392,20 +337,17 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         backups,
                         ErrorCodes.Data.RecoveryRequired,
                         "An empty selected reset directory could not be deleted safely."));
-
                 }
 
                 mutationCount++;
 
-                _afterDirectoryDeleted?.Invoke(directory.Path);
-
+                _testObserver?.AfterDirectoryDeleted(directory.Path);
             }
 
             Result backupVerification = VerifyAcceptedBackups(acceptedBackups);
 
             if (backupVerification.IsFailure)
             {
-
                 return Task.FromResult(FailureOrIncomplete(
                     filesDeleted,
                     mutationCount,
@@ -413,7 +355,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     backups,
                     backupVerification.Error.Code,
                     backupVerification.Error.Message));
-
             }
 
             Result<CleanupFile[]> remainingFiles = CaptureRemainingFiles(
@@ -424,7 +365,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
             if (remainingFiles.IsFailure)
             {
-
                 return Task.FromResult(FailureOrIncomplete(
                     filesDeleted,
                     mutationCount,
@@ -432,12 +372,10 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     backups,
                     remainingFiles.Error.Code,
                     remainingFiles.Error.Message));
-
             }
 
             if (remainingFiles.Value.Length > 0)
             {
-
                 InstallationResetIssueSummary[] issues =
                 [
                     .. remainingFiles.Value.Select(static file =>
@@ -452,7 +390,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     bytesDeleted,
                     backups,
                     issues));
-
             }
 
             InstallationResetVerification verification = new(
@@ -466,11 +403,9 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     CredentialResults: [],
                     [.. backups.OrderBy(static backup => backup.CanonicalPath, StringComparer.Ordinal)],
                     verification)));
-
         }
         catch (OperationCanceledException) when (mutationCount > 0)
         {
-
             return Task.FromResult(Incomplete(
                 filesDeleted,
                 bytesDeleted,
@@ -480,13 +415,10 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         ErrorCodes.Data.RecoveryRequired,
                         "Installation reset cleanup was cancelled after filesystem mutation."),
                 ]));
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -494,7 +426,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 or NotSupportedException
                 or ArgumentException)
         {
-
             return Task.FromResult(FailureOrIncomplete(
                 filesDeleted,
                 mutationCount,
@@ -502,9 +433,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 backups,
                 ErrorCodes.Data.RecoveryRequired,
                 "The selected reset filesystem inventory changed or became unavailable."));
-
         }
-
     }
 
     private static Result<CleanupFile[]> CaptureRemainingFiles(
@@ -513,7 +442,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
         IReadOnlyDictionary<string, InstallationResetPreservedBackup> acceptedBackups,
         CancellationToken cancellationToken)
     {
-
         List<CleanupFile> remainingFiles = [];
 
         List<IdentityOwnedFileSystemArtifact> remainingDirectories = [];
@@ -524,16 +452,13 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
         foreach (string selectedRoot in selectedRoots)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string root = Path.GetFullPath(selectedRoot);
 
             if (excludedRoots.Contains(root))
             {
-
                 continue;
-
             }
 
             Result capture = CaptureSelectedRoot(
@@ -548,11 +473,8 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
             if (capture.IsFailure)
             {
-
                 return Result<CleanupFile[]>.Failure(capture.Error);
-
             }
-
         }
 
         string? missingBackup = acceptedBackups.Keys
@@ -564,7 +486,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
             : Result<CleanupFile[]>.Failure(new Error(
                 ErrorCodes.Data.RecoveryRequired,
                 "An accepted backup is missing after offline cleanup."));
-
     }
 
     private static Result CaptureSelectedRoot(
@@ -577,12 +498,9 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
         ISet<string> excludedRoots,
         CancellationToken cancellationToken)
     {
-
         if (!TryCaptureSelectedRoot(root, out IdentityOwnedFileSystemArtifact rootArtifact))
         {
-
             return Result.Success();
-
         }
 
         Stack<IdentityOwnedFileSystemArtifact> pending = new();
@@ -593,7 +511,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
 
         while (pending.TryPop(out IdentityOwnedFileSystemArtifact directory))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -602,11 +519,9 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     out IdentityOwnedFileSystemArtifact currentDirectory)
                 || currentDirectory.Metadata != directory.Metadata)
             {
-
                 return Result.Failure(new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "A selected reset directory changed identity during inventory."));
-
             }
 
             string[] entries =
@@ -624,43 +539,34 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     out currentDirectory)
                 || currentDirectory.Metadata != directory.Metadata)
             {
-
                 return Result.Failure(new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "A selected reset directory changed identity during inventory."));
-
             }
 
             foreach (string entry in entries)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (excludedRoots.Contains(Path.GetFullPath(entry)))
                 {
-
                     continue;
-
                 }
 
                 if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                         entry,
                         out FileHandleMetadata metadata))
                 {
-
                     return Result.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset entry could not be inspected safely."));
-
                 }
 
                 if (metadata.Kind == FileSystemObjectKind.Other)
                 {
-
                     return Result.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset entry is a symlink or unsupported filesystem object."));
-
                 }
 
                 if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -669,31 +575,25 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         out IdentityOwnedFileSystemArtifact artifact)
                     || artifact.Metadata != metadata)
                 {
-
                     return Result.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset entry changed identity during inventory."));
-
                 }
 
                 if (metadata.Kind == FileSystemObjectKind.Directory)
                 {
-
                     directories.Add(artifact);
 
                     pending.Push(artifact);
 
                     continue;
-
                 }
 
                 if (metadata.HardLinkCount != 1)
                 {
-
                     return Result.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset file has multiple hard links."));
-
                 }
 
                 long length = new FileInfo(entry).Length;
@@ -703,26 +603,21 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                         out FileHandleMetadata verified)
                     || verified != metadata)
                 {
-
                     return Result.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "A selected reset file changed identity during inventory."));
-
                 }
 
                 if (IsValidBackup(entry))
                 {
-
                     if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                             entry,
                             out verified)
                         || verified != metadata)
                     {
-
                         return Result.Failure(new Error(
                             ErrorCodes.Data.RecoveryRequired,
                             "A selected backup changed identity during validation."));
-
                     }
 
                     InstallationResetPreservedBackup backup = new(
@@ -738,11 +633,9 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                                 out InstallationResetPreservedBackup? accepted)
                             || accepted != backup))
                     {
-
                         return Result.Failure(new Error(
                             ErrorCodes.Data.PlanChanged,
                             "A valid backup was not present in the accepted reset binding or changed identity."));
-
                     }
 
                     encounteredBackups?.Add(backup.CanonicalPath);
@@ -750,93 +643,72 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     backups.Add(backup);
 
                     continue;
-
                 }
 
                 files.Add(new CleanupFile(artifact, length));
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     private static Result<Dictionary<string, InstallationResetPreservedBackup>>
         CreateAcceptedBackupCatalog(
             InstallationResetPreservedBackup[] acceptedBackups)
     {
-
         Dictionary<string, InstallationResetPreservedBackup> catalog =
             new(PathComparer);
 
         foreach (InstallationResetPreservedBackup accepted in acceptedBackups)
         {
-
             if (string.IsNullOrWhiteSpace(accepted.CanonicalPath))
             {
-
                 return Result<Dictionary<string, InstallationResetPreservedBackup>>.Failure(
                     new Error(
                         ErrorCodes.Data.PlanChanged,
                         "The accepted backup binding contains an invalid path."));
-
             }
 
             string canonicalPath = Path.GetFullPath(accepted.CanonicalPath);
 
             InstallationResetPreservedBackup canonical = accepted with
             {
-
                 CanonicalPath = canonicalPath,
-
             };
 
             if (!catalog.TryAdd(canonicalPath, canonical))
             {
-
                 return Result<Dictionary<string, InstallationResetPreservedBackup>>.Failure(
                     new Error(
                         ErrorCodes.Data.PlanChanged,
                         "The accepted backup binding contains a duplicate path."));
-
             }
-
         }
 
         return Result<Dictionary<string, InstallationResetPreservedBackup>>.Success(catalog);
-
     }
 
     private static Result VerifyAcceptedBackups(
         IReadOnlyDictionary<string, InstallationResetPreservedBackup> acceptedBackups)
     {
-
         foreach (InstallationResetPreservedBackup accepted in acceptedBackups.Values)
         {
-
             if (!TryReadValidBackup(accepted.CanonicalPath, out InstallationResetPreservedBackup current)
                 || current != accepted)
             {
-
                 return Result.Failure(new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "An accepted backup changed or became unavailable during reset cleanup."));
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     private static bool TryReadValidBackup(
         string path,
         out InstallationResetPreservedBackup backup)
     {
-
         backup = default!;
 
         if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
@@ -846,9 +718,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
             || metadata.HardLinkCount != 1
             || !IsValidBackup(path))
         {
-
             return false;
-
         }
 
         long length = new FileInfo(path).Length;
@@ -858,9 +728,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 out FileHandleMetadata verified)
             || verified != metadata)
         {
-
             return false;
-
         }
 
         backup = new InstallationResetPreservedBackup(
@@ -871,21 +739,18 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 metadata.HardLinkCount));
 
         return true;
-
     }
 
     private static bool TryCaptureSelectedRoot(
         string root,
         out IdentityOwnedFileSystemArtifact artifact)
     {
-
         artifact = default;
 
         if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                 root,
                 out FileHandleMetadata metadata))
         {
-
             if (metadata.Kind != FileSystemObjectKind.Directory
                 || !IdentityOwnedFileSystemCleanup.TryCapturePath(
                     root,
@@ -893,52 +758,39 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     out artifact)
                 || artifact.Metadata != metadata)
             {
-
                 throw new IOException(
                     "A selected reset root is not an identity-owned ordinary directory.");
-
             }
 
             return true;
-
         }
 
         try
         {
-
             _ = File.GetAttributes(root);
-
         }
         catch (FileNotFoundException)
         {
-
             return false;
-
         }
         catch (DirectoryNotFoundException)
         {
-
             return false;
-
         }
 
         throw new IOException(
             "A selected reset root could not be inspected safely.");
-
     }
 
     private static bool HasSymlinkedAncestor(string path)
     {
-
         string fullPath = NormalizeMacOsSystemAlias(Path.GetFullPath(path));
 
         string? root = Path.GetPathRoot(fullPath);
 
         if (string.IsNullOrEmpty(root))
         {
-
             return true;
-
         }
 
         string current = root;
@@ -947,28 +799,21 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                      [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
                      StringSplitOptions.RemoveEmptyEntries))
         {
-
             current = Path.Combine(current, component);
 
             try
             {
-
                 FileSystemInfo entry = new DirectoryInfo(current);
 
                 if (!entry.Exists)
                 {
-
                     return false;
-
                 }
 
                 if (entry.LinkTarget is not null)
                 {
-
                     return true;
-
                 }
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -976,25 +821,18 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                     or ArgumentException
                     or NotSupportedException)
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     private static string NormalizeMacOsSystemAlias(string path)
     {
-
         if (!OperatingSystem.IsMacOS())
         {
-
             return path;
-
         }
 
         foreach ((string Alias, string Target) mapping in new[]
@@ -1004,45 +842,34 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                      ("/var", "/private/var"),
                  })
         {
-
             if (string.Equals(path, mapping.Alias, StringComparison.Ordinal))
             {
-
                 return mapping.Target;
-
             }
 
             string prefix = mapping.Alias + Path.DirectorySeparatorChar;
 
             if (path.StartsWith(prefix, StringComparison.Ordinal))
             {
-
                 return mapping.Target + path[mapping.Alias.Length..];
-
             }
-
         }
 
         return path;
-
     }
 
     private static bool IsValidBackup(string path)
     {
-
         if (!string.Equals(
                 Path.GetExtension(path),
                 BackupArchiveFormat.Extension,
                 StringComparison.OrdinalIgnoreCase))
         {
-
             return false;
-
         }
 
         try
         {
-
             Span<byte> header = stackalloc byte[68];
 
             using FileStream stream = new(
@@ -1062,18 +889,14 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 && headerLength == 68
                 && header[16] == 1
                 && header[17] == 1;
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or EndOfStreamException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool MatchesDirectoryIdentity(
@@ -1140,7 +963,6 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
     private static EnumerationOptions SelectedEntryEnumeration { get; } =
         new()
         {
-
             RecurseSubdirectories = false,
 
             AttributesToSkip = 0,
@@ -1148,11 +970,9 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
             IgnoreInaccessible = false,
 
             ReturnSpecialDirectories = false,
-
         };
 
     private sealed record CleanupFile(
         IdentityOwnedFileSystemArtifact Artifact,
         long Length);
-
 }

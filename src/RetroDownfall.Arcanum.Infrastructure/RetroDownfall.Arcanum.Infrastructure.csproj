@@ -19,14 +19,12 @@
 
     <IsTrimmable>true</IsTrimmable>
 
-    <!-- PublishAot belongs on the executable host at publish time, not on this library.
-         Leaving it true here stamped AOT feature switches into local Debug hosts and
-         broke EF LINQ (no precompiled queries). -->
+    <!-- The executable owns PublishAot. Infrastructure supplies the checked-in Native AOT compiled
+         model; application-authored database queries use direct SQLite rather than EF query
+         compilation. -->
     <PublishAot>false</PublishAot>
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
-
-    <!-- Keep false: MSBuild precompiled-query pass fails on some LINQ (e.g. ordered Include); compiled model comes from `dotnet ef dbcontext optimize`. -->
 
     <EFOptimizeContext>false</EFOptimizeContext>
 
@@ -55,10 +53,12 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.RegexAotSmoke" />
 
-    <!-- The benchmark host composes the same internal services a live host does. Measuring a public
-         facade instead would measure a facade, and rebuilding the composition against copies would
-         make the gate a test of the copies. -->
+    <!-- The dedicated benchmark hosts compose the same internal services a live host does.
+         Measuring a public facade instead would measure a facade, and rebuilding either composition
+         against copies would make its gate a test of the copies. -->
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Covenant.Benchmarks" />
+
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks" />
 
   </ItemGroup>
 
@@ -79,11 +79,6 @@
   <ItemGroup>
 
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.10" />
-
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.10">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
 
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
 

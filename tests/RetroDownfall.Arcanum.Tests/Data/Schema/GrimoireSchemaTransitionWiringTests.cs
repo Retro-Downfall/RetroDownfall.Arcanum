@@ -14,16 +14,16 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class GrimoireSchemaTransitionWiringTests
 {
-
     [Fact]
     public void The_transition_coordinator_is_driven_by_production_code()
     {
-
         string[] callers =
         [
             .. ProductionSourceInventory.Sources()
-                .Where(static source => !source.Is("GrimoireSchemaTransitionCoordinator.cs"))
-                .Where(static source => source.Names(".RunOnceAsync(stoppingToken"))
+                .Where(static source => source.Is("GrimoireSchemaTransitionHostedService.cs"))
+                .Where(static source => source.Names(
+                    ".GetRequiredService<GrimoireSchemaTransitionCoordinator>()"))
+                .Where(static source => source.Names(".RunOnceAsync(cancellationToken)"))
                 .Select(static source => source.RelativePath),
         ];
 
@@ -31,13 +31,11 @@ public sealed class GrimoireSchemaTransitionWiringTests
             callers.Length > 0,
             "No production source drives GrimoireSchemaTransitionCoordinator.RunOnceAsync, so a pending "
             + "schema transition would never drain.");
-
     }
 
     [Fact]
     public void The_backfill_runner_is_driven_by_the_coordinator()
     {
-
         string[] callers =
         [
             .. ProductionSourceInventory.Sources()
@@ -49,13 +47,11 @@ public sealed class GrimoireSchemaTransitionWiringTests
         Assert.True(
             callers.Length > 0,
             "No production source drives GrimoireSchemaBackfillRunner.AdvanceAsync.");
-
     }
 
     [Fact]
     public void The_transition_hosted_service_is_registered_on_the_long_running_host()
     {
-
         string[] registrations =
         [
             .. ProductionSourceInventory.Sources()
@@ -67,7 +63,6 @@ public sealed class GrimoireSchemaTransitionWiringTests
         Assert.True(
             registrations.Length > 0,
             "GrimoireSchemaTransitionHostedService is not registered, so nothing schedules a pass.");
-
     }
 
     /// <summary>
@@ -77,7 +72,6 @@ public sealed class GrimoireSchemaTransitionWiringTests
     [Fact]
     public void The_shipped_chain_set_is_registered_in_every_composition_root()
     {
-
         int registrations = ProductionSourceInventory.Sources()
             .Where(static source => source.Is("ServiceCollectionExtensions.cs"))
             .Sum(static source => source.Occurrences("services.AddSingleton(static _ => GrimoireSchemaVersionChains.Default)"));
@@ -86,7 +80,5 @@ public sealed class GrimoireSchemaTransitionWiringTests
             registrations >= 2,
             $"The shipped schema chain set is registered {registrations} time(s); the host and the CLI "
             + "composition roots both resolve GrimoireSchemaInstaller and both need it.");
-
     }
-
 }

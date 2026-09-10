@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantOfflineTransitionLaunchGapResumption
 {
-
     /// <summary>
     /// Resumes the adopted owner, or reports that nothing was adopted.
     /// </summary>
@@ -44,10 +43,9 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
         IGrimoireOfflineTransitionHandlerDispatch dispatch,
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
-        CovenantExclusiveRecoveryOwner? adopted,
+        CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner? adopted,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(dispatch);
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -56,20 +54,20 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
 
         if (adopted is not { } owner)
         {
-
             return Result.Success();
-
         }
 
         Result<LongRunningOperationSettlementOutcome> dispatched = await dispatch
-            .DispatchAsync(heldInstallationLock, guardedDirectory, owner.OperationId, cancellationToken)
+            .DispatchAsync(
+                heldInstallationLock,
+                guardedDirectory,
+                new AdoptedLaunchOwnerEvidence(owner.Owner, owner.ExpectedOperation),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (dispatched.IsFailure)
         {
-
             return Result.Failure(dispatched.Error);
-
         }
 
         return dispatched.Value is LongRunningOperationSettlementOutcome.Completed
@@ -77,7 +75,6 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
             or LongRunningOperationSettlementOutcome.Abandoned
                 ? Result.Success()
                 : Refusal();
-
     }
 
     private static Result Refusal() =>
@@ -85,4 +82,8 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "An offline transition launched before this start could not be finished before readiness.");
 
+    private sealed class AdoptedLaunchOwnerEvidence(
+        CovenantExclusiveRecoveryOwner owner,
+        LongRunningOperationRecoveryFingerprint expectedOperation)
+        : LongRunningRecoveryOwnerEvidence(owner, expectedOperation);
 }

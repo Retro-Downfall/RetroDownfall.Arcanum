@@ -25,30 +25,11 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// Card <em>before</em> the remote task exists, so a modality mismatch is a named local failure rather
 /// than something discovered mid-exchange (or never discovered at all).
 /// </summary>
-[Collection("OutboundUrlGuardDns")]
-public sealed class A2AOutboundModalityTests : IDisposable
+public sealed class A2AOutboundModalityTests
 {
-
     private const string FakeAgentHost = "modality-agent.example.test";
 
     private const string DiscoveryUrl = $"http://{FakeAgentHost}/";
-
-    private readonly IDnsResolver _originalResolver;
-
-    public A2AOutboundModalityTests()
-    {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        FakeDnsResolver fake = new();
-
-        fake.Add(FakeAgentHost, IPAddress.Parse("93.184.216.34"));
-
-        OutboundUrlGuard.DnsResolver = fake;
-
-    }
-
-    public void Dispose() => OutboundUrlGuard.DnsResolver = _originalResolver;
 
     // ---------------------------------------------------------------------------------------------
     // Policy: what gets asked for, and whether the card can produce it.
@@ -57,7 +38,6 @@ public sealed class A2AOutboundModalityTests : IDisposable
     [Fact]
     public void ValidateOutboundModes_UnstatedPreference_DefaultsToWhatThisInstanceConsumes()
     {
-
         ConclaveA2ASettings a2a = new();
 
         AgentCard card = CardWith(defaultOutputModes: ["text/plain"]);
@@ -69,13 +49,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         // Stating nothing on the wire leaves the peer free to answer in a modality this instance cannot
         // read; the default is the honest declaration of what it can.
         Assert.Equal(["text/plain"], result.Value.AcceptedOutputModes);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_OperatorDeclaredInputModes_BecomeTheOutboundDefault()
     {
-
         ConclaveA2ASettings a2a = new() { InputModes = ["text/plain", "application/json"] };
 
         AgentCard card = CardWith(defaultOutputModes: ["application/json"]);
@@ -87,13 +65,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.Equal(["text/plain", "application/json"], result.Value.AcceptedOutputModes);
 
         Assert.Equal("application/json", result.Value.NegotiatedOutputMode);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_Match_ReportsTheNegotiatedMode()
     {
-
         AgentCard card = CardWith(defaultOutputModes: ["application/json", "text/plain"]);
 
         Result<A2AOutboundModality> result = A2AAgentCardPolicy.ValidateOutboundModes(
@@ -104,13 +80,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("text/plain", result.Value.NegotiatedOutputMode);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_Mismatch_NamesBothSides()
     {
-
         AgentCard card = CardWith(defaultOutputModes: ["application/json"]);
 
         Result<A2AOutboundModality> result = A2AAgentCardPolicy.ValidateOutboundModes(
@@ -126,13 +100,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.Contains("audio/wav", result.Error.Message, StringComparison.Ordinal);
 
         Assert.Contains("application/json", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_CardAdvertisesNothing_IsNotAMismatch()
     {
-
         // A peer that says nothing has not said "no". Treating silence as refusal would break every
         // dispatch that works today.
         AgentCard card = CardWith(defaultOutputModes: null);
@@ -145,13 +117,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Null(result.Value.NegotiatedOutputMode);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_EmptyCardModalityList_IsNotAMismatch()
     {
-
         AgentCard card = CardWith(defaultOutputModes: []);
 
         Result<A2AOutboundModality> result = A2AAgentCardPolicy.ValidateOutboundModes(
@@ -160,13 +130,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
             new A2ASendingOptions(AcceptedOutputModes: ["audio/wav"]));
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_NamedSkill_UsesThatSkillsOutputModes()
     {
-
         AgentCard card = CardWith(defaultOutputModes: ["text/plain"]);
 
         card.Skills =
@@ -192,13 +160,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.True(mismatched.IsFailure);
 
         Assert.Equal(ErrorCodes.Sending.ModalityMismatch, mismatched.Error.Code);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_SkillWithNoOwnModes_FallsBackToTheCardDefaults()
     {
-
         AgentCard card = CardWith(defaultOutputModes: ["text/plain"]);
 
         card.Skills = [new AgentSkill { Id = "anything" }];
@@ -211,13 +177,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("text/plain", result.Value.NegotiatedOutputMode);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_UnknownSkill_FailsNamingWhatTheCardAdvertises()
     {
-
         AgentCard card = CardWith(defaultOutputModes: ["text/plain"]);
 
         card.Skills = [new AgentSkill { Id = "apprentice-goal-execution" }];
@@ -234,13 +198,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.Contains("summarize", result.Error.Message, StringComparison.Ordinal);
 
         Assert.Contains("apprentice-goal-execution", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void ValidateOutboundModes_SkillRequestedButCardListsNoSkills_IsNotAMismatch()
     {
-
         // Same rule as modalities: a card that advertises no skills has not refused one.
         AgentCard card = CardWith(defaultOutputModes: ["text/plain"]);
 
@@ -252,7 +214,6 @@ public sealed class A2AOutboundModalityTests : IDisposable
             new A2ASendingOptions(SkillId: "summarize"));
 
         Assert.True(result.IsSuccess);
-
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -262,7 +223,6 @@ public sealed class A2AOutboundModalityTests : IDisposable
     [Fact]
     public async Task DispatchSendingAsync_PeerCannotProduceTheRequestedMode_FailsBeforeCreatingTheRemoteTask()
     {
-
         CountingAgentHandler agentHandler = new("never reached");
 
         AgentCard card = BuildFakeCard();
@@ -287,13 +247,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
 
         // The whole point: no remote task was created, so nothing is left running on the far side.
         Assert.Equal(0, agentHandler.Executions);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_PeerAdvertisesNoModalities_IsStillDispatchedTo()
     {
-
         AgentCard card = BuildFakeCard();
 
         card.DefaultOutputModes = null!;
@@ -309,13 +267,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.True(result.IsSuccess);
 
         Assert.Equal("answered", result.Value.ResponseText);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_UnknownSkillId_FailsBeforeCreatingTheRemoteTask()
     {
-
         CountingAgentHandler agentHandler = new("never reached");
 
         AgentCard card = BuildFakeCard();
@@ -339,13 +295,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.Equal(ErrorCodes.Sending.SkillNotAdvertised, result.Error.Code);
 
         Assert.Equal(0, agentHandler.Executions);
-
     }
 
     [Fact]
     public async Task DispatchSendingAsync_StatesItsAcceptedOutputModesOnTheWire()
     {
-
         ConfigurationCapturingAgentHandler agentHandler = new("answered");
 
         using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler);
@@ -360,13 +314,11 @@ public sealed class A2AOutboundModalityTests : IDisposable
 
         // Never stating a preference is what let a peer answer in a modality this instance cannot read.
         Assert.Equal(["text/plain"], agentHandler.ObservedAcceptedOutputModes);
-
     }
 
     [Fact]
     public async Task ContinueSendingAsync_ValidatesModalitiesToo()
     {
-
         CountingAgentHandler agentHandler = new("never reached");
 
         AgentCard card = BuildFakeCard();
@@ -390,7 +342,6 @@ public sealed class A2AOutboundModalityTests : IDisposable
         Assert.Equal(ErrorCodes.Sending.ModalityMismatch, result.Error.Code);
 
         Assert.Equal(0, agentHandler.Executions);
-
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -419,29 +370,37 @@ public sealed class A2AOutboundModalityTests : IDisposable
     };
 
     private static A2AClientService CreateClient(HttpMessageHandler handler, ArcanumSettings settings) =>
-        new(new FakeHttpClientFactory(handler), new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<A2AClientService>.Instance);
+        new(
+            new FakeHttpClientFactory(handler),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<A2AClientService>.Instance,
+            DeterministicDns());
+
+    private static IDnsResolver DeterministicDns()
+    {
+        FakeDnsResolver dns = new();
+        dns.Add(FakeAgentHost, IPAddress.Parse("93.184.216.34"));
+
+        return dns;
+    }
 
     private static async Task<TestServer> CreateFakeRemoteAgentServerAsync(IAgentHandler agentHandler, AgentCard? card = null)
     {
-
         AgentCard advertised = card ?? BuildFakeCard();
 
         IHostBuilder hostBuilder = new HostBuilder()
             .ConfigureWebHost(webHost =>
             {
-
                 webHost.UseTestServer();
 
                 webHost.ConfigureServices(static services => services.AddRouting());
 
                 webHost.Configure(app =>
                 {
-
                     app.UseRouting();
 
                     app.UseEndpoints(endpoints =>
                     {
-
                         A2AServer server = new(
                             agentHandler,
                             new InMemoryTaskStore(),
@@ -452,17 +411,13 @@ public sealed class A2AOutboundModalityTests : IDisposable
                         endpoints.MapA2A(server, "/agent");
 
                         endpoints.MapWellKnownAgentCard(advertised);
-
                     });
-
                 });
-
             });
 
         IHost host = await hostBuilder.StartAsync().ConfigureAwait(false);
 
         return host.GetTestServer();
-
     }
 
     private static AgentCard BuildFakeCard() => new()
@@ -481,22 +436,18 @@ public sealed class A2AOutboundModalityTests : IDisposable
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
-
     }
 
     /// <summary>Completes immediately and counts how many times the peer was actually asked to work.</summary>
     private sealed class CountingAgentHandler(string responseText) : IAgentHandler
     {
-
         private int _executions;
 
         public int Executions => Volatile.Read(ref _executions);
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             _ = Interlocked.Increment(ref _executions);
 
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
@@ -508,23 +459,19 @@ public sealed class A2AOutboundModalityTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText(responseText)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
             Task.CompletedTask;
-
     }
 
     /// <summary>Records the send configuration the caller put on the wire.</summary>
     private sealed class ConfigurationCapturingAgentHandler(string responseText) : IAgentHandler
     {
-
         public string[] ObservedAcceptedOutputModes { get; private set; } = [];
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
-
             ObservedAcceptedOutputModes = [.. context.Configuration?.AcceptedOutputModes ?? []];
 
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
@@ -536,12 +483,9 @@ public sealed class A2AOutboundModalityTests : IDisposable
             await updater.AddArtifactAsync([Part.FromText(responseText)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-
         }
 
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
             Task.CompletedTask;
-
     }
-
 }

@@ -17,7 +17,8 @@ public sealed record ConclaveCastRequest(
     string WorkspacePath = "",
     Guid? CampaignId = null,
     Guid? ParentApprenticeId = null,
-    IReadOnlyList<string>? DelegationChain = null);
+    IReadOnlyList<string>? DelegationChain = null,
+    bool LaunchRequested = false);
 
 /// <summary>
 /// The <strong>Conclave Archmage</strong> mints child Apprentices for cross-Apprentice delegation.
@@ -27,7 +28,5 @@ public sealed record ConclaveCastRequest(
 /// </summary>
 public interface IConclaveArchmage
 {
-
     Task<Result<Apprentice>> CastAsync(ConclaveCastRequest request, CancellationToken cancellationToken = default);
-
 }

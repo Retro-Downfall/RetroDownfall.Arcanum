@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 {
-
     private const string PortVariable = "ARCANUM_Arcanum__Host__Port";
 
     private TempWorkspace _workspace = null!;
@@ -34,7 +33,6 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -47,12 +45,10 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         global::System.Environment.SetEnvironmentVariable(
             "ARCANUM_TEST_HOME",
             _workspace.Root);
-
     }
 
     public async Task DisposeAsync()
     {
-
         global::System.Environment.SetEnvironmentVariable(PortVariable, _originalPort);
 
         global::System.Environment.SetEnvironmentVariable(
@@ -60,14 +56,12 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
             _originalTestHome);
 
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
 
     public async Task Local_read_keeps_persisted_and_environment_effective_values_distinct()
     {
-
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
         await File.WriteAllTextAsync(
@@ -78,7 +72,7 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 
         ArcanumApiClient apiClient = new(
             new UnreachableHttpClientFactory(),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
 
         ConfigurationCommandService service = new(
             apiClient,
@@ -96,14 +90,12 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         Assert.Equal(5001, result.Value.Settings.Host.Port);
 
         Assert.Equal(6124, result.Value.EffectiveSettings().Host.Port);
-
     }
 
     [Fact]
 
     public async Task Local_write_rejects_a_change_committed_after_the_snapshot_read()
     {
-
         global::System.Environment.SetEnvironmentVariable(PortVariable, null);
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
@@ -117,7 +109,7 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         ConfigurationCommandService service = new(
             new ArcanumApiClient(
                 new UnreachableHttpClientFactory(),
-                new FakeSecretStore()),
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key")),
             new ConfigurationValidator(),
             writer,
             new RecordingGrimoireCliInitialization());
@@ -129,9 +121,7 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 
         ArcanumSettings competing = read.Value.Settings with
         {
-
             Host = read.Value.Settings.Host with { Port = 6124 },
-
         };
 
         Assert.True((await writer.WriteAsync(
@@ -140,9 +130,7 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 
         ArcanumSettings staleEdit = read.Value.Settings with
         {
-
             Host = read.Value.Settings.Host with { Port = 7333 },
-
         };
 
         Result write = await service.WriteAsync(
@@ -157,7 +145,6 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         Assert.Equal(
             6124,
             ConfigurationBootstrapper.LoadPersistedArcanumSettings().Host.Port);
-
     }
 
     [Theory]
@@ -166,7 +153,6 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
     [InlineData("An installation factory reset is active.")]
     public async Task Local_write_refusal_preserves_configuration_bytes(string refusal)
     {
-
         global::System.Environment.SetEnvironmentVariable(PortVariable, null);
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
@@ -182,7 +168,7 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         services.AddSingleton(
             new ArcanumApiClient(
                 new UnreachableHttpClientFactory(),
-                new FakeSecretStore()));
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key")));
 
         services.AddSingleton(new ConfigurationValidator());
 
@@ -205,9 +191,7 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 
         ArcanumSettings candidate = persisted with
         {
-
             Host = persisted.Host with { Port = 7333 },
-
         };
 
         _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -218,36 +202,28 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
         Assert.Equal(1, initialization.ExclusiveCalls);
 
         Assert.Equal(0, initialization.BootstrapCalls);
-
     }
 
     private sealed class UnreachableHttpClientFactory : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(new UnreachableHandler())
             {
-
-                BaseAddress = new Uri("http://127.0.0.1:5001/"),
-
+                BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class UnreachableHandler : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             Task.FromException<HttpResponseMessage>(
                 new HttpRequestException("Connection refused."));
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>("test-key");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -260,7 +236,5 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
-
 }

@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 [Collection("Grimoire")]
 public sealed class CampaignRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -28,14 +27,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
     public CampaignRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -45,39 +41,29 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Directory.CreateDirectory(_workspaceRoot);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_workspaceRoot))
         {
-
             Directory.Delete(_workspaceRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task AddAsync_GetByNameAsync_and_GetByPathAsync_round_trip()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string campaignDir = Path.Combine(_workspaceRoot, "alpha");
@@ -94,6 +80,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             Name = "Alpha",
             Path = campaignDir,
             Type = WorkspaceType.Campaign,
+            Description = "A fully populated campaign",
             Settings = CampaignRepository.SerializeSettings(CampaignSettings.CreateDefault()),
             SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(CampaignRepository.DefaultSanctumConfig()),
             CreatedAt = now,
@@ -122,12 +109,28 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Assert.Equal(saved.Id, byPath!.Id);
 
+        Assert.Equal(campaign.Name, byId!.Name);
+
+        Assert.Equal("alpha", byId.NameLower);
+
+        Assert.Equal(campaign.Path, byId.Path);
+
+        Assert.Equal(campaign.Type, byId.Type);
+
+        Assert.Equal(campaign.Description, byId.Description);
+
+        Assert.Equal(campaign.Settings, byId.Settings);
+
+        Assert.Equal(campaign.SanctumConfigJson, byId.SanctumConfigJson);
+
+        Assert.Equal(campaign.CreatedAt, byId.CreatedAt);
+
+        Assert.Equal(campaign.UpdatedAt, byId.UpdatedAt);
     }
 
     [SkippableFact]
     public async Task ListAsync_UpdateAsync_and_DeleteAsync_manage_campaigns()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CampaignRepository repository = CreateRepository();
@@ -162,7 +165,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
                 Id = Guid.NewGuid(),
                 Name = "Alpha",
                 Path = secondDir,
-                Type = WorkspaceType.Campaign,
+                Type = WorkspaceType.Custom,
                 Settings = CampaignRepository.SerializeSettings(CampaignSettings.CreateDefault()),
                 SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(CampaignRepository.DefaultSanctumConfig()),
                 CreatedAt = now,
@@ -173,6 +176,13 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         ListPageResult<Campaign> page = await repository.ListAsync(typeFilter: null, limit: 10, cancellationToken: CancellationToken.None);
 
         Assert.Equal(["Alpha", "Zulu"], page.Items.Select(c => c.Name).ToArray());
+
+        ListPageResult<Campaign> filtered = await repository.ListAsync(
+            WorkspaceType.Campaign,
+            limit: 10,
+            cancellationToken: CancellationToken.None);
+
+        Assert.Equal([first.Id], filtered.Items.Select(static campaign => campaign.Id));
 
         first.Name = "Zulu Prime";
 
@@ -189,13 +199,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Equal(1, await repository.CountAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task DeleteAsync_nulls_session_campaign_references()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CampaignRepository repository = CreateRepository();
@@ -245,25 +253,21 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Assert.NotNull(session);
 
         Assert.Null(session!.CampaignId);
-
     }
 
     [Fact]
     public void AddAsync_contract_returns_result()
     {
-
         Type returnType = typeof(ICampaignRepository)
             .GetMethod(nameof(ICampaignRepository.AddAsync))!
             .ReturnType;
 
         Assert.Equal(typeof(Task<Result<Campaign>>), returnType);
-
     }
 
     [SkippableFact]
     public async Task AddAsync_beyond_the_former_total_count_ceiling_succeeds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CampaignRepository repository = CreateRepository();
@@ -279,13 +283,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Assert.Equal(
             FormerCodeOwnedMaxCampaigns + 1,
             await repository.CountAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task AddAsync_two_contexts_near_the_former_ceiling_both_succeed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignsAsync(FormerCodeOwnedMaxCampaigns - 1, "concurrent-seed");
@@ -341,13 +343,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Assert.Equal(
             FormerCodeOwnedMaxCampaigns + 1,
             await verificationContext.Campaigns.CountAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task AddAsync_unrelated_write_failure_is_not_mapped_to_max()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CampaignRepository repository = CreateRepository();
@@ -373,13 +373,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         await using ArcanumDbContext verificationContext = _fixture.CreateContext(_dbPath);
 
         Assert.Equal(1, await verificationContext.Campaigns.CountAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task AddAsync_waits_beyond_former_retry_ceiling_without_poisoning_entity_state()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _db!.Database.OpenConnectionAsync(CancellationToken.None);
@@ -410,16 +408,12 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         repository.RetryingForTesting = (attempt, _, _) =>
         {
-
             if (attempt >= 5)
             {
-
                 _ = retryCeilingPassed.TrySetResult();
-
             }
 
             return ValueTask.CompletedTask;
-
         };
 
         using CancellationTokenSource watchdog = new(TimeSpan.FromSeconds(20));
@@ -430,9 +424,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         try
         {
-
             await retryCeilingPassed.Task.WaitAsync(watchdog.Token);
-
         }
         finally
         {
@@ -450,13 +442,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Assert.Equal(EntityState.Unchanged, _db.Entry(campaign).State);
 
         Assert.Equal(1, await repository.CountAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task AddAsync_canceled_during_contention_is_bounded()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _db!.Database.OpenConnectionAsync(CancellationToken.None);
@@ -515,12 +505,10 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         Assert.True(
             elapsed.Elapsed < TimeSpan.FromSeconds(3),
             $"Cancellation took {elapsed.Elapsed}; expected one bounded acquisition attempt plus retry cancellation.");
-
     }
 
     private Campaign NewCampaign(string suffix, bool createDirectory = true)
     {
-
         string campaignDir = Path.Combine(_workspaceRoot, suffix);
 
         if (createDirectory)
@@ -541,29 +529,24 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             CreatedAt = now,
             UpdatedAt = now,
         };
-
     }
 
     private const int FormerCodeOwnedMaxCampaigns = 500;
 
     private async Task SeedCampaignsAsync(int count, string namePrefix)
     {
-
         await using ArcanumDbContext seedContext = _fixture.CreateContext(_dbPath);
 
         for (int i = 0; i < count; i++)
         {
-
             Campaign campaign = NewCampaign($"{namePrefix}-{i}", createDirectory: false);
 
             campaign.NameLower = campaign.Name.ToLowerInvariant();
 
             _ = seedContext.Campaigns.Add(campaign);
-
         }
 
         _ = await seedContext.SaveChangesAsync(CancellationToken.None);
-
     }
 
     private CampaignRepository CreateRepository(ArcanumDbContext? db = null)
@@ -572,7 +555,5 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             db ?? _db!,
             NullLogger<CampaignRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
-
     }
-
 }

@@ -16,11 +16,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class SpellCastCommandTests
 {
-
     [Fact]
     public void Spell_cast_posts_to_cast_endpoint_and_prints_panel()
     {
-
         SpellCastResult cast = new(
             "greet",
             "Say hello",
@@ -44,13 +42,11 @@ public sealed class SpellCastCommandTests
         Assert.Equal(HttpMethod.Post, request.Method);
 
         Assert.Equal("/api/spells/greet/cast", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Spell_cast_prints_error_on_failure()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<SpellCastResult>(null, false, new Error("Spell.NotFound", "No spell exists with that name.")),
             ArcanumJsonContext.Default.ApiResponseSpellCastResult,
@@ -59,12 +55,10 @@ public sealed class SpellCastCommandTests
         CliTestResult result = RunCommand(handler, ["spell", "cast", "missing", "--workspace", "/tmp/ws"]);
 
         Assert.Equal(1, result.ExitCode);
-
     }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -79,8 +73,11 @@ public sealed class SpellCastCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -88,19 +85,16 @@ public sealed class SpellCastCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -111,33 +105,27 @@ public sealed class SpellCastCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -146,7 +134,6 @@ public sealed class SpellCastCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -156,9 +143,6 @@ public sealed class SpellCastCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

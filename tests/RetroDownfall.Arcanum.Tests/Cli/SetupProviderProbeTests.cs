@@ -14,34 +14,14 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// authentication failure, model absence, malformed response, and timeout, must stay inside a strict
 /// timeout, and must never spend inference tokens.
 /// </summary>
-[Collection("OutboundUrlGuardDns")]
-public sealed class SetupProviderProbeTests : IDisposable
+public sealed class SetupProviderProbeTests
 {
-
     private const string ModelListJson =
         """{"object":"list","data":[{"id":"gpt-test"},{"id":"other-model"}]}""";
-
-    private readonly IDnsResolver _originalResolver;
-
-    public SetupProviderProbeTests()
-    {
-
-        _originalResolver = OutboundUrlGuard.DnsResolver;
-
-        FakeDnsResolver fake = new();
-
-        fake.Add("provider.test", IPAddress.Parse("93.184.216.34"));
-
-        OutboundUrlGuard.DnsResolver = fake;
-
-    }
-
-    public void Dispose() => OutboundUrlGuard.DnsResolver = _originalResolver;
 
     [Fact]
     public async Task A_reachable_endpoint_that_advertises_the_model_is_reachable()
     {
-
         SetupConnectivityResult result = await Probe(
             new ScriptedHandler(Json(ModelListJson)),
             model: "gpt-test");
@@ -51,13 +31,11 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.True(result.SelectedModelAdvertised);
 
         Assert.Equal(2, result.ModelsAdvertised);
-
     }
 
     [Fact]
     public async Task Only_the_non_billable_models_route_is_requested()
     {
-
         ScriptedHandler handler = new(Json(ModelListJson));
 
         _ = await Probe(handler, model: "gpt-test");
@@ -65,13 +43,11 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.Equal("https://provider.test/v1/models", handler.RequestUri?.ToString());
 
         Assert.Equal(HttpMethod.Get, handler.Method);
-
     }
 
     [Fact]
     public async Task A_supplied_credential_is_sent_as_a_bearer_token_and_never_returned()
     {
-
         const string Secret = "sk-probe-secret";
 
         ScriptedHandler handler = new(Json(ModelListJson));
@@ -86,25 +62,21 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.Equal(Secret, handler.Authorization?.Parameter);
 
         Assert.DoesNotContain(Secret, result.Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_keyless_provider_sends_no_authorization_header()
     {
-
         ScriptedHandler handler = new(Json(ModelListJson));
 
         _ = await Probe(handler, model: "gpt-test");
 
         Assert.Null(handler.Authorization);
-
     }
 
     [Fact]
     public async Task A_reachable_endpoint_without_the_selected_model_reports_model_absence()
     {
-
         SetupConnectivityResult result = await Probe(
             new ScriptedHandler(Json(ModelListJson)),
             model: "missing-model");
@@ -114,13 +86,11 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.False(result.SelectedModelAdvertised);
 
         Assert.Contains("missing-model", result.Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task An_endpoint_that_advertises_no_models_stays_reachable_and_says_so()
     {
-
         SetupConnectivityResult result = await Probe(
             new ScriptedHandler(Json("""{"object":"list","data":[]}""")),
             model: "gpt-test");
@@ -130,7 +100,6 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.Equal(0, result.ModelsAdvertised);
 
         Assert.Contains("no models", result.Detail, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -138,19 +107,16 @@ public sealed class SetupProviderProbeTests : IDisposable
     [InlineData(HttpStatusCode.Forbidden)]
     public async Task Rejected_credentials_report_authentication_failure(HttpStatusCode statusCode)
     {
-
         SetupConnectivityResult result = await Probe(
             new ScriptedHandler(new HttpResponseMessage(statusCode)),
             model: "gpt-test");
 
         Assert.Equal(SetupConnectivityStatus.AuthenticationFailed, result.Status);
-
     }
 
     [Fact]
     public async Task Other_error_status_codes_report_unreachable_with_the_status()
     {
-
         SetupConnectivityResult result = await Probe(
             new ScriptedHandler(new HttpResponseMessage(HttpStatusCode.BadGateway)),
             model: "gpt-test");
@@ -158,25 +124,21 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.Equal(SetupConnectivityStatus.Unreachable, result.Status);
 
         Assert.Contains("502", result.Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_successful_response_that_is_not_a_model_list_reports_malformed()
     {
-
         SetupConnectivityResult result = await Probe(
             new ScriptedHandler(Json("<html>not json</html>")),
             model: "gpt-test");
 
         Assert.Equal(SetupConnectivityStatus.MalformedResponse, result.Status);
-
     }
 
     [Fact]
     public async Task A_tls_failure_is_reported_separately_from_a_connection_failure()
     {
-
         SetupConnectivityResult result = await Probe(
             new ThrowingHandler(
                 new HttpRequestException(
@@ -185,7 +147,6 @@ public sealed class SetupProviderProbeTests : IDisposable
             model: "gpt-test");
 
         Assert.Equal(SetupConnectivityStatus.TlsFailure, result.Status);
-
     }
 
     [Theory]
@@ -193,34 +154,29 @@ public sealed class SetupProviderProbeTests : IDisposable
     [InlineData(HttpRequestError.ConnectionError)]
     public async Task Dns_and_connection_failures_report_unreachable(HttpRequestError error)
     {
-
         SetupConnectivityResult result = await Probe(
             new ThrowingHandler(new HttpRequestException(error, "no route")),
             model: "gpt-test");
 
         Assert.Equal(SetupConnectivityStatus.Unreachable, result.Status);
-
     }
 
     [Fact]
     public async Task A_stalled_endpoint_reports_a_timeout_within_the_probe_budget()
     {
-
         SetupConnectivityResult result = await Probe(
             new ThrowingHandler(new TaskCanceledException("timed out")),
             model: "gpt-test");
 
         Assert.Equal(SetupConnectivityStatus.Timeout, result.Status);
-
     }
 
     [Fact]
     public async Task An_endpoint_rejected_by_the_outbound_guard_is_never_contacted()
     {
-
         ScriptedHandler handler = new(Json(ModelListJson));
 
-        SetupProviderProbe probe = new(new StubHttpMessageHandlerFactory(handler));
+        SetupProviderProbe probe = CreateProbe(handler);
 
         SetupConnectivityResult result = await probe.ProbeAsync(
             "not-a-url",
@@ -231,27 +187,22 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.Equal(SetupConnectivityStatus.EndpointRejected, result.Status);
 
         Assert.Null(handler.RequestUri);
-
     }
 
     [Fact]
     public async Task Each_probe_disposes_the_egress_handler_it_was_handed()
     {
-
         ScriptedHandler handler = new(Json(ModelListJson));
 
         _ = await Probe(handler, model: "gpt-test");
 
         Assert.True(handler.Disposed);
-
     }
 
     [Fact]
     public void The_probe_timeout_stays_within_the_documented_boundary()
     {
-
         Assert.Equal(TimeSpan.FromSeconds(5), SetupProviderProbe.ProbeTimeout);
-
     }
 
     [Theory]
@@ -267,9 +218,7 @@ public sealed class SetupProviderProbeTests : IDisposable
         string endpoint,
         SetupEndpointClass expected)
     {
-
         Assert.Equal(expected, SetupProviderProbe.ClassifyEndpoint(endpoint));
-
     }
 
     /// <summary>
@@ -280,14 +229,11 @@ public sealed class SetupProviderProbeTests : IDisposable
     [Fact]
     public async Task An_oversized_body_is_refused_without_being_buffered_first()
     {
-
         CountingStream body = new(OversizedBodyBytes);
 
         HttpResponseMessage response = new(HttpStatusCode.OK)
         {
-
             Content = new StreamContent(body),
-
         };
 
         response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -303,7 +249,6 @@ public sealed class SetupProviderProbeTests : IDisposable
         Assert.True(
             body.BytesRead <= ReadBudgetBytes,
             $"The probe pulled {body.BytesRead} bytes for a body it refuses at 4 MiB.");
-
     }
 
     /// <summary>A body far beyond the 4 MiB cap, streamed rather than materialised by the test.</summary>
@@ -317,36 +262,39 @@ public sealed class SetupProviderProbeTests : IDisposable
         string model,
         string? apiKey = null)
     {
-
-        SetupProviderProbe probe = new(new StubHttpMessageHandlerFactory(handler));
+        SetupProviderProbe probe = CreateProbe(handler);
 
         return probe.ProbeAsync(
             "https://provider.test/v1",
             model,
             apiKey,
             CancellationToken.None);
+    }
 
+    private static SetupProviderProbe CreateProbe(HttpMessageHandler handler)
+    {
+        FakeDnsResolver dns = new();
+        dns.Add("provider.test", IPAddress.Parse("93.184.216.34"));
+
+        return new SetupProviderProbe(
+            new StubHttpMessageHandlerFactory(handler),
+            dns);
     }
 
     private static HttpResponseMessage Json(string body) =>
         new(HttpStatusCode.OK)
         {
-
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
-
         };
 
     private sealed class StubHttpMessageHandlerFactory(HttpMessageHandler handler)
         : ISetupProbeHandlerFactory
     {
-
         public HttpMessageHandler Create() => handler;
-
     }
 
     private sealed class ScriptedHandler(HttpResponseMessage response) : HttpMessageHandler
     {
-
         public Uri? RequestUri { get; private set; }
 
         public HttpMethod? Method { get; private set; }
@@ -359,7 +307,6 @@ public sealed class SetupProviderProbeTests : IDisposable
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             RequestUri = request.RequestUri;
 
             Method = request.Method;
@@ -367,28 +314,22 @@ public sealed class SetupProviderProbeTests : IDisposable
             Authorization = request.Headers.Authorization;
 
             return Task.FromResult(response);
-
         }
 
         protected override void Dispose(bool disposing)
         {
-
             Disposed = true;
 
             base.Dispose(disposing);
-
         }
-
     }
 
     private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             Task.FromException<HttpResponseMessage>(exception);
-
     }
 
     /// <summary>
@@ -397,7 +338,6 @@ public sealed class SetupProviderProbeTests : IDisposable
     /// </summary>
     private sealed class CountingStream(long length) : Stream
     {
-
         public long BytesRead { get; private set; }
 
         public override bool CanRead => true;
@@ -419,14 +359,11 @@ public sealed class SetupProviderProbeTests : IDisposable
 
         public override int Read(Span<byte> buffer)
         {
-
             int take = (int)Math.Min(buffer.Length, length - BytesRead);
 
             if (take <= 0)
             {
-
                 return 0;
-
             }
 
             buffer[..take].Fill((byte)'a');
@@ -434,7 +371,6 @@ public sealed class SetupProviderProbeTests : IDisposable
             BytesRead += take;
 
             return take;
-
         }
 
         public override ValueTask<int> ReadAsync(
@@ -460,7 +396,5 @@ public sealed class SetupProviderProbeTests : IDisposable
 
         public override void Write(byte[] buffer, int offset, int count) =>
             throw new NotSupportedException();
-
     }
-
 }

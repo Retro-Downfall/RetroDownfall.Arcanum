@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </summary>
 internal static class CovenantCanonicalSchemaVersionTwoFixture
 {
-
     internal const string PublishedFingerprint =
         "BC0914DABEF7A54B0637E66697EE47CC7F2077E67B40BCE6D824EDE2913EDC61";
 
@@ -111,7 +110,7 @@ internal static class CovenantCanonicalSchemaVersionTwoFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CovenantCanonicalObjects.Select(definition => definition.Name == "covenant_versions"
+        .. CovenantCanonicalSchemaVersionThreeFixture.Objects.Select(definition => definition.Name == "covenant_versions"
             ? CovenantVersionsObject
             : definition),
     ];
@@ -138,5 +137,4 @@ internal static class CovenantCanonicalSchemaVersionTwoFixture
                 ]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
         ]);
-
 }

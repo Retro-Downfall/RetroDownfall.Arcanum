@@ -7,13 +7,11 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationValidatorTests
 {
-
     private readonly ConfigurationValidator _validator = new();
 
     [Fact]
     public void Validate_ValidOpenAiCompatibleProvider_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -30,7 +28,6 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
@@ -295,7 +292,6 @@ public sealed class ConfigurationValidatorTests
     [Fact]
     public void Validate_OpenAiCompatibleProviderWithoutModels_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -320,13 +316,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("ollama", StringComparison.OrdinalIgnoreCase));
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("no configured models", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public void Validate_OpenAiCompatibleProviderWithMalformedEndpoint_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -353,13 +347,11 @@ public sealed class ConfigurationValidatorTests
         Assert.DoesNotContain(
             result.Error.Details!,
             static e => e.Detail.Contains("not a valid uri", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Validate_OpenAiCompatibleProviderWithNonHttpEndpointScheme_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -377,13 +369,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsFailure);
-
     }
 
     [Fact]
     public void Validate_OpenAiCompatibleProviderWithValidHttpsEndpoint_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -401,13 +391,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_DuplicateProviderNames_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -424,13 +412,11 @@ public sealed class ConfigurationValidatorTests
         Assert.NotNull(result.Error.Details);
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("unique", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public void Validate_DuplicateProviderNamesCaseInsensitive_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -443,13 +429,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsFailure);
-
     }
 
     [Fact]
     public void Validate_UniqueProviderNames_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -462,13 +446,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_DefaultModelNotConfigured_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             DefaultModel = "missing-model",
@@ -492,13 +474,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "defaultModel");
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("missing-model", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Validate_FastModelNotConfigured_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             FastModel = "fast-missing",
@@ -522,13 +502,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "fastModel");
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("fast-missing", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Validate_DefaultModelExactMatch_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             DefaultModel = "llama3:latest",
@@ -546,13 +524,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_MultipleErrors_ReturnsStructuredDetails()
     {
-
         ArcanumSettings settings = new()
         {
             DefaultModel = "missing",
@@ -581,7 +557,6 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details, static e => e.Pointer == "defaultModel");
 
         Assert.Contains(result.Error.Details, static e => e.Pointer == "fastModel");
-
     }
 
     [Fact]
@@ -596,88 +571,67 @@ public sealed class ConfigurationValidatorTests
             ArcanumSettingClamps.McpMaxJsonRpcLineBytes(mcp.MaxJsonRpcLineBytes));
 
         Assert.Equal(configuredCap, effectiveCap);
-
     }
 
     [Fact]
     public void Validate_NullProviders_uses_empty_provider_list()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers = null!,
-
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_FastModelExactMatch_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
-
             FastModel = "llama3:latest",
 
             Providers =
             [
-
                 new ProviderSettings
                 {
-
                     Name = "ollama",
 
                     Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3:latest"],
-
                 },
-
             ],
-
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_RelativeAllowedRoot_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings
                 {
-
                     Name = "ollama",
 
                     Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3"],
-
                 },
-
             ],
 
             Security = new SecuritySettings
             {
                 CampaignRoots = ["relative/path"],
-
             },
-
         };
 
         Result result = _validator.Validate(settings);
@@ -685,38 +639,29 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "security.campaignRoots");
-
     }
 
     [Fact]
     public void Validate_MissingAllowedRootDirectory_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings
                 {
-
                     Name = "ollama",
 
                     Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3"],
-
                 },
-
             ],
 
             Security = new SecuritySettings
             {
                 SpellWorkspaceRoots = [Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid())],
-
             },
-
         };
 
         Result result = _validator.Validate(settings);
@@ -724,90 +669,68 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "security.spellWorkspaceRoots");
-
     }
 
     [Fact]
     public void Validate_ValidAllowedRootDirectory_ReturnsSuccess()
     {
-
         string tempDir = Path.Combine(Path.GetTempPath(), "arcanum-tests", Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(tempDir);
 
         try
         {
-
             ArcanumSettings settings = new()
             {
-
                 Providers =
                 [
-
                     new ProviderSettings
                     {
-
                         Name = "ollama",
 
                         Type = AiProviderKind.OpenAICompatible,
 
                         Models = ["llama3"],
-
                     },
-
                 ],
 
                 Security = new SecuritySettings
                 {
                     PerceptionWorkspaceRoots = [tempDir],
-
                 },
-
             };
 
             Result result = _validator.Validate(settings);
 
             Assert.True(result.IsSuccess);
-
         }
         finally
         {
-
             Directory.Delete(tempDir, recursive: true);
-
         }
-
     }
 
     [Fact]
     public void Validate_MissingHostWorkspace_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings
                 {
-
                     Name = "ollama",
 
                     Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3"],
-
                 },
-
             ],
 
             Workspaces = new WorkspaceSettings
             {
                 DefaultRoot = Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid()),
-
             },
-
         };
 
         Result result = _validator.Validate(settings);
@@ -815,71 +738,53 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "workspaces.defaultRoot");
-
     }
 
     [Fact]
     public void Validate_NullFeatures_DoesNotThrow()
     {
-
         ArcanumSettings settings = new()
         {
-
             Features = null!,
 
             Providers =
             [
-
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
             ],
-
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_NullIntegrations_DoesNotThrow()
     {
-
         ArcanumSettings settings = new()
         {
-
             Integrations = null!,
 
             Providers =
             [
-
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
             ],
-
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_NullProviderModels_TreatedAsNoModels()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = null! },
-
             ],
-
         };
 
         Result result = _validator.Validate(settings);
@@ -887,39 +792,31 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0]");
-
     }
 
     [Fact]
     public void Validate_NullPublicPolicySubObjects_DoesNotThrow()
     {
-
         ArcanumSettings settings = new()
         {
-
             Security = null!,
             Workspaces = null!,
             Host = null!,
 
             Providers =
             [
-
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
             ],
-
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_EmbeddingsDisabled_ReturnsSuccess_WithNoProviderOrModel()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -929,13 +826,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_EmbeddingsEnabledWithoutProvider_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -951,13 +846,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "integrations.embeddings.provider");
-
     }
 
     [Fact]
     public void Validate_EmbeddingsEnabledWithoutModel_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -973,13 +866,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "integrations.embeddings.model");
-
     }
 
     [Fact]
     public void Validate_EmbeddingsEnabledWithUnknownProvider_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1001,13 +892,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "integrations.embeddings.provider");
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("does-not-exist", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Validate_EmbeddingsEnabledWithValidProviderAndModel_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1025,7 +914,6 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Theory]
@@ -1035,7 +923,6 @@ public sealed class ConfigurationValidatorTests
     [InlineData(nameof(FeatureSettings.SemanticSpellRouting))]
     public void Validate_EmbeddingBackedFeatureWithoutEmbeddings_DerivesSubstrate(string flagName)
     {
-
         FeatureSettings features = flagName switch
         {
             nameof(FeatureSettings.SessionSearch) => new FeatureSettings { SessionSearch = true },
@@ -1065,13 +952,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(embeddings.Enabled);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_SagaExtractionWithoutSagaOrEmbeddings_DerivesBothParents()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1096,13 +981,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(embeddings.Saga.ExtractionEnabled);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_AllFeatureFlagsEnabledWithEmbeddingsEnabled_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1127,13 +1010,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_ScryingDefaults_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1142,7 +1023,6 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
@@ -1152,7 +1032,6 @@ public sealed class ConfigurationValidatorTests
         Assert.Equal(
             20L * 1024L * 1024L,
             ArcanumSettingClamps.ScryingMaxImageBytes(long.MaxValue));
-
     }
 
     [Fact]
@@ -1160,13 +1039,11 @@ public sealed class ConfigurationValidatorTests
     {
         Assert.Equal(1, ArcanumSettingClamps.ScryingMaxImagesPerRequest(0));
         Assert.Equal(100, ArcanumSettingClamps.ScryingMaxImagesPerRequest(int.MaxValue));
-
     }
 
     [Fact]
     public void Validate_ScryingEnabledWithEmptyAllowedMimeTypes_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1179,13 +1056,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "security.allowedImageMimeTypes");
-
     }
 
     [Fact]
     public void Validate_ScryingDisabledWithEmptyAllowedMimeTypes_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
@@ -1196,13 +1071,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_ProviderModelsWithVisionCapableEntry_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -1219,17 +1092,14 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_ProviderModelWithReasoningDefaults_ReturnsSuccess()
     {
-
         Result result = _validator.Validate(SettingsWithReasoning(null, null));
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Theory]
@@ -1241,11 +1111,9 @@ public sealed class ConfigurationValidatorTests
         ReasoningWireDialect wireDialect,
         bool expectedValid)
     {
-
         Result result = _validator.Validate(SettingsWithReasoning(wireDialect, null));
 
         Assert.Equal(expectedValid, result.IsSuccess);
-
     }
 
     [Theory]
@@ -1254,66 +1122,50 @@ public sealed class ConfigurationValidatorTests
     [InlineData(2_097_153)]
     public void Validate_ReasoningMaxBudgetOutsideClamp_ReturnsFailure(int maxBudgetTokens)
     {
-
-        
-
         Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.OpenRouter, maxBudgetTokens));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "providers[0].models[0].reasoning.maxBudgetTokens");
-
     }
 
     [Fact]
     public void Validate_BudgetControlWithStandardDialect_ReturnsFailure()
     {
-
-        
-
         Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.Standard, 32768));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
-
     }
-
 
     [Fact]
     public void Validate_MaxBudgetWithStandardDialect_ReturnsFailure()
     {
-
         Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.Standard, 32768));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
-
     }
-
-
 
     [Fact]
     public void Validate_MaxBudgetWithOmittedDialect_ReturnsFailure()
     {
-
         Result result = _validator.Validate(SettingsWithReasoning(null, 32768));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
-
     }
 
     [Fact]
     public void Validate_NullProviderElement_ReturnsPointerBearingFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers = [null!],
@@ -1325,13 +1177,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "providers[0]");
-
     }
 
     [Fact]
     public void Validate_NullModelEntry_ReturnsPointerBearingFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -1351,13 +1201,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "providers[0].models[0]");
-
     }
 
     [Fact]
     public void Validate_NullA2ASkillElement_ReturnsPointerBearingFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Integrations = new IntegrationSettings
@@ -1375,7 +1223,6 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer == "integrations.a2A.skills[0]");
-
     }
 
     [Theory]
@@ -1384,20 +1231,14 @@ public sealed class ConfigurationValidatorTests
     [InlineData(ReasoningWireDialect.AnthropicThinking)]
     public void Validate_BudgetControlWithExplicitNumericDialect_ReturnsSuccess(ReasoningWireDialect dialect)
     {
-
-        
-
         Result result = _validator.Validate(SettingsWithReasoning(dialect, 32768));
 
         Assert.True(result.IsSuccess);
-
     }
-
 
     [Fact]
     public void Validate_ListenAnyWithoutHttps_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Host = new HostSettings
@@ -1412,13 +1253,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.enabled");
-
     }
 
     [Fact]
     public void Validate_HttpsDisabledWithNoCertificatePath_ReturnsSuccess()
     {
-
         ArcanumSettings settings = new()
         {
             Host = new HostSettings { Https = new HttpsSettings { Enabled = false } },
@@ -1427,13 +1266,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_HttpsEnabledWithoutCertificatePath_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Host = new HostSettings { Https = new HttpsSettings { Enabled = true, Port = 5443, CertificatePath = null } },
@@ -1444,18 +1281,15 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.certificatePath");
-
     }
 
     [Fact]
     public void Validate_HttpsPortEqualsHttpPort_ReturnsFailure()
     {
-
         string certificatePath = Path.GetTempFileName();
 
         try
         {
-
             ArcanumSettings settings = new()
             {
                 Host = new HostSettings
@@ -1470,15 +1304,11 @@ public sealed class ConfigurationValidatorTests
             Assert.True(result.IsFailure);
 
             Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.port");
-
         }
         finally
         {
-
             File.Delete(certificatePath);
-
         }
-
     }
 
     [Theory]
@@ -1486,12 +1316,10 @@ public sealed class ConfigurationValidatorTests
     [InlineData(70_000)]
     public void Validate_HttpsPortOutsideClamp_ReturnsFailure(int port)
     {
-
         string certificatePath = Path.GetTempFileName();
 
         try
         {
-
             ArcanumSettings settings = new()
             {
                 Host = new HostSettings
@@ -1506,21 +1334,16 @@ public sealed class ConfigurationValidatorTests
             Assert.True(result.IsFailure);
 
             Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.port");
-
         }
         finally
         {
-
             File.Delete(certificatePath);
-
         }
-
     }
 
     [Fact]
     public void Validate_HttpsEnabledWithMissingCertificateFile_ReturnsFailure()
     {
-
         string missing = Path.Combine(Path.GetTempPath(), $"arcanum-missing-{Guid.NewGuid():N}.pfx");
 
         ArcanumSettings settings = new()
@@ -1537,18 +1360,15 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.certificatePath");
-
     }
 
     [Fact]
     public void Validate_HttpsEnabledWithExistingPfx_ReturnsSuccess()
     {
-
         string certificatePath = Path.GetTempFileName();
 
         try
         {
-
             ArcanumSettings settings = new()
             {
                 Host = new HostSettings
@@ -1568,28 +1388,22 @@ public sealed class ConfigurationValidatorTests
             Result result = _validator.Validate(settings);
 
             Assert.True(result.IsSuccess);
-
         }
         finally
         {
-
             File.Delete(certificatePath);
-
         }
-
     }
 
     [Fact]
     public void Validate_HttpsPemWithMissingPrivateKey_ReturnsFailure()
     {
-
         string certificatePath = Path.GetTempFileName();
 
         string missingKey = Path.Combine(Path.GetTempPath(), $"arcanum-missing-{Guid.NewGuid():N}.key");
 
         try
         {
-
             ArcanumSettings settings = new()
             {
                 Host = new HostSettings
@@ -1610,21 +1424,16 @@ public sealed class ConfigurationValidatorTests
             Assert.True(result.IsFailure);
 
             Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.privateKeyPath");
-
         }
         finally
         {
-
             File.Delete(certificatePath);
-
         }
-
     }
 
     [Fact]
     public void Validate_HttpsErrorsNeverIncludePassword()
     {
-
         ArcanumSettings settings = new()
         {
             Host = new HostSettings
@@ -1650,13 +1459,11 @@ public sealed class ConfigurationValidatorTests
             static e => e.Detail.Contains(
                 "ARCANUM_CERT_PASSWORD",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Validate_MissingProviderType_DefaultsToOpenAICompatible_Succeeds()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -1675,13 +1482,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_UndefinedProviderType_ReturnsFailure()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -1701,13 +1506,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0].type");
-
     }
 
     [Fact]
     public void Validate_EmbeddingsEnabled_RequiresOpenAICompatibleProvider()
     {
-
         ArcanumSettings settings = new()
         {
             Providers =
@@ -1734,13 +1537,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void RejectObsoleteKeys_RootLlamaCpp_ReturnsMigrationError()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -1757,13 +1558,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "llamaCpp");
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("OpenAICompatible", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void RejectObsoleteKeys_RootCache_ReturnsMigrationError()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -1780,7 +1579,32 @@ public sealed class ConfigurationValidatorTests
         Assert.Equal(
             ConfigurationValidator.ObsoleteCacheMigrationMessage,
             Assert.Single(result.Error.Details!, static e => e.Pointer == "cache").Detail);
+    }
 
+    [Fact]
+    public void RejectObsoleteKeys_CurrentModelSupportsTools_Succeeds()
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Providers:0:Models:0:SupportsTools"] = "false",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void RejectObsoleteJsonKeys_CurrentModelSupportsTools_Succeeds()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """{"providers":[{"models":[{"supportsTools":false}]}]}""");
+
+        Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
+
+        Assert.True(result.IsSuccess);
     }
 
     [Fact]
@@ -1873,7 +1697,6 @@ public sealed class ConfigurationValidatorTests
     [Fact]
     public void RejectObsoleteKeys_RootModerations_ReturnsMigrationError()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -1888,13 +1711,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "moderations");
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("501", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void RejectObsoleteKeys_ProviderLlamaCppAndModelMap_ReturnsMigrationErrors()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -1912,13 +1733,11 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0].llamaCpp");
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[1].modelMap");
-
     }
 
     [Fact]
     public void RejectObsoleteKeys_ProviderTypeLlamaCppServer_ReturnsMigrationError()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -1937,7 +1756,6 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(
             result.Error.Details!,
             static e => e.Detail.Contains(ConfigurationValidator.ObsoleteLlamaCppServerTypeMessage, StringComparison.Ordinal));
-
     }
 
     [Theory]
@@ -1952,7 +1770,6 @@ public sealed class ConfigurationValidatorTests
     [InlineData("""{"providers":[{"name":"old","apiKey":"secret","tokenization":{},"promptCaching":{},"supportsPromptCaching":true,"models":[{"name":"m","tokenization":{},"promptCaching":{}}]}]}""")]
     public void RejectObsoleteJsonKeys_ObsoleteShapes_ReturnMigrationError(string json)
     {
-
         using JsonDocument document = JsonDocument.Parse(json);
 
         Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
@@ -1962,7 +1779,6 @@ public sealed class ConfigurationValidatorTests
         Assert.Equal("Configuration.ValidationFailed", result.Error.Code);
 
         Assert.NotEmpty(result.Error.Details!);
-
     }
 
     [Fact]
@@ -2063,7 +1879,6 @@ public sealed class ConfigurationValidatorTests
     [Fact]
     public void RejectObsoleteJsonKeys_OpenAICompatibleOllamaShape_Succeeds()
     {
-
         const string json =
             """
             {
@@ -2083,7 +1898,6 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
@@ -2383,7 +2197,6 @@ public sealed class ConfigurationValidatorTests
     [Fact]
     public void Validate_BlankDaemonJobName_ReturnsFailure()
     {
-
         ArcanumSettings settings = SettingsWithDaemonJobs(
             new UnseenServantJob { Name = "  ", TargetSpell = "daily-digest" });
 
@@ -2392,13 +2205,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "daemon.jobs[0].name");
-
     }
 
     [Fact]
     public void Validate_DuplicateDaemonJobName_ReturnsFailure()
     {
-
         ArcanumSettings settings = SettingsWithDaemonJobs(
             new UnseenServantJob { Name = "digest", TargetSpell = "daily-digest" },
             new UnseenServantJob { Name = "Digest", TargetSpell = "weekly-digest" });
@@ -2408,13 +2219,11 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "daemon.jobs[1].name");
-
     }
 
     [Fact]
     public void Validate_DistinctDaemonJobNames_ReturnsSuccess()
     {
-
         ArcanumSettings settings = SettingsWithDaemonJobs(
             new UnseenServantJob { Name = "digest", TargetSpell = "daily-digest" },
             new UnseenServantJob { Name = "sweep", TargetSpell = "weekly-digest" });
@@ -2422,13 +2231,11 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     [Fact]
     public void Validate_NullDaemonSection_DoesNotThrow()
     {
-
         ArcanumSettings settings = SettingsWithDaemonJobs();
 
         settings.Daemon = null!;
@@ -2436,7 +2243,6 @@ public sealed class ConfigurationValidatorTests
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsSuccess);
-
     }
 
     private static ArcanumSettings SettingsWithDaemonJobs(params UnseenServantJob[] jobs) =>
@@ -2479,5 +2285,4 @@ public sealed class ConfigurationValidatorTests
                 },
             ],
         };
-
 }

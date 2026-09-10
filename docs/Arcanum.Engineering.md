@@ -14,10 +14,10 @@
 > **[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)** is the human-readable navigation
 > companion.
 
-**Audience:** senior C#/.NET engineers and coding agents extending an AOT-constrained, API-first
+**Audience:** senior C#/.NET engineers and coding agents extending an AOT-disciplined, API-first
 system.
 
-**Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows, and on macOS with `lld` (Linux is not a shipping RID) · `Microsoft.Extensions.AI`
+**Stack:** .NET 10 Native AOT · ASP.NET Core Minimal API · macOS arm64 and Windows x64/arm64 (Linux is not a shipping RID) · `Microsoft.Extensions.AI`
 · EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia
 
 **Version:** `0.1.0-beta` (see [`Directory.Build.props`](../Directory.Build.props))
@@ -30,15 +30,15 @@ Arcanum's default product posture is an unrestricted coding harness: let the age
 
 These are **non-negotiable** and define what "correct" means in this repo. Every prompt you write and every change you make must hold the line on all of them. They are the reason many "obvious" approaches (reflection-based JSON, `AIFunctionFactory.Create`, anonymous DTOs, inline `<script>`) are **wrong here**.
 
-### 1. Native AOT compatibility (hard constraint)
+### 1. Native AOT implementation discipline (hard constraint)
 
-Windows ships a **Native AOT** binary with **zero runtime prerequisite**, and macOS ships the same Native AOT host when LLVM `lld` is installed and uses a folder-based self-contained fallback without it. Linux is not a shipping RID: the hermetic SQLCipher targets map a filename only for an `osx-` or `win-` prefix, so a Linux build fails before it produces any output. The shared host remains AOT-constrained: minimal reflection, source generation, and an AOT warning gate still dictate serialization and binding. See [DESIGN.md §9](docs/Arcanum.DESIGN.md#9-native-aot-and-trimming).
+Every shipping RID uses the same **Native AOT** CLI/host with no separately installed .NET runtime and no managed fallback. EF Core is restricted to the compiled entity model, tracked writes, and the shared transaction; application-authored queries use parameterized SQLite on that same scoped connection. Linux is not a shipping RID: the hermetic SQLCipher targets map a filename only for an `osx-` or `win-` prefix, so a Linux build fails before it produces any output. See [DESIGN.md §9](Arcanum.DESIGN.md#9-native-aot-and-database-query-discipline).
 
 - **Source-generated JSON only.** Every HTTP payload type must have a `[JsonSerializable]` registration on **`ArcanumJsonContext`** (Api). Other contexts are scoped: `GrimoireJsonContext`, `ConfigurationJsonContext`, `ArcanumCoreJsonContext` (Core — Grimoire blobs, `arcanum.json`, campaign/skill metadata), `McpJsonSerializerContext` / `McpConfigJsonSerializerContext` (Infrastructure, JSON-RPC + `mcp.json`), `CommLinkInfrastructureJsonContext` (outbound webhooks), and `CliJsonContext` (CLI process envelopes). **Never** use reflection-based `JsonSerializer` overloads, `PostAsJsonAsync` with anonymous types, or `Results.Json` without an explicit `JsonTypeInfo`.
 - **Source-generated request delegates.** `Api` sets `EnableRequestDelegateGenerator`; handlers must be RDG-compatible (no unbounded reflection model binding, no anonymous return DTOs).
 - **Hand-authored tool schemas.** New `AIFunction` tools use explicit `JsonDocument` schemas, **not** `AIFunctionFactory.Create`.
 - **Config binding** uses `EnableConfigurationBindingGenerator`. Settings POCOs under `Arcanum:…` must use `{ get; set; }` (not `init`) — the generator silently skips `init`-only properties (dotnet/runtime#107856), which previously left `Providers` / `DefaultModel` empty at runtime while `arcanum.json` still looked correct.
-- **Verification gate:** a clean `dotnet publish` AOT run with zero first-party IL trim/AOT warnings. Use `./scripts/verify-aot-il-warnings.sh` (see [Build, test & verify](#build-test--verify)).
+- **Verification gates:** `EfNativeAotBoundaryTests` rejects production EF query APIs; `./scripts/verify-aot-il-warnings.sh` keeps the full AOT closure first-party-clean; `./scripts/verify-shipping-publish.sh --rid <rid>` requires a zero-warning Native AOT publish and drives the exact apphost as both host and `run --new` CLI through first-session creation and a deterministic streaming provider contract. See [Build, test & verify](#build-test--verify).
 
 ### 2. API-first design
 
@@ -55,7 +55,7 @@ Arcanum exposes a **Chat Completions compatibility subset** so common OpenAI cli
 - **`POST /v1/chat/completions`** (JSON or SSE) and **`GET /v1/models`** (auto-discovery across all configured providers).
 - Request parsing including multimodal `content` parts, `tool`/`assistant` tool-call replay, `stream_options.include_usage`, `response_format`, etc.
 - Responses carry `usage`, `system_fingerprint`, and OpenAI-shaped error envelopes. **Auth** accepts `Authorization: Bearer <KEY>` for OpenAI clients (as well as `X-Arcanum-Key`).
-- Arcanum runs **its own server-side MCP toolset** by default, so client-supplied `tools`/`tool_choice` are rejected with `400 unsupported_parameter` (except `tool_choice: "auto"`/`"none"`, which are always accepted as OpenAI defaults). Operators may opt in to **client tool forwarding** via `Arcanum:Features:ClientTools`; when enabled, client schemas are forwarded to the resolved provider (per-tool `strict` flag preserved via `AIFunction.AdditionalProperties`), `tool_choice.function.name` is verified against the supplied `tools`, and the returned `tool_calls` are surfaced for the client to round-trip (bypasses Arcanum's server-side tool loop, Sanctum, Ward recording, and tool audit logging).
+- Arcanum runs **its own server-side MCP toolset** by default, so client-supplied `tools`/`tool_choice` are rejected with `400 unsupported_parameter` (except `tool_choice: "auto"`/`"none"`, which are always accepted as OpenAI defaults). Operators may opt in to **client tool forwarding** via `Arcanum:Features:ClientTools`; when enabled, client schemas are forwarded to the resolved provider (per-tool `strict` flag preserved via `AIFunction.AdditionalProperties`), `tool_choice.function.name` is verified against the supplied `tools`, and the returned `tool_calls` are surfaced for the client to round-trip (bypasses Arcanum's server-side tool loop, Sanctum, Ward recording, and tool audit logging). A model declaring `supportsTools: false` omits optional tools before discovery/accounting and rejects required or named tool choices before inference.
 
 ### 4. Top-of-the-line, all-native multi-provider inference engine
 
@@ -92,7 +92,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](docs/A
 - **One blank line after each line of C# code** (visual breathing room) — applied throughout the codebase. Within reason. Curly braces do not require blank lines around them. Neither do control statements like if and loops, etc. Also, long-running Linq statements do not require blank lines either.
 - File-scoped namespaces; positional records for DTOs/contracts; **no `[JsonPropertyName]`** on `/api` wire types (casing comes from `[JsonSourceGenerationOptions]`); OpenAI `/v1` and MCP JSON-RPC types are explicit exceptions (API §8.2); primary constructors for DI; `IDisposable` where a service owns a `SemaphoreSlim`/`ServiceProvider`. See [DESIGN.md §12](docs/Arcanum.DESIGN.md#12-c-language-and-coding-conventions).
 
-> **Note on org-wide rules:** Corp-wide standards scoped to `Corp.Solution.*` solutions (Dapper + SQL Server stored procedures, the `Corp.Lib.*` NuGet stack, Refit "Service Libraries") **do not apply to Arcanum** — it is local-first over its own EF Core + SQLCipher Grimoire and retains AOT-safe contracts across Native AOT Windows and self-contained macOS packaging. The always-on house rules (blank lines, strict CSP, docs-in-same-change-set) still hold.
+> **Note on org-wide rules:** Corp-wide standards scoped to `Corp.Solution.*` solutions (Dapper + SQL Server stored procedures, the `Corp.Lib.*` NuGet stack, Refit "Service Libraries") **do not apply to Arcanum** — it is local-first over its own EF Core + SQLCipher Grimoire and ships one Native AOT CLI/host. The always-on house rules (blank lines, strict CSP, docs-in-same-change-set) still hold.
 
 ### 8. Thematic naming metaphor (D&D)
 
@@ -112,15 +112,15 @@ The repository maintains seven canonical docs (`README.md` at the repository roo
 
 **Primary dependency chain:** `Cli → Api → Infrastructure → Core` (`Cli` also references `Core`/`Infrastructure` directly for lightweight DI). `Infrastructure` also references the isolated `Secrets` project. Strict project boundaries are a deliberate goal.
 
-| Project | Role | Owns | AOT |
+| Project | Role | Owns | Build/runtime contract |
 |---------|------|------|-----|
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, Covenant compiler/digests/linker/admission contracts, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `ArcanumCoreJsonContext`) | `IsAotCompatible` |
 | **`Secrets`** | Native credential boundary | macOS Keychain, Windows Credential Manager, Linux Secret Service, fixed Arcanum credential identity | `IsAotCompatible` + `IsTrimmable` |
-| **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), authenticated encrypted blob storage + OS-backed file key, workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
+| **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), authenticated encrypted blob storage + OS-backed file key, workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable`; no experimental EF NativeAOT query generation |
 | **`NativeSqlCipher`** | Hermetic SQLCipher delivery (assets only, no code) | One verified, reproducibly built SQLCipher library per shipping RID (`osx-arm64`, `win-x64`, `win-arm64`), the `native-source-manifest.json` provenance it is checked against, upstream licenses and SBOMs, and the MSBuild target that delivers exactly one asset with no fallback | packable; `IncludeBuildOutput=false` |
 | **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `TurnExecutionCoordinator`/`TurnEngine`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
-| **`Cli`** | Shipping CLI/host entry point | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` on Windows and on macOS with LLVM `lld`; folder-based self-contained macOS fallback without lld; Linux is not a shipping RID |
-| **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
+| **`Cli`** | Shipping CLI/host entry point | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | Native AOT on every shipping RID; no managed fallback |
+| **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `IsAotCompatible`; ordinary managed debug host |
 | **`tests/RetroDownfall.Arcanum.Tests`** | xUnit test suite (not shipped) | MCP, security, config, workspace policy, SQLCipher Grimoire, and API-host integration tests | — |
 | **`tests/RetroDownfall.Compendium.Tests`** (assembly `RetroDownfall.Compendium.Ux.Tests`) | Compendium smoke tests (not shipped) | Round-trip read/write of factual configuration and credential references | — |
 | **`Compendium.Ux`** | Desktop configuration editor (Avalonia) | Visual editor for the 13 retained configuration sections; polished Host/Providers/Daemon/CLI/Presets pages plus descriptor-driven pages that refresh after asynchronous loads without rebuild-time file I/O; reuses Core models and edits credential references, never secret values | — |
@@ -704,7 +704,7 @@ HTTP remains the default on **loopback**. `Arcanum:Host:Https:Enabled` adds a TL
 
 ## Distribution and first run
 
-Windows packages contain separate archives for Arcanum, Compendium, and The Forge plus `SHA256SUMS`. The Linux script and workflow lane are still here but gated: with no verified hermetic SQLCipher asset for any `linux-*` RID, `package-linux.sh` exits 2 before building and the extraction steps below cannot be reached today. The `arcanum` executable is Native AOT; desktop apps are self-contained multi-file Avalonia folders. These archives are unsigned by default. Windows SmartScreen can warn; optional Authenticode requires the Windows packager's `-Sign` flag and `WINDOWS_CERT_PATH` / `WINDOWS_CERT_PASSWORD`.
+Windows packages contain separate archives for Arcanum, Compendium, and The Forge plus `SHA256SUMS`. The Linux script and workflow lane are still here but gated: with no verified hermetic SQLCipher asset for any `linux-*` RID, `package-linux.sh` exits 2 before building and the extraction steps below cannot be reached today. `arcanum` is Native AOT; the desktop apps are self-contained multi-file Avalonia folders. These archives are unsigned by default. Windows SmartScreen can warn; optional Authenticode requires the Windows packager's `-Sign` flag and `WINDOWS_CERT_PATH` / `WINDOWS_CERT_PASSWORD`.
 
 Linux (the steps a tarball would be extracted with, kept for when the lane is ungated):
 
@@ -789,7 +789,7 @@ Signing is mandatory in CI; `--skip-sign` and `--local-sign` are for local packa
 
 ## Build, test & verify
 
-Run from the repository root. The focused test projects run on the normal CLR; the final script checks the Native AOT publish closure for first-party trim/AOT warnings.
+Run from the repository root. The focused test projects run on the normal CLR. The compatibility gate checks AOT analyzer/regex-smoke warnings; the shipping gate publishes the supported runtime with zero warnings and exercises its first persisted inference turn.
 
 ```bash
 dotnet build RetroDownfall.Arcanum.slnx
@@ -797,7 +797,10 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 ./scripts/coverage.sh --threshold
 ./scripts/verify-aot-il-warnings.sh
+./scripts/verify-shipping-publish.sh --rid osx-arm64
 ```
+
+The hosted Grimoire producer inventory is a bidirectional source contract, not a checklist. Any application-owned `IHostedService` registration, owned DI scope, live-Grimoire connection route, provider call, filesystem access, or maintenance effect frontier added or removed under `src/` must update `HostedGrimoireProducerInventory` in the same change. `HostedGrimoireProducerInventoryTests` compiles the real generated production tree and fails for both an undisclosed site and a stale catalog entry; an exact ordinary-work kind or a concrete pre-readiness, stopped-host, owner-bound, or effect-free proof is mandatory for every operation.
 
 Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](docs/Arcanum.DESIGN.md#136-reliable-editing-loop-contract-matrix). Do not use `workspace_check` as the bootstrap verifier for an untrusted repository: it executes repository-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
 

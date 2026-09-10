@@ -1,0 +1,256 @@
+<Project TreatAsLocalProperty="ArcanumPortableMacOsNativeAotPackageSha512;ArcanumPortableMacOsNativeAotPackageVersion;IlcFrameworkNativePath;IlcSdkPath;_ArcanumBundledMacOsNativeAotPath;_ArcanumCryptoArchivePrepared;_ArcanumCryptoArchiveSource;_ArcanumMacOsSdkPath;_ArcanumPortableMacOsNativeAotPackagePath;_ArcanumPortableMacOsNativeAotPackageRoot;_ArcanumPortableMacOsNativeAotPackageSha512Path;_ArcanumPortableNativeAotPath;_ArcanumPreparedNativeAotPath;_ArcanumRequiresLegacyMacOsLld;_ArcanumRequiresPortableMacOsNativeAotBridge;_ArcanumVerifiedPortableNativeAotContents;_ArcanumVerifiedPortableNativeAotPackage;_ArcanumVerifiedPortableNativeAotRoot">
+
+  <!-- Homebrew source-builds .NET without the portable Brotli and zlib archives and marks its
+       Native AOT runtime pack nonportable. That makes ILC resolve OpenSSL and Brotli from the build
+       machine, leaking /opt/homebrew dylib dependencies into the release. Request the audited
+       Microsoft-signed runtime pack as an exact build-time download without projecting its static
+       libraries into application assets. Official SDK installations already resolve the matching
+       portable pack themselves, so the bridge activates only when the installed bundled pack bears
+       .NET's nonportable marker; this avoids adding a second, stale PackageDownload when an SDK patch
+       moves ahead. PackageDownload is not represented in packages.lock.json, so the repository pins
+       and verifies NuGet's SHA-512 package content hash below. -->
+
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true'">
+
+    <_ArcanumBundledMacOsNativeAotPath>$(NetCoreRoot)packs/Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64/$(BundledNETCoreAppPackageVersion)/runtimes/osx-arm64/native/</_ArcanumBundledMacOsNativeAotPath>
+
+    <_ArcanumRequiresPortableMacOsNativeAotBridge>false</_ArcanumRequiresPortableMacOsNativeAotBridge>
+
+    <_ArcanumRequiresPortableMacOsNativeAotBridge Condition="Exists('$(_ArcanumBundledMacOsNativeAotPath)nonportable.txt')">true</_ArcanumRequiresPortableMacOsNativeAotBridge>
+
+    <!-- Runtime packs before 10.0.12 need lld to avoid Apple's large-addend assertion. Starting
+         with 10.0.12, .NET emits relocation anchors for ld-prime; lld rejects those anchors inside
+         __eh_frame, so selecting the linker by pack version is required in both directions. -->
+    <_ArcanumRequiresLegacyMacOsLld>false</_ArcanumRequiresLegacyMacOsLld>
+
+    <_ArcanumRequiresLegacyMacOsLld Condition="'$(BundledNETCoreAppPackageVersion)' != '' and $([MSBuild]::VersionLessThan('$(BundledNETCoreAppPackageVersion)', '10.0.12'))">true</_ArcanumRequiresLegacyMacOsLld>
+
+    <ArcanumPortableMacOsNativeAotPackageVersion>$(BundledNETCoreAppPackageVersion)</ArcanumPortableMacOsNativeAotPackageVersion>
+
+    <ArcanumPortableMacOsNativeAotPackageSha512></ArcanumPortableMacOsNativeAotPackageSha512>
+
+    <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.11'">NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==</ArcanumPortableMacOsNativeAotPackageSha512>
+
+    <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.12'">Qt7NCMotrQFrpukryPBpKeF/AawvptJv+v+c0Q3L29Y/ptFO8nFor+g8xKasWq4XNLL/hT/x+QBC7gacjeiIUQ==</ArcanumPortableMacOsNativeAotPackageSha512>
+
+    <_ArcanumPortableMacOsNativeAotPackageRoot>$(NuGetPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)/</_ArcanumPortableMacOsNativeAotPackageRoot>
+
+    <_ArcanumPortableMacOsNativeAotPackagePath>$(_ArcanumPortableMacOsNativeAotPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64.$(ArcanumPortableMacOsNativeAotPackageVersion).nupkg</_ArcanumPortableMacOsNativeAotPackagePath>
+
+    <_ArcanumPortableMacOsNativeAotPackageSha512Path>$(_ArcanumPortableMacOsNativeAotPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64.$(ArcanumPortableMacOsNativeAotPackageVersion).nupkg.sha512</_ArcanumPortableMacOsNativeAotPackageSha512Path>
+
+  </PropertyGroup>
+
+  <Target
+    Name="CollectArcanumPortableMacOsNativeAotPack"
+    BeforeTargets="CollectPackageDownloads"
+    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true' and '$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'">
+
+    <Error
+      Code="ARCAOT005"
+      Condition="'$(ArcanumPortableMacOsNativeAotPackageSha512)' == ''"
+      Text="The .NET SDK requires Native AOT runtime pack $(BundledNETCoreAppPackageVersion), but Arcanum has not audited that official portable package. Audit and pin its SHA-512 before publishing." />
+
+    <ItemGroup>
+
+      <PackageDownload
+        Include="Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64"
+        Version="[$(ArcanumPortableMacOsNativeAotPackageVersion)]" />
+
+    </ItemGroup>
+
+  </Target>
+
+  <Target
+    Name="RequireArcanumPortableMacOsNativeAotPack"
+    BeforeTargets="IlcCompile"
+    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true' and '$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'">
+
+    <Error
+      Code="ARCAOT005"
+      Condition="'$(ArcanumPortableMacOsNativeAotPackageSha512)' == ''"
+      Text="The .NET SDK requires Native AOT runtime pack $(BundledNETCoreAppPackageVersion), but Arcanum has not audited that official portable package. Audit and pin its SHA-512 before publishing." />
+
+    <Error
+      Code="ARCAOT006"
+      Condition="!Exists('$(_ArcanumPortableMacOsNativeAotPackagePath)') or !Exists('$(_ArcanumPortableMacOsNativeAotPackageSha512Path)')"
+      Text="The exact Microsoft macOS Native AOT package or its NuGet SHA-512 record is missing; refusing an unverifiable publish." />
+
+    <ItemGroup>
+
+      <_ArcanumPortableMacOsNativeAotPackageHash Remove="@(_ArcanumPortableMacOsNativeAotPackageHash)" />
+
+    </ItemGroup>
+
+    <ReadLinesFromFile File="$(_ArcanumPortableMacOsNativeAotPackageSha512Path)">
+
+      <Output
+        TaskParameter="Lines"
+        ItemName="_ArcanumPortableMacOsNativeAotPackageHash" />
+
+    </ReadLinesFromFile>
+
+    <Error
+      Code="ARCAOT007"
+      Condition="'@(_ArcanumPortableMacOsNativeAotPackageHash)' != '$(ArcanumPortableMacOsNativeAotPackageSha512)'"
+      Text="The restored Microsoft macOS Native AOT package content hash does not match the repository-audited SHA-512 value; clear the package cache and restore from the official source." />
+
+    <VerifyFileHash
+      File="$(_ArcanumPortableMacOsNativeAotPackagePath)"
+      Hash="$(ArcanumPortableMacOsNativeAotPackageSha512)"
+      Algorithm="SHA512"
+      HashEncoding="base64" />
+
+    <!-- NuGet's expanded package directory is a mutable cache that is not covered by the
+         .nupkg hash above. Copy, re-verify, and extract the exact package into this build's
+         clean intermediate tree; every linker input below is derived only from those bytes. -->
+
+    <PropertyGroup>
+
+      <_ArcanumVerifiedPortableNativeAotRoot>$(NativeIntermediateOutputPath)arcanum-verified-portable-nativeaot/</_ArcanumVerifiedPortableNativeAotRoot>
+
+      <_ArcanumVerifiedPortableNativeAotPackage>$(_ArcanumVerifiedPortableNativeAotRoot)runtime-pack.nupkg</_ArcanumVerifiedPortableNativeAotPackage>
+
+      <_ArcanumVerifiedPortableNativeAotContents>$(_ArcanumVerifiedPortableNativeAotRoot)contents/</_ArcanumVerifiedPortableNativeAotContents>
+
+      <_ArcanumPortableNativeAotPath>$(_ArcanumVerifiedPortableNativeAotContents)runtimes/osx-arm64/native/</_ArcanumPortableNativeAotPath>
+
+    </PropertyGroup>
+
+    <RemoveDir Directories="$(_ArcanumVerifiedPortableNativeAotRoot)" />
+
+    <MakeDir Directories="$(_ArcanumVerifiedPortableNativeAotContents)" />
+
+    <Copy
+      SourceFiles="$(_ArcanumPortableMacOsNativeAotPackagePath)"
+      DestinationFiles="$(_ArcanumVerifiedPortableNativeAotPackage)" />
+
+    <VerifyFileHash
+      File="$(_ArcanumVerifiedPortableNativeAotPackage)"
+      Hash="$(ArcanumPortableMacOsNativeAotPackageSha512)"
+      Algorithm="SHA512"
+      HashEncoding="base64" />
+
+    <Unzip
+      SourceFiles="$(_ArcanumVerifiedPortableNativeAotPackage)"
+      DestinationFolder="$(_ArcanumVerifiedPortableNativeAotContents)" />
+
+    <Error
+      Code="ARCAOT001"
+      Condition="'$(_ArcanumPortableNativeAotPath)' == '' or !Exists('$(_ArcanumPortableNativeAotPath)libRuntime.WorkstationGC.a')"
+      Text="The Microsoft portable macOS Native AOT runtime pack was not restored. Restore with network access and retry." />
+
+    <Error
+      Code="ARCAOT002"
+      Condition="Exists('$(_ArcanumPortableNativeAotPath)nonportable.txt') or !Exists('$(_ArcanumPortableNativeAotPath)libbrotlicommon.a') or !Exists('$(_ArcanumPortableNativeAotPath)libz.a')"
+      Text="The resolved macOS Native AOT runtime pack is nonportable; refusing to link a machine-specific Arcanum binary." />
+
+  </Target>
+
+  <!-- -Z removes Apple Clang's implicit, nonexistent /usr/local/lib search path. Add the active
+       SDK's real library and framework directories explicitly so this remains a complete link,
+       not warning suppression. Run before SetupOSSpecificProps so its LinkerArg projection sees
+       all three entries. -->
+
+  <Target
+    Name="ConfigureArcanumPortableMacOsLinkerSearch"
+    BeforeTargets="SetupOSSpecificProps"
+    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true'">
+
+    <Exec
+      Command="xcrun --sdk macosx --show-sdk-path"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low">
+
+      <Output TaskParameter="ConsoleOutput" PropertyName="_ArcanumMacOsSdkPath" />
+
+    </Exec>
+
+    <Error
+      Code="ARCAOT003"
+      Condition="'$(_ArcanumMacOsSdkPath)' == '' or !Exists('$(_ArcanumMacOsSdkPath)/usr/lib') or !Exists('$(_ArcanumMacOsSdkPath)/System/Library/Frameworks')"
+      Text="The active macOS SDK could not be resolved for the portable Native AOT link." />
+
+    <Error
+      Code="ARCAOT008"
+      Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and !Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and !Exists('/usr/local/opt/lld/bin/ld64.lld')"
+      Text="This pre-10.0.12 macOS Native AOT SDK requires LLVM ld64.lld. Install lld or update to the current .NET 10 SDK; Arcanum has no managed fallback." />
+
+    <ItemGroup>
+
+      <LinkerArg
+        Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and Exists('/opt/homebrew/opt/lld/bin/ld64.lld')"
+        Include="--ld-path=/opt/homebrew/opt/lld/bin/ld64.lld" />
+
+      <LinkerArg
+        Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and !Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and Exists('/usr/local/opt/lld/bin/ld64.lld')"
+        Include="--ld-path=/usr/local/opt/lld/bin/ld64.lld" />
+
+      <LinkerArg Include="-Wl,-Z" />
+
+      <LinkerArg Include="-Wl,-L,$(_ArcanumMacOsSdkPath)/usr/lib" />
+
+      <LinkerArg Include="-Wl,-F,$(_ArcanumMacOsSdkPath)/System/Library/Frameworks" />
+
+    </ItemGroup>
+
+  </Target>
+
+  <!-- Microsoft's serviced Apple crypto archive contains compiler-module debug references to the
+       build farm's transient clang cache. The linker reports those missing files even though
+       Arcanum does not ship native debug symbols. Stage the complete pack before the SDK constructs
+       its ordered native-library arguments, then strip only debug metadata from the staged crypto
+       archive. Never mutate NuGet's signed cache entry, and keep every code/global symbol. -->
+
+  <Target
+    Name="PrepareArcanumMacOsCryptoArchive"
+    BeforeTargets="SetupOSSpecificProps"
+    DependsOnTargets="SetupProperties;RequireArcanumPortableMacOsNativeAotPack"
+    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true'">
+
+    <PropertyGroup>
+
+      <_ArcanumPortableNativeAotPath Condition="'$(_ArcanumRequiresPortableMacOsNativeAotBridge)' != 'true'">$(IlcFrameworkNativePath)</_ArcanumPortableNativeAotPath>
+
+      <_ArcanumCryptoArchiveSource>$(_ArcanumPortableNativeAotPath)libSystem.Security.Cryptography.Native.Apple.a</_ArcanumCryptoArchiveSource>
+
+      <_ArcanumPreparedNativeAotPath>$(NativeIntermediateOutputPath)arcanum-portable-native/</_ArcanumPreparedNativeAotPath>
+
+      <_ArcanumCryptoArchivePrepared>$(_ArcanumPreparedNativeAotPath)libSystem.Security.Cryptography.Native.Apple.a</_ArcanumCryptoArchivePrepared>
+
+    </PropertyGroup>
+
+    <ItemGroup>
+
+      <_ArcanumPortableNativeAotFile Remove="@(_ArcanumPortableNativeAotFile)" />
+
+      <_ArcanumPortableNativeAotFile Include="$(_ArcanumPortableNativeAotPath)*" />
+
+    </ItemGroup>
+
+    <Error
+      Code="ARCAOT004"
+      Condition="!Exists('$(_ArcanumCryptoArchiveSource)')"
+      Text="The portable Native AOT pack is missing its Apple cryptography archive." />
+
+    <RemoveDir Directories="$(_ArcanumPreparedNativeAotPath)" />
+
+    <MakeDir Directories="$(_ArcanumPreparedNativeAotPath)" />
+
+    <Copy
+      SourceFiles="@(_ArcanumPortableNativeAotFile)"
+      DestinationFiles="@(_ArcanumPortableNativeAotFile->'$(_ArcanumPreparedNativeAotPath)%(Filename)%(Extension)')" />
+
+    <Exec Command="xcrun strip -S &quot;$(_ArcanumCryptoArchivePrepared)&quot;" />
+
+    <PropertyGroup>
+
+      <IlcFrameworkNativePath>$(_ArcanumPreparedNativeAotPath)</IlcFrameworkNativePath>
+
+      <IlcSdkPath>$(_ArcanumPreparedNativeAotPath)</IlcSdkPath>
+
+    </PropertyGroup>
+
+  </Target>
+
+</Project>

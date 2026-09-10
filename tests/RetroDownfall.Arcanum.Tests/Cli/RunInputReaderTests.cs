@@ -10,12 +10,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class RunInputReaderTests
 {
-
     [Fact]
 
     public async Task ReadAsync_keeps_positional_instruction_separate_from_injected_redirected_input()
     {
-
         TextReader originalInput = Console.In;
 
         StringReader configuredInput = new(string.Empty);
@@ -26,7 +24,6 @@ public sealed class RunInputReaderTests
 
         try
         {
-
             Console.SetIn(redirectedInput);
 
             RunInputReader reader = CreateReader(
@@ -53,22 +50,17 @@ public sealed class RunInputReaderTests
             Assert.False(result.IsOversize);
 
             Assert.Null(result.Error);
-
         }
         finally
         {
-
             Console.SetIn(originalInput);
-
         }
-
     }
 
     [Fact]
 
     public async Task ReadAsync_accepts_exact_ten_mebibyte_utf8_boundary_and_rejects_one_byte_more()
     {
-
         TextReader originalInput = Console.In;
 
         StringReader configuredInput = new(string.Empty);
@@ -77,7 +69,6 @@ public sealed class RunInputReaderTests
 
         try
         {
-
             Console.SetIn(new StringReader(exact));
 
             RunInputReader exactReader = CreateReader(
@@ -116,22 +107,17 @@ public sealed class RunInputReaderTests
                 RunInputReader.MaxRedirectedInputBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 rejected.Error,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             Console.SetIn(originalInput);
-
         }
-
     }
 
     [Fact]
 
     public async Task ReadAsync_prompts_once_and_reads_one_line_for_true_tty_without_instruction()
     {
-
         TextReader originalInput = Console.In;
 
         StringReader interactiveInput = new("typed prompt\nignored second line\n");
@@ -140,7 +126,6 @@ public sealed class RunInputReaderTests
 
         try
         {
-
             Console.SetIn(interactiveInput);
 
             RunInputReader reader = CreateReader(
@@ -165,22 +150,17 @@ public sealed class RunInputReaderTests
             Assert.Equal("ignored second line", await interactiveInput.ReadLineAsync());
 
             Assert.Contains("Prompt", diagnostics.ToString(), StringComparison.OrdinalIgnoreCase);
-
         }
         finally
         {
-
             Console.SetIn(originalInput);
-
         }
-
     }
 
     [Fact]
 
     public async Task ReadAsync_skips_prompt_for_true_tty_when_explicit_file_context_exists()
     {
-
         TextReader originalInput = Console.In;
 
         StringReader interactiveInput = new("must remain unread\n");
@@ -189,7 +169,6 @@ public sealed class RunInputReaderTests
 
         try
         {
-
             Console.SetIn(interactiveInput);
 
             RunInputReader reader = CreateReader(
@@ -215,29 +194,23 @@ public sealed class RunInputReaderTests
             Assert.Equal("must remain unread", await interactiveInput.ReadLineAsync());
 
             Assert.Equal(string.Empty, diagnostics.ToString());
-
         }
         finally
         {
-
             Console.SetIn(originalInput);
-
         }
-
     }
 
     [Fact]
 
     public async Task ReadAsync_returns_success_and_warning_for_empty_redirected_input()
     {
-
         TextReader originalInput = Console.In;
 
         StringReader configuredInput = new(string.Empty);
 
         try
         {
-
             Console.SetIn(new StringReader(string.Empty));
 
             RunInputReader reader = CreateReader(
@@ -260,29 +233,86 @@ public sealed class RunInputReaderTests
             Assert.Contains(
                 result.Diagnostics,
                 value => value.Contains("empty", StringComparison.OrdinalIgnoreCase));
-
         }
         finally
         {
-
             Console.SetIn(originalInput);
-
         }
+    }
 
+    [Fact]
+    public async Task ReadAsync_does_not_warn_when_redirected_input_is_empty_but_instruction_is_explicit()
+    {
+        TextReader originalInput = Console.In;
+        StringReader configuredInput = new(string.Empty);
+
+        try
+        {
+            Console.SetIn(new StringReader(string.Empty));
+
+            RunInputReader reader = CreateReader(
+                configuredInput,
+                new StringWriter(),
+                inputRedirected: false);
+
+            RunInputReadResult result = await reader.ReadAsync(
+                "continue safely",
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+            Assert.Equal("continue safely", result.Instruction);
+            Assert.Null(result.PipedContent);
+            Assert.True(result.InputRedirected);
+            Assert.Empty(result.Diagnostics);
+        }
+        finally
+        {
+            Console.SetIn(originalInput);
+        }
+    }
+
+    [Fact]
+    public async Task ReadAsync_does_not_warn_when_redirected_input_is_empty_but_file_context_is_explicit()
+    {
+        TextReader originalInput = Console.In;
+        StringReader configuredInput = new(string.Empty);
+
+        try
+        {
+            Console.SetIn(new StringReader(string.Empty));
+
+            RunInputReader reader = CreateReader(
+                configuredInput,
+                new StringWriter(),
+                inputRedirected: false);
+
+            RunInputReadResult result = await reader.ReadAsync(
+                null,
+                CancellationToken.None,
+                hasExplicitFileContext: true);
+
+            Assert.True(result.IsSuccess);
+            Assert.Equal(string.Empty, result.Instruction);
+            Assert.Null(result.PipedContent);
+            Assert.True(result.InputRedirected);
+            Assert.Empty(result.Diagnostics);
+        }
+        finally
+        {
+            Console.SetIn(originalInput);
+        }
     }
 
     [Fact]
 
     public async Task ReadAsync_fails_instead_of_dropping_redirected_input_when_it_cannot_be_read()
     {
-
         TextReader originalInput = Console.In;
 
         StringReader configuredInput = new(string.Empty);
 
         try
         {
-
             Console.SetIn(new ThrowingTextReader());
 
             RunInputReader reader = CreateReader(
@@ -306,15 +336,11 @@ public sealed class RunInputReaderTests
                 StringComparison.Ordinal);
 
             Assert.Empty(result.Diagnostics);
-
         }
         finally
         {
-
             Console.SetIn(originalInput);
-
         }
-
     }
 
     private static RunInputReader CreateReader(
@@ -322,7 +348,6 @@ public sealed class RunInputReaderTests
         TextWriter diagnostics,
         bool inputRedirected)
     {
-
         ConsoleDispatcher dispatcher = new(
             TextWriter.Null,
             diagnostics,
@@ -332,12 +357,10 @@ public sealed class RunInputReaderTests
             new CliStandardInput(configuredInput),
             dispatcher,
             () => inputRedirected);
-
     }
 
     private sealed class ThrowingTextReader : TextReader
     {
-
         public override int Read(
             char[] buffer,
             int index,
@@ -348,7 +371,5 @@ public sealed class RunInputReaderTests
             Memory<char> buffer,
             CancellationToken cancellationToken = default) =>
             ValueTask.FromException<int>(new IOException("simulated read failure"));
-
     }
-
 }

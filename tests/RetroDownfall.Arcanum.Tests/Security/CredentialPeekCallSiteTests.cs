@@ -3,31 +3,15 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Security;
 
 /// <summary>
-/// Keeps read-only and thin-client credential probes on the non-mutating read contract. Behavioral
-/// tests for the stores prove Peek performs no OS or mirror writes; this inventory prevents a
-/// consumer from silently switching back to the migration-capable read.
+/// Keeps read-only credential probes on the non-mutating read contract and authenticated thin
+/// clients on the server-verified credential lease. Behavioral tests prove both paths avoid
+/// migration-capable reads while this inventory prevents callers from silently bypassing them.
 /// </summary>
 public sealed class CredentialPeekCallSiteTests
 {
-
     public static TheoryData<string, string, string> ReadOnlyCallSites =>
         new()
         {
-            {
-                "src/RetroDownfall.Arcanum.Cli/Services/FileBatchApiClient.cs",
-                ".PeekApiKeyReadResultAsync()",
-                ".GetApiKeyAsync()"
-            },
-            {
-                "src/RetroDownfall.Arcanum.Cli/Services/ArcanumServeLauncher.cs",
-                ".PeekApiKeyReadResultAsync()",
-                ".GetApiKeyAsync()"
-            },
-            {
-                "src/RetroDownfall.Arcanum.Cli/Diagnostics/HostHealthDiagnostics.cs",
-                ".PeekApiKeyReadResultAsync()",
-                ".GetApiKeyAsync()"
-            },
             {
                 "src/RetroDownfall.Arcanum.Cli/Commands/KeyCommands.cs",
                 ".PeekApiKeyReadResultAsync()",
@@ -122,7 +106,6 @@ public sealed class CredentialPeekCallSiteTests
         string requiredCall,
         string forbiddenCall)
     {
-
         ProductionSource source = Assert.Single(
             ProductionSourceInventory.Sources(),
             candidate => candidate.IsExactOwner(relativePath));
@@ -130,7 +113,38 @@ public sealed class CredentialPeekCallSiteTests
         Assert.Contains(requiredCall, source.Text, StringComparison.Ordinal);
 
         Assert.DoesNotContain(forbiddenCall, source.Text, StringComparison.Ordinal);
-
     }
 
+    [Theory]
+    [InlineData("src/RetroDownfall.Arcanum.Cli/Services/FileBatchApiClient.cs")]
+    [InlineData("src/RetroDownfall.Arcanum.Cli/Services/ArcanumServeLauncher.cs")]
+    [InlineData("src/RetroDownfall.Arcanum.Cli/Diagnostics/HostHealthDiagnostics.cs")]
+    public void Authenticated_thin_clients_use_the_server_verified_credential_lease(
+        string relativePath)
+    {
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            candidate => candidate.IsExactOwner(relativePath));
+
+        Assert.Contains("ArcanumApiCredentialLease", source.Text, StringComparison.Ordinal);
+
+        string compact = string.Join(
+            ' ',
+            source.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.True(
+            source.Text.Contains(".ResolveAsync(", StringComparison.Ordinal)
+            || source.Text.Contains(".ProbeAuthenticatedAsync(", StringComparison.Ordinal)
+            || compact.Contains(
+                "ArcanumAuthenticatedHttpSender.SendAsync( client, credentialLease,",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain("ISecretStore", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PeekApiKeyReadResultAsync", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("GetApiKeyAsync", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("GetApiKeyReadResultAsync", source.Text, StringComparison.Ordinal);
+    }
 }

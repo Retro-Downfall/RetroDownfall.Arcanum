@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.CommLink;
@@ -12,16 +13,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.CommLink;
 internal sealed class WebhookCommLinkDispatcher(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    IDnsResolver dnsResolver,
     ILogger<WebhookCommLinkDispatcher> logger) : ICommLinkDispatcher
 {
-
     internal const string HttpClientName = "CommLinkWebhook";
 
     public async Task<Result<CommLinkDeliveryResult>> DispatchAsync(
         CommLinkMessage message,
         CancellationToken cancellationToken = default)
     {
-
         CommLinkSettings commLinkSettings = optionsMonitor.CurrentValue.ResolveCommLink();
 
         // Resolve the secret-bearing URL only at the dispatch boundary. The URL never enters the
@@ -31,76 +31,66 @@ internal sealed class WebhookCommLinkDispatcher(
 
         if (string.IsNullOrWhiteSpace(url))
         {
-
             logger.LogWarning("Comm Link webhook URL environment reference is unset; alert was not sent.");
 
             return Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
-
         }
 
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? endpoint))
         {
-
             logger.LogWarning("Comm Link webhook URL is invalid; alert was not sent.");
 
             return Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
-
         }
 
         string[] allowedSchemes = commLinkSettings.AllowedSchemes ?? ["https"];
 
         if (commLinkSettings.AllowedHosts.Length > 0 && !IsHostAllowed(endpoint.Host, commLinkSettings.AllowedHosts))
         {
-
             logger.LogWarning(
                 "Comm Link webhook URL host '{Host}' is not in Arcanum:Integrations:CommLink:AllowedHosts; alert was not sent.",
                 endpoint.Host);
 
             return Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
-
         }
 
         if (!IsSchemeAllowed(endpoint.Scheme, allowedSchemes))
         {
-
             logger.LogWarning(
                 "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:Integrations:CommLink:AllowedSchemes; alert was not sent.",
                 endpoint.Scheme);
 
             return Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
-
         }
 
-        Result outbound = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url, cancellationToken).ConfigureAwait(false);
+        Result outbound = await OutboundUrlGuard.ValidateUntrustedUrlAsync(
+            url,
+            dnsResolver,
+            cancellationToken).ConfigureAwait(false);
 
         if (outbound.IsFailure)
         {
-
             logger.LogWarning(
                 "Comm Link webhook URL was rejected by outbound URL policy: {Reason}",
                 outbound.Error.Message);
 
             return Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
-
         }
 
         string? severityName = Enum.GetName(message.Severity);
 
         if (string.IsNullOrEmpty(severityName))
         {
-
             severityName = nameof(CommLinkSeverity.Info);
-
         }
 
         WebhookPayloadDto dto = new()
         {
-
             Title = message.Title,
 
             Body = message.Body,
@@ -110,7 +100,6 @@ internal sealed class WebhookCommLinkDispatcher(
             Source = message.Source,
 
             TimestampUtc = DateTimeOffset.UtcNow.ToString("O"),
-
         };
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(dto, CommLinkInfrastructureJsonContext.Default.WebhookPayloadDto);
@@ -123,12 +112,9 @@ internal sealed class WebhookCommLinkDispatcher(
 
         try
         {
-
             using HttpRequestMessage request = new(HttpMethod.Post, endpoint)
             {
-
                 Content = content,
-
             };
 
             using HttpResponseMessage response = await client
@@ -142,24 +128,18 @@ internal sealed class WebhookCommLinkDispatcher(
 
             if (!response.IsSuccessStatusCode)
             {
-
                 return Result<CommLinkDeliveryResult>.Failure(
                     new Error(
                         "CommLink.WebhookHttpError",
                         $"Webhook returned HTTP {(int)response.StatusCode}."));
-
             }
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             // Log host only — never the full webhook URL (may contain path/query secrets).
             logger.LogWarning(
                 "Comm Link webhook POST failed for host {Host} ({FailureType}).",
@@ -170,20 +150,16 @@ internal sealed class WebhookCommLinkDispatcher(
                 new Error(
                     "CommLink.WebhookException",
                     "Comm Link webhook POST failed. See server logs for details."));
-
         }
 
         return Result<CommLinkDeliveryResult>.Success(
             new CommLinkDeliveryResult(CommLinkDeliveryStatus.Delivered));
-
     }
 
     private static bool IsSchemeAllowed(string scheme, string[] allowedSchemes)
     {
-
         foreach (string allowed in allowedSchemes)
         {
-
             if (string.IsNullOrWhiteSpace(allowed))
             {
                 continue;
@@ -193,19 +169,15 @@ internal sealed class WebhookCommLinkDispatcher(
             {
                 return true;
             }
-
         }
 
         return false;
-
     }
 
     private static bool IsHostAllowed(string host, string[] allowedHosts)
     {
-
         foreach (string allowed in allowedHosts)
         {
-
             string trimmed = allowed.Trim();
 
             if (string.IsNullOrWhiteSpace(trimmed))
@@ -217,11 +189,8 @@ internal sealed class WebhookCommLinkDispatcher(
             {
                 return true;
             }
-
         }
 
         return false;
-
     }
-
 }

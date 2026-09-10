@@ -305,9 +305,10 @@ public sealed class WindowsDaemonManager : IDaemonManager
 
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        Task exitTask = process.WaitForExitAsync(cancellationToken);
         try
         {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(exitTask, stdoutTask, stderrTask).ConfigureAwait(false);
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorAccessDenied)
         {

@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -15,686 +17,502 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("ProcessEnvironment")]
 public sealed class ArcanumServeLauncherTests
 {
+    private const string ApiKey = "launcher-test-key";
 
     [Fact]
-    public async Task AlreadyRunning_when_authenticated_health_probe_succeeds()
+    public async Task Verified_running_host_uses_the_mirror_once_and_does_not_spawn()
     {
+        PresenceSequenceHandler handler = new(
+            request => ValidProof(request, ApiKey));
 
-        SequencedHandler handler = new(HttpStatusCode.OK);
+        RecordingReader mirror = new(SecretStoreReadResult.Ok(ApiKey));
+        RecordingReader operatingSystem = new(
+            SecretStoreReadResult.Corrupted("must not be opened"));
 
-        FakeServeProcessLauncher processLauncher = new();
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            mirror,
+            operatingSystem);
+
+        FakeServeProcessLauncher process = new();
+        FakeSecureStorageNotice notice = new();
 
         ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
+            lease,
+            process,
+            notice: notice);
 
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
 
         Assert.Equal(ServeLaunchStatus.AlreadyRunning, result.Status);
-
         Assert.Equal(HealthProbeState.Healthy, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
+        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal(1, mirror.ReadCount);
+        Assert.Equal(0, operatingSystem.ReadCount);
+        Assert.Equal(0, process.StartCount);
+        Assert.Equal(0, notice.BeforeHostBootstrapCount);
     }
 
     [Fact]
-    public async Task Unauthorized_does_not_spawn()
+    public async Task Definite_no_listener_spawns_then_waits_for_a_valid_proof()
     {
-
-        SequencedHandler handler = new(HttpStatusCode.Unauthorized);
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "bad-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.AuthFailed, result.Status);
-
-        Assert.Equal(HealthProbeState.Unauthorized, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-        // Documented: launcher never deletes arcanum.pid on Unauthorized; spawn simply is not called.
-    }
-
-    [Fact]
-    public async Task No_key_then_spawn_then_key_appears_poll_succeeds()
-    {
-
-        FakeSecretStore secretStore = new() { ApiKey = null };
-
-        SequencedHandler handler = new(
+        PresenceSequenceHandler handler = new(
             _ => throw ConnectionRefused(),
-            _ =>
-            {
-                secretStore.ApiKey = "appeared-key";
+            request => ValidProof(request, ApiKey));
 
-                return new HttpResponseMessage(HttpStatusCode.OK);
-            });
+        RecordingReader mirror = new(SecretStoreReadResult.Ok(ApiKey));
+        RecordingReader operatingSystem = new(SecretStoreReadResult.Missing());
 
-        FakeServeProcessLauncher processLauncher = new();
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            mirror,
+            operatingSystem);
+
+        FakeServeProcessLauncher process = new();
+        FakeSecureStorageNotice notice = new();
 
         ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            secretStore);
+            lease,
+            process,
+            notice: notice);
 
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
 
         Assert.Equal(ServeLaunchStatus.Started, result.Status);
-
         Assert.Equal(HealthProbeState.Healthy, result.Health);
-
-        Assert.Equal(1, processLauncher.StartCount);
-
-        Assert.Equal("1", processLauncher.LastOptions!.Env[ArcanumServeLauncher.AutoLaunchedEnvVar]);
-
+        Assert.Equal(1, process.StartCount);
+        Assert.Equal("1", process.LastOptions!.Env[ArcanumServeLauncher.AutoLaunchedEnvVar]);
+        Assert.Equal(1, notice.BeforeHostBootstrapCount);
+        Assert.Equal(1, mirror.ReadCount);
+        Assert.Equal(0, operatingSystem.ReadCount);
     }
 
     [Fact]
-    public async Task Post_spawn_unauthorized_with_null_key_keeps_polling()
+    public async Task Foreign_responder_never_reads_a_credential_or_spawns()
     {
-
-        FakeSecretStore secretStore = new() { ApiKey = null };
-
-        int probeIndex = 0;
-
-        SequencedHandler handler = new(_ =>
-        {
-
-            probeIndex++;
-
-            if (probeIndex == 1)
-            {
-                throw ConnectionRefused();
-            }
-
-            // Probes 2–3: Unauthorized while key is still null (first-run race — keep polling).
-            if (probeIndex is 2 or 3)
-            {
-                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
-            }
-
-            secretStore.ApiKey = "bootstrap-key";
-
-            return new HttpResponseMessage(HttpStatusCode.OK);
-
-        });
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            secretStore);
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Started, result.Status);
-
-        Assert.Equal(1, processLauncher.StartCount);
-
-        Assert.True(probeIndex >= 4);
-
-    }
-
-    [Fact]
-    public async Task Post_spawn_unauthorized_with_non_null_key_eventually_AuthFailed()
-    {
-
-        SequencedHandler handler = new(
-            _ => throw ConnectionRefused(),
+        PresenceSequenceHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
 
-        FakeServeProcessLauncher processLauncher = new();
+        RecordingReader mirror = new(SecretStoreReadResult.Ok(ApiKey));
+        RecordingReader operatingSystem = new(SecretStoreReadResult.Ok(ApiKey));
 
-        ArcanumServeLauncher launcher = CreateLauncher(
+        using ArcanumApiCredentialLease lease = CreateLease(
             handler,
-            processLauncher,
-            apiKey: "stored-key");
+            mirror,
+            operatingSystem);
 
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
+        Assert.Equal(HealthProbeState.UnexpectedResponder, result.Health);
+        Assert.Equal(0, mirror.ReadCount);
+        Assert.Equal(0, operatingSystem.ReadCount);
+        Assert.Equal(0, process.StartCount);
+        Assert.Contains(
+            "not read or sent",
+            result.Guidance ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Wrong_server_proof_is_auth_failed_and_never_spawns()
+    {
+        PresenceSequenceHandler handler = new(
+            request => ValidProof(request, "different-installation-key"));
+
+        RecordingReader mirror = new(SecretStoreReadResult.Ok(ApiKey));
+        RecordingReader operatingSystem = new(SecretStoreReadResult.Ok(ApiKey));
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            mirror,
+            operatingSystem);
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
 
         Assert.Equal(ServeLaunchStatus.AuthFailed, result.Status);
-
         Assert.Equal(HealthProbeState.Unauthorized, result.Health);
+        Assert.Equal(1, mirror.ReadCount);
+        Assert.Equal(1, operatingSystem.ReadCount);
+        Assert.Equal(0, process.StartCount);
+    }
 
-        Assert.Equal(1, processLauncher.StartCount);
+    [Theory]
+    [InlineData(false, "No local API credential was found")]
+    [InlineData(true, "could not be read")]
+    public async Task Credential_failure_guidance_preserves_missing_versus_unreadable_storage(
+        bool corrupted,
+        string expectedGuidance)
+    {
+        PresenceSequenceHandler handler = new(
+            request => ValidProof(request, ApiKey));
 
+        SecretStoreReadResult read = corrupted
+            ? SecretStoreReadResult.Corrupted("credential unreadable")
+            : SecretStoreReadResult.Missing();
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            new RecordingReader(read),
+            new RecordingReader(read));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.AuthFailed, result.Status);
+        Assert.Contains(
+            expectedGuidance,
+            result.Guidance ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, process.StartCount);
     }
 
     [Fact]
-    public async Task Launch_disabled_when_noninteractive()
+    public async Task Existing_host_can_finish_credential_bootstrap_without_a_second_spawn()
     {
+        PresenceSequenceHandler handler = new(
+            _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+            request => ValidProof(request, ApiKey));
 
-        SequencedHandler handler = new(HttpStatusCode.OK);
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
+        using ArcanumApiCredentialLease lease = CreateLease(
             handler,
-            processLauncher,
-            apiKey: "test-key",
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.AlreadyRunning, result.Status);
+        Assert.Equal(2, handler.RequestCount);
+        Assert.Equal(0, process.StartCount);
+    }
+
+    [Fact]
+    public async Task Noninteractive_invocation_does_not_probe_or_spawn()
+    {
+        PresenceSequenceHandler handler = new(
+            _ => throw new InvalidOperationException("must not probe"));
+
+        using ArcanumApiCredentialLease lease = CreateLease(
+            handler,
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
+
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(
+            lease,
+            process,
             interactive: false);
 
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
 
         Assert.Equal(ServeLaunchStatus.LaunchDisabled, result.Status);
-
         Assert.Equal(HealthProbeState.NotAttempted, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-        Assert.Equal(0, handler.CallCount);
-
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Equal(0, process.StartCount);
     }
 
     [Fact]
-    public async Task Launch_disabled_when_ARCANUM_NO_AUTO_SERVE_set()
+    public async Task Explicit_no_auto_serve_does_not_probe_or_spawn()
     {
-
-        string? original = global::System.Environment.GetEnvironmentVariable(ArcanumServeLauncher.NoAutoServeEnvVar);
+        string? original = global::System.Environment.GetEnvironmentVariable(
+            ArcanumServeLauncher.NoAutoServeEnvVar);
 
         try
         {
+            global::System.Environment.SetEnvironmentVariable(
+                ArcanumServeLauncher.NoAutoServeEnvVar,
+                "1");
 
-            global::System.Environment.SetEnvironmentVariable(ArcanumServeLauncher.NoAutoServeEnvVar, "1");
+            PresenceSequenceHandler handler = new(
+                _ => throw new InvalidOperationException("must not probe"));
 
-            SequencedHandler handler = new(HttpStatusCode.OK);
-
-            FakeServeProcessLauncher processLauncher = new();
-
-            ArcanumServeLauncher launcher = CreateLauncher(
+            using ArcanumApiCredentialLease lease = CreateLease(
                 handler,
-                processLauncher,
-                apiKey: "test-key",
-                interactive: true);
+                new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+                new RecordingReader(SecretStoreReadResult.Missing()));
 
-            ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+            FakeServeProcessLauncher process = new();
+            ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+            ServeLaunchResult result = await launcher
+                .EnsureRunningAsync(CancellationToken.None);
 
             Assert.Equal(ServeLaunchStatus.LaunchDisabled, result.Status);
-
-            Assert.Equal(0, processLauncher.StartCount);
-
+            Assert.Equal(0, handler.RequestCount);
+            Assert.Equal(0, process.StartCount);
         }
         finally
         {
-
-            global::System.Environment.SetEnvironmentVariable(ArcanumServeLauncher.NoAutoServeEnvVar, original);
-
+            global::System.Environment.SetEnvironmentVariable(
+                ArcanumServeLauncher.NoAutoServeEnvVar,
+                original);
         }
-
     }
 
     [Fact]
-    public async Task NO_COLOR_does_not_disable_auto_serve()
+    public async Task ListenAny_without_acknowledgement_does_not_spawn()
     {
-
-        // Launcher gates on ICliEnvironment.IsInteractive only (not ColorEnabled / NO_COLOR).
-        // CliEnvironment already encodes redirect into IsInteractive; we inject interactive=true.
-        string? originalNoColor = global::System.Environment.GetEnvironmentVariable("NO_COLOR");
-
-        string? originalNoAuto = global::System.Environment.GetEnvironmentVariable(ArcanumServeLauncher.NoAutoServeEnvVar);
-
-        try
-        {
-
-            global::System.Environment.SetEnvironmentVariable("NO_COLOR", "1");
-
-            global::System.Environment.SetEnvironmentVariable(ArcanumServeLauncher.NoAutoServeEnvVar, null);
-
-            SequencedHandler handler = new(HttpStatusCode.OK);
-
-            FakeServeProcessLauncher processLauncher = new();
-
-            ArcanumServeLauncher launcher = CreateLauncher(
-                handler,
-                processLauncher,
-                apiKey: "test-key",
-                interactive: true);
-
-            ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-            Assert.Equal(ServeLaunchStatus.AlreadyRunning, result.Status);
-
-            Assert.Equal(0, processLauncher.StartCount);
-
-        }
-        finally
-        {
-
-            global::System.Environment.SetEnvironmentVariable("NO_COLOR", originalNoColor);
-
-            global::System.Environment.SetEnvironmentVariable(ArcanumServeLauncher.NoAutoServeEnvVar, originalNoAuto);
-
-        }
-
-    }
-
-    [Fact]
-    public async Task ListenAny_without_ack_does_not_spawn()
-    {
-
         string? originalAck = global::System.Environment.GetEnvironmentVariable(
             ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable);
 
-        string? originalHostAny = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
+        string? originalDotnet = global::System.Environment.GetEnvironmentVariable(
+            "DOTNET_ENVIRONMENT");
 
-        string? originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+        string? originalAspNet = global::System.Environment.GetEnvironmentVariable(
+            "ASPNETCORE_ENVIRONMENT");
 
-        string? originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-
-        string? originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+        string? originalHome = global::System.Environment.GetEnvironmentVariable(
+            "ARCANUM_TEST_HOME");
 
         string testHome = Path.Combine(
             Path.GetTempPath(),
-            "arcanum-serve-launcher-tests",
-            Guid.NewGuid().ToString("N"));
+            $"arcanum-launcher-listen-any-{Guid.NewGuid():N}");
 
         try
         {
-
-            Directory.CreateDirectory(testHome);
+            global::System.Environment.SetEnvironmentVariable(
+                ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable,
+                null);
 
             global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
-
             global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
-
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", testHome);
 
-            global::System.Environment.SetEnvironmentVariable(ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable, null);
+            PresenceSequenceHandler handler = new(
+                _ => throw ConnectionRefused());
 
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", null);
+            using ArcanumApiCredentialLease lease = CreateLease(
+                handler,
+                new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+                new RecordingReader(SecretStoreReadResult.Missing()));
 
-            Assert.StartsWith(
-                Path.GetFullPath(testHome),
-                Path.GetFullPath(ArcanumPaths.GrimoireDirectory),
-                StringComparison.Ordinal);
-
-            SequencedHandler handler = new(_ => throw ConnectionRefused());
-
-            FakeServeProcessLauncher processLauncher = new();
+            FakeServeProcessLauncher process = new();
 
             ArcanumSettings settings = new()
             {
-                Host = new HostSettings { ListenAny = true, Https = new HttpsSettings { Enabled = true } },
+                Host = new HostSettings
+                {
+                    ListenAny = true,
+                    Https = new HttpsSettings { Enabled = true },
+                },
             };
 
             ArcanumServeLauncher launcher = CreateLauncher(
-                handler,
-                processLauncher,
-                apiKey: "test-key",
+                lease,
+                process,
                 settings: settings);
 
-            ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+            ServeLaunchResult result = await launcher
+                .EnsureRunningAsync(CancellationToken.None);
 
             Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
             Assert.Equal(HealthProbeState.ConnectionRefused, result.Health);
-
-            Assert.Equal(0, processLauncher.StartCount);
-
-            Assert.Contains("ListenAny", result.Guidance ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-
+            Assert.Equal(0, process.StartCount);
+            Assert.Contains(
+                "ListenAny",
+                result.Guidance ?? string.Empty,
+                StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(
                 ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable,
                 originalAck);
 
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", originalHostAny);
-
-            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", originalDotnetEnvironment);
-
-            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNetCoreEnvironment);
-
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalTestHome);
+            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", originalDotnet);
+            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNet);
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalHome);
 
             if (Directory.Exists(testHome))
             {
-
                 Directory.Delete(testHome, recursive: true);
-
             }
-
         }
-
     }
 
     [Fact]
-    public async Task Tls_failure_does_not_spawn()
+    public async Task Spawn_failure_returns_a_typed_failure_with_the_bootstrap_log()
     {
+        PresenceSequenceHandler handler = new(
+            _ => throw ConnectionRefused());
 
-        SequencedHandler handler = new(_ =>
-            throw new HttpRequestException(
-                "The SSL connection could not be established.",
-                new AuthenticationException("cert invalid")));
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
+        using ArcanumApiCredentialLease lease = CreateLease(
             handler,
-            processLauncher,
-            apiKey: "test-key");
+            new RecordingReader(SecretStoreReadResult.Ok(ApiKey)),
+            new RecordingReader(SecretStoreReadResult.Missing()));
 
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+        FakeServeProcessLauncher process = new(
+            new InvalidOperationException("spawn refused"));
+
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
+
+        ServeLaunchResult result = await launcher
+            .EnsureRunningAsync(CancellationToken.None);
 
         Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-        Assert.Equal(HealthProbeState.TlsFailure, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
+        Assert.Equal(ArcanumServeLauncher.BootstrapLogPath, result.LogPath);
+        Assert.Contains(
+            "spawn refused",
+            result.Guidance ?? string.Empty,
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Timeout_does_not_spawn()
+    public async Task Post_spawn_missing_listener_times_out_without_repeated_credential_reads()
     {
+        PresenceSequenceHandler handler = new(
+            _ => throw ConnectionRefused());
 
-        SequencedHandler handler = new(async (_, ct) =>
-        {
+        RecordingReader mirror = new(SecretStoreReadResult.Ok(ApiKey));
+        RecordingReader operatingSystem = new(SecretStoreReadResult.Missing());
 
-            await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
-
-            return new HttpResponseMessage(HttpStatusCode.OK);
-
-        });
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
+        using ArcanumApiCredentialLease lease = CreateLease(
             handler,
-            processLauncher,
-            apiKey: "test-key");
+            mirror,
+            operatingSystem);
 
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+        FakeServeProcessLauncher process = new();
+        ArcanumServeLauncher launcher = CreateLauncher(lease, process);
 
-        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-        Assert.Equal(HealthProbeState.Timeout, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-    }
-
-    [Fact]
-    public async Task Connection_refused_spawns()
-    {
-
-        SequencedHandler handler = new(
-            _ => throw ConnectionRefused(),
-            _ => new HttpResponseMessage(HttpStatusCode.OK));
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Started, result.Status);
-
-        Assert.Equal(1, processLauncher.StartCount);
-
-    }
-
-    [Fact]
-    public async Task Live_pid_but_health_fails_does_not_delete_pid()
-    {
-
-        // Unauthorized means something is already answering — spawn must not run.
-        // The launcher never deletes arcanum.pid (no processLauncher delete API); assert spawn not called.
-        SequencedHandler handler = new(HttpStatusCode.Unauthorized);
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.AuthFailed, result.Status);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-    }
-
-    [Fact]
-    public async Task Returns_Failed_on_timeout()
-    {
-
-        TimeSpan? previousDeadline = ArcanumServeLauncher.TestPollDeadline;
+        TimeSpan? originalDeadline = ArcanumServeLauncher.TestPollDeadline;
 
         try
         {
+            ArcanumServeLauncher.TestPollDeadline =
+                TimeSpan.FromMilliseconds(100);
 
-            ArcanumServeLauncher.TestPollDeadline = TimeSpan.FromMilliseconds(600);
-
-            SequencedHandler handler = new(_ => throw ConnectionRefused());
-
-            FakeServeProcessLauncher processLauncher = new();
-
-            ArcanumServeLauncher launcher = CreateLauncher(
-                handler,
-                processLauncher,
-                apiKey: "test-key");
-
-            ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+            ServeLaunchResult result = await launcher
+                .EnsureRunningAsync(CancellationToken.None);
 
             Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-            Assert.Equal(HealthProbeState.Timeout, result.Health);
-
-            Assert.Equal(1, processLauncher.StartCount);
-
+            Assert.Equal(1, process.StartCount);
+            Assert.Equal(0, mirror.ReadCount);
+            Assert.Equal(0, operatingSystem.ReadCount);
+            Assert.Equal(ArcanumServeLauncher.BootstrapLogPath, result.LogPath);
         }
         finally
         {
-
-            ArcanumServeLauncher.TestPollDeadline = previousDeadline;
-
+            ArcanumServeLauncher.TestPollDeadline = originalDeadline;
         }
-
-    }
-
-    [Fact]
-    public async Task Does_not_spawn_when_server_unhealthy_503()
-    {
-
-        SequencedHandler handler = new(HttpStatusCode.ServiceUnavailable);
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-        Assert.Equal(HealthProbeState.UnhealthyStatus, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-    }
-
-    [Fact]
-    public async Task Health_body_reset_after_headers_is_classified_not_thrown()
-    {
-
-        // A host shutting down mid-response returns 200 headers and then resets the connection while
-        // the body streams. HttpIOException derives from IOException (not HttpRequestException), so
-        // the probe must classify it as "something answered" rather than letting it escape.
-        SequencedHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StreamContent(new ResettingStream()),
-        });
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-        Assert.Equal(HealthProbeState.Timeout, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-    }
-
-    /// <summary>
-    /// A foreign service on the port — the default 5001 is the classic ASP.NET Core dev port — fails
-    /// the header phase with an <see cref="HttpRequestException" /> that carries a post-connection
-    /// <see cref="HttpRequestError" /> and no inner <see cref="SocketException" />. Something is
-    /// holding the port, so a second host cannot bind it and must never be spawned.
-    /// </summary>
-    [Theory]
-    [InlineData(HttpRequestError.InvalidResponse)]
-    [InlineData(HttpRequestError.ResponseEnded)]
-    [InlineData(HttpRequestError.HttpProtocolError)]
-    [InlineData(HttpRequestError.VersionNegotiationError)]
-    [InlineData(HttpRequestError.ConfigurationLimitExceeded)]
-    public async Task Something_answered_but_not_as_arcanum_does_not_spawn(HttpRequestError error)
-    {
-
-        SequencedHandler handler = new(_ =>
-            throw new HttpRequestException(error, "The response ended prematurely."));
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-        Assert.Equal(HealthProbeState.UnexpectedResponder, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-    }
-
-    /// <summary>
-    /// A reset or abort names a peer that accepted the connection and then tore it down. The socket
-    /// ladder only recognised the never-connected codes, so these fell through to the no-listener
-    /// default and spawned into an occupied port too.
-    /// </summary>
-    [Theory]
-    [InlineData(SocketError.ConnectionReset)]
-    [InlineData(SocketError.ConnectionAborted)]
-    [InlineData(SocketError.Shutdown)]
-    public async Task A_peer_that_accepted_then_tore_down_does_not_spawn(SocketError socketError)
-    {
-
-        SequencedHandler handler = new(_ =>
-            throw new HttpRequestException(
-                HttpRequestError.Unknown,
-                "An error occurred while sending the request.",
-                new SocketException((int)socketError)));
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
-
-        Assert.Equal(HealthProbeState.UnexpectedResponder, result.Health);
-
-        Assert.Equal(0, processLauncher.StartCount);
-
-    }
-
-    /// <summary>
-    /// The other half of the contract: an unrecognised transport failure with nothing to suggest a
-    /// peer answered stays a no-listener verdict, so auto-serve still recovers a host that died.
-    /// </summary>
-    [Fact]
-    public async Task An_unclassifiable_transport_failure_still_spawns()
-    {
-
-        SequencedHandler handler = new(
-            _ => throw new HttpRequestException(
-                HttpRequestError.Unknown,
-                "An error occurred while sending the request."),
-            _ => new HttpResponseMessage(HttpStatusCode.OK));
-
-        FakeServeProcessLauncher processLauncher = new();
-
-        ArcanumServeLauncher launcher = CreateLauncher(
-            handler,
-            processLauncher,
-            apiKey: "test-key");
-
-        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
-
-        Assert.Equal(ServeLaunchStatus.Started, result.Status);
-
-        Assert.Equal(1, processLauncher.StartCount);
-
     }
 
     private static ArcanumServeLauncher CreateLauncher(
-        HttpMessageHandler handler,
-        FakeServeProcessLauncher processLauncher,
-        string? apiKey,
+        ArcanumApiCredentialLease lease,
+        FakeServeProcessLauncher process,
         bool interactive = true,
-        ArcanumSettings? settings = null) =>
-        CreateLauncher(
-            handler,
-            processLauncher,
-            new FakeSecretStore { ApiKey = apiKey },
-            interactive,
-            settings);
-
-    private static ArcanumServeLauncher CreateLauncher(
-        HttpMessageHandler handler,
-        FakeServeProcessLauncher processLauncher,
-        FakeSecretStore secretStore,
-        bool interactive = true,
-        ArcanumSettings? settings = null)
-    {
-
-        FakeHttpClientFactory factory = new(handler);
-
-        TestOptionsMonitor<ArcanumSettings> monitor = new(settings ?? new ArcanumSettings());
-
-        FakeCliEnvironment env = new(interactive);
-
-        return new ArcanumServeLauncher(
-            factory,
-            monitor,
-            secretStore,
-            env,
-            processLauncher,
+        ArcanumSettings? settings = null,
+        ISecureStorageNotice? notice = null) =>
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(
+                settings ?? new ArcanumSettings()),
+            lease,
+            new FakeCliEnvironment(interactive),
+            process,
+            notice ?? new FakeSecureStorageNotice(),
             NullLogger<ArcanumServeLauncher>.Instance);
 
+    private static ArcanumApiCredentialLease CreateLease(
+        HttpMessageHandler handler,
+        RecordingReader mirror,
+        RecordingReader operatingSystem)
+    {
+        HttpClient client = new(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5001/"),
+        };
+
+        return new ArcanumApiCredentialLease(
+            client,
+            new Uri("http://localhost:5001/api/presence"),
+            mirror.ReadAsync,
+            operatingSystem.ReadAsync);
+    }
+
+    private static HttpResponseMessage ValidProof(
+        HttpRequestMessage request,
+        string key)
+    {
+        Assert.False(request.Headers.Contains(ArcanumApiHeaders.ApiKey));
+
+        string encodedNonce = Assert.Single(
+            request.Headers.GetValues(ArcanumApiHeaders.PresenceNonce));
+
+        Assert.True(
+            ArcanumPresenceProofProtocol.TryDecode(
+                encodedNonce,
+                ArcanumPresenceProofProtocol.NonceBytes,
+                out byte[]? nonce));
+
+        Assert.True(
+            ArcanumPresenceProofProtocol.TryCanonicalAuthority(
+                request.RequestUri!,
+                out string? authority));
+
+        byte[] encodedKey = Encoding.UTF8.GetBytes(key);
+        byte[] digest = SHA256.HashData(encodedKey);
+        using ArcanumProcessCapabilityService processCapabilities = new();
+        byte[] processCapability = processCapabilities.Issue();
+        byte[] capabilityEnvelope =
+            ArcanumPresenceProofProtocol.CreateCapabilityEnvelope(
+                digest,
+                nonce!,
+                authority!,
+                processCapability);
+        byte[] proof = ArcanumPresenceProofProtocol.ComputeProof(
+            digest,
+            nonce!,
+            authority!,
+            capabilityEnvelope);
+
+        try
+        {
+            HttpResponseMessage response = new(HttpStatusCode.NoContent);
+
+            response.Headers.TryAddWithoutValidation(
+                ArcanumApiHeaders.PresenceVersion,
+                ArcanumPresenceProofProtocol.Version);
+
+            response.Headers.TryAddWithoutValidation(
+                ArcanumApiHeaders.PresenceAuthority,
+                authority);
+
+            response.Headers.TryAddWithoutValidation(
+                ArcanumApiHeaders.PresenceProof,
+                ArcanumPresenceProofProtocol.Encode(proof));
+
+            response.Headers.TryAddWithoutValidation(
+                ArcanumApiHeaders.PresenceCapability,
+                ArcanumPresenceProofProtocol.Encode(capabilityEnvelope));
+
+            return response;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(nonce!);
+            CryptographicOperations.ZeroMemory(encodedKey);
+            CryptographicOperations.ZeroMemory(digest);
+            CryptographicOperations.ZeroMemory(processCapability);
+            CryptographicOperations.ZeroMemory(capabilityEnvelope);
+            CryptographicOperations.ZeroMemory(proof);
+        }
     }
 
     private static HttpRequestException ConnectionRefused() =>
@@ -702,188 +520,89 @@ public sealed class ArcanumServeLauncherTests
             "Connection refused",
             new SocketException((int)SocketError.ConnectionRefused));
 
-    private sealed class FakeCliEnvironment : ICliEnvironment
+    private sealed class RecordingReader(SecretStoreReadResult result)
     {
+        private int _readCount;
 
-        public FakeCliEnvironment(bool interactive)
-        {
+        internal int ReadCount => Volatile.Read(ref _readCount);
 
-            IsInteractive = interactive;
-
-            ColorEnabled = interactive;
-
-            ShouldShowManaBar = interactive;
-
-        }
-
-        public bool IsInteractive { get; }
-
-        public bool ColorEnabled { get; }
-
-        public bool ShouldShowManaBar { get; }
-
-    }
-
-    private sealed class FakeSecretStore : ISecretStore
-    {
-
-        public string? ApiKey { get; set; }
-
-        public Task<string?> GetApiKeyAsync() =>
-            throw new InvalidOperationException("The launcher must use Peek.");
-
-        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
-            throw new InvalidOperationException("The launcher must use Peek.");
-
-        public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync() =>
-            Task.FromResult(
-                string.IsNullOrWhiteSpace(ApiKey)
-                    ? SecretStoreReadResult.Missing()
-                    : SecretStoreReadResult.Ok(ApiKey!));
-
-        public Task SaveApiKeyAsync(string apiKey) =>
-            throw new InvalidOperationException("The launcher must not persist credentials.");
-
-        public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
-
-        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
-    }
-
-    private sealed class FakeServeProcessLauncher : IServeProcessLauncher
-    {
-
-        public int StartCount { get; private set; }
-
-        public ServeProcessStartOptions? LastOptions { get; private set; }
-
-        public Task<StartedProcess> StartServeAsync(
-            ServeProcessStartOptions options,
+        internal Task<SecretStoreReadResult> ReadAsync(
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _readCount);
 
-            StartCount++;
-
-            LastOptions = options;
-
-            return Task.FromResult(new StartedProcess(42_001));
-
+            return Task.FromResult(result);
         }
-
     }
 
-    private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+    private sealed class PresenceSequenceHandler(
+        params Func<HttpRequestMessage, HttpResponseMessage>[] steps)
+        : HttpMessageHandler
     {
+        private int _requestCount;
 
-        public HttpClient CreateClient(string name) =>
-            new(handler, disposeHandler: false)
-            {
-                BaseAddress = new Uri("http://localhost:5001/"),
-                Timeout = TimeSpan.FromSeconds(60),
-            };
-
-    }
-
-    /// <summary>
-    /// Stands in for a connection reset while the response body streams: readable, then throws the
-    /// same <see cref="IOException"/> shape <c>HttpIOException</c> surfaces on a premature EOF.
-    /// </summary>
-    private sealed class ResettingStream : Stream
-    {
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => false;
-
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count) =>
-            throw new IOException("The response ended prematurely.");
-
-        public override ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default) =>
-            throw new IOException("The response ended prematurely.");
-
-        public override Task<int> ReadAsync(
-            byte[] buffer,
-            int offset,
-            int count,
-            CancellationToken cancellationToken) =>
-            throw new IOException("The response ended prematurely.");
-
-        public override void Flush()
-        {
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-    }
-
-    private sealed class SequencedHandler : HttpMessageHandler
-    {
-
-        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>[] _steps;
-
-        private int _index;
-
-        public SequencedHandler(params HttpStatusCode[] statuses)
-            : this(statuses.Select(status =>
-                    (Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>)((_, _) =>
-                        Task.FromResult(new HttpResponseMessage(status))))
-                .ToArray())
-        {
-        }
-
-        public SequencedHandler(params Func<HttpRequestMessage, HttpResponseMessage>[] steps)
-            : this(steps.Select(step =>
-                    (Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>)((req, _) =>
-                        Task.FromResult(step(req))))
-                .ToArray())
-        {
-        }
-
-        public SequencedHandler(params Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>[] steps)
-        {
-
-            _steps = steps.Length == 0
-                ? throw new ArgumentException("At least one step is required.", nameof(steps))
-                : steps;
-
-        }
-
-        public int CallCount { get; private set; }
+        internal int RequestCount => Volatile.Read(ref _requestCount);
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
 
-            CallCount++;
+            int index = Interlocked.Increment(ref _requestCount) - 1;
 
-            int index = Math.Min(_index, _steps.Length - 1);
+            Func<HttpRequestMessage, HttpResponseMessage> step =
+                steps[Math.Min(index, steps.Length - 1)];
 
-            if (_index < _steps.Length)
-            {
-                _index++;
-            }
-
-            return _steps[index](request, cancellationToken);
-
+            return Task.FromResult(step(request));
         }
-
     }
 
+    private sealed class FakeCliEnvironment(bool interactive) : ICliEnvironment
+    {
+        public bool IsInteractive => interactive;
+
+        public bool ColorEnabled => interactive;
+
+        public bool ShouldShowManaBar => interactive;
+    }
+
+    private sealed class FakeServeProcessLauncher(Exception? failure = null)
+        : IServeProcessLauncher
+    {
+        internal int StartCount { get; private set; }
+
+        internal ServeProcessStartOptions? LastOptions { get; private set; }
+
+        public Task<StartedProcess> StartServeAsync(
+            ServeProcessStartOptions options,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            StartCount++;
+            LastOptions = options;
+
+            return failure is null
+                ? Task.FromResult(new StartedProcess(42_001))
+                : Task.FromException<StartedProcess>(failure);
+        }
+    }
+
+    private sealed class FakeSecureStorageNotice : ISecureStorageNotice
+    {
+        internal int BeforeHostBootstrapCount { get; private set; }
+
+        public void ExplainBeforeHostBootstrap() =>
+            BeforeHostBootstrapCount++;
+
+        public void ExplainAfterSetup()
+        {
+        }
+
+        public void MarkHostBootstrapCompleted()
+        {
+        }
+    }
 }

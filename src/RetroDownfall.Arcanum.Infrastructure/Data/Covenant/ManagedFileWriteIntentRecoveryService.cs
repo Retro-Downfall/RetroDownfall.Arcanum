@@ -41,7 +41,6 @@ internal sealed record ManagedFileWriteIntentRow(
 /// </remarks>
 internal static class ManagedFileWriteIntentStore
 {
-
     private const string SelectColumns = """
         SELECT WriteOperationId, ArtifactId, SensitivityLabelId, DurableLocationEvidence,
             CreatedChildPhysicalIdentityDigest, PhaseCode, Revision
@@ -66,7 +65,6 @@ internal static class ManagedFileWriteIntentStore
         int ceiling,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ceiling);
@@ -74,7 +72,9 @@ internal static class ManagedFileWriteIntentStore
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
-            $"{SelectColumns} ORDER BY WriteOperationId LIMIT {ceiling + 1};";
+            $"{SelectColumns} ORDER BY WriteOperationId LIMIT $take;";
+
+        _ = command.Parameters.AddWithValue("$take", checked((long)ceiling + 1L));
 
         List<ManagedFileWriteIntentRow> rows = [];
 
@@ -84,22 +84,17 @@ internal static class ManagedFileWriteIntentStore
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             Result<ManagedFileWriteIntentRow> row = Read(reader);
 
             if (row.IsFailure)
             {
-
                 return Result<IReadOnlyList<ManagedFileWriteIntentRow>>.Failure(row.Error);
-
             }
 
             rows.Add(row.Value);
-
         }
 
         return Result<IReadOnlyList<ManagedFileWriteIntentRow>>.Success(rows);
-
     }
 
     /// <summary>
@@ -120,7 +115,6 @@ internal static class ManagedFileWriteIntentStore
         DateTimeOffset utcNow,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -149,20 +143,16 @@ internal static class ManagedFileWriteIntentStore
         _ = command.Parameters.AddWithValue("$expectedRevision", expectedRevision);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-
     }
 
     private static Result<ManagedFileWriteIntentRow> Read(SqliteDataReader reader)
     {
-
         Result<ManagedFileWriteDurableLocationEvidence> location =
             ManagedFileEvidenceCodec.DecodeWriteLocation((byte[])reader.GetValue(3));
 
         if (location.IsFailure)
         {
-
             return Result<ManagedFileWriteIntentRow>.Failure(location.Error);
-
         }
 
         CovenantDigest? createdChild = reader.IsDBNull(4)
@@ -178,14 +168,12 @@ internal static class ManagedFileWriteIntentStore
                 createdChild,
                 (ManagedFileWriteIntentPhase)reader.GetInt32(5),
                 reader.GetInt64(6)));
-
     }
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
 }
 
 /// <summary>
@@ -193,11 +181,9 @@ internal static class ManagedFileWriteIntentStore
 /// </summary>
 internal enum ManagedFileWriteIntentRecoveryOutcome : byte
 {
-
     Cleaned = 1,
 
     ManualNonrevocable = 2,
-
 }
 
 /// <summary>
@@ -231,7 +217,6 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
     IManagedFileOwnershipVerifier verifier,
     TimeProvider timeProvider)
 {
-
     private readonly ICovenantSqliteConnectionInitializer _initializer =
         initializer ?? throw new ArgumentNullException(nameof(initializer));
 
@@ -259,7 +244,6 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
         ManagedFileWriteIntentRow intent,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(intent);
@@ -267,12 +251,10 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
         if (intent.Phase is < ManagedFileWriteIntentPhase.Prepared
             or > ManagedFileWriteIntentPhase.ParentFsynced)
         {
-
             return Result<ManagedFileWriteIntentRecoveryOutcome>.Failure(
                 new Error(
                     ErrorCodes.Covenant.ManualArtifactErasureRequired,
                     "Only an unfinished managed-file write intent can be recovered."));
-
         }
 
         Result<ManagedFileResolvedRoot?> root = await ManagedFileRootResolver
@@ -281,19 +263,15 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
 
         if (root.IsFailure)
         {
-
             return Result<ManagedFileWriteIntentRecoveryOutcome>.Failure(root.Error);
-
         }
 
         bool manual = root.Value is null;
 
         if (root.Value is { } resolved)
         {
-
             foreach (ManagedFileDurableLocationEvidence candidate in Candidates(intent.Location))
             {
-
                 Result<bool> child = await RemoveCandidateChildAsync(
                     resolved,
                     candidate,
@@ -302,15 +280,11 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
 
                 if (child.IsFailure)
                 {
-
                     return Result<ManagedFileWriteIntentRecoveryOutcome>.Failure(child.Error);
-
                 }
 
                 manual |= child.Value;
-
             }
-
         }
 
         ManagedFileWriteIntentRecoveryOutcome outcome = manual
@@ -326,7 +300,6 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
         return terminalized.IsFailure
             ? Result<ManagedFileWriteIntentRecoveryOutcome>.Failure(terminalized.Error)
             : Result<ManagedFileWriteIntentRecoveryOutcome>.Success(outcome);
-
     }
 
     /// <summary>
@@ -363,43 +336,33 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
         CovenantDigest? createdChildPhysicalIdentityDigest,
         CancellationToken cancellationToken)
     {
-
         Result<ManagedFileOpenOutcome> opened = await _opener
             .OpenNoFollowAsync(root, candidate, cancellationToken)
             .ConfigureAwait(false);
 
         if (opened.IsFailure)
         {
-
             return Result<bool>.Failure(opened.Error);
-
         }
 
         if (opened.Value.Kind is ManagedFileOpenKind.Absent)
         {
-
             return Result<bool>.Success(false);
-
         }
 
         if (opened.Value.Kind is ManagedFileOpenKind.Mismatch
             || opened.Value.Handle is not { } handle)
         {
-
             return Result<bool>.Success(true);
-
         }
 
         try
         {
-
             if (createdChildPhysicalIdentityDigest is not { } expected)
             {
-
                 // A Prepared row never created a child, so nothing here can be proved to be ours. The
                 // file stays, and an operator has to look at it.
                 return Result<bool>.Success(true);
-
             }
 
             Result<ManagedFileCompareDeleteResult> deleted = await _verifier
@@ -410,15 +373,11 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
                 ? Result<bool>.Failure(deleted.Error)
                 : Result<bool>.Success(
                     deleted.Value is not ManagedFileCompareDeleteResult.Deleted);
-
         }
         finally
         {
-
             handle.Dispose();
-
         }
-
     }
 
     private async Task<Result> TerminalizeAsync(
@@ -427,7 +386,6 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
         ManagedFileWriteIntentRecoveryOutcome outcome,
         CancellationToken cancellationToken)
     {
-
         ManagedFileWriteIntentPhase terminal =
             outcome is ManagedFileWriteIntentRecoveryOutcome.Cleaned
                 ? ManagedFileWriteIntentPhase.Cleaned
@@ -437,14 +395,12 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
 
         try
         {
-
             bool advanced;
 
             using (_initializer.Authorize(
                 connection,
                 CovenantSqliteAuthorizationKind.ManagedFileIntentMutation))
             {
-
                 advanced = await ManagedFileWriteIntentStore.TryTerminalizeAsync(
                     connection,
                     transaction,
@@ -454,12 +410,10 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
                     terminal,
                     _time.GetUtcNow(),
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             if (!advanced)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 // The row moved under us. The filesystem effect above is already durable, so the honest
@@ -468,24 +422,18 @@ internal sealed class ManagedFileWriteIntentRecoveryService(
                     new Error(
                         ErrorCodes.Covenant.ManualArtifactErasureRequired,
                         "A managed-file write intent changed while it was being terminalized."));
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return Result.Success();
-
         }
         catch (SqliteException exception)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return Result.Failure(
                 new Error(ErrorCodes.Covenant.ManualArtifactErasureRequired, exception.Message));
-
         }
-
     }
-
 }

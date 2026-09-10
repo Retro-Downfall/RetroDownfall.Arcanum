@@ -24,9 +24,8 @@ namespace RetroDownfall.Arcanum.Cli.Diagnostics;
 public sealed class HostHealthComponentsCheck(
     IOptions<ArcanumSettings> options,
     IHttpClientFactory httpClientFactory,
-    ISecretStore secretStore) : IDoctorCheck
+    ArcanumApiCredentialLease credentialLease) : IDoctorCheck
 {
-
     public const string CheckId = "host.health_components";
 
     public string Id => CheckId;
@@ -39,7 +38,6 @@ public sealed class HostHealthComponentsCheck(
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         HostSettings host = options.Value.Host;
 
         int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
@@ -47,33 +45,22 @@ public sealed class HostHealthComponentsCheck(
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
-        SecretStoreReadResult apiKeyRead = await secretStore
-            .PeekApiKeyReadResultAsync()
-            .ConfigureAwait(false);
-
-        string? apiKey = apiKeyRead.Status == SecretStoreReadStatus.Ok
-            ? apiKeyRead.Value
-            : null;
-
         HealthProbeResult probe = await ArcanumHealthProbe
-            .ProbeAsync(
+            .ProbeAuthenticatedAsync(
                 client,
                 new Uri(ArcanumLocalApiAddress.ResolveHealthProbeUrl(host)),
-                apiKey,
+                credentialLease,
                 TimeSpan.FromSeconds(timeoutSeconds),
                 cancellationToken)
             .ConfigureAwait(false);
 
         return Describe(probe);
-
     }
 
     internal static DoctorFinding Describe(HealthProbeResult probe)
     {
-
         if (probe.State == HealthProbeState.Unauthorized)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 "The host answered but rejected this machine's API key, so its subsystem health "
@@ -85,7 +72,6 @@ public sealed class HostHealthComponentsCheck(
                         DoctorRemedyCommands.KeySet,
                         "Store the master API key this host expects. 'arcanum key show' prints the current one to stderr."),
                 ]);
-
         }
 
         // A host that answers 503 is running and unhealthy — the single most informative state this
@@ -93,7 +79,6 @@ public sealed class HostHealthComponentsCheck(
         // moment they matter, so only a genuine no-answer takes the unavailable path.
         if (probe.State == HealthProbeState.UnhealthyStatus)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 $"The host is running but reports itself unhealthy (HTTP {probe.StatusCode}). "
@@ -105,7 +90,6 @@ public sealed class HostHealthComponentsCheck(
                         DoctorRemedyCommands.Lore,
                         "Inspect the host's own health report for the failing components."),
                 ]);
-
         }
 
         // Something is holding the port and answering as no Arcanum host would. "Start the host" is
@@ -113,7 +97,6 @@ public sealed class HostHealthComponentsCheck(
         // already owns — so this state gets its own finding rather than the no-answer one.
         if (probe.State == HealthProbeState.UnexpectedResponder)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 "Something is listening at the host address but answered as no Arcanum host would "
@@ -125,12 +108,10 @@ public sealed class HostHealthComponentsCheck(
                         DoctorRemedyCommands.ConfigEdit,
                         "Free the configured port, or point 'Arcanum:Host:Port' at one nothing else is using."),
                 ]);
-
         }
 
         if (probe.State != HealthProbeState.Healthy)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Unavailable,
                 "The host did not answer, so its per-subsystem health could not be read. Every local "
@@ -142,18 +123,15 @@ public sealed class HostHealthComponentsCheck(
                         DoctorRemedyCommands.Serve,
                         "Start the host, then re-run 'arcanum doctor' to include its subsystem verdicts."),
                 ]);
-
         }
 
         IReadOnlyList<HealthComponentDto> components = probe.Components ?? [];
 
         if (components.Count == 0)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Degraded,
                 "The host is reachable but reported no subsystem components.");
-
         }
 
         IReadOnlyList<HealthComponentDto> unhealthy =
@@ -164,11 +142,9 @@ public sealed class HostHealthComponentsCheck(
 
         if (unhealthy.Count == 0 && degraded.Count == 0)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 $"All {components.Count} host subsystem(s) report healthy.");
-
         }
 
         string detail = string.Join(
@@ -187,7 +163,6 @@ public sealed class HostHealthComponentsCheck(
                     DoctorRemedyCommands.Lore,
                     "Inspect the host's own health report for the named components."),
             ]);
-
     }
 
     private static string DescribeStatus(HealthStatus status) => status switch
@@ -196,5 +171,4 @@ public sealed class HostHealthComponentsCheck(
         HealthStatus.Degraded => "degraded",
         _ => "healthy",
     };
-
 }

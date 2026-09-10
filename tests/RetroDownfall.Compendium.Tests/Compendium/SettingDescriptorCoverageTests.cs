@@ -9,7 +9,6 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 
 public sealed class SettingDescriptorCoverageTests
 {
-
     private const string ConfigurationNamespace = "RetroDownfall.Arcanum.Core.Configuration";
 
     private static readonly string[] RemovedProviderProfilePrefixes =
@@ -29,15 +28,43 @@ public sealed class SettingDescriptorCoverageTests
     [Fact]
     public void Editable_descriptor_count_matches_the_documented_total()
     {
+        Assert.Equal(162, SettingDescriptors.All.Count);
+    }
 
-        Assert.Equal(161, SettingDescriptors.All.Count);
+    [Fact]
+    public void Complete_configuration_reference_names_every_descriptor_exactly_once()
+    {
+        string referencePath = Path.Combine(
+            FindRepositoryRoot(),
+            "docs",
+            "Compendium.README.md");
 
+        string[] documentedKeys = File.ReadLines(referencePath)
+            .Where(static line => line.StartsWith("| `", StringComparison.Ordinal))
+            .Select(static line =>
+            {
+                int closingDelimiter = line.IndexOf("` |", 3, StringComparison.Ordinal);
+
+                Assert.True(
+                    closingDelimiter > 3,
+                    $"Malformed configuration-reference row: {line}");
+
+                return line[3..closingDelimiter];
+            })
+            .OrderBy(static key => key, StringComparer.Ordinal)
+            .ToArray();
+
+        string[] descriptorKeys = SettingDescriptors.All
+            .Select(static descriptor => descriptor.Key)
+            .OrderBy(static key => key, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(descriptorKeys, documentedKeys);
     }
 
     [Fact]
     public void Every_retained_public_choice_has_an_editable_descriptor()
     {
-
         HashSet<string> expectedKeys = [];
 
         CollectEditableKeys(typeof(ArcanumSettings), prefix: string.Empty, expectedKeys);
@@ -55,13 +82,11 @@ public sealed class SettingDescriptorCoverageTests
             missing.Count == 0,
             $"{missing.Count} retained public choice(s) lack an editable SettingDescriptor:"
             + $"\n  {string.Join("\n  ", missing)}");
-
     }
 
     [Fact]
     public void Every_descriptor_key_matches_a_retained_public_choice()
     {
-
         HashSet<string> expectedKeys = [];
 
         CollectEditableKeys(typeof(ArcanumSettings), prefix: string.Empty, expectedKeys);
@@ -75,13 +100,11 @@ public sealed class SettingDescriptorCoverageTests
         Assert.True(
             orphaned.Count == 0,
             $"SettingDescriptor keys with no retained public choice: {string.Join(", ", orphaned)}");
-
     }
 
     [Fact]
     public void Descriptor_keys_are_unique()
     {
-
         List<string> duplicates = SettingDescriptors.All
             .GroupBy(static descriptor => descriptor.Key, StringComparer.Ordinal)
             .Where(static group => group.Count() > 1)
@@ -91,7 +114,6 @@ public sealed class SettingDescriptorCoverageTests
         Assert.True(
             duplicates.Count == 0,
             $"Duplicate SettingDescriptor keys: {string.Join(", ", duplicates)}");
-
     }
 
     [Theory]
@@ -120,7 +142,6 @@ public sealed class SettingDescriptorCoverageTests
 
     public void Removed_configuration_controls_are_not_exposed(string removedPath)
     {
-
         Assert.DoesNotContain(
             SettingDescriptors.All,
             descriptor => string.Equals(
@@ -130,13 +151,11 @@ public sealed class SettingDescriptorCoverageTests
                 || descriptor.Key.StartsWith(
                     removedPath + ".",
                     StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Descriptor_sections_are_exactly_the_minimal_navigation()
     {
-
         ConfigSection[] expected =
         [
             ConfigSection.Presets,
@@ -165,13 +184,11 @@ public sealed class SettingDescriptorCoverageTests
         Assert.DoesNotContain(
             SettingDescriptors.All,
             static descriptor => descriptor.Section == ConfigSection.Presets);
-
     }
 
     [Fact]
     public void Opaque_authored_maps_have_one_dictionary_editor_each()
     {
-
         string[] dictionaryPaths =
         [
             "integrations.workspaceChecks.customProfiles",
@@ -180,7 +197,6 @@ public sealed class SettingDescriptorCoverageTests
 
         foreach (string path in dictionaryPaths)
         {
-
             SettingDescriptor descriptor = Assert.Single(
                 SettingDescriptors.All,
                 candidate => candidate.Key == path);
@@ -191,15 +207,12 @@ public sealed class SettingDescriptorCoverageTests
                 candidate => candidate.Key.StartsWith(
                     path + ".",
                     StringComparison.Ordinal));
-
         }
-
     }
 
     [Fact]
     public void Removed_implementation_profiles_have_no_descriptors()
     {
-
         Assert.DoesNotContain(
             SettingDescriptors.All,
             descriptor => RemovedProviderProfilePrefixes.Any(prefix =>
@@ -210,35 +223,28 @@ public sealed class SettingDescriptorCoverageTests
             SectionDescriptors.All,
             descriptor => descriptor.Title.Contains("Advanced", StringComparison.OrdinalIgnoreCase)
                 || descriptor.Title.Contains("Basic", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public void Retained_configuration_contract_is_source_generated_and_mutable()
     {
-
         HashSet<Type> configurationTypes = [];
 
         CollectConfigurationTypes(typeof(ArcanumSettings), configurationTypes);
 
         foreach (Type type in configurationTypes.OrderBy(static type => type.FullName, StringComparer.Ordinal))
         {
-
             Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
 
             foreach (PropertyInfo property in GetBindableProperties(type))
             {
-
                 MethodInfo setter = property.SetMethod!;
 
                 Assert.DoesNotContain(
                     typeof(IsExternalInit),
                     setter.ReturnParameter.GetRequiredCustomModifiers());
-
             }
-
         }
-
     }
 
     private static void CollectEditableKeys(
@@ -246,10 +252,8 @@ public sealed class SettingDescriptorCoverageTests
         string prefix,
         HashSet<string> keys)
     {
-
         foreach (PropertyInfo property in GetBindableProperties(type))
         {
-
             string name = ToCamelCase(property.Name);
             string key = string.IsNullOrEmpty(prefix)
                 ? name
@@ -259,71 +263,49 @@ public sealed class SettingDescriptorCoverageTests
 
             if (IsDictionary(propertyType))
             {
-
                 keys.Add(key);
-
             }
             else if (TryGetRecordCollectionElement(propertyType, out Type? elementType))
             {
-
                 CollectEditableKeys(elementType!, key, keys);
-
             }
             else if (IsConfigurationRecord(propertyType))
             {
-
                 CollectEditableKeys(propertyType, key, keys);
-
             }
             else
             {
-
                 keys.Add(key);
-
             }
-
         }
-
     }
 
     private static void CollectConfigurationTypes(Type type, HashSet<Type> types)
     {
-
         type = UnwrapNullable(type);
 
         if (!IsConfigurationRecord(type) || !types.Add(type))
         {
-
             return;
-
         }
 
         foreach (PropertyInfo property in GetBindableProperties(type))
         {
-
             Type propertyType = UnwrapNullable(property.PropertyType);
 
             if (TryGetRecordCollectionElement(propertyType, out Type? elementType))
             {
-
                 CollectConfigurationTypes(elementType!, types);
-
             }
             else if (TryGetDictionaryValue(propertyType, out Type? valueType))
             {
-
                 CollectConfigurationTypes(valueType!, types);
-
             }
             else
             {
-
                 CollectConfigurationTypes(propertyType, types);
-
             }
-
         }
-
     }
 
     private static IEnumerable<PropertyInfo> GetBindableProperties(Type type) =>
@@ -346,50 +328,39 @@ public sealed class SettingDescriptorCoverageTests
 
     private static bool TryGetDictionaryValue(Type type, out Type? valueType)
     {
-
         valueType = null;
 
         if (!IsDictionary(type))
         {
-
             return false;
-
         }
 
         valueType = type.GetGenericArguments()[1];
 
         return true;
-
     }
 
     private static bool TryGetRecordCollectionElement(Type type, out Type? elementType)
     {
-
         elementType = null;
 
         if (type.IsArray)
         {
-
             Type element = type.GetElementType()!;
 
             if (IsConfigurationRecord(element))
             {
-
                 elementType = element;
 
                 return true;
-
             }
 
             return false;
-
         }
 
         if (!type.IsGenericType)
         {
-
             return false;
-
         }
 
         Type genericDefinition = type.GetGenericTypeDefinition();
@@ -397,24 +368,19 @@ public sealed class SettingDescriptorCoverageTests
         if (genericDefinition != typeof(IReadOnlyList<>)
             && genericDefinition != typeof(List<>))
         {
-
             return false;
-
         }
 
         Type candidate = type.GetGenericArguments()[0];
 
         if (!IsConfigurationRecord(candidate))
         {
-
             return false;
-
         }
 
         elementType = candidate;
 
         return true;
-
     }
 
     private static string ToCamelCase(string name) =>
@@ -422,4 +388,11 @@ public sealed class SettingDescriptorCoverageTests
             ? name
             : char.ToLowerInvariant(name[0]) + name[1..];
 
+    private static string FindRepositoryRoot(
+        [CallerFilePath] string sourceFilePath = "") =>
+        Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(sourceFilePath)!,
+            "..",
+            "..",
+            ".."));
 }

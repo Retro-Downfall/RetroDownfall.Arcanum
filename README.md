@@ -37,13 +37,8 @@ Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
 .\arcanum-win-x64\arcanum.exe setup
 ```
 
-**Linux** — no prebuilt binary in this release yet; build from source:
-
-```bash
-git clone https://github.com/Retro-Downfall/RetroDownfall.Arcanum.git
-cd RetroDownfall.Arcanum
-dotnet build RetroDownfall.Arcanum.slnx
-```
+**Linux** — not a supported RID yet. Arcanum has no verified hermetic SQLCipher asset for Linux,
+so source builds fail closed instead of silently using a different database runtime.
 
 Verify any download against `SHA256SUMS.txt` from the same release. Run as a normal user —
 elevation is never required.
@@ -131,6 +126,10 @@ key-by-key reference.
   from where it stopped rather than starting over (issue #254). Saga extraction now does the same at
   page boundaries: committed pages stay paid for, ordered per-turn provenance intervals wait through
   maintenance, and provider work resumes at the first unpaid page after reopening (issue #255).
+  Ordinary background work stays on the queue-free fast path; all 23 registered background services
+  now either join the maintenance drain before opening resources or carry a narrow startup,
+  stopped-host, owner-bound, or effect-free proof. Maintenance pays the waiting cost, while retained
+  jobs keep their identity and completed provider work instead of creating a reopen rush (issue #256).
 - **Your API, not a bespoke one.** An OpenAI Chat Completions compatibility subset means existing
   clients and SDKs work against `arcanum serve` unchanged.
 - **Bring the providers you already pay for.** Any OpenAI-compatible HTTP endpoint, plus opt-in
@@ -172,7 +171,7 @@ still moving.
 [Current operator limitations](docs/Arcanum.Engineering.md#current-operator-limitations) is an
 honest list of what does not work yet, and it is worth reading before you rely on anything here.
 
-**Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows, and on macOS with `lld` (Linux is not a shipping RID) · `Microsoft.Extensions.AI`
+**Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on macOS arm64 and Windows x64/arm64 (Linux is not a shipping RID) · `Microsoft.Extensions.AI`
 · EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia
 
 ## Contributing

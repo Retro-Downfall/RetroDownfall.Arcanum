@@ -19,11 +19,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed class FullInstallationResetCleanupAuthorityTests
 {
-
     [Fact]
     public void Runtime_contract_comparers_reject_same_instance_forged_invalid_objects_without_reference_identity()
     {
-
         CampaignPathFullInstallationResetInventory inventory =
             (CampaignPathFullInstallationResetInventory)RuntimeHelpers.GetUninitializedObject(
                 typeof(CampaignPathFullInstallationResetInventory));
@@ -61,13 +59,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         Assert.True(CampaignPathFullInstallationResetContractComparer.ReceiptEquals(
             null,
             null));
-
     }
 
     [Fact]
     public void Runtime_contract_comparers_reject_every_field_and_position_substitution()
     {
-
         Guid owner = Guid.Parse("60000000-0000-4000-8000-000000000001");
 
         CampaignMarkerInventoryEntryV1 first = Entry(
@@ -101,11 +97,9 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         foreach (CampaignMarkerInventoryEntryV1 substituted in substitutedEntries)
         {
-
             Assert.False(CampaignPathFullInstallationResetContractComparer.InventoryEquals(
                 inventory,
                 Inventory(owner, [substituted, second])));
-
         }
 
         Assert.False(CampaignPathFullInstallationResetContractComparer.InventoryEquals(
@@ -204,13 +198,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         Assert.False(CampaignPathFullInstallationResetContractComparer.ReceiptEquals(
             receipt,
             null));
-
     }
 
     [Fact]
     public void Inventory_factory_rejects_noncanonical_inputs_and_detaches_every_accepted_value()
     {
-
         Guid owner = Guid.Parse("10000000-0000-4000-8000-000000000001");
 
         CampaignMarkerInventoryEntryV1 first = Entry(
@@ -259,12 +251,10 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         foreach (CampaignMarkerInventoryEntryV1 invalidEntry in invalidEntries)
         {
-
             Assert.True(CampaignPathFullInstallationResetInventory.Create(
                 owner,
                 [invalidEntry],
                 validDigest).IsFailure);
-
         }
 
         Assert.True(CampaignPathFullInstallationResetInventory.Create(
@@ -339,13 +329,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 owner,
                 valid,
                 validDigest))));
-
     }
 
     [Fact]
     public void Preparation_factory_rejects_substitution_and_recopies_the_inventory()
     {
-
         Guid owner = Guid.Parse("30000000-0000-4000-8000-000000000001");
 
         CampaignPathFullInstallationResetInventory inventory = Inventory(owner);
@@ -381,13 +369,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         Assert.True(CampaignPathFullInstallationResetContractComparer.InventoryEquals(
             inventory,
             accepted.Inventory));
-
     }
 
     [Fact]
     public void Receipt_factory_enforces_vector_order_detachment_derived_counts_and_checked_terminal_sum()
     {
-
         Guid owner = Guid.Parse("40000000-0000-4000-8000-000000000001");
 
         Guid first = Guid.Parse("40000000-0000-4000-8000-000000000010");
@@ -507,13 +493,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         Assert.Equal(
             "26B63BE668FE309ADD01922EA6DD3FEFE222C7833FF9DFA379BDA0275CF98574",
             Convert.ToHexString(emptyPrepared.MarkerIntentVectorDigest.Bytes));
-
     }
 
     [Fact]
     public async Task Pair_absence_verified_mints_one_operation_revision_effect_inventory_and_lock_bound_proof()
     {
-
         MethodInfo? mint = typeof(HostToolsMarkerPairResetCoordinator).GetMethod(
             "MintCleanupAuthorityAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
@@ -575,13 +559,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             publicationProperty.GetValue(boundProof));
 
         Assert.Equal(1, harness.Store.RecoverCalls);
-
     }
 
     [Fact]
     public void Cleanup_authority_cannot_be_constructed_from_a_digest_path_lock_or_public_attestation()
     {
-
         Type authority = typeof(HostToolsMarkerPairResetCoordinator
             .FullInstallationResetMarkerCleanupAuthority);
 
@@ -610,20 +592,16 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         foreach (object input in nonauthorityInputs)
         {
-
             TargetInvocationException thrown = Assert.Throws<TargetInvocationException>(() =>
                 bridge.Invoke(null, [input, harness.Subject, input]));
 
             Assert.IsType<InvalidOperationException>(thrown.InnerException);
-
         }
-
     }
 
     [Fact]
     public async Task Cleanup_authority_revalidates_envelope_anchor_phase_and_exact_lock_before_every_use()
     {
-
         using AuthorityHarness harness = new();
 
         HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority
@@ -682,13 +660,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted);
 
         Assert.True((await wrongPhase.MintAsync()).IsFailure);
-
     }
 
     [Fact]
     public async Task Preparation_authority_rejects_owner_effect_or_inventory_input_substitution()
     {
-
         using AuthorityHarness harness = new();
 
         HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority
@@ -719,22 +695,18 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         foreach (CampaignPathFullInstallationResetCleanupPreparation substitution
             in substitutions)
         {
-
             Assert.True((await authority.RevalidatePreparationAsync(
                 substitution,
                 null,
                 CancellationToken.None)).IsFailure);
-
         }
 
         Assert.Equal(1 + substitutions.Length, harness.Store.RecoverCalls);
-
     }
 
     [Fact]
     public async Task Reconciliation_authority_rejects_owner_effect_intent_vector_or_count_input_substitution()
     {
-
         using AuthorityHarness harness = new(withPreparedReceipt: true);
 
         HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority
@@ -765,21 +737,17 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         foreach (CampaignPathFullInstallationResetCleanupReceipt substitution
             in substitutions)
         {
-
             Assert.True((await authority.RevalidateReceiptAsync(
                 substitution,
                 CancellationToken.None)).IsFailure);
-
         }
 
         Assert.Equal(1 + substitutions.Length, harness.Store.RecoverCalls);
-
     }
 
     [Fact]
     public async Task Cleanup_authority_rejects_released_wrong_or_stale_lock_and_changed_revision()
     {
-
         using AuthorityHarness harness = new();
 
         HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority
@@ -793,20 +761,16 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         try
         {
-
             using ArcanumMaintenanceLock wrongLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(otherRoot));
 
             await Assert.ThrowsAnyAsync<Exception>(() => harness.MintAsync(
                 wrongLock,
                 harness.Current));
-
         }
         finally
         {
-
             Directory.Delete(otherRoot, recursive: true);
-
         }
 
         harness.Store.Current = NextPublication(harness.Current);
@@ -830,13 +794,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             harness.Preparation(),
             null,
             CancellationToken.None)).IsFailure);
-
     }
 
     [Fact]
     public async Task Prepared_receipt_publication_invalidates_old_authority_and_fresh_revision_authority_succeeds()
     {
-
         using AuthorityHarness harness = new();
 
         HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority
@@ -863,13 +825,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             CancellationToken.None);
 
         Assert.True(fresh.IsSuccess, fresh.Error.Message);
-
     }
 
     [Fact]
     public async Task Terminal_receipt_publication_invalidates_the_last_reconciliation_authority()
     {
-
         using AuthorityHarness harness = new(withPreparedReceipt: true);
 
         HostToolsMarkerPairResetCoordinator.FullInstallationResetMarkerCleanupAuthority
@@ -902,13 +862,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             CancellationToken.None);
 
         Assert.True(current.IsSuccess, current.Error.Message);
-
     }
 
     [Fact]
     public void Cleanup_authority_is_nonserializable_and_absent_from_all_json_contexts()
     {
-
         string repositoryRoot = RepositoryRoot();
 
         string[] productionSources = Directory.GetFiles(
@@ -926,7 +884,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             jsonContexts,
             file =>
             {
-
                 string source = File.ReadAllText(file);
 
                 Assert.DoesNotContain(
@@ -948,7 +905,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                     "CampaignPathFullInstallationResetCleanupReceipt",
                     source,
                     StringComparison.Ordinal);
-
             });
 
         Type authority = typeof(HostToolsMarkerPairResetCoordinator
@@ -983,13 +939,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 "Covenant",
                 "CampaignPathFullInstallationResetContracts.cs")),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Runtime_contract_and_authority_surfaces_are_internal_sealed_factory_only_and_bridge_guarded()
     {
-
         Type[] contracts =
         [
             typeof(CampaignPathFullInstallationResetInventory),
@@ -999,7 +953,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         foreach (Type contract in contracts)
         {
-
             Assert.True(contract.IsNotPublic);
 
             Assert.True(contract.IsSealed);
@@ -1012,7 +965,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
             Assert.Empty(contract.GetConstructors(
                 BindingFlags.Instance | BindingFlags.Public));
-
         }
 
         Assert.Equal(
@@ -1076,12 +1028,10 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             "CampaignPathFullInstallationResetContractComparer.ReceiptEquals(",
             coordinatorSource,
             StringComparison.Ordinal);
-
     }
 
     private static CampaignPathFullInstallationResetInventory Inventory(Guid owner)
     {
-
         ImmutableArray<CampaignMarkerInventoryEntryV1> entries = [Entry(
             Guid.Parse("50000000-0000-4000-8000-000000000001"),
             0x51)];
@@ -1090,7 +1040,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             owner,
             entries,
             Value(FullInstallationResetMarkerPairResetDigests.CampaignInventory(entries))));
-
     }
 
     private static CampaignPathFullInstallationResetInventory Inventory(
@@ -1106,14 +1055,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         ImmutableArray<CampaignMarkerInventoryEntryV1> entries,
         CovenantDigest digest)
     {
-
         ConstructorInfo constructor = Assert.Single(
             typeof(CampaignPathFullInstallationResetInventory).GetConstructors(
                 BindingFlags.Instance | BindingFlags.NonPublic));
 
         return Assert.IsType<CampaignPathFullInstallationResetInventory>(
             constructor.Invoke([owner, entries, digest]));
-
     }
 
     private static CampaignPathFullInstallationResetCleanupReceipt PreparedReceipt(
@@ -1136,7 +1083,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         HostToolsMarkerPairResetPhase phase,
         CampaignPathFullInstallationResetCleanupReceipt? receipt = null)
     {
-
         Guid operation = Guid.NewGuid();
 
         Guid installation = Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
@@ -1266,14 +1212,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             envelopeDigest,
             payload,
             anchor);
-
     }
 
     private static InstallationResetActivePublication NextPublication(
         InstallationResetActivePublication current,
         CampaignPathFullInstallationResetCleanupReceipt? receipt = null)
     {
-
         HostToolsMarkerPairResetCheckpointV1 checkpoint = Assert.IsType<
             HostToolsMarkerPairResetCheckpointV1>(
                 current.Payload.HostToolsMarkerPairReset);
@@ -1312,14 +1256,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 Revision = current.Anchor.Revision + 1,
                 EnvelopeDigest = envelopeDigest,
             });
-
     }
 
     private static InstallationResetActivePublication ChangePhase(
         InstallationResetActivePublication publication,
         HostToolsMarkerPairResetPhase phase)
     {
-
         HostToolsMarkerPairResetCheckpointV1 checkpoint = Assert.IsType<
             HostToolsMarkerPairResetCheckpointV1>(
                 publication.Payload.HostToolsMarkerPairReset);
@@ -1332,7 +1274,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                     HostToolsMarkerPairReset = checkpoint with { Phase = phase },
                 }),
         };
-
     }
 
     private static FullInstallationResetExternalRemediationAttestation Attestation(
@@ -1381,28 +1322,11 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             claim.IssuerDigest,
             claim.AcceptedAtUtc);
 
-    private static string RepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null
-            && !File.Exists(Path.Combine(
-                directory.FullName,
-                "RetroDownfall.Arcanum.slnx")))
-        {
-
-            directory = directory.Parent;
-
-        }
-
-        return Assert.IsType<DirectoryInfo>(directory).FullName;
-
-    }
+    private static string RepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 
     private static int Count(string source, string value)
     {
-
         int count = 0;
 
         int offset = 0;
@@ -1412,15 +1336,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             offset,
             StringComparison.Ordinal)) >= 0)
         {
-
             count++;
 
             offset += value.Length;
-
         }
 
         return count;
-
     }
 
     private static string[] FactoryNames(Type contract) =>
@@ -1432,7 +1353,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
     private static byte[] DigestBacking(CovenantDigest digest)
     {
-
         FieldInfo? backing = typeof(CovenantDigest).GetField(
             "_bytes",
             BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1440,18 +1360,15 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         Assert.NotNull(backing);
 
         return Assert.IsType<byte[]>(backing.GetValue(digest));
-
     }
 
     private sealed class AuthorityHarness : IDisposable
     {
-
         internal AuthorityHarness(
             HostToolsMarkerPairResetPhase phase =
                 HostToolsMarkerPairResetPhase.PairAbsenceVerified,
             bool withPreparedReceipt = false)
         {
-
             GuardedRoot = Path.Combine(
                 Path.GetTempPath(),
                 $"arcanum-cleanup-authority-{Guid.NewGuid():N}");
@@ -1470,14 +1387,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
             if (withPreparedReceipt)
             {
-
                 Receipt = PreparedReceipt(
                     current.Payload.OperationId,
                     checkpoint.OwnerEffectDigest,
                     AuthorityIntentIds());
 
                 current = ReplaceReceipt(current, Receipt);
-
             }
 
             Store = new RecordingActiveStore(GuardedRoot, current);
@@ -1490,7 +1405,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 new AcceptingVerifier(() => Store.Current),
                 new InertLifecycle(),
                 new InertOsPort());
-
         }
 
         internal string GuardedRoot { get; }
@@ -1526,7 +1440,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                 ArcanumMaintenanceLock? heldLock = null,
                 InstallationResetActivePublication? publication = null)
         {
-
             MethodInfo? reflectedMethod =
                 typeof(HostToolsMarkerPairResetCoordinator).GetMethod(
                     "MintCleanupAuthorityAsync",
@@ -1549,12 +1462,10 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                                 ]));
 
             return await task;
-
         }
 
         public void Dispose()
         {
-
             HeldLock.Dispose();
 
             Directory.Delete(GuardedRoot, recursive: true);
@@ -1563,16 +1474,13 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             // the guarded root leaves the lock file behind at the temp root. Enough of those and the
             // suite stalls on lock contention rather than failing.
             File.Delete(RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock.LockPathFor(GuardedRoot));
-
         }
-
     }
 
     private static InstallationResetActivePublication ReplaceReceipt(
         InstallationResetActivePublication publication,
         CampaignPathFullInstallationResetCleanupReceipt receipt)
     {
-
         HostToolsMarkerPairResetCheckpointV1 checkpoint = Assert.IsType<
             HostToolsMarkerPairResetCheckpointV1>(
                 publication.Payload.HostToolsMarkerPairReset);
@@ -1592,14 +1500,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                     },
                 }),
         };
-
     }
 
     private sealed class RecordingActiveStore(
         string guardedRoot,
         InstallationResetActivePublication current) : IInstallationResetActiveStore
     {
-
         public string GuardedRoot { get; } = guardedRoot;
 
         internal InstallationResetActivePublication Current { get; set; } = current;
@@ -1610,7 +1516,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             RecoverCalls++;
 
             return Task.FromResult(Result<InstallationResetActiveRecoveryState>.Success(
@@ -1618,7 +1523,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
                     InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
                     Current,
                     LegacyRecord: null)));
-
         }
 
         public Task<Result<InstallationResetActivePublication>> BeginAsync(
@@ -1657,14 +1561,12 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class AcceptingVerifier(
         Func<InstallationResetActivePublication> current)
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         public bool MatchesAuthenticatedClaim(
             FullInstallationResetExternalRemediationAttestation attestation,
             Guid currentInstallationId,
@@ -1688,42 +1590,34 @@ public sealed class FullInstallationResetCleanupAuthorityTests
             HostProcessToolsMatchedPair persistedPair,
             DateTimeOffset acceptedAtUtc)
         {
-
             FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
                 FullInstallationResetRemediationClaimV1>(
                     current().Payload.FullInstallationResetRemediationClaim);
 
             return Result<FullInstallationResetRemediationAuthorization>.Success(
                 Authorization(claim));
-
         }
-
     }
 
     private sealed class InertDatabase : IHostToolsMarkerPairResetDatabase
     {
-
         public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
             OpenHostToolsMarkerPairResetDatabaseSessionAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class InertReadiness : IFullInstallationResetCampaignSchemaReadiness
     {
-
         public Task<Result> RequireExactAsync(
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class InertOsPort : IHostToolsMarkerPairResetOsPort
     {
-
         public HostToolsMarkerPairResetOsOpenResult OpenExact() =>
             throw new NotSupportedException();
 
@@ -1740,12 +1634,10 @@ public sealed class FullInstallationResetCleanupAuthorityTests
         public Task<HostToolsMarkerPairResetOsAbsenceStatus> ProveExactAbsenceAsync(
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class InertLifecycle : ICampaignPathMarkerLifecycle
     {
-
         public Task<Result<CampaignPathFullInstallationResetInventory>>
             InventoryFullInstallationResetCleanupAsync(
                 Guid ownerOperationId,
@@ -1800,7 +1692,6 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
         public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId) =>
             throw new NotSupportedException();
-
     }
 
     private static CampaignMarkerInventoryEntryV1 Entry(Guid campaignId, byte seed) =>
@@ -1817,11 +1708,8 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.Error.Message);
 
         return result.Value;
-
     }
-
 }

@@ -32,7 +32,6 @@ internal sealed class GrimoireSchemaInstaller(
     TimeProvider timeProvider,
     ILogger<GrimoireSchemaInstaller>? logger = null)
 {
-
     private readonly GrimoireSchemaManifestInspector _inspector =
         inspector ?? throw new ArgumentNullException(nameof(inspector));
 
@@ -58,7 +57,6 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(context);
@@ -93,7 +91,6 @@ internal sealed class GrimoireSchemaInstaller(
             .ConfigureAwait(false);
 
         return new GrimoireSchemaInstallResult(core, canonical, accelerator);
-
     }
 
     /// <summary>
@@ -111,13 +108,11 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(context);
 
         return InstallCoreAsync(connection, embeddingDimensions: null, context, cancellationToken);
-
     }
 
     private async Task<GrimoireSchemaTierInstallResult> InstallCoreAsync(
@@ -126,12 +121,9 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             throw new InvalidOperationException("Grimoire schema installation requires an open SQLite connection.");
-
         }
 
         // The core schema contains guard triggers that call the arcanum_*_authorized functions, and
@@ -149,7 +141,6 @@ internal sealed class GrimoireSchemaInstaller(
                 context,
                 cancellationToken),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<GrimoireSchemaTierInstallResult> InstallOptionalTierAsync(
@@ -160,27 +151,21 @@ internal sealed class GrimoireSchemaInstaller(
         bool dependencyHealthy,
         CancellationToken cancellationToken)
     {
-
         GrimoireSchemaManifest manifest = _chains.ForTier(tier).HeadManifest;
 
         if (!dependencyHealthy)
         {
-
             return Failed(manifest, GrimoireSchemaTierHealth.DependencyUnavailable);
-
         }
 
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                 () => InstallTierAsync(connection, tier, embeddingDimensions, context, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             // The whole point of the tier boundary. Whatever went wrong is confined to this
             // capability, and the exception is logged rather than surfaced, because the public
             // result carries only a closed content-free code.
@@ -190,9 +175,7 @@ internal sealed class GrimoireSchemaInstaller(
                 tier);
 
             return Failed(manifest, GrimoireSchemaTierHealth.Unavailable);
-
         }
-
     }
 
     /// <summary>
@@ -206,7 +189,6 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         GrimoireSchemaVersionChain chain = _chains.ForTier(tier);
 
         GrimoireSchemaRecordedTier? recorded = await ReadRecordedTierAsync(connection, chain, cancellationToken)
@@ -224,7 +206,6 @@ internal sealed class GrimoireSchemaInstaller(
 
         switch (decision.Action)
         {
-
             case GrimoireSchemaEvolutionAction.Refuse:
 
                 return Refuse(chain, tier, decision.Refusal!.Value);
@@ -273,9 +254,7 @@ internal sealed class GrimoireSchemaInstaller(
             default:
 
                 throw new InvalidOperationException($"Unhandled schema evolution action {decision.Action}.");
-
         }
-
     }
 
     /// <summary>
@@ -289,16 +268,13 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-
             foreach (GrimoireSchemaObject definition in chain.HeadObjects)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 await ExecuteAsync(
@@ -306,7 +282,6 @@ internal sealed class GrimoireSchemaInstaller(
                     transaction,
                     GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions),
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             GrimoireSchemaTierInstallResult result = await FinalizeRunAsync(
@@ -319,36 +294,26 @@ internal sealed class GrimoireSchemaInstaller(
 
             if (result.IsHealthy)
             {
-
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             }
             else
             {
-
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
                 if (chain.TransactionTier == GrimoireSchemaTransactionTier.Core)
                 {
-
                     throw new GrimoireSchemaRefusedException(chain.TransactionTier, result.Health);
-
                 }
-
             }
 
             return result;
-
         }
         catch
         {
-
             await TryRollbackAsync(transaction).ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     /// <summary>
@@ -371,7 +336,6 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         GrimoireSchemaInspectionResult probe = await _inspector
             .InspectAsync(connection, transaction: null, chain.HeadManifest, cancellationToken)
             .ConfigureAwait(false);
@@ -387,7 +351,6 @@ internal sealed class GrimoireSchemaInstaller(
                 embeddingDimensions,
                 context,
                 cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -413,14 +376,12 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         GrimoireSchemaTransitionJournalRow? row = journal;
 
         int through = fromVersion;
 
         while (chain.TryGetStep(through, out GrimoireSchemaVersionStep step))
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             await using SqliteTransaction transaction =
@@ -428,22 +389,18 @@ internal sealed class GrimoireSchemaInstaller(
 
             try
             {
-
                 foreach (GrimoireSchemaTransitionStatement statement in step.Statements.OrderBy(
                     static candidate => candidate.Ordinal))
                 {
-
                     await ExecuteAsync(
                         connection,
                         transaction,
                         ResolveStatement(statement, embeddingDimensions),
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 if (step.Backfill is not null)
                 {
-
                     row = await OpenOrAdvanceAsync(
                         connection,
                         transaction,
@@ -457,12 +414,10 @@ internal sealed class GrimoireSchemaInstaller(
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                     return Incomplete(chain, recordedVersion);
-
                 }
 
                 if (step.ToVersion == chain.HeadVersion)
                 {
-
                     GrimoireSchemaTierInstallResult result = await FinalizeRunAsync(
                         connection,
                         transaction,
@@ -473,21 +428,16 @@ internal sealed class GrimoireSchemaInstaller(
 
                     if (result.IsHealthy)
                     {
-
                         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
                     }
                     else
                     {
-
                         // The journal row is left exactly as it was, so the run is retried rather
                         // than half-recorded.
                         await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
                     }
 
                     return result;
-
                 }
 
                 row = await OpenOrAdvanceAsync(
@@ -503,23 +453,18 @@ internal sealed class GrimoireSchemaInstaller(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 through = step.ToVersion;
-
             }
             catch
             {
-
                 await TryRollbackAsync(transaction).ConfigureAwait(false);
 
                 throw;
-
             }
-
         }
 
         // Reached only when the chain has no step leaving this version, which the planner already
         // refuses. Fail closed rather than reporting a health nothing established.
         return Incomplete(chain, recordedVersion);
-
     }
 
     /// <summary>
@@ -543,7 +488,6 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -562,14 +506,12 @@ internal sealed class GrimoireSchemaInstaller(
 
         if (!inspection.IsValid)
         {
-
             return Failed(
                 chain.HeadManifest,
                 inspection.Failure == GrimoireSchemaInspectionFailure.CatalogReadFailed
                     ? GrimoireSchemaTierHealth.Unavailable
                     : GrimoireSchemaTierHealth.InstalledCatalogDrift,
                 inspection.DiagnosticCode);
-
         }
 
         await WriteMetadataAsync(
@@ -586,10 +528,8 @@ internal sealed class GrimoireSchemaInstaller(
                 .DeleteAsync(connection, transaction, journal, cancellationToken)
                 .ConfigureAwait(false))
         {
-
             throw new InvalidOperationException(
                 $"The {chain.TransactionTier} schema transition journal moved while this run was finishing.");
-
         }
 
         return new GrimoireSchemaTierInstallResult(
@@ -599,7 +539,6 @@ internal sealed class GrimoireSchemaInstaller(
             chain.HeadManifest.SourceDefinitionFingerprint,
             inspection.InstalledCatalogFingerprint,
             DiagnosticCode: null);
-
     }
 
     /// <summary>
@@ -615,12 +554,10 @@ internal sealed class GrimoireSchemaInstaller(
         string? backfillName,
         CancellationToken cancellationToken)
     {
-
         DateTimeOffset now = _time.GetUtcNow();
 
         if (row is null)
         {
-
             GrimoireSchemaTransitionJournalRow opened = new(
                 chain.Family,
                 chain.TransactionTier,
@@ -638,7 +575,6 @@ internal sealed class GrimoireSchemaInstaller(
                 .ConfigureAwait(false);
 
             return opened;
-
         }
 
         if (!await GrimoireSchemaTransitionJournal.AdvanceAsync(
@@ -652,15 +588,12 @@ internal sealed class GrimoireSchemaInstaller(
                 now,
                 cancellationToken).ConfigureAwait(false))
         {
-
             throw new InvalidOperationException(
                 $"The {chain.TransactionTier} schema transition journal moved while this run was advancing.");
-
         }
 
         return row with
         {
-
             CompletedThroughVersion = completedThroughVersion,
 
             BackfillName = backfillName,
@@ -668,9 +601,7 @@ internal sealed class GrimoireSchemaInstaller(
             BackfillCursor = null,
 
             Revision = row.Revision + 1,
-
         };
-
     }
 
     /// <summary>
@@ -682,13 +613,10 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaVersionChain chain,
         CancellationToken cancellationToken)
     {
-
         if (!await ObjectExistsAsync(connection, "grimoire_feature_schemas", cancellationToken)
             .ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -709,7 +637,6 @@ internal sealed class GrimoireSchemaInstaller(
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? new GrimoireSchemaRecordedTier(reader.GetInt32(0), reader.GetString(1))
             : null;
-
     }
 
     /// <summary>
@@ -733,7 +660,6 @@ internal sealed class GrimoireSchemaInstaller(
     /// </summary>
     private static string ResolveStatement(GrimoireSchemaTransitionStatement statement, int? embeddingDimensions)
     {
-
         string resolved = embeddingDimensions is int width
             ? statement.Sql.Replace(
                 GrimoireSchemaCatalog.EmbeddingDimensionsToken,
@@ -745,7 +671,6 @@ internal sealed class GrimoireSchemaInstaller(
             ? throw new InvalidOperationException(
                 $"Grimoire transition statement '{statement.ResourcePath}.sql' contains an unresolved template placeholder.")
             : resolved;
-
     }
 
     private static async Task ExecuteAsync(
@@ -754,7 +679,6 @@ internal sealed class GrimoireSchemaInstaller(
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -762,26 +686,19 @@ internal sealed class GrimoireSchemaInstaller(
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task TryRollbackAsync(SqliteTransaction transaction)
     {
-
         try
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             // Best-effort: disposal rolls an uncommitted transaction back anyway, and keeping the
             // original failure is worth more than reporting the rollback's.
-
         }
-
     }
 
     /// <summary>
@@ -827,7 +744,6 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -858,10 +774,9 @@ internal sealed class GrimoireSchemaInstaller(
 
         _ = command.Parameters.AddWithValue(
             "$installedAt",
-            context.InstalledAtUtc.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(context.InstalledAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static GrimoireSchemaTierInstallResult Failed(
@@ -881,7 +796,6 @@ internal sealed class GrimoireSchemaInstaller(
         string name,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """SELECT 1 FROM sqlite_master WHERE "name" = $name LIMIT 1;""";
@@ -891,7 +805,6 @@ internal sealed class GrimoireSchemaInstaller(
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is not null && result != DBNull.Value;
-
     }
 
     private static async Task<bool> AnyManifestObjectExistsAsync(
@@ -899,21 +812,15 @@ internal sealed class GrimoireSchemaInstaller(
         GrimoireSchemaManifest manifest,
         CancellationToken cancellationToken)
     {
-
         foreach (GrimoireSchemaManifestEntry entry in manifest.Entries)
         {
-
             if (await ObjectExistsAsync(connection, entry.Name, cancellationToken).ConfigureAwait(false))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -938,15 +845,11 @@ internal sealed class GrimoireSchemaInstaller(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             if (!await LexiconCorpusIsEmptyAsync(connection, cancellationToken).ConfigureAwait(false))
             {
-
                 return;
-
             }
 
             await using SqliteCommand command = connection.CreateCommand();
@@ -954,17 +857,13 @@ internal sealed class GrimoireSchemaInstaller(
             command.CommandText = "INSERT INTO lexicon_fts(lexicon_fts) VALUES('rebuild');";
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger?.LogWarning(
                 ex,
                 "The Lexicon FTS rebuild after schema install failed; search may be incomplete until the next rebuild.");
-
         }
-
     }
 
     /// <summary>
@@ -975,7 +874,6 @@ internal sealed class GrimoireSchemaInstaller(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = "SELECT 1 FROM lexicon_entries LIMIT 1;";
@@ -983,7 +881,6 @@ internal sealed class GrimoireSchemaInstaller(
         object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return result is null || result == DBNull.Value;
-
     }
 
     /// <summary>
@@ -996,13 +893,11 @@ internal sealed class GrimoireSchemaInstaller(
         int configuredDimensions,
         CancellationToken cancellationToken)
     {
-
         await WarnOnTableDimensionMismatchAsync(connection, "entry_embeddings", configuredDimensions, cancellationToken)
             .ConfigureAwait(false);
 
         await WarnOnTableDimensionMismatchAsync(connection, "saga_memory_embeddings", configuredDimensions, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task WarnOnTableDimensionMismatchAsync(
@@ -1011,10 +906,8 @@ internal sealed class GrimoireSchemaInstaller(
         int configuredDimensions,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             // tableName is one of the fixed internal constants passed above, never user input.
@@ -1024,37 +917,28 @@ internal sealed class GrimoireSchemaInstaller(
 
             if (result is null or DBNull)
             {
-
                 return;
-
             }
 
             long existingDimensions = Convert.ToInt64(result, CultureInfo.InvariantCulture);
 
             if (existingDimensions != configuredDimensions)
             {
-
                 logger?.LogWarning(
                     "Embedding dimension changed from {OldDimensions} to {NewDimensions} in {TableName}. Existing embeddings are stale. Reset the affected embedding scope and re-index to use the new dimension.",
                     existingDimensions,
                     configuredDimensions,
                     tableName);
-
             }
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger?.LogWarning(
                 ex,
                 "The embedding dimension probe for {TableName} failed; skipping the dimension-mismatch check.",
                 tableName);
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -1073,9 +957,7 @@ internal sealed class GrimoireSchemaRefusedException(
         + "fresh by moving arcanum.db and arcanum.db.kdf aside under ~/.config/arcanum/ — session data "
         + "in the old file is not readable by this build either way.")
 {
-
     public GrimoireSchemaTransactionTier Tier { get; } = tier;
 
     public GrimoireSchemaTierHealth Health { get; } = health;
-
 }

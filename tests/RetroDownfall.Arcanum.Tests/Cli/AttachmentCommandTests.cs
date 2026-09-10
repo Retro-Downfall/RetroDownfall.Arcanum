@@ -40,7 +40,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class AttachmentCommandTests
 {
-
     private static readonly Guid SessionId =
         Guid.Parse("11111111-2222-3333-4444-555555555555");
 
@@ -57,7 +56,6 @@ public sealed class AttachmentCommandTests
 
     public async Task Help_exposes_complete_attachment_command_family()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = await RunCommandAsync(
@@ -80,20 +78,16 @@ public sealed class AttachmentCommandTests
                      "reveal",
                  })
         {
-
             Assert.Contains(command, result.Output, StringComparison.OrdinalIgnoreCase);
-
         }
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public async Task Privacy_disclosure_needs_no_session_or_http_and_promises_no_terminal_bytes()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = await RunCommandAsync(
@@ -111,14 +105,12 @@ public sealed class AttachmentCommandTests
         Assert.Contains("attachment bytes", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("terminal", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task List_shows_latest_versions_while_versions_shows_full_history()
     {
-
         RecordingHandler listHandler = new(
             attachmentListEnvelope: VersionedAttachmentListEnvelope);
 
@@ -157,14 +149,12 @@ public sealed class AttachmentCommandTests
         Assert.Contains("\"version\":1", versions.Output, StringComparison.Ordinal);
 
         Assert.Contains("\"version\":2", versions.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public async Task List_preserves_case_distinct_logical_keys()
     {
-
         RecordingHandler handler = new(
             attachmentListEnvelope: CaseDistinctAttachmentListEnvelope);
 
@@ -197,14 +187,12 @@ public sealed class AttachmentCommandTests
         Assert.Equal(2, upper.GetProperty("version").GetInt32());
 
         Assert.Equal(3, lower.GetProperty("version").GetInt32());
-
     }
 
     [Fact]
 
     public async Task Case_distinct_logical_key_selector_is_ambiguous_but_exact_guid_remains_usable()
     {
-
         RecordingHandler ambiguousHandler = new(
             attachmentListEnvelope: CaseDistinctAttachmentListEnvelope);
 
@@ -251,14 +239,12 @@ public sealed class AttachmentCommandTests
         Assert.Equal(
             1,
             document.RootElement.GetProperty("version").GetInt32());
-
     }
 
     [Fact]
 
     public async Task Versions_does_not_merge_case_distinct_histories()
     {
-
         RecordingHandler ambiguousHandler = new(
             attachmentListEnvelope: CaseDistinctAttachmentListEnvelope);
 
@@ -309,14 +295,12 @@ public sealed class AttachmentCommandTests
             rows.EnumerateArray()
                 .Select(row => row.GetProperty("version").GetInt32())
                 .ToArray());
-
     }
 
     [Fact]
 
     public async Task List_accepts_positional_session_with_session_option_precedence()
     {
-
         RecordingHandler positionalHandler = new();
 
         CliTestResult positional = await RunCommandAsync(
@@ -359,14 +343,12 @@ public sealed class AttachmentCommandTests
             request => request.Path.Contains(
                 ignoredPositional.ToString("D"),
                 StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
 
     public async Task Human_list_includes_filename_and_redacts_paths_in_source_reason()
     {
-
         RecordingHandler handler = new(
             attachmentListEnvelope: DiagnosticAttachmentListEnvelope);
 
@@ -388,14 +370,12 @@ public sealed class AttachmentCommandTests
         Assert.Contains("[path]", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("/srv/private", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public async Task Refresh_posts_to_server_even_when_selected_row_is_snapshot_only()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = await RunCommandAsync(
@@ -418,14 +398,12 @@ public sealed class AttachmentCommandTests
         Assert.Equal(
             $"/api/sessions/{SessionId:D}/attachments/{FirstAttachmentId:D}/refresh",
             refresh.Path);
-
     }
 
     [Fact]
 
     public async Task Pin_and_unpin_use_context_pins_with_exact_attachment_id()
     {
-
         RecordingHandler pinHandler = new();
 
         CliTestResult pin = await RunCommandAsync(
@@ -447,13 +425,11 @@ public sealed class AttachmentCommandTests
 
         using (JsonDocument document = JsonDocument.Parse(create.Body))
         {
-
             Assert.Equal(
                 FirstAttachmentId.ToString("D"),
                 document.RootElement
                     .GetProperty("targetIdentifier")
                     .GetString());
-
         }
 
         RecordingHandler unpinHandler = new();
@@ -477,14 +453,12 @@ public sealed class AttachmentCommandTests
         Assert.Equal(
             $"/api/sessions/{SessionId:D}/context-pins/{PinId:D}",
             delete.Path);
-
     }
 
     [Fact]
 
     public async Task Export_atomically_replaces_destination_without_writing_content_to_stdout()
     {
-
         byte[] content = Encoding.UTF8.GetBytes("export-canary-content-26");
 
         string directory = Path.Combine(
@@ -499,7 +473,6 @@ public sealed class AttachmentCommandTests
 
         try
         {
-
             RecordingHandler handler = new(attachmentContent: content);
 
             CliTestResult result = await RunCommandAsync(
@@ -534,22 +507,17 @@ public sealed class AttachmentCommandTests
                     directory,
                     ".*.download",
                     SearchOption.TopDirectoryOnly));
-
         }
         finally
         {
-
             Directory.Delete(directory, recursive: true);
-
         }
-
     }
 
     [Fact]
 
     public async Task Reveal_rejects_an_api_relative_path_that_escapes_attachment_storage()
     {
-
         RecordingHandler handler = new(
             attachmentListEnvelope: EscapingAttachmentListEnvelope);
 
@@ -566,14 +534,12 @@ public sealed class AttachmentCommandTests
         Assert.Equal(1, result.ExitCode);
 
         Assert.Contains("unsafe", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Reveal_missing_local_server_artifact_does_not_launch_and_recommends_export()
     {
-
         using TestHomeScope home = new();
 
         FakeAttachmentRevealLauncher launcher = new();
@@ -598,14 +564,12 @@ public sealed class AttachmentCommandTests
         Assert.Contains("not locally available", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("attachment export", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Reveal_non_envelope_local_target_does_not_launch_and_recommends_export()
     {
-
         using TestHomeScope home = new();
 
         string target = home.ResolveAttachmentPath(
@@ -639,14 +603,12 @@ public sealed class AttachmentCommandTests
         Assert.Contains("not locally available", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("attachment export", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Reveal_local_arcablob_artifact_launches_file_manager()
     {
-
         using TestHomeScope home = new();
 
         string target = home.ResolveAttachmentPath(
@@ -678,14 +640,12 @@ public sealed class AttachmentCommandTests
         Assert.Equal(1, launcher.Attempts);
 
         Assert.Equal(target, launcher.LastPath);
-
     }
 
     [Fact]
 
     public async Task Add_from_stdin_streams_multipart_without_echoing_attachment_bytes()
     {
-
         const string SecretAttachmentBytes = "stdin-canary-attachment-body-26";
 
         RecordingHandler handler = new();
@@ -726,14 +686,12 @@ public sealed class AttachmentCommandTests
         Assert.DoesNotContain(SecretAttachmentBytes, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(SecretAttachmentBytes, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public async Task Add_from_stdin_defaults_to_text_filename_and_mime()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = await RunCommandAsync(
@@ -759,7 +717,6 @@ public sealed class AttachmentCommandTests
         Assert.Contains("text/plain", request.Body, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("ordinary piped text", request.Body, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -782,7 +739,6 @@ public sealed class AttachmentCommandTests
         string mimeType,
         string expectedFilename)
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = await RunCommandAsync(
@@ -808,14 +764,12 @@ public sealed class AttachmentCommandTests
         Assert.Contains(expectedFilename, request.Body, StringComparison.Ordinal);
 
         Assert.Contains(mimeType, request.Body, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Reference_forwards_server_workspace_path_without_client_resolution()
     {
-
         const string ServerPath = "../server-path";
 
         const string WorkspaceId = "ws-server";
@@ -832,7 +786,6 @@ public sealed class AttachmentCommandTests
 
         try
         {
-
             global::System.Environment.CurrentDirectory = clientDirectory;
 
             Assert.False(File.Exists(Path.GetFullPath(ServerPath)));
@@ -869,17 +822,13 @@ public sealed class AttachmentCommandTests
                 Path.GetFullPath(ServerPath),
                 request.Body,
                 StringComparison.Ordinal);
-
         }
         finally
         {
-
             global::System.Environment.CurrentDirectory = originalDirectory;
 
             Directory.Delete(root, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -889,7 +838,6 @@ public sealed class AttachmentCommandTests
     [Fact]
     public async Task Run_repeatable_attachment_options_serialize_reference_ids()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = await RunCommandAsync(
@@ -915,7 +863,6 @@ public sealed class AttachmentCommandTests
             ping.Body,
             FirstAttachmentId,
             SecondAttachmentId);
-
     }
 
     /// <summary>
@@ -926,7 +873,6 @@ public sealed class AttachmentCommandTests
     [Fact]
     public async Task Run_reports_a_failed_turn_without_losing_the_attachment_references()
     {
-
         RecordingHandler handler = new(failFirstPing: true);
 
         CliTestResult result = await RunCommandAsync(
@@ -952,14 +898,12 @@ public sealed class AttachmentCommandTests
             SecondAttachmentId);
 
         Assert.NotEqual(0, result.ExitCode);
-
     }
 
     private static void AssertAttachmentReferences(
         string requestBody,
         params Guid[] expected)
     {
-
         using JsonDocument document = JsonDocument.Parse(requestBody);
 
         JsonElement references = document.RootElement.GetProperty("attachmentReferences");
@@ -970,7 +914,6 @@ public sealed class AttachmentCommandTests
             .ToArray();
 
         Assert.Equal(expected, actual);
-
     }
 
     private static async Task<CliTestResult> RunCommandAsync(
@@ -979,7 +922,6 @@ public sealed class AttachmentCommandTests
         string? input = null,
         IAttachmentRevealLauncher? revealLauncher = null)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -995,6 +937,10 @@ public sealed class AttachmentCommandTests
 
         services.AddSingleton<ISecretStore>(
             new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
         services.RemoveAll<ICliInferenceContextResolver>();
 
@@ -1023,17 +969,14 @@ public sealed class AttachmentCommandTests
 
         if (revealLauncher is not null)
         {
-
             services.RemoveAll<IAttachmentRevealLauncher>();
 
             services.AddSingleton(revealLauncher);
-
         }
 
         return await CliTestHarness
             .RunAsync(services, args, input)
             .ConfigureAwait(false);
-
     }
 
     private static HttpResponseMessage JsonResponse(
@@ -1041,20 +984,16 @@ public sealed class AttachmentCommandTests
         HttpStatusCode status = HttpStatusCode.OK) =>
         new(status)
         {
-
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
-
         };
 
     private static HttpResponseMessage NdjsonResponse(string ndjson) =>
         new(HttpStatusCode.OK)
         {
-
             Content = new StringContent(
                 ndjson,
                 Encoding.UTF8,
                 "application/x-ndjson"),
-
         };
 
     private static string SerializeFrames(params IntelligenceEvent[] frames) =>
@@ -1069,29 +1008,23 @@ public sealed class AttachmentCommandTests
     private sealed class FakeHttpClientFactory(
         RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
 
                 Timeout = Timeout.InfiniteTimeSpan,
-
             };
-
     }
 
     private sealed class FakeAttachmentRevealLauncher : IAttachmentRevealLauncher
     {
-
         public int Attempts { get; private set; }
 
         public string? LastPath { get; private set; }
 
         public string TryReveal(string absolutePath, out bool started)
         {
-
             Attempts++;
 
             LastPath = absolutePath;
@@ -1099,14 +1032,11 @@ public sealed class AttachmentCommandTests
             started = true;
 
             return $"Revealed: {absolutePath}";
-
         }
-
     }
 
     private sealed class TestHomeScope : IDisposable
     {
-
         private readonly string? _originalAspNetCoreEnvironment;
 
         private readonly string? _originalDotnetEnvironment;
@@ -1115,7 +1045,6 @@ public sealed class AttachmentCommandTests
 
         public TestHomeScope()
         {
-
             _originalAspNetCoreEnvironment =
                 global::System.Environment.GetEnvironmentVariable(
                     "ASPNETCORE_ENVIRONMENT");
@@ -1144,7 +1073,6 @@ public sealed class AttachmentCommandTests
             global::System.Environment.SetEnvironmentVariable(
                 "ARCANUM_TEST_HOME",
                 Root);
-
         }
 
         public string Root { get; }
@@ -1157,7 +1085,6 @@ public sealed class AttachmentCommandTests
 
         public void Dispose()
         {
-
             global::System.Environment.SetEnvironmentVariable(
                 "ASPNETCORE_ENVIRONMENT",
                 _originalAspNetCoreEnvironment);
@@ -1172,13 +1099,9 @@ public sealed class AttachmentCommandTests
 
             if (Directory.Exists(Root))
             {
-
                 Directory.Delete(Root, recursive: true);
-
             }
-
         }
-
     }
 
     private sealed class RecordingHandler(
@@ -1186,7 +1109,6 @@ public sealed class AttachmentCommandTests
         string? attachmentListEnvelope = null,
         byte[]? attachmentContent = null) : HttpMessageHandler
     {
-
         private int _pingCount;
 
         private readonly string _attachmentListEnvelope =
@@ -1201,7 +1123,6 @@ public sealed class AttachmentCommandTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             byte[] bytes = request.Content is null
                 ? []
                 : await request.Content
@@ -1218,28 +1139,23 @@ public sealed class AttachmentCommandTests
 
             if (recorded.Path == "/api/perception/chronosync")
             {
-
                 return JsonResponse(
                     """
                     {"data":{"previousSnapshotTime":null,"newThreads":[],"missingThreads":[],"domainChanged":false,"previousDomain":null},"isSuccess":true,"error":null,"traceId":"test"}
                     """);
-
             }
 
             if (recorded.Path == "/api/intelligence/ping-stream")
             {
-
                 _pingCount++;
 
                 if (failFirstPing && _pingCount == 1)
                 {
-
                     return NdjsonResponse(
                         SerializeFrames(
                             new IntelligenceEvent(
                                 IntelligenceEventType.Error,
                                 "simulated failed turn")));
-
                 }
 
                 return NdjsonResponse(
@@ -1252,48 +1168,36 @@ public sealed class AttachmentCommandTests
                             IntelligenceEventType.Result,
                             "ok",
                             "ok")));
-
             }
 
             if (recorded.Path == "/api/mcp")
             {
-
                 return JsonResponse(
                     """
                     {"data":[],"isSuccess":true,"error":null,"traceId":"test"}
                     """);
-
             }
 
             if (recorded.Path == "/api/workspaces")
             {
-
                 return JsonResponse(WorkspaceListEnvelope);
-
             }
 
             if (recorded.Path == "/api/workspaces/ws-server")
             {
-
                 return JsonResponse(WorkspaceEnvelope);
-
             }
 
             if (recorded.Path.EndsWith("/refresh", StringComparison.Ordinal))
             {
-
                 return JsonResponse(RefreshEnvelope);
-
             }
 
             if (recorded.Path.EndsWith("/content", StringComparison.Ordinal))
             {
-
                 HttpResponseMessage response = new(HttpStatusCode.OK)
                 {
-
                     Content = new ByteArrayContent(_attachmentContent),
-
                 };
 
                 response.Content.Headers.ContentType =
@@ -1302,39 +1206,30 @@ public sealed class AttachmentCommandTests
                 response.Content.Headers.ContentDisposition =
                     new System.Net.Http.Headers.ContentDispositionHeaderValue("attachment")
                     {
-
                         FileNameStar = "notes.txt",
-
                     };
 
                 return response;
-
             }
 
             if (recorded.Path.EndsWith("/context-pins", StringComparison.Ordinal))
             {
-
                 return request.Method == HttpMethod.Get
                     ? JsonResponse(PinListEnvelope)
                     : JsonResponse(PinEnvelope);
-
             }
 
             if (request.Method == HttpMethod.Delete
                 && recorded.Path.Contains("/context-pins/", StringComparison.Ordinal))
             {
-
                 return new HttpResponseMessage(HttpStatusCode.NoContent);
-
             }
 
             if (recorded.Path.Contains("/attachments", StringComparison.Ordinal))
             {
-
                 return request.Method == HttpMethod.Get
                     ? JsonResponse(_attachmentListEnvelope)
                     : JsonResponse(AttachmentEnvelope);
-
             }
 
             return JsonResponse(
@@ -1342,9 +1237,7 @@ public sealed class AttachmentCommandTests
                 {"data":null,"isSuccess":false,"error":{"code":"Test.NotFound","message":"No test response."},"traceId":"test"}
                 """,
                 HttpStatusCode.NotFound);
-
         }
-
     }
 
     private sealed record RecordedRequest(
@@ -1355,7 +1248,6 @@ public sealed class AttachmentCommandTests
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -1370,17 +1262,14 @@ public sealed class AttachmentCommandTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeContextResolver : ICliInferenceContextResolver
     {
-
         public Task<CliInferenceContextResult> ResolveAsync(
             CliInferenceContextRequest request,
             CancellationToken cancellationToken)
         {
-
             Guid? sessionId = Guid.TryParse(request.Session, out Guid parsed)
                 ? parsed
                 : null;
@@ -1400,14 +1289,11 @@ public sealed class AttachmentCommandTests
 
             return Task.FromResult(
                 CliInferenceContextResult.Success(context, []));
-
         }
-
     }
 
     private sealed class FakeEye : IEyeOfTheWorld
     {
-
         public Task<PatternSnapshot> PerceivePatternAsync(
             string directoryPath,
             CancellationToken cancellationToken) =>
@@ -1416,14 +1302,12 @@ public sealed class AttachmentCommandTests
                     DomainType.Unknown,
                     directoryPath,
                     []));
-
     }
 
     private sealed class NoopGrimoireInitialization :
         IGrimoireCliInitialization,
         IServiceProvider
     {
-
         public Task<T> RunExclusiveAsync<T>(
             Func<IServiceProvider, CancellationToken, Task<T>> operation,
             CancellationToken cancellationToken) => operation(this, cancellationToken);
@@ -1433,12 +1317,10 @@ public sealed class AttachmentCommandTests
             CancellationToken cancellationToken) => operation(this, cancellationToken);
 
         public object? GetService(Type serviceType) => null;
-
     }
 
     private sealed class NoopChronosyncEngine : IChronosyncEngine
     {
-
         public Task<ChronosyncReport> AnalyzeAndSyncAsync(
             PatternSnapshot currentSnapshot,
             CancellationToken cancellationToken = default) =>
@@ -1448,12 +1330,10 @@ public sealed class AttachmentCommandTests
                     [],
                     [],
                     false));
-
     }
 
     private sealed class NoopServeLauncher : IArcanumServeLauncher
     {
-
         public Task<ServeLaunchResult> EnsureRunningAsync(
             CancellationToken cancellationToken) =>
             Task.FromResult(
@@ -1463,7 +1343,6 @@ public sealed class AttachmentCommandTests
                     TimeSpan.Zero,
                     null,
                     null));
-
     }
 
     private const string WorkspaceListEnvelope =
@@ -1520,5 +1399,4 @@ public sealed class AttachmentCommandTests
         """
         {"data":[{"id":"99999999-8888-7777-6666-555555555555","sessionId":"11111111-2222-3333-4444-555555555555","kind":4,"targetIdentifier":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","displayLabel":"stdin","contentVersion":"abc123","createdAt":"2026-08-01T12:00:00Z","updatedAt":"2026-08-01T12:00:00Z"}],"isSuccess":true,"error":null,"traceId":"test"}
         """;
-
 }

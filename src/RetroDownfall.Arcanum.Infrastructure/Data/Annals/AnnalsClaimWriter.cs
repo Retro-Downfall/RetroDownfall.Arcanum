@@ -1,5 +1,4 @@
 using System.Data.Common;
-
 using System.Globalization;
 
 using RetroDownfall.Arcanum.Core.Annals;
@@ -25,10 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 /// </remarks>
 internal static class AnnalsClaimWriter
 {
-
-    /// <summary>The one timestamp format the Grimoire stores, and the one the validity check orders by.</summary>
-    private const string TimestampFormat = "o";
-
     /// <summary>
     /// Opens a claim at revision one and points its head at it.
     /// </summary>
@@ -57,7 +52,6 @@ internal static class AnnalsClaimWriter
         Guid? sourceSessionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
@@ -67,9 +61,7 @@ internal static class AnnalsClaimWriter
         if (await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
                 .ConfigureAwait(false) is not null)
         {
-
             return false;
-
         }
 
         string claimId = Guid.NewGuid().ToString();
@@ -120,7 +112,6 @@ internal static class AnnalsClaimWriter
             ("@updatedAt", Format(recordedAt)));
 
         return true;
-
     }
 
     /// <summary>
@@ -149,7 +140,6 @@ internal static class AnnalsClaimWriter
         Guid? sourceSessionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
@@ -161,7 +151,6 @@ internal static class AnnalsClaimWriter
 
         if (head is null)
         {
-
             return await AppendAssertAsync(
                 connection,
                 transaction,
@@ -176,14 +165,11 @@ internal static class AnnalsClaimWriter
                 recordedAt,
                 sourceSessionId,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (head.ContentHash is byte[] current && current.AsSpan().SequenceEqual(contentHash))
         {
-
             return false;
-
         }
 
         int revision = head.CurrentRevision + 1;
@@ -216,7 +202,6 @@ internal static class AnnalsClaimWriter
             cancellationToken).ConfigureAwait(false);
 
         return true;
-
     }
 
     /// <summary>
@@ -255,7 +240,6 @@ internal static class AnnalsClaimWriter
         Guid? sourceSessionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
@@ -265,16 +249,12 @@ internal static class AnnalsClaimWriter
 
         if (head is null)
         {
-
             return false;
-
         }
 
         if (head.CurrentOperation == AnnalOperation.Retire)
         {
-
             return false;
-
         }
 
         int revision = head.CurrentRevision + 1;
@@ -307,7 +287,6 @@ internal static class AnnalsClaimWriter
             cancellationToken).ConfigureAwait(false);
 
         return true;
-
     }
 
     /// <summary>Removes the claim describing one durable row, with every version and edge it owns.</summary>
@@ -318,7 +297,6 @@ internal static class AnnalsClaimWriter
         string subjectId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
@@ -329,7 +307,6 @@ internal static class AnnalsClaimWriter
             AnnalsErasurePlan.ForSubjectQuery(subjectStore, "SELECT @subjectId"),
             cancellationToken,
             ("@subjectId", subjectId));
-
     }
 
     /// <summary>
@@ -348,7 +325,6 @@ internal static class AnnalsClaimWriter
         CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(subjectIdQuery);
@@ -359,7 +335,6 @@ internal static class AnnalsClaimWriter
             AnnalsErasurePlan.ForSubjectQuery(subjectStore, subjectIdQuery),
             cancellationToken,
             parameters);
-
     }
 
     /// <summary>Removes every claim belonging to one store, leaving the other store's untouched.</summary>
@@ -369,7 +344,6 @@ internal static class AnnalsClaimWriter
         AnnalSubjectStore subjectStore,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await DeleteInOrderAsync(
@@ -377,7 +351,6 @@ internal static class AnnalsClaimWriter
             transaction,
             AnnalsErasurePlan.ForStore(subjectStore),
             cancellationToken);
-
     }
 
     /// <summary>
@@ -395,19 +368,15 @@ internal static class AnnalsClaimWriter
         CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
-
         foreach (AnnalsErasureStep step in steps)
         {
-
             await ExecuteAsync(
                 connection,
                 transaction,
                 cancellationToken,
                 $"DELETE FROM {step.Table} WHERE {step.Predicate}",
                 parameters);
-
         }
-
     }
 
     private static async Task<string> InsertVersionAsync(
@@ -427,7 +396,6 @@ internal static class AnnalsClaimWriter
         Guid? sourceSessionId,
         CancellationToken cancellationToken)
     {
-
         string versionId = Guid.NewGuid().ToString();
 
         await ExecuteAsync(
@@ -460,7 +428,6 @@ internal static class AnnalsClaimWriter
             ("@sourceSessionId", sourceSessionId?.ToString()));
 
         return versionId;
-
     }
 
     /// <summary>
@@ -480,7 +447,6 @@ internal static class AnnalsClaimWriter
         DateTimeOffset recordedAt,
         CancellationToken cancellationToken)
     {
-
         long dependentSequence = await ReadSequenceAsync(connection, transaction, versionId, cancellationToken)
             .ConfigureAwait(false);
 
@@ -518,7 +484,6 @@ internal static class AnnalsClaimWriter
             ("@operationCode", (int)operation),
             ("@updatedAt", Format(recordedAt)),
             ("@claimId", head.ClaimId));
-
     }
 
     private static async Task<HeadRow?> ReadHeadAsync(
@@ -528,7 +493,6 @@ internal static class AnnalsClaimWriter
         string subjectId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -551,9 +515,7 @@ internal static class AnnalsClaimWriter
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return new HeadRow(
@@ -563,7 +525,6 @@ internal static class AnnalsClaimWriter
             (AnnalOperation)reader.GetInt32(3),
             reader.GetInt64(4),
             reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5));
-
     }
 
     private static async Task<long> ReadSequenceAsync(
@@ -572,7 +533,6 @@ internal static class AnnalsClaimWriter
         string versionId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -584,7 +544,6 @@ internal static class AnnalsClaimWriter
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task ExecuteAsync(
@@ -594,7 +553,6 @@ internal static class AnnalsClaimWriter
         string commandText,
         params (string Name, object? Value)[] parameters)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -603,18 +561,14 @@ internal static class AnnalsClaimWriter
 
         foreach ((string name, object? value) in parameters)
         {
-
             AddParameter(command, name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static void AddParameter(DbCommand command, string name, object? value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -622,11 +576,10 @@ internal static class AnnalsClaimWriter
         parameter.Value = value ?? DBNull.Value;
 
         _ = command.Parameters.Add(parameter);
-
     }
 
     private static string Format(DateTimeOffset value) =>
-        value.ToString(TimestampFormat, CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     /// <summary>A claim's head joined to the version it points at, which is all any writer needs.</summary>
     private sealed record HeadRow(
@@ -636,5 +589,4 @@ internal static class AnnalsClaimWriter
         AnnalOperation CurrentOperation,
         long CurrentSequence,
         byte[]? ContentHash);
-
 }

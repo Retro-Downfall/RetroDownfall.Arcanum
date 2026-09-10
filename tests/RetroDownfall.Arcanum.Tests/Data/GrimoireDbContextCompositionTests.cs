@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 using System.Reflection;
 
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +21,16 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Collection("ProcessEnvironment")]
 public sealed class GrimoireDbContextCompositionTests
 {
+    [Fact]
+    public void Ef_design_time_factory_warns_any_future_runtime_caller()
+    {
+        RequiresAssemblyFilesAttribute boundary = Assert.Single(
+            typeof(ArcanumDbContextFactory)
+                .GetConstructor(Type.EmptyTypes)!
+                .GetCustomAttributes<RequiresAssemblyFilesAttribute>());
+
+        Assert.Contains("design-time", boundary.Message, StringComparison.OrdinalIgnoreCase);
+    }
 
     [Theory]
     [InlineData(ProductComposition.NonPooledCli)]
@@ -26,20 +38,15 @@ public sealed class GrimoireDbContextCompositionTests
     public async Task Product_DbContext_options_use_the_singleton_ordinary_lifecycle(
         ProductComposition composition)
     {
-
         ServiceCollection services = new();
 
         if (composition == ProductComposition.NonPooledCli)
         {
-
             services.AddArcanumGrimoireForCli();
-
         }
         else
         {
-
             services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
-
         }
 
         await using ServiceProvider provider = services.BuildServiceProvider();
@@ -132,13 +139,11 @@ public sealed class GrimoireDbContextCompositionTests
         Assert.Same(SqliteNativeRuntime.Instance, provider.GetRequiredService<ISqliteNativeRuntime>());
 
         AssertSingleServingConnectionInterceptor(options);
-
     }
 
     [SkippableFact]
     public async Task Api_test_host_replacement_uses_the_host_singleton_ordinary_lifecycle()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -203,7 +208,6 @@ public sealed class GrimoireDbContextCompositionTests
         Assert.Same(SqliteNativeRuntime.Instance, provider.GetRequiredService<ISqliteNativeRuntime>());
 
         AssertSingleServingConnectionInterceptor(options);
-
     }
 
     /// <summary>
@@ -221,7 +225,6 @@ public sealed class GrimoireDbContextCompositionTests
     [SkippableFact]
     public async Task Api_test_host_shares_one_serving_interceptor_across_scopes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -241,13 +244,11 @@ public sealed class GrimoireDbContextCompositionTests
                 .GetRequiredService<DbContextOptions<ArcanumDbContext>>()));
 
         Assert.Same(firstInterceptor, secondInterceptor);
-
     }
 
     [Fact]
     public void Direct_DbContext_options_paths_are_named_non_serving_exemptions()
     {
-
         ProductionSource[] sources = [.. ProductionSourceInventory.Sources()];
 
         ProductionSource[] optionsPaths =
@@ -287,7 +288,6 @@ public sealed class GrimoireDbContextCompositionTests
             sources,
             static source => source.Is("GrimoireDatabaseBootstrapper.cs")
                 && source.Names("SqliteConnection connection = new("));
-
     }
 
     /// <summary>
@@ -338,18 +338,15 @@ public sealed class GrimoireDbContextCompositionTests
     private static CovenantConnectionEnrolmentInterceptor[] Interceptors(
         DbContextOptions<ArcanumDbContext> options)
     {
-
         CoreOptionsExtension core = options.FindExtension<CoreOptionsExtension>()
             ?? throw new InvalidOperationException("The EF Core options extension is missing.");
 
         return [.. core.Interceptors!.OfType<CovenantConnectionEnrolmentInterceptor>()];
-
     }
 
     private static void AssertSingleServingConnectionInterceptor(
         DbContextOptions<ArcanumDbContext> options)
     {
-
         CoreOptionsExtension core = options.FindExtension<CoreOptionsExtension>()
             ?? throw new InvalidOperationException("The EF Core options extension is missing.");
 
@@ -357,90 +354,76 @@ public sealed class GrimoireDbContextCompositionTests
             core.Interceptors!.OfType<DbConnectionInterceptor>());
 
         _ = Assert.IsType<CovenantConnectionEnrolmentInterceptor>(interceptor);
-
     }
 
     private static IGrimoireOrdinaryConnectionLifecycle GetLifecycle(
         CovenantConnectionEnrolmentInterceptor interceptor)
     {
-
         FieldInfo field = typeof(CovenantConnectionEnrolmentInterceptor).GetField(
             "_lifecycle",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The interceptor lifecycle field is missing.");
 
         return Assert.IsAssignableFrom<IGrimoireOrdinaryConnectionLifecycle>(field.GetValue(interceptor));
-
     }
 
     private static ICovenantConnectionDrain GetDrain(
         CovenantConnectionEnrolmentInterceptor interceptor)
     {
-
         FieldInfo field = typeof(CovenantConnectionEnrolmentInterceptor).GetField(
             "_drain",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The interceptor drain field is missing.");
 
         return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(interceptor));
-
     }
 
     private static ICovenantConnectionDrain GetDrain(
         IGrimoireConnectionAdmissionGate gate)
     {
-
         FieldInfo field = typeof(GrimoireConnectionAdmissionGate).GetField(
             "_drain",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The admission gate drain field is missing.");
 
         return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(gate));
-
     }
 
     private static IGrimoireOrdinaryConnectionLifecycle GetLifecycle(
         IGrimoireOrdinaryConnectionFactory factory)
     {
-
         FieldInfo field = typeof(GrimoireOrdinaryConnectionFactory).GetField(
             "_lifecycle",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The ordinary factory lifecycle field is missing.");
 
         return Assert.IsAssignableFrom<IGrimoireOrdinaryConnectionLifecycle>(field.GetValue(factory));
-
     }
 
     private static ICovenantConnectionDrain GetDrain(
         IGrimoireOrdinaryConnectionFactory factory)
     {
-
         FieldInfo field = typeof(GrimoireOrdinaryConnectionFactory).GetField(
             "_drain",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The ordinary factory drain field is missing.");
 
         return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(factory));
-
     }
 
     private static ICovenantConnectionDrain GetDrain(
         IGrimoireOrdinaryConnectionLifecycle lifecycle)
     {
-
         FieldInfo field = typeof(GrimoireOrdinaryConnectionLifecycle).GetField(
             "_drain",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The lifecycle drain field is missing.");
 
         return Assert.IsAssignableFrom<ICovenantConnectionDrain>(field.GetValue(lifecycle));
-
     }
 
     private static T GetDependency<T>(object instance, string fieldName)
     {
-
         FieldInfo field = instance.GetType().GetField(
             fieldName,
             BindingFlags.Instance | BindingFlags.NonPublic)
@@ -448,16 +431,12 @@ public sealed class GrimoireDbContextCompositionTests
                 $"The {instance.GetType().Name} field '{fieldName}' is missing.");
 
         return Assert.IsAssignableFrom<T>(field.GetValue(instance));
-
     }
 
     public enum ProductComposition
     {
-
         NonPooledCli = 1,
 
         PooledHost = 2,
-
     }
-
 }

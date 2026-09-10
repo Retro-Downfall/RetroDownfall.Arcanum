@@ -8,6 +8,8 @@ Rules:
   - One blank line between file-level `}` and a following `///` at column 0.
   - Collapse runs of 3+ newlines to 2 (at most one blank line between non-empty lines).
   - Trim trailing whitespace on each line.
+  - With `--compact-delimiters`, remove blank lines immediately inside code parentheses, brackets,
+    and braces while preserving delimiter-shaped text inside multiline strings and block comments.
   - Between consecutive single-line type members (fields / auto-properties / events) at the same
     indentation, ensure one blank line.
   - After a closing `}` that ends a block, if the next non-empty line is a sibling at the same
@@ -52,6 +54,10 @@ NEXT_SIBLING_AFTER_BRACE = re.compile(
     r"public\b|private\b|protected\b|internal\b)"
 )
 
+OPENING_DELIMITERS = frozenset("({[")
+
+CLOSING_DELIMITERS = frozenset(")}]")
+
 
 def should_skip_dir(path: Path, repo: Path) -> bool:
     try:
@@ -90,6 +96,163 @@ def collapse_multi_blank_lines(text: str) -> str:
 def trim_trailing_ws(text: str) -> str:
     lines = text.split("\n")
     return "\n".join(line.rstrip(" \t") for line in lines)
+
+
+def protected_multiline_lines(lines: list[str]) -> set[int]:
+    """Return lines whose delimiter-shaped text belongs to a multiline literal or comment."""
+    protected: set[int] = set()
+    mode: str | None = None
+    raw_delimiter = ""
+
+    for line_number, line in enumerate(lines):
+        position = 0
+
+        if mode is not None:
+            protected.add(line_number)
+
+        while position < len(line):
+            if mode == "block_comment":
+                end = line.find("*/", position)
+                if end < 0:
+                    break
+                position = end + 2
+                mode = None
+                continue
+
+            if mode == "raw_string":
+                end = line.find(raw_delimiter, position)
+                if end < 0:
+                    break
+                position = end + len(raw_delimiter)
+                mode = None
+                raw_delimiter = ""
+                continue
+
+            if mode == "verbatim_string":
+                while position < len(line):
+                    quote = line.find('"', position)
+                    if quote < 0:
+                        position = len(line)
+                        break
+                    if quote + 1 < len(line) and line[quote + 1] == '"':
+                        position = quote + 2
+                        continue
+                    position = quote + 1
+                    mode = None
+                    break
+                if mode == "verbatim_string":
+                    break
+                continue
+
+            if line.startswith("//", position):
+                break
+
+            if line.startswith("/*", position):
+                protected.add(line_number)
+                mode = "block_comment"
+                position += 2
+                continue
+
+            raw_quote_position = position
+            if line[position] == "$":
+                while raw_quote_position < len(line) and line[raw_quote_position] == "$":
+                    raw_quote_position += 1
+
+            if raw_quote_position < len(line) and line[raw_quote_position] == '"':
+                quote_end = raw_quote_position
+                while quote_end < len(line) and line[quote_end] == '"':
+                    quote_end += 1
+                quote_count = quote_end - raw_quote_position
+                if quote_count >= 3:
+                    protected.add(line_number)
+                    raw_delimiter = '"' * quote_count
+                    mode = "raw_string"
+                    position = quote_end
+                    continue
+
+            verbatim_prefix_length = 0
+            if line.startswith('@"', position):
+                verbatim_prefix_length = 2
+            elif line.startswith('$@"', position) or line.startswith('@$"', position):
+                verbatim_prefix_length = 3
+
+            if verbatim_prefix_length:
+                protected.add(line_number)
+                mode = "verbatim_string"
+                position += verbatim_prefix_length
+                continue
+
+            regular_prefix_length = 0
+            if line.startswith('$"', position):
+                regular_prefix_length = 2
+            elif line[position] == '"':
+                regular_prefix_length = 1
+
+            if regular_prefix_length:
+                position += regular_prefix_length
+                escaped = False
+                while position < len(line):
+                    character = line[position]
+                    position += 1
+                    if escaped:
+                        escaped = False
+                    elif character == "\\":
+                        escaped = True
+                    elif character == '"':
+                        break
+                continue
+
+            if line[position] == "'":
+                position += 1
+                escaped = False
+                while position < len(line):
+                    character = line[position]
+                    position += 1
+                    if escaped:
+                        escaped = False
+                    elif character == "\\":
+                        escaped = True
+                    elif character == "'":
+                        break
+                continue
+
+            position += 1
+
+    return protected
+
+
+def remove_blank_inside_delimiters(lines: list[str]) -> list[str]:
+    """Remove vertical whitespace just inside code delimiters, never inside protected text."""
+    protected = protected_multiline_lines(lines)
+    keep = [True] * len(lines)
+
+    for index, line in enumerate(lines):
+        if line.strip() or index in protected:
+            continue
+
+        previous = index - 1
+        while previous >= 0 and not lines[previous].strip():
+            previous -= 1
+
+        following = index + 1
+        while following < len(lines) and not lines[following].strip():
+            following += 1
+
+        previous_opens = (
+            previous >= 0
+            and previous not in protected
+            and lines[previous].rstrip().endswith(tuple(OPENING_DELIMITERS))
+        )
+        following_closes = (
+            following < len(lines)
+            and following not in protected
+            and lines[following].lstrip().startswith(tuple(CLOSING_DELIMITERS))
+        )
+
+        if previous_opens or following_closes:
+            keep[index] = False
+
+    return [line for index, line in enumerate(lines) if keep[index]]
 
 
 def is_member_decl_line(line: str) -> bool:
@@ -192,7 +355,7 @@ def insert_blank_after_closing_braces(lines: list[str]) -> list[str]:
     return out
 
 
-def process_file(path: Path, dry_run: bool) -> bool:
+def process_file(path: Path, dry_run: bool, compact_delimiters: bool = False) -> bool:
     # `raw` loses its BOM below so the rules never have to special-case column 0, but the
     # change comparison has to run against the untouched original -- comparing the re-prefixed
     # result against the stripped copy reported every BOM file as dirty forever, which is why
@@ -208,6 +371,8 @@ def process_file(path: Path, dry_run: bool) -> bool:
     text = fix_file_level_type_gap(text)
 
     lines = text.split("\n")
+    if compact_delimiters:
+        lines = remove_blank_inside_delimiters(lines)
     lines = insert_blank_between_member_lines(lines)
     lines = insert_blank_before_doc_after_member(lines)
     lines = insert_blank_after_closing_braces(lines)
@@ -224,7 +389,8 @@ def process_file(path: Path, dry_run: bool) -> bool:
     if new_raw == original:
         return False
     if not dry_run:
-        path.write_text(new_raw, encoding="utf-8", newline="\n")
+        with path.open("w", encoding="utf-8", newline="\n") as destination:
+            destination.write(new_raw)
     return True
 
 
@@ -252,6 +418,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", type=Path, default=Path.cwd(), help="Repository root (contains src/)")
     ap.add_argument("--check", action="store_true", help="Do not write; exit 2 if any file would change")
+    ap.add_argument(
+        "--compact-delimiters",
+        action="store_true",
+        help="Remove blank lines immediately inside (), [], and {} in the selected files",
+    )
     ap.add_argument("paths", nargs="*", type=Path, help="Optional files/dirs (default: src/)")
     args = ap.parse_args()
 
@@ -262,7 +433,11 @@ def main() -> int:
 
     changed = 0
     for path in iter_cs_files(repo, [p.resolve() for p in args.paths]):
-        if process_file(path, dry_run=args.check):
+        if process_file(
+            path,
+            dry_run=args.check,
+            compact_delimiters=args.compact_delimiters,
+        ):
             changed += 1
             print(path.relative_to(repo))
 

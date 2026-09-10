@@ -15,7 +15,6 @@ internal sealed class ConclaveArchmage(
     IApprenticeRepository repository,
     IOptionsMonitor<ArcanumSettings> settings) : IConclaveArchmage
 {
-
     public async Task<Result<Apprentice>> CastAsync(
         ConclaveCastRequest request,
         CancellationToken cancellationToken = default)
@@ -61,7 +60,7 @@ internal sealed class ConclaveArchmage(
 
         bool hasDelegationChain = request.DelegationChain is { Count: > 0 };
 
-        if (request.ParentApprenticeId is not null || hasDelegationChain)
+        if (request.ParentApprenticeId is not null || hasDelegationChain || request.LaunchRequested)
         {
             child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
             {
@@ -69,6 +68,7 @@ internal sealed class ConclaveArchmage(
                 Timestamp = now,
                 ParentApprenticeId = request.ParentApprenticeId,
                 DelegationChain = hasDelegationChain ? [.. request.DelegationChain!] : null,
+                LaunchRequested = request.LaunchRequested,
             });
         }
 
@@ -76,5 +76,4 @@ internal sealed class ConclaveArchmage(
 
         return Result<Apprentice>.Success(child);
     }
-
 }

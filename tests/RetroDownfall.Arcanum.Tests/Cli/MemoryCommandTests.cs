@@ -26,12 +26,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class MemoryCommandTests
 {
-
     [Fact]
 
     public void Memory_status_uses_active_session_and_renders_each_distinct_store()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         MemoryStatusDto payload = new(
@@ -67,14 +65,12 @@ public sealed class MemoryCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal($"/api/memory/status/{sessionId:D}", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public void Memory_search_defaults_to_all_and_clearly_displays_scope_provenance_and_retention()
     {
-
         MemorySearchResponse payload = new(
             "dark mode",
             MemorySearchScope.All,
@@ -111,17 +107,14 @@ public sealed class MemoryCommandTests
         Assert.NotNull(sent);
 
         Assert.Equal(MemorySearchScope.All, sent.Scope);
-
     }
 
     [Fact]
 
     public void Memory_search_accepts_every_documented_scope_without_extra_enablement_switches()
     {
-
         foreach (string scope in new[] { "session", "attachments", "workspace", "saga", "lexicon", "all" })
         {
-
             RecordingHandler handler = new(_ => CreateResponse(
                 new ApiResponse<MemorySearchResponse>(
                     new MemorySearchResponse("needle", Enum.Parse<MemorySearchScope>(scope, true), []),
@@ -136,16 +129,13 @@ public sealed class MemoryCommandTests
             Assert.Equal(0, result.ExitCode);
 
             Assert.Single(handler.Requests);
-
         }
-
     }
 
     [Fact]
 
     public void Memory_search_rejects_empty_query_without_calling_the_api()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["memory", "search", "   "]);
@@ -153,14 +143,12 @@ public sealed class MemoryCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public void Memory_lexicon_delete_is_explicit_and_calls_item_scoped_endpoint_after_yes()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(
@@ -174,14 +162,12 @@ public sealed class MemoryCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/memory/lexicon/Operator", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public void Memory_has_no_generic_delete_command()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["memory", "delete", "anything"]);
@@ -189,7 +175,6 @@ public sealed class MemoryCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
@@ -197,7 +182,6 @@ public sealed class MemoryCommandTests
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -212,8 +196,11 @@ public sealed class MemoryCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -221,19 +208,16 @@ public sealed class MemoryCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -244,42 +228,35 @@ public sealed class MemoryCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content
                     .ReadAsByteArrayAsync(cancellationToken)
                     .GetAwaiter()
                     .GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
-
             }
 
             Requests.Add(snapshot);
@@ -288,9 +265,6 @@ public sealed class MemoryCommandTests
                 responder is null
                     ? new HttpResponseMessage(HttpStatusCode.NotFound)
                     : responder(request));
-
         }
-
     }
-
 }

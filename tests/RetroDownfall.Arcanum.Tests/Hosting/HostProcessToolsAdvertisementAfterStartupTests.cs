@@ -1,24 +1,45 @@
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging.Abstractions;
+
 using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Sanctum;
+
 using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Tests.Support;
+
 using SysEnv = System.Environment;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -41,7 +62,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection("ProcessEnvironment")]
 public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifetime
 {
-
     private const string SpellName = "escape-hatch-preview";
 
     private readonly TempWorkspace _workspace = new();
@@ -58,7 +78,6 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
 
     public async Task InitializeAsync()
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         await _workspace.InitializeAsync();
@@ -71,38 +90,28 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
         Directory.CreateDirectory(_tempDir);
 
         _dbPath = Path.Combine(_tempDir, "grimoire.db");
-
     }
 
     public async Task DisposeAsync()
     {
-
         await _workspace.DisposeAsync();
 
         try
         {
-
             if (Directory.Exists(_tempDir))
             {
-
                 Directory.Delete(_tempDir, recursive: true);
-
             }
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
             // Best-effort cleanup of a temporary directory.
-
         }
-
     }
 
     [Fact]
     public async Task A_host_started_with_the_escape_hatch_and_no_transition_advertises_no_host_process_tools()
     {
-
         using HostProcessToolsEscapeHatchScope hatch = new();
 
         string? previousTestHome = SysEnv.GetEnvironmentVariable("ARCANUM_TEST_HOME");
@@ -114,7 +123,6 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
 
         try
         {
-
             // Keeps the connection manager's configuration reads inside this test's temporary tree
             // instead of the operator's real profile, where a configured server would be started.
             SysEnv.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
@@ -207,11 +215,9 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             HostProcessToolPolicy.SetStartupDecisionForTests(null);
 
             Assert.True(HostProcessToolPolicy.AreAllowed(ArcanumEdition.Development));
-
         }
         finally
         {
-
             HostProcessToolPolicy.SetStartupDecisionForTests(null);
 
             SysEnv.SetEnvironmentVariable("ARCANUM_TEST_HOME", previousTestHome);
@@ -221,14 +227,11 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             SysEnv.SetEnvironmentVariable(
                 "ASPNETCORE_ENVIRONMENT",
                 previousAspNetCoreEnvironment);
-
         }
-
     }
 
     private void WriteSpellWithScript()
     {
-
         _workspace.WriteFile(
             $"spells/{SpellName}/SPELL.md",
             $"""
@@ -240,12 +243,10 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
              """);
 
         _workspace.WriteFile($"spells/{SpellName}/scripts/run.sh", "echo arcanum\n");
-
     }
 
     private static McpConnectionManager CreateConnectionManager()
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
@@ -267,7 +268,7 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        return new McpConnectionManager(
+        McpConnectionManager manager = new(
             NullLogger<McpConnectionManager>.Instance,
             new HumanPromptRegistry(),
             scopeFactory,
@@ -277,11 +278,14 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
+        manager.ConfigureGlobalAdmission(
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        return manager;
     }
 
     private sealed class SilentEventBus : IEventBus
     {
-
         public void Publish<T>(T @event)
             where T : notnull
         {
@@ -290,12 +294,10 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
         public IAsyncEnumerable<T> Subscribe<T>(CancellationToken cancellationToken)
             where T : notnull =>
             AsyncEnumerable.Empty<T>();
-
     }
 
     private sealed class UntrustedWorkspaceStore : ITrustedMcpWorkspaceStore
     {
-
         public Task<bool> IsTrustedAsync(
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
@@ -322,12 +324,10 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -367,12 +367,10 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class RecordedSecretStore : ISecretStore
     {
-
         private string? _apiKey;
 
         private string? _grimoireSecret;
@@ -390,11 +388,9 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             _apiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() =>
@@ -402,13 +398,9 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
-
             _grimoireSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
-
     }
-
 }
