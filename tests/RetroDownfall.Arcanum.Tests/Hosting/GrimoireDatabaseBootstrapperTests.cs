@@ -34,6 +34,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
+[Collection(HostedServiceLifetimeCollection.Name)]
 public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 {
     private readonly string _tempDir;

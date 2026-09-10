@@ -303,6 +303,31 @@ public sealed class EnvironmentIsolationContractTests
             + "not full-suite resource contention.");
     }
 
+    /// <summary>
+    /// Bootstrapper tests exercise durable hosted-service checkpoints whose production deadlines
+    /// must not be consumed by unrelated full-suite CPU pressure.
+    /// </summary>
+    [Fact]
+    public void Grimoire_database_bootstrapper_test_class_is_serialized()
+    {
+        Type bootstrapperTests =
+            typeof(RetroDownfall.Arcanum.Tests.Hosting.GrimoireDatabaseBootstrapperTests);
+
+        string collection = Assert.IsType<string>(
+            AttributeName<CollectionAttribute>(bootstrapperTests));
+
+        Assert.Equal(HostedServiceLifetimeCollection.Name, collection);
+
+        Assert.True(
+            CollectionParallelism.Value.TryGetValue(
+                collection,
+                out bool disablesParallelization)
+            && disablesParallelization,
+            $"{bootstrapperTests.FullName} exercises bounded durable hosted-service checkpoints "
+            + "and must run in a DisableParallelization collection so their liveness deadlines "
+            + "measure the host lifecycle, not full-suite resource contention.");
+    }
+
     [Fact]
     public void Collections_that_mutate_the_process_environment_disable_parallelization()
     {
