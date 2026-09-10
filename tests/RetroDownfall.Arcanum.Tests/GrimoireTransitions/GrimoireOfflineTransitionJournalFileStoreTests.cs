@@ -2363,9 +2363,21 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 destinationIdentity,
                 destinationAfter.Metadata.Identity));
 
-        Assert.Equal(sourceBytes, File.ReadAllBytes(location.WorkingPath));
+        FileStream sourceAfterStream = sourceAfter.GetStream(FileAccess.Read);
 
-        Assert.Equal(destinationBytes, File.ReadAllBytes(location.JournalPath));
+        byte[] actualSourceBytes = new byte[sourceBytes.Length];
+
+        sourceAfterStream.ReadExactly(actualSourceBytes);
+
+        Assert.Equal(sourceBytes, actualSourceBytes);
+
+        FileStream destinationAfterStream = destinationAfter.GetStream(FileAccess.Read);
+
+        byte[] actualDestinationBytes = new byte[destinationBytes.Length];
+
+        destinationAfterStream.ReadExactly(actualDestinationBytes);
+
+        Assert.Equal(destinationBytes, actualDestinationBytes);
 
     }
 
