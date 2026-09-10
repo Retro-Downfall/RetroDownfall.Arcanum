@@ -257,9 +257,13 @@ if [[ ! -f "$QUALIFICATION_RECEIPT" ]]; then
 fi
 
 IFS= read -r actual_qualification_receipt <"$QUALIFICATION_RECEIPT" || true
-actual_qualification_receipt="${actual_qualification_receipt%$'\r'}"
 qualification_receipt_byte_count="$(wc -c <"$QUALIFICATION_RECEIPT" | tr -d '[:space:]')"
 expected_qualification_receipt_byte_count=$((${#EXPECTED_QUALIFICATION_RECEIPT} + 1))
+
+if [[ "$actual_qualification_receipt" == *$'\r' ]]; then
+  actual_qualification_receipt="${actual_qualification_receipt%$'\r'}"
+  expected_qualification_receipt_byte_count=$((${#EXPECTED_QUALIFICATION_RECEIPT} + 2))
+fi
 
 if [[ "$actual_qualification_receipt" != "$EXPECTED_QUALIFICATION_RECEIPT" \
   || "$qualification_receipt_byte_count" != "$expected_qualification_receipt_byte_count" ]]; then

@@ -152,6 +152,24 @@ public sealed class LocalOllamaAotQualificationContractTests
     }
 
     [SkippableFact]
+    public async Task Wrapper_accepts_an_exact_windows_style_success_receipt()
+    {
+        RequirePosixScriptFixture();
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
+            receiptKind: "ollama-crlf");
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable,
+            "--image",
+            fixture.Image);
+
+        Assert.Equal(0, result.ExitCode);
+    }
+
+    [SkippableFact]
     public async Task Wrapper_fails_when_its_private_temporary_directory_cannot_be_removed()
     {
         RequirePosixScriptFixture();
@@ -197,13 +215,16 @@ public sealed class LocalOllamaAotQualificationContractTests
         Assert.Contains("local qualification warning scan failed", result.StandardError, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
-    public async Task Wrapper_rejects_receipt_bytes_after_the_required_line()
+    [SkippableTheory]
+    [InlineData("ollama")]
+    [InlineData("ollama-crlf")]
+    public async Task Wrapper_rejects_receipt_bytes_after_the_required_line(
+        string receiptKind)
     {
         RequirePosixScriptFixture();
 
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
-            receiptKind: "ollama");
+            receiptKind);
         fixture.AppendReceiptBytesWithoutANewline();
 
         PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(

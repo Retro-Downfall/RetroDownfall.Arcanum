@@ -57,6 +57,21 @@ public sealed class PublishedApphostVerificationScriptTests
     }
 
     [SkippableFact]
+    public async Task Gate_accepts_an_exact_windows_style_success_receipt()
+    {
+        RequirePosixScriptFixture();
+
+        using ScriptFixture fixture = new(receiptKind: "published-crlf");
+
+        ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", "verify-published-apphost.sh"),
+            "--executable",
+            fixture.Executable);
+
+        Assert.Equal(0, result.ExitCode);
+    }
+
+    [SkippableFact]
     public async Task Gate_fails_when_its_private_temporary_directory_cannot_be_removed()
     {
         RequirePosixScriptFixture();
@@ -96,12 +111,15 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Contains("published-apphost warning scan failed", result.StandardError, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
-    public async Task Gate_rejects_receipt_bytes_after_the_required_line()
+    [SkippableTheory]
+    [InlineData("published")]
+    [InlineData("published-crlf")]
+    public async Task Gate_rejects_receipt_bytes_after_the_required_line(
+        string receiptKind)
     {
         RequirePosixScriptFixture();
 
-        using ScriptFixture fixture = new(receiptKind: "published");
+        using ScriptFixture fixture = new(receiptKind);
         fixture.AppendReceiptBytesWithoutANewline();
 
         ScriptResult result = await fixture.RunAsync(
@@ -463,9 +481,27 @@ public sealed class PublishedApphostVerificationScriptTests
                       fi
                     fi
                     ;;
+                  published-crlf)
+                    if [[ "$selected" == "$expected_published" ]]; then
+                      printf '%s\r\n' 'published-session-smoke:v1' > "${ARCANUM_PUBLISHED_SMOKE_RECEIPT:?}"
+
+                      if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
+                        printf '%s' 'trailing-bytes' >> "${ARCANUM_PUBLISHED_SMOKE_RECEIPT:?}"
+                      fi
+                    fi
+                    ;;
                   ollama)
                     if [[ "$selected" == "$expected_ollama" ]]; then
                       printf '%s\n' 'local-ollama-aot-qualification:v1' > "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
+
+                      if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
+                        printf '%s' 'trailing-bytes' >> "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
+                      fi
+                    fi
+                    ;;
+                  ollama-crlf)
+                    if [[ "$selected" == "$expected_ollama" ]]; then
+                      printf '%s\r\n' 'local-ollama-aot-qualification:v1' > "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
 
                       if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
                         printf '%s' 'trailing-bytes' >> "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"

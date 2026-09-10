@@ -189,9 +189,13 @@ require_exact_receipt() {
   fi
 
   IFS= read -r actual <"$receipt" || true
-  actual="${actual%$'\r'}"
   actual_byte_count="$(wc -c <"$receipt" | tr -d '[:space:]')"
   expected_byte_count=$((${#expected} + 1))
+
+  if [[ "$actual" == *$'\r' ]]; then
+    actual="${actual%$'\r'}"
+    expected_byte_count=$((${#expected} + 2))
+  fi
 
   if [[ "$actual" != "$expected" || "$actual_byte_count" != "$expected_byte_count" ]]; then
     echo "error: $description did not execute successfully (invalid success receipt)" >&2
