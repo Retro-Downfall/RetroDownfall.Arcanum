@@ -2196,6 +2196,103 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     }
 
     /// <summary>
+    /// The first-publication primitive is a rename-if-absent operation, not replacement with a
+    /// pre-check. A real destination collision must therefore leave both directory entries bound to
+    /// the identities and bytes they had before the single native call.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_no_replace_rename_preserves_both_files_when_destination_exists()
+    {
+
+        Skip.If(
+            !OperatingSystem.IsWindows(),
+            "Windows-only: exercises the NT rename primitive's no-replace collision contract.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest);
+
+        Assert.True(
+            opened.IsSuccess,
+            opened.IsFailure ? "open: " + opened.Error.Code : "open: success");
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = opened.Value;
+
+        byte[] sourceBytes = Bytes("windows-no-replace-source").ToArray();
+
+        byte[] destinationBytes = Bytes("windows-no-replace-destination").ToArray();
+
+        FileHandleIdentity sourceIdentity;
+
+        using (GrimoireOfflineTransitionJournalOpenedFile source = Value(
+                   primitives.CreateWorkingExclusive(location.WorkingLeaf)))
+        {
+
+            source.GetStream(FileAccess.ReadWrite).Write(sourceBytes);
+
+            Assert.True(primitives.FlushWorking(source).IsSuccess);
+
+            sourceIdentity = source.Metadata.Identity;
+
+        }
+
+        FileHandleIdentity destinationIdentity;
+
+        using (GrimoireOfflineTransitionJournalOpenedFile destination = Value(
+                   primitives.CreateWorkingExclusive(location.JournalLeaf)))
+        {
+
+            destination.GetStream(FileAccess.ReadWrite).Write(destinationBytes);
+
+            Assert.True(primitives.FlushWorking(destination).IsSuccess);
+
+            destinationIdentity = destination.Metadata.Identity;
+
+        }
+
+        Result collision = primitives.PublishFirstNoReplace(
+            location.JournalLeaf,
+            location.WorkingLeaf);
+
+        Assert.True(collision.IsFailure, "An existing destination was replaced.");
+
+        string[] leaves = [location.JournalLeaf, location.WorkingLeaf];
+
+        using GrimoireOfflineTransitionJournalChildEnumeration survivors = Value(
+            primitives.EnumerateExactChildren(leaves));
+
+        GrimoireOfflineTransitionJournalOpenedFile sourceAfter =
+            Assert.IsType<GrimoireOfflineTransitionJournalOpenedFile>(
+                survivors.ExactChildren[location.WorkingLeaf]);
+
+        GrimoireOfflineTransitionJournalOpenedFile destinationAfter =
+            Assert.IsType<GrimoireOfflineTransitionJournalOpenedFile>(
+                survivors.ExactChildren[location.JournalLeaf]);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(sourceIdentity, sourceAfter.Metadata.Identity));
+
+        Assert.True(
+            FileHandleIdentity.IdentitiesMatch(
+                destinationIdentity,
+                destinationAfter.Metadata.Identity));
+
+        Assert.Equal(sourceBytes, File.ReadAllBytes(location.WorkingPath));
+
+        Assert.Equal(destinationBytes, File.ReadAllBytes(location.JournalPath));
+
+    }
+
+    /// <summary>
     /// Runs a real second publication end to end on an actual Windows host: no double stands in for
     /// <c>ExchangeRetainingPrevious</c>, so this is the Windows exchange mechanism itself, not a
     /// retention-shape recording of whatever the current host implements. The recording decorator
