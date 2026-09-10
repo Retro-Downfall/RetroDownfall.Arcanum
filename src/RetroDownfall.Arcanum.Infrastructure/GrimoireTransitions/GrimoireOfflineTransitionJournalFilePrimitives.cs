@@ -793,22 +793,17 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             writable: false,
             out SafeFileHandle? named);
 
-        using (named)
+        if (status is not SecureFileOpenStatus.Success || named is null
+            || !FileHandleIdentityInterop.TryGetHandleMetadata(
+                named,
+                out FileHandleMetadata current)
+            || current.Kind is not FileSystemObjectKind.RegularFile
+            || current.HardLinkCount != 1
+            || !FileHandleIdentity.IdentitiesMatch(before.Identity, current.Identity))
         {
+            named?.Dispose();
 
-            if (status is not SecureFileOpenStatus.Success || named is null
-                || !FileHandleIdentityInterop.TryGetHandleMetadata(
-                    named,
-                    out FileHandleMetadata current)
-                || current.Kind is not FileSystemObjectKind.RegularFile
-                || current.HardLinkCount != 1
-                || !FileHandleIdentity.IdentitiesMatch(before.Identity, current.Identity))
-            {
-
-                return RecoveryRequired();
-
-            }
-
+            return RecoveryRequired();
         }
 
         bool unlinked;
@@ -818,29 +813,33 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (OperatingSystem.IsWindows())
             {
-
                 uint disposition = FileDispositionDelete | FileDispositionPosixSemantics;
 
                 unlinked = SetFileInformationByHandle(
-                    expected.Handle,
+                    named,
                     FileDispositionInfoEx,
                     ref disposition,
                     sizeof(uint));
 
+                // Windows removes the visible link only when the handle carrying the POSIX
+                // disposition closes. Keep the independent expected handle open as the identity,
+                // zero-link-count, and readable-data witness after this exact named handle closes.
+                named.Dispose();
+
+                named = null;
             }
             else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
+                named.Dispose();
+
+                named = null;
 
                 unlinked = UnlinkAt(ParentDescriptor, relativeLeaf, flags: 0) == 0;
-
             }
             else
             {
-
                 unlinked = false;
-
             }
-
         }
         catch (Exception exception) when (
             exception is EntryPointNotFoundException
@@ -848,9 +847,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             unlinked = false;
-
+        }
+        finally
+        {
+            named?.Dispose();
         }
 
         if (!unlinked
