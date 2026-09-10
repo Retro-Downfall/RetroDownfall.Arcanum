@@ -18,6 +18,8 @@
 
     <ApplicationTitle>Compendium</ApplicationTitle>
 
+    <ApplicationIcon>Assets/compendium.ico</ApplicationIcon>
+
     <Version>0.1.0-beta</Version>
 
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
@@ -27,6 +29,12 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
 
   </PropertyGroup>
+
+  <ItemGroup>
+
+    <AvaloniaResource Include="Assets/**" />
+
+  </ItemGroup>
 
   <ItemGroup>
 

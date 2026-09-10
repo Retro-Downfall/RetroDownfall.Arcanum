@@ -52,6 +52,170 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(LongRunningOperationState.Running)]
+    [InlineData(LongRunningOperationState.Waiting)]
+    [InlineData(LongRunningOperationState.Cancelling)]
+    public async Task Same_owner_resumption_refreshes_an_expired_active_lease_without_incrementing_attempt(
+        LongRunningOperationState activeState)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        ILongRunningOperationSameOwnerLeaseResumption resumption = store;
+
+        DateTimeOffset startedAt = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, startedAt);
+
+        LongRunningOperationLeaseResult acquired = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(acquired.Acquired);
+
+        if (activeState == LongRunningOperationState.Waiting)
+        {
+            Assert.True(await store.TryTransitionAsync(
+                operation.Id,
+                acquired.Operation.Revision,
+                "automatic-retention-owner",
+                LongRunningOperationState.Waiting,
+                startedAt.AddSeconds(1)));
+        }
+        else if (activeState == LongRunningOperationState.Cancelling)
+        {
+            Assert.True(await store.RequestCancellationAsync(
+                operation.Id,
+                acquired.Operation.Revision,
+                startedAt.AddSeconds(1)));
+        }
+
+        LongRunningOperation before = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        DateTimeOffset resumedAt = startedAt.AddMinutes(2);
+
+        DateTimeOffset newExpiry = resumedAt.AddMinutes(5);
+
+        bool resumed = await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            resumedAt,
+            newExpiry);
+
+        LongRunningOperation after = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        Assert.True(resumed);
+
+        Assert.Equal(activeState, after.State);
+
+        Assert.Equal(before.AttemptCount, after.AttemptCount);
+
+        Assert.Equal(before.LeaseOwner, after.LeaseOwner);
+
+        Assert.Equal(resumedAt, after.HeartbeatAt);
+
+        Assert.Equal(newExpiry, after.LeaseExpiresAt);
+
+        Assert.Equal(before.Revision + 1, after.Revision);
+    }
+
+    [SkippableFact]
+    public async Task Same_owner_resumption_refuses_a_different_owner_or_terminal_row()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        ILongRunningOperationSameOwnerLeaseResumption resumption = store;
+
+        DateTimeOffset startedAt = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, startedAt);
+
+        LongRunningOperationLeaseResult acquired = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(acquired.Acquired);
+
+        LongRunningOperation beforeWrongOwner = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        Assert.False(await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            "different-owner",
+            startedAt.AddMinutes(2),
+            startedAt.AddMinutes(7)));
+
+        Assert.Equal(beforeWrongOwner, await store.GetAsync(operation.Id));
+
+        Assert.False(await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            " automatic-retention-owner ",
+            startedAt.AddMinutes(2),
+            startedAt.AddMinutes(7)));
+
+        Assert.Equal(beforeWrongOwner, await store.GetAsync(operation.Id));
+
+        Assert.True(await store.TryTransitionAsync(
+            operation.Id,
+            beforeWrongOwner.Revision,
+            "automatic-retention-owner",
+            LongRunningOperationState.Completed,
+            startedAt.AddMinutes(3)));
+
+        LongRunningOperation terminal = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        Assert.False(await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            "automatic-retention-owner",
+            startedAt.AddMinutes(4),
+            startedAt.AddMinutes(9)));
+
+        Assert.Equal(terminal, await store.GetAsync(operation.Id));
+    }
+
+    [SkippableFact]
+    public async Task Same_owner_resumption_does_not_truncate_a_different_owner_into_authority()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        ILongRunningOperationSameOwnerLeaseResumption resumption = store;
+
+        DateTimeOffset startedAt = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, startedAt);
+
+        string exactOwner = new('a', 200);
+
+        LongRunningOperationLeaseResult acquired = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            exactOwner,
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(acquired.Acquired);
+
+        LongRunningOperation before = Assert.IsType<LongRunningOperation>(await store.GetAsync(operation.Id));
+
+        bool resumed = await resumption.ResumeSameOwnerLeaseAsync(
+            operation.Id,
+            exactOwner + "b",
+            startedAt.AddMinutes(2),
+            startedAt.AddMinutes(7));
+
+        Assert.False(resumed);
+
+        Assert.Equal(before, await store.GetAsync(operation.Id));
+    }
+
     /// <summary>
     /// Issue #118 — the request-identity row reads back into the right properties.
     /// </summary>
@@ -252,7 +416,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     public async Task TryStartSingleFlightAsync_OnlyOneActiveOperationPerKind()
     {
-
         RequireSqlCipher();
 
         await using ArcanumDbContext competingDb = _fixture.CreateContext(_dbPath);
@@ -308,14 +471,12 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 now));
 
         Assert.Equal(LongRunningOperationState.Pending, unrelated.State);
-
     }
 
     [SkippableFact]
 
     public async Task TryStartSingleFlightAsync_RetentionKindsShareOneActiveSlot()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -354,14 +515,12 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationKinds.DataRetentionPrune, only.Kind);
 
         Assert.Equal(LongRunningOperationState.Running, only.State);
-
     }
 
     [SkippableFact]
 
     public async Task RenewLeaseAsync_UsesIndependentEncryptedConnection()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -399,13 +558,11 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
 
         Assert.Equal(2, persisted.Revision);
-
     }
 
     [SkippableFact]
     public async Task RenewLeaseAsync_UsesAnUnpooledIsolatedHeartbeatOrdinaryLease()
     {
-
         RequireSqlCipher();
 
         RecordingFreshOrdinaryConnectionFactory connections = new(
@@ -464,7 +621,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(System.Data.ConnectionState.Closed, heartbeat.State);
 
         Assert.Equal(0, connections.LiveLeaseCount);
-
     }
 
     /// <summary>
@@ -487,7 +643,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     public async Task RenewLeaseAsync_LeavesNoLiveHandleArtifactBesideTheGrimoire()
     {
-
         RequireSqlCipher();
 
         string pooledPath = _fixture.CopyDatabase();
@@ -528,7 +683,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(renewed);
 
         Assert.Empty(LiveHandleSurvivors(pooledPath));
-
     }
 
     /// <summary>
@@ -553,7 +707,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task HeartbeatAsync_RunsOnAConnectionTheStoreOwns()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -605,7 +758,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(heartbeatAt, persisted.HeartbeatAt);
 
         Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
-
     }
 
     /// <summary>
@@ -616,7 +768,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task CovenantDrain_ClosesTheScopedLedgerHandle_AndTheNextReadReopensIt()
     {
-
         RequireSqlCipher();
 
         CovenantConnectionDrain drain = new();
@@ -643,14 +794,12 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(operation.Id, reopened.Id);
 
         Assert.Equal(System.Data.ConnectionState.Open, connection.State);
-
     }
 
     [SkippableFact]
 
     public async Task RenewLeaseAsync_AppliesConnectionPolicyToItsIndependentConnection()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -688,7 +837,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             startedAt.AddMinutes(6));
 
         Assert.True(renewed);
-
     }
 
     [SkippableFact]
@@ -960,7 +1108,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [handler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
             now,
@@ -978,7 +1127,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task ReconcileAsync_PageSize_DoesNotLimitTotalRecoveryWork()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -989,7 +1137,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         for (int index = 0; index < operationCount; index++)
         {
-
             LongRunningOperation operation = await CreateAsync(
                 store,
                 now.AddMinutes(-10).AddSeconds(index));
@@ -999,7 +1146,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 $"dead-host-{index}",
                 now.AddMinutes(-5),
                 now.AddMinutes(-4));
-
         }
 
         CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
@@ -1008,7 +1154,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [handler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
             now,
@@ -1021,7 +1168,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(operationCount, summary.Completed);
 
         Assert.Equal(operationCount, handler.CallCount);
-
     }
 
     [SkippableFact]
@@ -1050,7 +1196,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [handler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary unsupportedSummary = await reconciler.ReconcileAsync(
             now,
@@ -1076,7 +1223,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             store,
             [corruptHandler],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary corruptSummary = await corruptReconciler.ReconcileAsync(
             now,
@@ -1095,7 +1243,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
     public async Task RetentionRecoveryAttention_IsDiscoverableAndClaimable_WhileUnrelatedAttentionIsNot()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -1113,7 +1260,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         foreach (LongRunningOperation operation in new[] { retention, unrelated })
         {
-
             LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
                 operation.Id,
                 "first-worker",
@@ -1130,7 +1276,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                     LongRunningOperationState.ReconciliationRequired,
                     now.AddSeconds(1),
                     ErrorCodes.Data.ReconciliationFailed));
-
         }
 
         IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
@@ -1156,13 +1301,11 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(retentionLease.Acquired);
 
         Assert.False(unrelatedLease.Acquired);
-
     }
 
     [SkippableFact]
     public async Task CovenantMaintenanceAttention_IsClaimableOnlyForTheTwoCovenantRetentionKinds()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore store = Store(_db!);
@@ -1194,7 +1337,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         foreach (LongRunningOperation operation in new[] { mutation, factory, prune, unrelated })
         {
-
             LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
                 operation.Id,
                 "failed-disposition-owner",
@@ -1211,7 +1353,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                     LongRunningOperationState.ReconciliationRequired,
                     now.AddSeconds(1),
                     ErrorCodes.Covenant.MaintenanceFailed));
-
         }
 
         IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
@@ -1249,7 +1390,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             "recovery-owner",
             now.AddSeconds(2),
             now.AddMinutes(2))).Acquired);
-
     }
 
     [SkippableFact]
@@ -1273,6 +1413,111 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationState.Completed, first.State);
         Assert.Equal(LongRunningOperationState.Completed, duplicate.State);
         Assert.Equal([reservationId, reservationId], reservations.Released);
+    }
+
+    [SkippableFact]
+    public async Task Classified_recovery_claim_is_one_exact_compare_exchange_returning_the_claimed_row()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+        DateTimeOffset now = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+        LongRunningOperation created = await CreateAsync(store, now);
+        LongRunningOperationLeaseResult original = await store.TryAcquireLeaseAsync(
+            created.Id,
+            "dead-owner",
+            now,
+            now.AddMinutes(1));
+        LongRunningOperation expected = original.Operation;
+        LongRunningOperationRecoveryFingerprint fingerprint = new(
+            expected.Id,
+            expected.Kind,
+            expected.CheckpointVersion,
+            expected.Revision);
+
+        foreach (LongRunningOperationRecoveryFingerprint drifted in new[]
+        {
+            fingerprint with { Revision = fingerprint.Revision + 1 },
+            fingerprint with { Kind = LongRunningOperationKinds.Batch },
+            fingerprint with { CheckpointVersion = fingerprint.CheckpointVersion + 1 },
+        })
+        {
+            LongRunningOperationLeaseResult refused = await store.TryAcquireClassifiedRecoveryLeaseAsync(
+                drifted,
+                "recovery-owner",
+                now.AddMinutes(2),
+                now.AddMinutes(4));
+
+            Assert.False(refused.Acquired);
+
+            LongRunningOperation unchanged = Assert.IsType<LongRunningOperation>(
+                await store.GetAsync(expected.Id));
+            Assert.Equal(expected.Revision, unchanged.Revision);
+            Assert.Equal(expected.AttemptCount, unchanged.AttemptCount);
+            Assert.Equal(expected.LeaseOwner, unchanged.LeaseOwner);
+            Assert.Equal(expected.LeaseExpiresAt, unchanged.LeaseExpiresAt);
+        }
+
+        LongRunningOperationLeaseResult claimed = await store.TryAcquireClassifiedRecoveryLeaseAsync(
+            fingerprint,
+            "recovery-owner",
+            now.AddMinutes(2),
+            now.AddMinutes(4));
+
+        Assert.True(claimed.Acquired);
+        Assert.Equal(expected.Id, claimed.Operation.Id);
+        Assert.Equal(expected.Kind, claimed.Operation.Kind);
+        Assert.Equal(expected.CheckpointVersion, claimed.Operation.CheckpointVersion);
+        Assert.Equal(expected.Revision + 1, claimed.Operation.Revision);
+        Assert.Equal(expected.AttemptCount + 1, claimed.Operation.AttemptCount);
+        Assert.Equal("recovery-owner", claimed.Operation.LeaseOwner);
+    }
+
+    [SkippableFact]
+    public async Task Generic_recovery_excludes_owner_bound_rows_before_applying_the_page_limit()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+        DateTimeOffset now = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
+
+        for (int index = 0; index < 3; index++)
+        {
+            LongRunningOperation ownerBound = await store.CreateAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionMutation,
+                    LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                    $"Owner-bound {index}.",
+                    now.AddSeconds(index)));
+            LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+                ownerBound.Id,
+                "dead-owner",
+                now,
+                now.AddMinutes(1));
+
+            Assert.True(await store.SaveCheckpointAsync(
+                ownerBound.Id,
+                "dead-owner",
+                expectedCheckpointVersion: 0,
+                checkpointVersion: 4,
+                checkpointPayload: [1],
+                checkpointReference: "owner-bound",
+                publicSummary: ownerBound.PublicSummary,
+                now.AddSeconds(5)));
+        }
+
+        LongRunningOperation ordinary = await CreateAsync(store, now.AddMinutes(1));
+        _ = await store.TryAcquireLeaseAsync(
+            ordinary.Id,
+            "dead-owner",
+            now,
+            now.AddMinutes(1));
+
+        IReadOnlyList<LongRunningOperation> page = await store.FindExpiredForGenericRecoveryAsync(
+            now.AddMinutes(2),
+            limit: 1);
+
+        Assert.Equal(ordinary.Id, Assert.Single(page).Id);
     }
 
     private static Task<LongRunningOperation> CreateAsync(

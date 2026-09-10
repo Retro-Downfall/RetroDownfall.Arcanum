@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -26,13 +27,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// </remarks>
 public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 {
-
     public async ValueTask<Result<Guid>> CreateBoundSessionAsync(
         CanonicalCampaignContext campaign,
         string title,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(title);
 
         Guid sessionId = Guid.NewGuid();
@@ -45,22 +44,17 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         try
         {
-
             if (campaign.IsCampaignBound)
             {
-
                 Result exists = await RequireCampaignAsync(campaign.CampaignId!.Value, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (exists.IsFailure)
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return exists.Error;
-
                 }
-
             }
 
             _ = _db.Sessions.Add(new Session
@@ -74,7 +68,9 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
                 UnsummarizedEntryCount = 0,
             });
 
-            await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.SaveChangesAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
 
             // The binding row and its Session commit together. A Session that briefly existed without
             // one would be readable by a concurrent turn as an integrity failure, and by the backfill
@@ -84,19 +80,15 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<Guid>.Success(sessionId);
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogWarning(exception, "A bound Session could not be created.");
 
             return new Error(ErrorCodes.Grimoire.WriteFailed, "The session could not be created.");
-
         }
-
     }
 
     public async ValueTask<Result<AssistantReplyBeginReceipt>> BeginAssistantReplyAsync(
@@ -106,7 +98,6 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         string model,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(prompt);
 
         ArgumentNullException.ThrowIfNull(model);
@@ -126,7 +117,6 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         try
         {
-
             Result<SessionCampaignBinding> binding = await RequireMatchingBindingAsync(
                 existingSessionId,
                 campaign,
@@ -134,11 +124,9 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
             if (binding.IsFailure)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return binding.Error;
-
             }
 
             int entryCount = await _entryPersistence
@@ -154,11 +142,9 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
             if (limit is { } exceeded)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return exceeded;
-
             }
 
             Guid userEntryId = Guid.NewGuid();
@@ -171,33 +157,34 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
                 .ReserveSequenceRangeAsync(existingSessionId, count: 2, cancellationToken)
                 .ConfigureAwait(false);
 
-            _ = _db.Entries.Add(new Entry
-            {
-                Id = userEntryId,
-                SessionId = existingSessionId,
-                Role = MessageRole.User,
-                Content = prompt,
-                ModelUsed = model,
-                CreatedAt = now,
-                Sequence = turnSequence,
-            });
-
-            _ = _db.Entries.Add(new Entry
-            {
-                Id = assistantEntryId,
-                SessionId = existingSessionId,
-                Role = MessageRole.Assistant,
-                Content = string.Empty,
-                ModelUsed = model,
-                CreatedAt = now,
-                Sequence = turnSequence + 1L,
-            });
+            await _entryPersistence.InsertEntriesAsync(
+                [
+                    new Entry
+                    {
+                        Id = userEntryId,
+                        SessionId = existingSessionId,
+                        Role = MessageRole.User,
+                        Content = prompt,
+                        ModelUsed = model,
+                        CreatedAt = now,
+                        Sequence = turnSequence,
+                    },
+                    new Entry
+                    {
+                        Id = assistantEntryId,
+                        SessionId = existingSessionId,
+                        Role = MessageRole.Assistant,
+                        Content = string.Empty,
+                        ModelUsed = model,
+                        CreatedAt = now,
+                        Sequence = turnSequence + 1L,
+                    },
+                ],
+                cancellationToken).ConfigureAwait(false);
 
             await _entryPersistence
                 .BumpSessionUpdatedAtAsync(existingSessionId, now, cancellationToken)
                 .ConfigureAwait(false);
-
-            await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
 
             await _entryPersistence
                 .IncrementUnsummarizedEntryCountIfKnownAsync(existingSessionId, 2, cancellationToken)
@@ -217,11 +204,9 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
                         // the live count immediately, so this echoed value is the only record of it.
                         turnSequence - 1,
                         TaintedArtifactCount: 0)));
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogWarning(
@@ -230,9 +215,7 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
                 existingSessionId);
 
             return new Error(ErrorCodes.Grimoire.WriteFailed, "The conversation turn could not be started.");
-
         }
-
     }
 
     /// <summary>
@@ -243,15 +226,15 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         CanonicalCampaignContext campaign,
         CancellationToken cancellationToken)
     {
-
-        await using SqliteCommand command = CreateSqliteCommand();
-
-        command.CommandText = """
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
             SELECT b.BindingKindCode,
                    b.CampaignId
             FROM session_campaign_bindings AS b
             WHERE b.SessionId = $sessionId;
-            """;
+            """,
+            cancellationToken).ConfigureAwait(false);
 
         // session_campaign_bindings.SessionId is declared REFERENCES "Sessions"("Id") and foreign keys
         // are set and verified on every connection this context opens, so the column holds exactly what
@@ -260,50 +243,52 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         // foreign key outright.
         _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
-        SessionCampaignBinding stored;
+        SessionCampaignBinding? stored = null;
 
         await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
-                bool exists = await _db.Sessions
-                    .AsNoTracking()
-                    .AnyAsync(session => session.Id == sessionId, cancellationToken)
-                    .ConfigureAwait(false);
-
-                return exists
-                    ? new Error(
-                        ErrorCodes.Covenant.IntegrityFailure,
-                        "This Session has no immutable Campaign binding.")
-                    : new Error(ErrorCodes.Session.NotFound, "Session not found.");
-
+                stored = null;
             }
-
-            long kindCode = reader.GetInt64(0);
-
-            if (kindCode is < 1 or > 3)
+            else
             {
-                return new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "This Session's Campaign binding is malformed.");
+                long kindCode = reader.GetInt64(0);
+
+                if (kindCode is < 1 or > 3)
+                {
+                    return new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "This Session's Campaign binding is malformed.");
+                }
+
+                stored = SessionCampaignBinding.Create(
+                    (SessionCampaignBindingKind)kindCode,
+                    reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)));
             }
-
-            stored = SessionCampaignBinding.Create(
-                (SessionCampaignBindingKind)kindCode,
-                reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)));
-
         }
 
-        if (stored.Kind is SessionCampaignBindingKind.LegacyUnresolved)
+        if (stored is null)
+        {
+            bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+            return exists
+                ? new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "This Session has no immutable Campaign binding.")
+                : new Error(ErrorCodes.Session.NotFound, "Session not found.");
+        }
+
+        SessionCampaignBinding required = stored.Value;
+
+        if (required.Kind is SessionCampaignBindingKind.LegacyUnresolved)
         {
             return new Error(
                 ErrorCodes.Session.CampaignBindingRequired,
                 "This Session predates immutable Campaign binding and must be resolved before it can be used.");
         }
 
-        if (stored.Kind != campaign.Binding.Kind || stored.CampaignId != campaign.CampaignId)
+        if (required.Kind != campaign.Binding.Kind || required.CampaignId != campaign.CampaignId)
         {
             return new Error(
                 ErrorCodes.Covenant.CampaignBindingConflict,
@@ -312,7 +297,6 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         if (campaign.IsCampaignBound)
         {
-
             Result live = await RequireCampaignAsync(campaign.CampaignId!.Value, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -320,26 +304,36 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
             {
                 return live.Error;
             }
-
         }
 
-        return Result<SessionCampaignBinding>.Success(stored);
-
+        return Result<SessionCampaignBinding>.Success(required);
     }
 
     private async Task<Result> RequireCampaignAsync(Guid campaignId, CancellationToken cancellationToken)
     {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT 1
+            FROM "Campaigns"
+            WHERE "Id" = $campaignId
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
 
-        bool live = await _db.Campaigns
-            .AsNoTracking()
-            .AnyAsync(campaign => campaign.Id == campaignId, cancellationToken)
-            .ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$campaignId",
+            GrimoireEntitySql.Format(campaignId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        bool live = value is not null and not DBNull;
 
         return live
             ? Result.Success()
             : Result.Failure(
                 new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
-
     }
 
     private async Task InsertBindingAsync(
@@ -348,8 +342,13 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         DateTimeOffset boundAtUtc,
         CancellationToken cancellationToken)
     {
-
-        await using SqliteCommand command = CreateSqliteCommand();
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
+            """,
+            cancellationToken).ConfigureAwait(false);
 
         // The narrow, false-by-default authority session_campaign_bindings_guard_insert demands, and the
         // same one CoreGrimoireSchemaDataInitializer opens for its own writes to this table. It begins
@@ -359,11 +358,6 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
         // refused a canonical write just as firmly - and both had to be true for a Session to be created.
         using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
             .Authorize(command.Connection!, CovenantSqliteAuthorizationKind.SessionBindingWrite);
-
-        command.CommandText = """
-            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
-            VALUES ($sessionId, $kindCode, $campaignId, $boundAtUtc);
-            """;
 
         // session_campaign_bindings.SessionId is declared REFERENCES "Sessions"("Id") and foreign keys
         // are set and verified on every connection this context opens, so the column holds exactly what
@@ -390,36 +384,8 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
         _ = command.Parameters.AddWithValue(
             "$boundAtUtc",
-            boundAtUtc.ToString("o", System.Globalization.CultureInfo.InvariantCulture));
+            UtcInstantText.Format(boundAtUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
-
-    /// <summary>
-    /// A command on the context's own connection and current transaction.
-    /// </summary>
-    /// <remarks>
-    /// Raw SQL because the binding table has no EF entity by design. Enlisting the ambient transaction
-    /// explicitly is what keeps the binding insert and the Session insert in one commit.
-    /// </remarks>
-    private SqliteCommand CreateSqliteCommand()
-    {
-
-        if (_db.Database.GetDbConnection() is not SqliteConnection connection)
-        {
-            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
-        }
-
-        SqliteCommand command = connection.CreateCommand();
-
-        if (_db.Database.CurrentTransaction?.GetDbTransaction() is SqliteTransaction transaction)
-        {
-            command.Transaction = transaction;
-        }
-
-        return command;
-
-    }
-
 }

@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -6,7 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
-/// The one projection both durable erasure checkpoint shapes resolve into, and the identity rules it
+/// The one projection both durable erasure launch shapes resolve into, and the identity rules it
 /// refuses to bend.
 /// </summary>
 /// <remarks>
@@ -22,31 +23,42 @@ public sealed class CovenantErasureCheckpointStateTests
 
     private static readonly Guid OtherOperationId = new("66666666-6666-4666-8666-666666666666");
 
-    [Theory]
-    [InlineData(CovenantResetPhase.InventoryPrepared)]
-    [InlineData(CovenantResetPhase.CanonicalApplied)]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed)]
-    [InlineData(CovenantResetPhase.HandlesClosed)]
-    [InlineData(CovenantResetPhase.WalTruncated)]
-    [InlineData(CovenantResetPhase.DatabaseCompacted)]
-    [InlineData(CovenantResetPhase.AcceleratorInitialized)]
-    [InlineData(CovenantResetPhase.FinalWalTruncated)]
-    [InlineData(CovenantResetPhase.SidecarsVerified)]
-    [InlineData(CovenantResetPhase.ReopenedVerified)]
-    public void Every_declared_phase_round_trips_through_the_reset_journal(CovenantResetPhase phase)
+    private static readonly Guid SourceGeneration = new("77777777-7777-4777-8777-777777777777");
+
+    private static readonly Guid TargetGeneration = new("88888888-8888-4888-8888-888888888888");
+
+    private static CovenantOfflineTransitionEpochsV1 SourceEpochs => new(11, 22, 33);
+
+    private static CovenantOfflineTransitionEpochsV1 TargetEpochs => new(12, 23, 34);
+
+    /// <summary>
+    /// A reset launch projects the first phase, whatever else the row holds.
+    /// </summary>
+    /// <remarks>
+    /// The row used to carry a phase and the projection used to report it back. It no longer can: a
+    /// launch records only what was committed to, and progress past that point lives in the
+    /// authenticated journal. A projection that still reported a phase from this row would be
+    /// answering for a surface it is no longer the authority for, and the answer would be stale
+    /// exactly when it mattered — after a crash, where the journal has advanced and the row has not.
+    /// The owner is still rebuilt from the launch and nothing else, because that is the field the
+    /// exclusive gate is adopted against.
+    /// </remarks>
+    [Fact]
+    public void A_reset_launch_projects_the_first_phase_and_the_owner_it_names()
     {
 
         Result<CovenantErasureCheckpointState> projected =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 OperationId,
-                ResetPayload(phase),
+                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                ResetPayload(),
                 out bool describesErasure);
 
         Assert.True(projected.IsSuccess);
 
         Assert.True(describesErasure);
 
-        Assert.Equal(phase, projected.Value.Phase);
+        Assert.Equal(CovenantResetPhaseMachine.First, projected.Value.Phase);
 
         Assert.Equal(CovenantExclusiveOperation.CovenantReset, projected.Value.Operation);
 
@@ -56,26 +68,28 @@ public sealed class CovenantErasureCheckpointStateTests
 
     }
 
-    [Theory]
-    [InlineData(CovenantResetPhase.InventoryPrepared)]
-    [InlineData(CovenantResetPhase.CanonicalApplied)]
-    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed)]
-    [InlineData(CovenantResetPhase.HandlesClosed)]
-    [InlineData(CovenantResetPhase.WalTruncated)]
-    [InlineData(CovenantResetPhase.DatabaseCompacted)]
-    [InlineData(CovenantResetPhase.AcceleratorInitialized)]
-    [InlineData(CovenantResetPhase.FinalWalTruncated)]
-    [InlineData(CovenantResetPhase.SidecarsVerified)]
-    [InlineData(CovenantResetPhase.ReopenedVerified)]
-    public void Every_declared_phase_round_trips_through_the_factory_journal(CovenantResetPhase phase)
+    /// <summary>
+    /// The factory arm answers the same way, for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// The factory launch is a separate durable shape under a separate kind, so nothing but a test
+    /// stops the two arms drifting into two different ideas of where a resumed erasure stands. Both
+    /// must report the first phase and defer to the journal; an arm that kept reading a phase out of
+    /// its row would resume from a step the other arm had already left behind.
+    /// </remarks>
+    [Fact]
+    public void A_factory_launch_projects_the_first_phase_and_the_owner_it_names()
     {
 
         Result<CovenantErasureCheckpointState> projected =
-            CovenantErasureCheckpointState.FromFactoryResetCheckpoint(OperationId, FactoryPayload(phase));
+            CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                OperationId,
+                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                FactoryPayload());
 
         Assert.True(projected.IsSuccess);
 
-        Assert.Equal(phase, projected.Value.Phase);
+        Assert.Equal(CovenantResetPhaseMachine.First, projected.Value.Phase);
 
         Assert.Equal(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, projected.Value.Operation);
 
@@ -88,11 +102,18 @@ public sealed class CovenantErasureCheckpointStateTests
     {
 
         CovenantErasureCheckpointState reset = CovenantErasureCheckpointState
-            .FromMutationCheckpoint(OperationId, ResetPayload(CovenantResetPhase.DatabaseCompacted), out _)
+            .FromMutationCheckpoint(
+                OperationId,
+                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                ResetPayload(),
+                out _)
             .Value;
 
         CovenantErasureCheckpointState factory = CovenantErasureCheckpointState
-            .FromFactoryResetCheckpoint(OperationId, FactoryPayload(CovenantResetPhase.DatabaseCompacted))
+            .FromFactoryResetCheckpoint(
+                OperationId,
+                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                FactoryPayload())
             .Value;
 
         Assert.Equal(reset.OperationId, factory.OperationId);
@@ -118,7 +139,8 @@ public sealed class CovenantErasureCheckpointStateTests
         Result<CovenantErasureCheckpointState> projected =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 OtherOperationId,
-                ResetPayload(CovenantResetPhase.CanonicalApplied),
+                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                ResetPayload(),
                 out _);
 
         Assert.True(projected.IsFailure);
@@ -134,7 +156,8 @@ public sealed class CovenantErasureCheckpointStateTests
         Result<CovenantErasureCheckpointState> projected =
             CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 OtherOperationId,
-                FactoryPayload(CovenantResetPhase.CanonicalApplied));
+                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                FactoryPayload());
 
         Assert.True(projected.IsFailure);
 
@@ -142,29 +165,36 @@ public sealed class CovenantErasureCheckpointStateTests
 
     }
 
-    [Fact]
-    public void A_retention_journal_with_no_Covenant_arm_is_refused()
+    /// <summary>
+    /// A retention row filed at any version but the launch version is an ordinary mutation.
+    /// </summary>
+    /// <remarks>
+    /// The row's own version, not the payload's contents, is what says whether a Covenant erasure ran
+    /// here. Every other retention mutation closed nothing, so there is no exclusive scope to adopt
+    /// and inventing one would close a scope this operation never opened. Asking the version rather
+    /// than sniffing the bytes is the stronger rule: the payload below is a launch that would decode
+    /// perfectly, and it is still an ordinary mutation, because a row that was never filed as a launch
+    /// cannot become one by carrying launch-shaped bytes.
+    /// </remarks>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(5)]
+    public void A_retention_journal_filed_at_any_other_version_is_an_ordinary_mutation(int checkpointVersion)
     {
-
-        // A version-3 row with no arm describes a mutation that closed nothing. There is no exclusive
-        // scope to adopt, and inventing one would close a scope this operation never opened.
-        byte[] payload = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                Subtype: "delete-session",
-                Target: "5",
-                Covenant: null));
 
         Result<CovenantErasureCheckpointState> projected =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 OperationId,
-                payload,
+                checkpointVersion,
+                ResetPayload(),
                 out bool describesErasure);
 
         Assert.True(projected.IsFailure);
 
         // The discriminator is what lets the recovery handler answer "ordinary reconciliation" here
-        // and "an operator must look at this" for an arm it cannot resume. One code for both would
+        // and "an operator must look at this" for a launch it cannot resume. One code for both would
         // tell somebody to leave a stuck ordinary mutation alone forever.
         Assert.False(describesErasure);
 
@@ -174,19 +204,30 @@ public sealed class CovenantErasureCheckpointStateTests
     public void An_undecodable_payload_is_refused_rather_than_guessed()
     {
 
-        byte[] payload = "{\"version\":3,\"subtype\":\"reset-memory\""u8.ToArray();
+        byte[] payload = "{\"version\":4,\"operationKind\":\"data-retention-mutation\""u8.ToArray();
 
         Assert.True(
             CovenantErasureCheckpointState
-                .FromMutationCheckpoint(OperationId, payload, out bool describesErasure)
+                .FromMutationCheckpoint(
+                    OperationId,
+                    CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                    payload,
+                    out bool describesErasure)
                 .IsFailure);
 
-        // Unknown counts as an erasure. A payload that would not decode cannot say whether it closed
-        // admission, and calling it an ordinary mutation would reconcile a row that may have a
+        // A row filed at the launch version still counts as an erasure even when its bytes will not
+        // decode. The version already said a destructive plan was committed here, and downgrading the
+        // row to an ordinary mutation on a decode failure would reconcile something that may have a
         // half-erased family and a shut gate behind it.
         Assert.True(describesErasure);
 
-        Assert.True(CovenantErasureCheckpointState.FromFactoryResetCheckpoint(OperationId, payload).IsFailure);
+        Assert.True(
+            CovenantErasureCheckpointState
+                .FromFactoryResetCheckpoint(
+                    OperationId,
+                    DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                    payload)
+                .IsFailure);
 
     }
 
@@ -197,40 +238,58 @@ public sealed class CovenantErasureCheckpointStateTests
         // The codec pins each arm to its own operation code. A reset journal that named the factory
         // erasure would rebuild an owner whose code and whose journal disagreed about what ran.
         byte[] payload = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                Subtype: "reset-memory",
-                Target: "5",
-                new CovenantResetEffectArmV1(
-                    OperationId,
-                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(CovenantOperationGateFixture.Digest(7)),
-                    CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                    CovenantResetPhase.CanonicalApplied)));
+            new CovenantOfflineTransitionLaunchV4(
+                CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                OperationId,
+                LongRunningOperationKinds.DataRetentionMutation,
+                nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                CovenantRecoveryCheckpointCodec.EncodeEffectDigest(CovenantOperationGateFixture.Digest(7)),
+                SourceGeneration,
+                TargetGeneration,
+                SourceEpochs,
+                TargetEpochs,
+                StartingRevision: 0));
 
         Assert.True(
-            CovenantErasureCheckpointState.FromMutationCheckpoint(OperationId, payload, out _).IsFailure);
+            CovenantErasureCheckpointState
+                .FromMutationCheckpoint(
+                    OperationId,
+                    CovenantOfflineTransitionLaunchV4.CurrentVersion,
+                    payload,
+                    out _)
+                .IsFailure);
 
     }
 
-    private static byte[] ResetPayload(CovenantResetPhase phase) =>
+    private static byte[] ResetPayload() =>
         CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                Subtype: "reset-memory",
-                Target: "5",
-                new CovenantResetEffectArmV1(
-                    OperationId,
-                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(CovenantOperationGateFixture.Digest(7)),
-                    CovenantExclusiveOperation.CovenantReset,
-                    phase)));
-
-    private static byte[] FactoryPayload(CovenantResetPhase phase) =>
-        CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionFactoryResetCheckpointV1(
-                DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+            new CovenantOfflineTransitionLaunchV4(
+                CovenantOfflineTransitionLaunchV4.CurrentVersion,
                 OperationId,
+                LongRunningOperationKinds.DataRetentionMutation,
+                nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
+                CovenantExclusiveOperation.CovenantReset,
                 CovenantRecoveryCheckpointCodec.EncodeEffectDigest(CovenantOperationGateFixture.Digest(7)),
+                SourceGeneration,
+                TargetGeneration,
+                SourceEpochs,
+                TargetEpochs,
+                StartingRevision: 0));
+
+    private static byte[] FactoryPayload() =>
+        CovenantRecoveryCheckpointCodec.Encode(
+            new DataRetentionFactoryTransitionLaunchV2(
+                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                OperationId,
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
                 CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-                phase));
+                CovenantRecoveryCheckpointCodec.EncodeEffectDigest(CovenantOperationGateFixture.Digest(7)),
+                SourceGeneration,
+                TargetGeneration,
+                SourceEpochs,
+                TargetEpochs,
+                StartingRevision: 0));
 
 }

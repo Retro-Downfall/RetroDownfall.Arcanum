@@ -43,15 +43,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// or be erased while the service is alive, and a sweep that decided once at boot would keep opening
 /// transactions against a dataset the installation has since replaced. Reset-awareness comes from the
 /// registration, which withholds the service until recovery has settled.</para>
+///
+/// <para>The whole three-sweep pass holds one ordinary Grimoire work lease through asynchronous
+/// scope disposal. Its maintenance-oriented name does not grant permission to race an exclusive
+/// backup, reset, restore, or schema migration.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class CovenantMaintenanceHostedService(
     IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate admissionGate,
     ICovenantAvailability availability,
     TimeProvider timeProvider,
     ILogger<CovenantMaintenanceHostedService> logger) : BackgroundService
 {
-
     /// <summary>How long a pass waits before the next one, when the tier is healthy.</summary>
     internal static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);
 
@@ -60,46 +64,32 @@ internal sealed class CovenantMaintenanceHostedService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         while (!stoppingToken.IsCancellationRequested)
         {
-
             bool swept = false;
 
             try
             {
-
                 swept = await RunOnceAsync(stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogError(ex, "A Covenant maintenance pass failed before it could report a result.");
-
             }
 
             try
             {
-
                 await Task.Delay(swept ? Interval : IdleInterval, timeProvider, stoppingToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-
                 break;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -107,7 +97,6 @@ internal sealed class CovenantMaintenanceHostedService(
     /// </summary>
     internal async Task<bool> RunOnceAsync(CancellationToken cancellationToken)
     {
-
         CovenantAvailabilitySnapshot health = availability.Current;
 
         // The canonical tier is the one every sweep writes through. An unhealthy or absent one is not
@@ -115,10 +104,17 @@ internal sealed class CovenantMaintenanceHostedService(
         // the sweeps simply have nothing they may do until it leaves.
         if (!health.FeatureEnabled || health.Canonical != CovenantCapabilityState.Healthy)
         {
-
             return false;
-
         }
+
+        if (!admissionGate.TryAcquireWorkLease(
+                GrimoireWorkKind.CovenantMaintenance,
+                out IGrimoireWorkLease? admitted))
+        {
+            return false;
+        }
+
+        await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
@@ -128,7 +124,6 @@ internal sealed class CovenantMaintenanceHostedService(
                 "owner cleanup",
                 async () =>
                 {
-
                     Result<CovenantCleanupOutcome> outcome = await scope.ServiceProvider
                         .GetRequiredService<CovenantOwnerCleanupCoordinator>()
                         .RunBatchAsync(CovenantCleanupWorker.DefaultBatchSize, cancellationToken)
@@ -138,7 +133,6 @@ internal sealed class CovenantMaintenanceHostedService(
                         ? Result<string>.Failure(outcome.Error)
                         : Result<string>.Success(
                             $"{outcome.Value.CampaignsCleaned} Campaign(s), {outcome.Value.SessionsCleaned} Session(s), {outcome.Value.HeadsRemoved} head(s)");
-
                 })
             .ConfigureAwait(false);
 
@@ -148,7 +142,6 @@ internal sealed class CovenantMaintenanceHostedService(
                 "search outbox",
                 async () =>
                 {
-
                     Result<CovenantOutboxSyncOutcome> outcome = await scope.ServiceProvider
                         .GetRequiredService<CovenantSearchOutboxCoordinator>()
                         .SynchronizeAsync(CovenantSearchOutboxWorker.DefaultBatchRows, cancellationToken)
@@ -157,7 +150,6 @@ internal sealed class CovenantMaintenanceHostedService(
                     return outcome.IsFailure
                         ? Result<string>.Failure(outcome.Error)
                         : Result<string>.Success($"{outcome.Value.ProjectionsWritten} projection(s)");
-
                 })
             .ConfigureAwait(false);
 
@@ -167,7 +159,6 @@ internal sealed class CovenantMaintenanceHostedService(
                 "turn receipt compaction",
                 async () =>
                 {
-
                     Result<CovenantReceiptCompactionOutcome> outcome = await scope.ServiceProvider
                         .GetRequiredService<CovenantTurnReceiptCompactionCoordinator>()
                         .CompactAsync(CovenantTurnReceiptCompactionCoordinator.DefaultSessionsPerPass, cancellationToken)
@@ -177,12 +168,10 @@ internal sealed class CovenantMaintenanceHostedService(
                         ? Result<string>.Failure(outcome.Error)
                         : Result<string>.Success(
                             $"{outcome.Value.ReceiptsFolded} receipt(s) across {outcome.Value.SessionsFolded} Session(s)");
-
                 })
             .ConfigureAwait(false);
 
         return true;
-
     }
 
     /// <summary>
@@ -199,10 +188,8 @@ internal sealed class CovenantMaintenanceHostedService(
         string sweep,
         Func<Task<Result<string>>> run)
     {
-
         try
         {
-
             // EF opens the scope's connection before the sweep asks the connection source for it. The
             // source opens the raw handle when it finds the connection closed, and a raw open skips
             // EF's RelationalConnection and therefore the pragma interceptor — the only thing that
@@ -219,16 +206,13 @@ internal sealed class CovenantMaintenanceHostedService(
 
             if (db.Database.GetDbConnection().State != ConnectionState.Open)
             {
-
                 await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             Result<string> outcome = await run().ConfigureAwait(false);
 
             if (outcome.IsFailure)
             {
-
                 logger.LogDebug(
                     "Covenant {Sweep} sweep did not run this pass: {ErrorCode} {ErrorMessage}",
                     sweep,
@@ -236,19 +220,13 @@ internal sealed class CovenantMaintenanceHostedService(
                     outcome.Error.Message);
 
                 return;
-
             }
 
             logger.LogDebug("Covenant {Sweep} sweep applied {Applied}.", sweep, outcome.Value);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogError(ex, "The Covenant {Sweep} sweep threw before it could report a result.", sweep);
-
         }
-
     }
-
 }

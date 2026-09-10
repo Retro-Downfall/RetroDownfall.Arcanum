@@ -1,25 +1,35 @@
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Api.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Sanctum;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
 {
-
     private McpConnectionManager _manager = null!;
 
     public Task InitializeAsync()
     {
-
         ArcanumSettings settings = new();
 
         ServiceCollection services = new();
@@ -53,21 +63,20 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings));
 
-        return Task.CompletedTask;
+        _manager.ConfigureGlobalAdmission(
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
 
+        return Task.CompletedTask;
     }
 
     public async Task DisposeAsync()
     {
-
         await _manager.DisposeAsync();
-
     }
 
     [Fact]
     public async Task RegisterFromConfigAsync_ConcurrentRegistrations_RetainsEveryServer()
     {
-
         const int RegistrationCount = 66;
 
         using Barrier barrier = new(RegistrationCount);
@@ -75,25 +84,19 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
         McpConfig[] configs = Enumerable.Range(0, RegistrationCount)
             .Select(i => new McpConfig
             {
-
                 McpServers = new Dictionary<string, McpServerConfig>
                 {
-
                     [$"server-{i}"] = new() { Command = "echo", Args = [$"arg-{i}"] },
-
                 },
-
             })
             .ToArray();
 
         Task[] tasks = Enumerable.Range(0, RegistrationCount)
             .Select(i => Task.Run(async () =>
             {
-
                 barrier.SignalAndWait();
 
                 await _manager.RegisterFromConfigAsync(configs[i], scopeWorkingDirectory: null, CancellationToken.None);
-
             }))
             .ToArray();
 
@@ -102,7 +105,6 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
         McpServerInfo[] statuses = await _manager.GetAllStatusesAsync(CancellationToken.None);
 
         Assert.Equal(RegistrationCount, statuses.Length);
-
     }
 
     // Regression guard: a canceled StartAsync (e.g. the caller's HTTP request aborted mid-handshake)
@@ -113,7 +115,6 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
     [Fact]
     public async Task StartAsync_CanceledDuringHandshake_ResetsEntryState_NotStuckStarting()
     {
-
         // Spawn an absolute-path, silent sleeper (MCP subprocesses do not inherit PATH by default).
         // It never speaks the MCP JSON-RPC handshake, so InitializeAsync blocks until this test's
         // own cancellation fires on every supported host OS.
@@ -158,12 +159,10 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
         Assert.NotEqual(McpServerState.Starting, status!.State);
 
         Assert.Equal(McpServerState.Error, status.State);
-
     }
 
     private sealed class UntrustedWorkspaceStore : ITrustedMcpWorkspaceStore
     {
-
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
 
@@ -186,12 +185,10 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
 
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -215,7 +212,6 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>
@@ -229,19 +225,15 @@ public Task RecordResourceLimitBreachAsync(
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
 
         public IAsyncEnumerable<T> Subscribe<T>(CancellationToken cancellationToken) where T : notnull =>
             AsyncEnumerable.Empty<T>();
-
     }
-
 }

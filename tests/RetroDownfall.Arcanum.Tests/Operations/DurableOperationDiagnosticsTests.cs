@@ -21,7 +21,8 @@ public sealed class DurableOperationDiagnosticsTests
                 store,
                 handlers,
                 time,
-                NullLogger<LongRunningOperationReconciler>.Instance));
+                NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership()));
 
     /// <summary>Stands in for the real container, where every registry kind owns a handler.</summary>
     private static ILongRunningOperationRecoveryHandler[] HandlersForEveryKind() =>

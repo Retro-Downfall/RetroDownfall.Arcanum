@@ -180,7 +180,7 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         };
 
         Assert.Throws<ArgumentException>(() =>
-            InstallationResetActivePayloadV2.FromRecord(record));
+            InstallationResetActivePayloadV3.FromRecord(record));
 
         Result<InstallationResetActivePublication> result = await store.BeginAsync(
             heldLock,
@@ -872,7 +872,7 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
                 installationId,
                 revision: 2,
                 publication.EnvelopeDigest,
-                InstallationResetActivePayloadV2.FromRecord(terminal)));
+                InstallationResetActivePayloadV3.FromRecord(terminal)));
 
         WriteEnvelope(store.ActivePath, ahead);
 
@@ -1171,7 +1171,7 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
             fixture,
             revision: 2,
             fixture.Publication.EnvelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(next));
+            InstallationResetActivePayloadV3.FromRecord(next));
 
         WriteEnvelope(fixture.Store.ActivePath, ahead);
 
@@ -1248,8 +1248,8 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         using (AuthenticatedFixture operation = await BeginAuthenticatedAsync("recovery-operation"))
         {
 
-            InstallationResetActivePayloadV2 substituted =
-                InstallationResetActivePayloadV2.FromRecord(operation.Record with
+            InstallationResetActivePayloadV3 substituted =
+                InstallationResetActivePayloadV3.FromRecord(operation.Record with
                 {
                     OperationId = Guid.Parse("99999999-8888-4777-8666-555555555555"),
                 });
@@ -2244,6 +2244,100 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task Advance_carries_a_nested_receipt_forward_and_refuses_to_undo_it()
+    {
+
+        // Mutation caught: letting a nested receipt be removed, regressed, or renamed lets a reset
+        // forget that it started a database transition it can no longer prove anything about.
+        string guardedRoot = _workspace.CreateSubdir("nested-receipt-monotonic");
+
+        using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+        InstallationResetActiveStore store = new(
+            guardedRoot,
+            new RecordingCredentialStore([]));
+
+        Guid installationId = Guid.Parse("71111111-2222-4333-8444-555555555555");
+
+        InstallationResetActiveRecord absent = CreateRecord(InstallationResetPhase.Prepared);
+
+        InstallationResetActivePublication opening = Value(await store.BeginAsync(
+            heldLock,
+            installationId,
+            absent,
+            CancellationToken.None));
+
+        Assert.Null(opening.Payload.NestedTransitionReceipt);
+
+        Guid nested = Guid.Parse("81111111-2222-4333-8444-555555555555");
+
+        InstallationResetNestedTransitionReceiptV1 claimed = new(
+            Version: 1,
+            nested,
+            InstallationResetNestedTransitionPhase.Claimed,
+            NestedEffectDigest: null,
+            TerminalWinnerDigest: null);
+
+        InstallationResetNestedTransitionReceiptV1 completed = claimed with
+        {
+            Phase = InstallationResetNestedTransitionPhase.Completed,
+            NestedEffectDigest = Digest(0x51),
+            TerminalWinnerDigest = Digest(0x61),
+        };
+
+        InstallationResetActivePublication claimPublication = Value(await store.AdvanceAsync(
+            heldLock,
+            opening,
+            absent with { NestedTransitionReceipt = claimed },
+            CancellationToken.None));
+
+        Assert.Equal(claimed, claimPublication.Payload.NestedTransitionReceipt);
+
+        // A claim may only become the completion of the same nested operation. Dropping it, moving it
+        // back, or pointing it at a different operation each describe a transition this reset did not
+        // launch.
+        InstallationResetActiveRecord[] refused =
+        [
+            absent,
+            absent with
+            {
+                NestedTransitionReceipt = completed with
+                {
+                    NestedOperationId = Guid.Parse("91111111-2222-4333-8444-555555555555"),
+                },
+            },
+        ];
+
+        foreach (InstallationResetActiveRecord candidate in refused)
+        {
+
+            Assert.True(
+                (await store.AdvanceAsync(
+                    heldLock,
+                    claimPublication,
+                    candidate,
+                    CancellationToken.None)).IsFailure);
+
+        }
+
+        InstallationResetActivePublication completion = Value(await store.AdvanceAsync(
+            heldLock,
+            claimPublication,
+            absent with { NestedTransitionReceipt = completed },
+            CancellationToken.None));
+
+        Assert.Equal(completed, completion.Payload.NestedTransitionReceipt);
+
+        Assert.True(
+            (await store.AdvanceAsync(
+                heldLock,
+                completion,
+                absent with { NestedTransitionReceipt = claimed },
+                CancellationToken.None)).IsFailure);
+
+    }
 
     private static InstallationResetActiveRecord CreateRecord(
         InstallationResetPhase phase)
@@ -2544,7 +2638,7 @@ public sealed class InstallationResetActiveStoreTests : IAsyncLifetime
         AuthenticatedFixture fixture,
         ulong revision,
         CovenantDigest previousDigest,
-        InstallationResetActivePayloadV2 payload)
+        InstallationResetActivePayloadV3 payload)
     {
 
         BackupRestoreProfileNamespace profile = Value(

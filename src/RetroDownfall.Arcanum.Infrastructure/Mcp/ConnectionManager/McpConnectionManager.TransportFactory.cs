@@ -1,25 +1,39 @@
 using System.Collections.Concurrent;
+
 using System.Text.Json;
+
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Options;
+
 using ModelContextProtocol.Client;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed partial class McpConnectionManager
 {
-
     /// <summary>
     /// Decides whether to strip the inherited host environment before spawning an MCP server
     /// subprocess. Secure default: strip for ALL servers — global (modeled as
@@ -30,11 +44,9 @@ public sealed partial class McpConnectionManager
     /// </summary>
     internal static bool ShouldStripUserEnvironment(McpServerConfig cfg)
     {
-
         ArgumentNullException.ThrowIfNull(cfg);
 
         return true;
-
     }
 
     // W-MCP-HTTP: an stdio server may opt specific host variables back in via `inheritEnv` (e.g.
@@ -43,30 +55,22 @@ public sealed partial class McpConnectionManager
     // nothing is opted in so the secure strip-everything default is preserved.
     internal static IReadOnlySet<string>? BuildInheritEnvironmentAllowlist(string[]? inheritEnv)
     {
-
         if (inheritEnv is not { Length: > 0 })
         {
-
             return null;
-
         }
 
         HashSet<string> allowlist = new(StringComparer.OrdinalIgnoreCase);
 
         foreach (string name in inheritEnv)
         {
-
             if (!string.IsNullOrWhiteSpace(name))
             {
-
                 allowlist.Add(name.Trim());
-
             }
-
         }
 
         return allowlist.Count == 0 ? null : allowlist;
-
     }
 
     // W-MCP-HTTP: an explicit `type` wins; otherwise a configured `url` implies the Streamable
@@ -108,26 +112,21 @@ public sealed partial class McpConnectionManager
         return TimeSpan.FromSeconds(
             ArcanumSettingClamps.McpInitializationTimeoutSeconds(
                 ArcanumRuntimeDefaults.Mcp.InitializationTimeoutSeconds));
-
     }
 
     private int GetClampedMcpMaxToolsTotalBytes()
     {
-
         return ArcanumSettingClamps.McpMaxToolsTotalBytes(
             ArcanumRuntimeDefaults.Mcp.MaxToolsTotalBytes);
-
     }
 
     private int GetClampedMcpMaxJsonRpcLineBytes()
     {
-
         return ArcanumSettingClamps.McpMaxJsonRpcLineBytes(
             ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes);
-
     }
 
-    private readonly McpElicitationBridge _elicitationBridge = new(humanPromptRegistry);
+    private readonly McpElicitationBridge _elicitationBridge;
 
     /// <summary>
     /// Builds the shared SDK <see cref="McpClientOptions"/> for every transport: client identity and the
@@ -167,7 +166,6 @@ public sealed partial class McpConnectionManager
 
     private SdkMcpClientWrapper CreateHttpMcpClient(Uri endpoint)
     {
-
         HttpClient httpClient = httpClientFactory.CreateClient(McpHttpClientName);
 
         HttpClientTransport transport = new(
@@ -181,7 +179,6 @@ public sealed partial class McpConnectionManager
             ownsHttpClient: false);
 
         return CreateSdkMcpClientWrapper(transport);
-
     }
 
     // W-MCP-HTTP: validates a Streamable HTTP endpoint before connecting. The URL must be an
@@ -191,66 +188,49 @@ public sealed partial class McpConnectionManager
     // by the named client's egress handler.
     private async Task<Result<Uri>> ResolveValidatedHttpEndpointAsync(McpServerConfig cfg, CancellationToken cancellationToken)
     {
-
         string? url = cfg.Url;
 
         if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? endpoint))
         {
-
             return Result<Uri>.Failure(new Error("Mcp.InvalidUrl", "MCP HTTP server requires an absolute http or https url."));
-
         }
 
         if (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps)
         {
-
             return Result<Uri>.Failure(new Error("Mcp.InvalidUrl", "MCP HTTP server url must use the http or https scheme."));
-
         }
 
         if (endpoint.Scheme == Uri.UriSchemeHttp && !IsHttpHostAllowed(endpoint.Host))
         {
-
             return Result<Uri>.Failure(new Error(
                 "Mcp.InsecureUrl",
                 $"Plaintext http MCP server '{endpoint.Host}' requires the host in Arcanum:Integrations:Mcp:AllowedHttpHosts; otherwise use https."));
-
         }
 
         Result outbound = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url, cancellationToken).ConfigureAwait(false);
 
         if (outbound.IsFailure)
         {
-
             return Result<Uri>.Failure(new Error("Mcp.BlockedUrl", outbound.Error.Message));
-
         }
 
         return Result<Uri>.Success(endpoint);
-
     }
 
     private bool IsHttpHostAllowed(string host)
     {
-
         string[] allowed =
             settings.CurrentValue.Integrations?.Mcp?.AllowedHttpHosts ?? [];
 
         foreach (string candidate in allowed)
         {
-
             if (!string.IsNullOrWhiteSpace(candidate)
                 && string.Equals(host, candidate.Trim(), StringComparison.OrdinalIgnoreCase))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
-
 }

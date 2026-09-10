@@ -18,23 +18,28 @@ public sealed class CovenantErasureTransitionTests
 {
 
     [Fact]
-    public void Storage_transition_requires_exact_v3_capabilities()
+    public void Storage_transition_requires_the_exact_closed_period_authority()
     {
 
         Assert.Equal(
-            [typeof(CovenantExclusiveOperation), typeof(CovenantV3MaintenanceCapability), typeof(CancellationToken)],
+            [
+                typeof(CovenantExclusiveOperation),
+                typeof(CovenantCanonicalDatasetTransition),
+                typeof(CovenantClosedPeriodAuthority),
+                typeof(CancellationToken),
+            ],
             typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.ApplyCanonicalErasureAsync))!
                 .GetParameters()
                 .Select(static parameter => parameter.ParameterType));
 
         Assert.Equal(
-            [typeof(CovenantV3MaintenanceCapability), typeof(CancellationToken)],
+            [typeof(CovenantClosedPeriodAuthority), typeof(CancellationToken)],
             typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.TruncateWalAsync))!
                 .GetParameters()
                 .Select(static parameter => parameter.ParameterType));
 
         Assert.Equal(
-            [typeof(CovenantV3CompactionCapabilities), typeof(CancellationToken)],
+            [typeof(CovenantClosedPeriodAuthority), typeof(CancellationToken)],
             typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.CompactAsync))!
                 .GetParameters()
                 .Select(static parameter => parameter.ParameterType));
@@ -49,32 +54,35 @@ public sealed class CovenantErasureTransitionTests
 
         Assert.True((await harness.Subject.ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation.CovenantReset,
-            harness.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            new CovenantCanonicalDatasetTransition(
+                Guid.NewGuid(),
+                new CovenantOfflineTransitionEpochsV1(1, 1, 1),
+                Guid.NewGuid(),
+                new CovenantOfflineTransitionEpochsV1(2, 2, 2)),
+            harness.Authority,
             CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.CloseHandlesAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.CloseHandlesAsync(
+            harness.Authority,
+            CancellationToken.None)).IsSuccess);
 
         Assert.True((await harness.Subject.TruncateWalAsync(
-            harness.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+            harness.Authority,
             CancellationToken.None)).IsSuccess);
 
         Assert.True((await harness.Subject.CompactAsync(
-            new CovenantV3CompactionCapabilities(
-                harness.Mint(CovenantV3MaintenancePurpose.CompactionVacuum),
-                harness.Mint(CovenantV3MaintenancePurpose.CompactionExport),
-                harness.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification),
-                harness.Mint(CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore)),
+            harness.Authority,
             CancellationToken.None)).IsSuccess);
 
         Assert.True((await harness.Subject.InitializeAcceleratorAsync(
-            harness.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+            harness.Authority,
             CancellationToken.None)).IsSuccess);
 
-        Assert.True((await harness.Subject.VerifySidecarAbsenceAsync(CancellationToken.None)).IsSuccess);
+        Assert.True((await harness.Subject.VerifySidecarAbsenceAsync(harness.Authority, CancellationToken.None)).IsSuccess);
 
         Result<CovenantVerifiedCandidateState> verified =
             await harness.Subject.VerifyReopenAsync(
-                harness.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification),
+                harness.Authority,
                 CancellationToken.None);
 
         Assert.True(verified.IsSuccess);
@@ -94,6 +102,22 @@ public sealed class CovenantErasureTransitionTests
         Assert.Equal(1, harness.Storage.AbsenceCalls);
 
         Assert.Equal(1, harness.Storage.ReopenCalls);
+
+        // New assertion, and the reason it is worth making. Under the retired design each phase was
+        // handed a freshly minted purpose-specific capability, so "did the right authority arrive?"
+        // was a question about a value this test constructed for the occasion, and the doubles never
+        // looked at it. There is now exactly one authority for the whole closed period, which makes
+        // the interesting question a different one: that every phase was handed that same object,
+        // rather than one the transition built for itself. A transition that minted its own would be
+        // opening the database outside the closure the coordinator established, and nothing else in
+        // this suite would notice.
+        Assert.Same(harness.Authority, harness.Canonical.Authority);
+
+        Assert.All(
+            harness.Storage.Authorities,
+            authority => Assert.Same(harness.Authority, authority));
+
+        Assert.Equal(5, harness.Storage.Authorities.Count);
 
     }
 
@@ -535,9 +559,16 @@ public sealed class CovenantErasureTransitionTests
 
         internal ICovenantExclusiveOperationLease Lease { get; } = new NullExclusiveLease();
 
-        internal CovenantV3MaintenanceCapability Mint(CovenantV3MaintenancePurpose purpose) =>
-            CovenantV3MaintenanceCapability.MintAsync(Lease, purpose, CancellationToken.None)
-                .AsTask().GetAwaiter().GetResult().Value;
+        /// <summary>
+        /// The one closed-period authority every phase of this harness's transition is given.
+        /// </summary>
+        /// <remarks>
+        /// One instance rather than one per phase, because that is now the production shape: the
+        /// coordinator closes admission once and every phase of the erasure runs under that single
+        /// closure. Inert, because this transition is a forwarder and must not open anything itself.
+        /// </remarks>
+        internal CovenantClosedPeriodAuthority Authority { get; } =
+            CovenantClosedPeriodTestAuthority.Inert();
 
         public void Dispose() => Runtime.Dispose();
 
@@ -555,7 +586,8 @@ public sealed class CovenantErasureTransitionTests
                     CovenantFtsRebuildState.Rebuilding,
                     EnvelopeMasterKeyVersion: 7,
                     Enumerable.Repeat((byte)0xC1, 32).ToArray(),
-                    EnvelopeKeyEpoch: 31),
+                    EnvelopeKeyEpoch: 31,
+                    KeyReclamationEpoch: 37),
                 new CovenantCandidateAuthorityState(
                     InstallationIdentity: "verified-installation",
                     AuthorityEpoch: 23,
@@ -605,13 +637,18 @@ public sealed class CovenantErasureTransitionTests
 
         internal int ApplyCalls { get; private set; }
 
+        internal CovenantClosedPeriodAuthority? Authority { get; private set; }
+
         public Task<Result<Guid>> ApplyAsync(
             CovenantExclusiveOperation operation,
-            CovenantV3MaintenanceCapability capability,
+            CovenantCanonicalDatasetTransition dataset,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
             ApplyCalls++;
+
+            Authority = authority;
 
             return Task.FromResult(Result<Guid>.Success(generation));
 
@@ -635,36 +672,123 @@ public sealed class CovenantErasureTransitionTests
 
         internal int ReopenCalls { get; private set; }
 
-        public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
-            Record(() => CloseCalls++);
+        /// <summary>Every authority this double was handed, in the order the phases ran.</summary>
+        internal List<CovenantClosedPeriodAuthority> Authorities { get; } = [];
 
-        public Task<Result> TruncateWalAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            Record(() => TruncateCalls++);
+        public Task<Result> CloseHandlesAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            Record(authority, () => CloseCalls++);
 
-        public Task<Result> CompactAsync(CovenantV3CompactionCapabilities capabilities, CancellationToken cancellationToken) =>
-            Record(() => CompactCalls++);
+        public Task<Result> TruncateWalAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            Record(authority, () => TruncateCalls++);
 
-        public Task<Result> InitializeAcceleratorAsync(CovenantV3MaintenanceCapability capability, CancellationToken cancellationToken) =>
-            Record(() => InitializeCalls++);
+        public async Task<Result<bool>> CompactAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
 
-        public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
-            Record(() => AbsenceCalls++);
+            Result recorded = await Record(authority, () => CompactCalls++);
+
+            return recorded.IsFailure ? Result<bool>.Failure(recorded.Error) : Result<bool>.Success(false);
+
+        }
+
+        public async Task<Result<CovenantDigest>> StageCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => StageCalls++);
+
+            return recorded.IsFailure
+                ? Result<CovenantDigest>.Failure(recorded.Error)
+                : Result<CovenantDigest>.Success(Staged);
+
+        }
+
+        public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => ProveCalls++);
+
+            return recorded.IsFailure
+                ? Result<CovenantDigest>.Failure(recorded.Error)
+                : Result<CovenantDigest>.Success(Staged);
+
+        }
+
+        public Task<Result> InstallCompactionReplacementAsync(
+            CovenantClosedPeriodAuthority authority,
+            CovenantDigest stagingIdentity,
+            CovenantDigest stagedContent,
+            CovenantDigest destinationIdentity,
+            CancellationToken cancellationToken) =>
+            Record(authority, () => InstallCalls++);
+
+        public async Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken)
+        {
+
+            Result recorded = await Record(authority, () => CanonicalIdentityReads++);
+
+            return recorded.IsFailure
+                ? Result<CovenantDigest>.Failure(recorded.Error)
+                : Result<CovenantDigest>.Success(Staged);
+
+        }
+
+        internal int StageCalls { get; private set; }
+
+        internal int ProveCalls { get; private set; }
+
+        internal int InstallCalls { get; private set; }
+
+        internal int CanonicalIdentityReads { get; private set; }
+
+        /// <summary>A digest that stands for a staged candidate this double never actually writes.</summary>
+        private static CovenantDigest Staged { get; } = new(Enumerable.Repeat((byte)0x5A, 32).ToArray());
+
+        public Task<Result> InitializeAcceleratorAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            Record(authority, () => InitializeCalls++);
+
+        public Task<Result> VerifySidecarAbsenceAsync(
+            CovenantClosedPeriodAuthority authority,
+            CancellationToken cancellationToken) =>
+            Record(authority: null, () => AbsenceCalls++);
 
         public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-            CovenantV3MaintenanceCapability capability,
+            CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
 
             ReopenCalls++;
 
+            Authorities.Add(authority);
+
             return Task.FromResult(Result<CovenantVerifiedCandidateState>.Success(candidate));
 
         }
 
-        private static Task<Result> Record(Action increment)
+        private Task<Result> Record(CovenantClosedPeriodAuthority? authority, Action increment)
         {
 
             increment();
+
+            if (authority is not null)
+            {
+
+                Authorities.Add(authority);
+
+            }
 
             return Task.FromResult(Result.Success());
 

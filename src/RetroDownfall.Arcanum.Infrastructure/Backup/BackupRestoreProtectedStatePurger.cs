@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -44,7 +45,6 @@ internal sealed record BackupRestoreProtectedStatePurgeReceipt(
 /// </remarks>
 internal static class BackupRestoreProtectedStatePurger
 {
-
     /// <summary>The persisted artifact-kind code to policy map, keyed the way the column stores it.</summary>
     /// <remarks>
     /// Keyed on <see cref="CovenantSensitiveArtifactPurgeRule.Code"/> rather than on the enum value, so
@@ -65,14 +65,11 @@ internal static class BackupRestoreProtectedStatePurger
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (staged is null || transaction is null || initializer is null || timeProvider is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A staged protected-state purge requires its connection, transaction, and clock.");
-
         }
 
         using CovenantSqliteAuthorizationScope family = initializer.Authorize(
@@ -91,9 +88,7 @@ internal static class BackupRestoreProtectedStatePurger
 
         if (labels.IsFailure)
         {
-
             return labels.Error;
-
         }
 
         // The accelerator first: its documents are a projection of the canonical rows below, and its
@@ -116,7 +111,6 @@ internal static class BackupRestoreProtectedStatePurger
             labels.Value.RemovedLabels,
             labels.Value.RemovedArtifacts,
             labels.Value.RepairedProjections);
-
     }
 
     /// <summary>
@@ -138,14 +132,11 @@ internal static class BackupRestoreProtectedStatePurger
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "artifact_sensitivity", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return new LabelPurge(0, 0, 0);
-
         }
 
         List<StagedLabel> labels = await ReadLabelsAsync(staged, transaction, cancellationToken)
@@ -157,10 +148,8 @@ internal static class BackupRestoreProtectedStatePurger
 
         foreach (StagedLabel label in labels)
         {
-
             if (!RulesByCode.TryGetValue(label.KindCode, out CovenantSensitiveArtifactPurgeRule? rule))
             {
-
                 // Fail closed. A label this build has no policy for describes Covenant-derived content
                 // whose storage it cannot enumerate, and removing the label alone would leave that
                 // content with nothing admitting it is protected.
@@ -168,24 +157,18 @@ internal static class BackupRestoreProtectedStatePurger
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "The staged archive carries a sensitivity label of a kind this build has no "
                     + "protected-artifact purge policy for, so its protected state cannot be removed.");
-
             }
 
             if (await ApplyPlanAsync(staged, transaction, label, rule, cancellationToken)
                     .ConfigureAwait(false))
             {
-
                 removedArtifacts = checked(removedArtifacts + 1);
-
             }
 
             if (label.SessionId is { } sessionId)
             {
-
                 _ = sessions.Add(sessionId);
-
             }
-
         }
 
         ulong removedLabels = await DeleteAllAsync(
@@ -203,7 +186,6 @@ internal static class BackupRestoreProtectedStatePurger
                 sessions,
                 timeProvider,
                 cancellationToken).ConfigureAwait(false));
-
     }
 
     /// <summary>
@@ -222,20 +204,16 @@ internal static class BackupRestoreProtectedStatePurger
         CovenantSensitiveArtifactPurgeRule rule,
         CancellationToken cancellationToken)
     {
-
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(rule.Kind);
 
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
-
             if (projection.ExistsConditionally
                 && !await BackupRestoreDatabaseWorker
                     .TableExistsAsync(staged, projection.Table, cancellationToken, transaction)
                     .ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             _ = await ExecuteAsync(
@@ -244,27 +222,22 @@ internal static class BackupRestoreProtectedStatePurger
                 projection.DeleteBy("$artifactKey"),
                 label,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (plan.CurrentPointerTable is { } pointer)
         {
-
             _ = await ExecuteAsync(
                 staged,
                 transaction,
                 $"DELETE FROM {pointer} WHERE {CovenantIdentitySql.Keyed("CurrentArtifactId", "$artifactKey")};",
                 label,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (plan.RedactionSql is { } redaction)
         {
-
             _ = await ExecuteAsync(staged, transaction, redaction, label, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         return plan.Artifact is { } artifact
@@ -274,7 +247,6 @@ internal static class BackupRestoreProtectedStatePurger
                 artifact.DeleteBy("$artifactKey"),
                 label,
                 cancellationToken).ConfigureAwait(false) > 0;
-
     }
 
     /// <summary>
@@ -295,22 +267,18 @@ internal static class BackupRestoreProtectedStatePurger
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-
         if (sessions.Count == 0
             || !await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "session_sensitivity_state", cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         ulong folded = 0;
 
         foreach (string sessionId in sessions)
         {
-
             await using SqliteCommand command = staged.CreateCommand();
 
             command.Transaction = transaction;
@@ -334,11 +302,9 @@ internal static class BackupRestoreProtectedStatePurger
             folded = checked(
                 folded
                 + (ulong)await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
-
         }
 
         return folded;
-
     }
 
     private static async Task<List<StagedLabel>> ReadLabelsAsync(
@@ -346,7 +312,6 @@ internal static class BackupRestoreProtectedStatePurger
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         List<StagedLabel> labels = [];
 
         await using SqliteCommand command = staged.CreateCommand();
@@ -366,18 +331,15 @@ internal static class BackupRestoreProtectedStatePurger
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             labels.Add(
                 new StagedLabel(
                     reader.GetString(0),
                     reader.GetInt64(1),
                     reader.GetString(2),
                     reader.IsDBNull(3) ? null : reader.GetString(3)));
-
         }
 
         return labels;
-
     }
 
     private static async Task<ulong> DeleteAllAsync(
@@ -386,19 +348,15 @@ internal static class BackupRestoreProtectedStatePurger
         IEnumerable<string> tables,
         CancellationToken cancellationToken)
     {
-
         ulong removed = 0;
 
         foreach (string table in tables)
         {
-
             if (!await BackupRestoreDatabaseWorker
                     .TableExistsAsync(staged, table, cancellationToken, transaction)
                     .ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             await using SqliteCommand command = staged.CreateCommand();
@@ -410,11 +368,9 @@ internal static class BackupRestoreProtectedStatePurger
             removed = checked(
                 removed
                 + (ulong)await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
-
         }
 
         return removed;
-
     }
 
     private static async Task<int> ExecuteAsync(
@@ -424,7 +380,6 @@ internal static class BackupRestoreProtectedStatePurger
         StagedLabel label,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = staged.CreateCommand();
 
         command.Transaction = transaction;
@@ -455,13 +410,10 @@ internal static class BackupRestoreProtectedStatePurger
             label.SessionId is { } sessionKey ? CovenantIdentitySql.Key(sessionKey) : (object)DBNull.Value);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static string Timestamp(TimeProvider timeProvider) =>
-        timeProvider.GetUtcNow().UtcDateTime.ToString(
-            "yyyy-MM-ddTHH:mm:ss.fffffffZ",
-            CultureInfo.InvariantCulture);
+        UtcInstantText.Format(timeProvider.GetUtcNow());
 
     /// <summary>One staged label, reduced to the four fields a purge statement binds.</summary>
     private sealed record StagedLabel(
@@ -474,5 +426,4 @@ internal static class BackupRestoreProtectedStatePurger
         ulong RemovedLabels,
         ulong RemovedArtifacts,
         ulong RepairedProjections);
-
 }

@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 public sealed class MacOsBundleTemplateTests
 {
-
     private const string CompendiumTemplate = "Info.plist.compendium";
 
     private const string TheForgeTemplate = "Info.plist.theforge";
@@ -21,7 +20,6 @@ public sealed class MacOsBundleTemplateTests
 
     public void Bundle_template_declares_the_cocoa_high_resolution_key(string templateFileName)
     {
-
         IReadOnlyDictionary<string, string> entries = ReadTemplate(templateFileName);
 
         Assert.True(
@@ -34,13 +32,11 @@ public sealed class MacOsBundleTemplateTests
             entries.Keys,
             key => key.Contains("HighResolution", StringComparison.Ordinal)
                 && !string.Equals(key, "NSHighResolutionCapable", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Bundle_templates_declare_the_same_keys()
     {
-
         IReadOnlyDictionary<string, string> compendium = ReadTemplate(CompendiumTemplate);
 
         IReadOnlyDictionary<string, string> theForge = ReadTemplate(TheForgeTemplate);
@@ -48,12 +44,10 @@ public sealed class MacOsBundleTemplateTests
         Assert.Equal(
             compendium.Keys.Order(StringComparer.Ordinal),
             theForge.Keys.Order(StringComparer.Ordinal));
-
     }
 
     private static IReadOnlyDictionary<string, string> ReadTemplate(string templateFileName)
     {
-
         string path = Path.Combine(
             FindRepositoryRoot(),
             "scripts",
@@ -76,14 +70,11 @@ public sealed class MacOsBundleTemplateTests
 
         foreach (XElement element in dictionary.Elements())
         {
-
             if (string.Equals(element.Name.LocalName, "key", StringComparison.Ordinal))
             {
-
                 pendingKey = element.Value;
 
                 continue;
-
             }
 
             Assert.NotNull(pendingKey);
@@ -93,36 +84,13 @@ public sealed class MacOsBundleTemplateTests
                 : element.Name.LocalName;
 
             pendingKey = null;
-
         }
 
         Assert.Null(pendingKey);
 
         return entries;
-
     }
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 }

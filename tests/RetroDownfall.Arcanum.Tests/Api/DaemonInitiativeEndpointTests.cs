@@ -26,20 +26,17 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// that is not in <c>Arcanum:Daemon:Jobs</c>, so the endpoint must not report success for one — a typo'd
 /// job name previously returned 200 with a fabricated status and the operator believed the change landed.
 /// </summary>
-public sealed class DaemonInitiativeEndpointTests
+public sealed partial class DaemonInitiativeEndpointTests
 {
-
     private const string ConfiguredJob = "saga-extraction";
 
     [Fact]
     public async Task Initiative_for_an_unknown_job_returns_404_and_never_touches_the_pacer()
     {
-
         (WebApplication app, RecordingPacer pacer) = await CreateHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpResponseMessage response = await PostInitiativeAsync(client, "saga-extraciton", 15);
@@ -55,20 +52,16 @@ public sealed class DaemonInitiativeEndpointTests
             Assert.Empty(pacer.Applied);
 
             await app.StopAsync();
-
         }
-
     }
 
     [Fact]
     public async Task Initiative_for_a_configured_job_applies_the_override()
     {
-
         (WebApplication app, RecordingPacer pacer) = await CreateHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpResponseMessage response = await PostInitiativeAsync(client, ConfiguredJob, 15);
@@ -78,20 +71,16 @@ public sealed class DaemonInitiativeEndpointTests
             Assert.Equal((ConfiguredJob, 15), Assert.Single(pacer.Applied));
 
             await app.StopAsync();
-
         }
-
     }
 
     [Fact]
     public async Task Initiative_rejects_an_out_of_range_interval()
     {
-
         (WebApplication app, RecordingPacer pacer) = await CreateHostAsync();
 
         await using (app)
         {
-
             using HttpClient client = app.GetTestClient();
 
             HttpResponseMessage zero = await PostInitiativeAsync(client, ConfiguredJob, 0);
@@ -105,14 +94,11 @@ public sealed class DaemonInitiativeEndpointTests
             Assert.Empty(pacer.Applied);
 
             await app.StopAsync();
-
         }
-
     }
 
     private static Task<HttpResponseMessage> PostInitiativeAsync(HttpClient client, string jobName, int minutes)
     {
-
         string payload = JsonSerializer.Serialize(
             new AdjustInitiativeRequestDto(minutes),
             ArcanumJsonContext.Default.AdjustInitiativeRequestDto);
@@ -120,12 +106,10 @@ public sealed class DaemonInitiativeEndpointTests
         return client.PostAsync(
             $"/api/unseen-servant/jobs/{jobName}/initiative",
             new StringContent(payload, Encoding.UTF8, "application/json"));
-
     }
 
-    private static async Task<(WebApplication App, RecordingPacer Pacer)> CreateHostAsync()
+    private static async Task<(WebApplication App, RecordingPacer Pacer)> CreateHostAsync(IUnseenServantPacer? suppliedPacer = null)
     {
-
         RecordingPacer pacer = new();
 
         ArcanumSettings settings = new()
@@ -149,7 +133,7 @@ public sealed class DaemonInitiativeEndpointTests
 
         builder.WebHost.UseTestServer();
 
-        builder.Services.AddSingleton<IUnseenServantPacer>(pacer);
+        builder.Services.AddSingleton<IUnseenServantPacer>(suppliedPacer ?? pacer);
 
         builder.Services.AddSingleton<IUnseenServantJobTracker>(new InertTracker());
 
@@ -166,21 +150,19 @@ public sealed class DaemonInitiativeEndpointTests
         await app.StartAsync();
 
         return (app, pacer);
-
     }
 
     private sealed class RecordingPacer : IUnseenServantPacer
     {
-
         public List<(string JobName, int IntervalMinutes)> Applied { get; } = [];
 
-        public bool SetDynamicInterval(string jobName, int intervalMinutes)
-        {
+        public bool Accepted { get; set; } = true;
 
+        public Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default)
+        {
             Applied.Add((jobName, intervalMinutes));
 
-            return true;
-
+            return Task.FromResult(Accepted);
         }
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
@@ -188,17 +170,13 @@ public sealed class DaemonInitiativeEndpointTests
         public Task HydrateAsync(
             IReadOnlyList<UnseenServantWatermark> watermarks,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
-
     }
 
     private sealed class InertTracker : IUnseenServantJobTracker
     {
-
         public void RecordCompletion(UnseenServantJob job, bool success, string? resultSummary)
         {
-
             // Nothing to record for an endpoint-shape test.
-
         }
 
         public DateTimeOffset? GetLastRunAt(UnseenServantJob job) => null;
@@ -210,7 +188,5 @@ public sealed class DaemonInitiativeEndpointTests
         public Task HydrateAsync(
             IReadOnlyList<UnseenServantWatermark> watermarks,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
-
     }
-
 }

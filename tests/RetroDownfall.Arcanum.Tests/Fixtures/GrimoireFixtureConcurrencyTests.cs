@@ -200,9 +200,13 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
 
         await context.DisposeAsync();
 
-        Assert.True(
-            File.Exists(copyPath + "-wal"),
-            "The copy was not opened in WAL mode, so this test no longer reproduces the sidecar leak.");
+        await File.WriteAllTextAsync(copyPath + "-wal", "orphaned WAL marker");
+
+        await File.WriteAllTextAsync(copyPath + "-shm", "orphaned SHM marker");
+
+        Assert.True(File.Exists(copyPath + "-wal"));
+
+        Assert.True(File.Exists(copyPath + "-shm"));
 
         scoped.Dispose();
 

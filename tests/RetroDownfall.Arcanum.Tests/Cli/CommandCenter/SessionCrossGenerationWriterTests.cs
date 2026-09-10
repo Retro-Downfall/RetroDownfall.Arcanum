@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class SessionCrossGenerationWriterTests
 {
-
     private static readonly Guid PriorSessionId =
         Guid.Parse("61616161-6161-6161-6161-616161616161");
 
@@ -36,7 +35,6 @@ public sealed class SessionCrossGenerationWriterTests
     [Fact]
     public async Task Resume_does_not_persist_or_switch_to_a_session_missing_at_client_admission()
     {
-
         MutableSessionHandler host = new(RemoteSessionId);
 
         (SessionWorkspaceService workspace, FakeContextStore store, RecordingArcanumClientMutationBoundary boundary) =
@@ -62,13 +60,11 @@ public sealed class SessionCrossGenerationWriterTests
         Assert.Equal(1, boundary.Calls);
 
         Assert.Equal(2, host.RemoteDetailRequests);
-
     }
 
     [Fact]
     public async Task Fork_does_not_persist_or_switch_to_a_branch_missing_at_client_admission()
     {
-
         MutableSessionHandler host = new(RemoteSessionId)
         {
             ForkSourceId = PriorSessionId,
@@ -97,13 +93,11 @@ public sealed class SessionCrossGenerationWriterTests
         Assert.Equal(1, boundary.Calls);
 
         Assert.Equal(2, host.RemoteDetailRequests);
-
     }
 
     [Fact]
     public async Task Bound_session_does_not_persist_or_switch_when_missing_at_client_admission()
     {
-
         MutableSessionHandler host = new(RemoteSessionId)
         {
             Available = false,
@@ -130,7 +124,6 @@ public sealed class SessionCrossGenerationWriterTests
         Assert.Equal(1, boundary.Calls);
 
         Assert.Equal(1, host.RemoteDetailRequests);
-
     }
 
     private static (
@@ -140,7 +133,6 @@ public sealed class SessionCrossGenerationWriterTests
             MutableSessionHandler host,
             bool disableOnAdmission = true)
     {
-
         FakeContextStore store = new(
             CliContextDocument.Empty with { SessionId = PriorSessionId });
 
@@ -148,9 +140,7 @@ public sealed class SessionCrossGenerationWriterTests
 
         if (disableOnAdmission)
         {
-
             boundary.BeforeMutation = () => host.Available = false;
-
         }
 
         CliSessionManager manager = new(
@@ -161,7 +151,7 @@ public sealed class SessionCrossGenerationWriterTests
 
         ArcanumApiClient client = new(
             new FakeHttpClientFactory(host),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
 
         SessionWorkspaceService workspace = new(
             client,
@@ -169,12 +159,10 @@ public sealed class SessionCrossGenerationWriterTests
             NullLogger<SessionWorkspaceService>.Instance);
 
         return (workspace, store, boundary);
-
     }
 
     private static CommandCenterState PriorState()
     {
-
         CommandCenterState state = new(new SessionLogBuffer());
 
         state.ApplySessionMeta(PriorSessionId, "Prior", "Active", 1);
@@ -182,7 +170,6 @@ public sealed class SessionCrossGenerationWriterTests
         state.Log.Append(SessionLogEntryKind.User, "retain prior transcript");
 
         return state;
-
     }
 
     private sealed class FakeContextStore(
@@ -190,7 +177,6 @@ public sealed class SessionCrossGenerationWriterTests
         ICliContextStore,
         ICliContextExclusiveWriter
     {
-
         private CliContextDocument _document = document;
 
         internal int ExclusiveSaves { get; private set; }
@@ -201,19 +187,15 @@ public sealed class SessionCrossGenerationWriterTests
 
         public void SaveUnderExclusive(CliContextDocument document)
         {
-
             ExclusiveSaves++;
 
             _document = document;
-
         }
-
     }
 
     private sealed class MutableSessionHandler(
         Guid remoteSessionId) : HttpMessageHandler
     {
-
         internal bool Available { get; set; } = true;
 
         internal Guid? ForkSourceId { get; init; }
@@ -224,7 +206,6 @@ public sealed class SessionCrossGenerationWriterTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string path = request.RequestUri!.AbsolutePath;
@@ -232,17 +213,14 @@ public sealed class SessionCrossGenerationWriterTests
             if (request.Method == HttpMethod.Post
                 && path == $"/api/sessions/{PriorSessionId:D}/fork")
             {
-
                 return Task.FromResult(
                     SessionResponse(
                         Result<SessionDetailDto>.Success(Detail()),
                         HttpStatusCode.Created));
-
             }
 
             if (path.EndsWith("/attachments", StringComparison.Ordinal))
             {
-
                 ApiResponse<SessionAttachmentDto[]> envelope =
                     ApiResponse<SessionAttachmentDto[]>.FromResult(
                         Result<SessionAttachmentDto[]>.Success([]));
@@ -252,12 +230,10 @@ public sealed class SessionCrossGenerationWriterTests
                         JsonSerializer.Serialize(
                             envelope,
                             ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray)));
-
             }
 
             if (path.EndsWith("/entries", StringComparison.Ordinal))
             {
-
                 ApiResponse<EntryDto[]> envelope =
                     ApiResponse<EntryDto[]>.FromResult(
                         Result<EntryDto[]>.Success([]));
@@ -267,12 +243,10 @@ public sealed class SessionCrossGenerationWriterTests
                         JsonSerializer.Serialize(
                             envelope,
                             ArcanumJsonContext.Default.ApiResponseEntryDtoArray)));
-
             }
 
             if (path == $"/api/sessions/{remoteSessionId:D}")
             {
-
                 RemoteDetailRequests++;
 
                 Result<SessionDetailDto> result = Available
@@ -286,12 +260,10 @@ public sealed class SessionCrossGenerationWriterTests
                     SessionResponse(
                         result,
                         Available ? HttpStatusCode.OK : HttpStatusCode.NotFound));
-
             }
 
             if (path is "/api/sessions" or "/api/sessions/")
             {
-
                 ApiResponse<SessionQueryResult> envelope =
                     ApiResponse<SessionQueryResult>.FromResult(
                         Result<SessionQueryResult>.Success(
@@ -302,11 +274,9 @@ public sealed class SessionCrossGenerationWriterTests
                         JsonSerializer.Serialize(
                             envelope,
                             ArcanumJsonContext.Default.ApiResponseSessionQueryResult)));
-
             }
 
             throw new InvalidOperationException($"Unexpected request to {path}.");
-
         }
 
         private SessionDetailDto Detail() =>
@@ -338,24 +308,20 @@ public sealed class SessionCrossGenerationWriterTests
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             };
-
     }
 
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -369,7 +335,5 @@ public sealed class SessionCrossGenerationWriterTests
 
         public Task SaveGrimoireEncryptionSecretAsync(
             string encryptionSecret) => Task.CompletedTask;
-
     }
-
 }

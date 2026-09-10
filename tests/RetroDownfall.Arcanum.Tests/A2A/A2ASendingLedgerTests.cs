@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 [Trait("Category", "Integration")]
 public sealed class A2ASendingLedgerTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -32,42 +31,33 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task RegisteredInboundSending_IsResolvableByTaskIdFromAFreshLedgerInstance()
     {
-
         RequireSqlCipher();
 
         Guid apprenticeId = Guid.NewGuid();
@@ -80,13 +70,11 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         // A fresh ledger stands in for the process that restarts: nothing in memory carries over, so a
         // resolvable answer here is the whole of what #62 restores.
         Assert.Equal(apprenticeId, await CreateLedger().FindInboundApprenticeAsync("task-abc"));
-
     }
 
     [SkippableFact]
     public async Task ReleasedSending_IsNoLongerResolvable()
     {
-
         RequireSqlCipher();
 
         IA2ASendingLedger ledger = CreateLedger();
@@ -97,25 +85,21 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         // A settled Sending must not be reconciled or cancelled after the next restart.
         Assert.Null(await CreateLedger().FindInboundApprenticeAsync("task-done"));
-
     }
 
     [SkippableFact]
     public async Task UnknownTaskId_ResolvesToNothingRatherThanThrowing()
     {
-
         RequireSqlCipher();
 
         Assert.Null(await CreateLedger().FindInboundApprenticeAsync("never-registered"));
 
         Assert.Null(await CreateLedger().FindInboundApprenticeAsync("   "));
-
     }
 
     [SkippableFact]
     public async Task RegisteredOutboundSending_CarriesTheAgentUrlNeededToCancelItLater()
     {
-
         RequireSqlCipher();
 
         IA2ASendingLedger ledger = CreateLedger();
@@ -142,17 +126,14 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         Assert.Equal("remote-9", record.TaskId);
 
         Assert.Equal(A2ASendingRecordDirection.Outbound, record.Direction);
-
     }
 
     [SkippableFact]
     public async Task BlankTaskId_IsNotRecordedAtAll()
     {
-
         RequireSqlCipher();
 
         Assert.False((await CreateLedger().RegisterInboundAsync("  ", Guid.NewGuid())).IsRecorded);
-
     }
 
     // ── #68: a Sending parked awaiting the peer's answer ───────────────────────────────────────────
@@ -160,7 +141,6 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
     [SkippableFact]
     public async Task ParkedInboundSending_IsResolvableAsParkedFromAFreshLedgerInstance()
     {
-
         RequireSqlCipher();
 
         Guid apprenticeId = Guid.NewGuid();
@@ -180,13 +160,11 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         Assert.Equal(apprenticeId, parked!.Value.ApprenticeId);
 
         Assert.Equal("ctx-7", parked.Value.ContextId);
-
     }
 
     [SkippableFact]
     public async Task UnparkedInboundSending_IsNotResolvableAsParked()
     {
-
         RequireSqlCipher();
 
         IA2ASendingLedger ledger = CreateLedger();
@@ -195,13 +173,11 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         // A Sending still being worked is not answerable; only an escalated one is.
         Assert.Null(await CreateLedger().FindParkedInboundAsync("task-working"));
-
     }
 
     [SkippableFact]
     public async Task ParkedSendingFlaggedByReconciliation_IsStillResolvableAndCanStillBeClosed()
     {
-
         RequireSqlCipher();
 
         Guid apprenticeId = Guid.NewGuid();
@@ -242,13 +218,11 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         await afterRestart.ReleaseAsync(parked.Value.Ledger);
 
         Assert.Null(await CreateLedger().FindParkedInboundAsync("task-flagged"));
-
     }
 
     [SkippableFact]
     public async Task ParkedSendingWhoseLeaseReconciliationReleased_IsStillClosedWhenItSettles()
     {
-
         RequireSqlCipher();
 
         IA2ASendingLedger ledger = CreateLedger();
@@ -283,7 +257,6 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
             (await store.GetAsync(entry.OperationId))!.State);
 
         Assert.Null(await CreateLedger().FindInboundApprenticeAsync("task-stale-lease"));
-
     }
 
     // ── the durable lease on a Sending that is still running ───────────────────────────────────────
@@ -291,7 +264,6 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
     [SkippableFact]
     public async Task SendingStillInFlight_KeepsItsLeaseSoBackgroundReconciliationCannotReclaimIt()
     {
-
         RequireSqlCipher();
 
         FakeTimeProvider clock = new();
@@ -317,13 +289,11 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
             .FindExpiredAsync(clock.GetUtcNow(), 100);
 
         Assert.DoesNotContain(expired, operation => operation.Id == entry.OperationId);
-
     }
 
     [SkippableFact]
     public async Task SettledSending_IsNoLongerRenewed()
     {
-
         RequireSqlCipher();
 
         FakeTimeProvider clock = new();
@@ -340,13 +310,11 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         // Renewing a closed row forever would keep a settled Sending out of every later pass.
         Assert.Equal(0, await renewer.RenewHeldAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task ParkedSending_IsNoLongerRenewed()
     {
-
         RequireSqlCipher();
 
         FakeTimeProvider clock = new();
@@ -364,7 +332,6 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         // Waiting on a peer is not work: reconciliation is supposed to flag a parked Sending, which
         // renewing its lease forever would prevent (§5.7.1.5).
         Assert.Equal(0, await renewer.RenewHeldAsync(CancellationToken.None));
-
     }
 
     private IA2ASendingLedger CreateLedger() =>
@@ -386,7 +353,6 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
     private A2ASendingLeaseRenewer CreateRenewer(TimeProvider clock)
     {
-
         ServiceCollection services = new();
 
         services.AddScoped<ILongRunningOperationStore>(
@@ -396,14 +362,13 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
         return new A2ASendingLeaseRenewer(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            new GrimoireConnectionAdmissionGate(clock),
             clock,
             NullLogger<A2ASendingLeaseRenewer>.Instance);
-
     }
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
 }
 
 /// <summary>
@@ -412,7 +377,6 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 /// </summary>
 internal sealed class CountingOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
 {
-
     private int _rowsRead;
 
     public int RowsRead => Volatile.Read(ref _rowsRead);
@@ -421,13 +385,11 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
         LongRunningOperationQuery query,
         CancellationToken cancellationToken = default)
     {
-
         IReadOnlyList<LongRunningOperation> page = await inner.ListAsync(query, cancellationToken);
 
         Interlocked.Add(ref _rowsRead, page.Count);
 
         return page;
-
     }
 
     public Task<LongRunningOperation> CreateAsync(
@@ -538,5 +500,4 @@ internal sealed class CountingOperationStore(ILongRunningOperationStore inner) :
 
     public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(CancellationToken cancellationToken = default) =>
         inner.GetCountsAsync(cancellationToken);
-
 }

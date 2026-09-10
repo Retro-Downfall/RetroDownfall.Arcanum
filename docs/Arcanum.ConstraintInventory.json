@@ -3308,20 +3308,23 @@
       ],
       "symbolValues": {
         "ArcanumSettingClamps.EmbeddingsSagaExtractionWindowEntries": "Former public clamp: Math.Clamp(value, 2, 50); removed",
-        "SagaEmbeddingSettings.ExtractionWindowEntries": "Former default 10-entry tail window; replaced by a code-owned checkpoint page target of 10 widened through complete timestamp groups"
+        "SagaEmbeddingSettings.ExtractionWindowEntries": "Former default 10-entry tail window; replaced by a code-owned checkpoint page target of 10 widened through the complete boundary timestamp group inside one ordered provenance interval's exclusive-lower/inclusive-upper entry-sequence bounds"
       },
-      "currentValue": "Former 2–50 entry tail window; now oldest-first 10-entry checkpoint targets widened through the complete boundary timestamp group until caught up",
+      "currentValue": "Former 2–50 entry tail window; now oldest-first 10-entry checkpoint targets widened through the complete boundary timestamp group inside each ordered provenance interval's exclusive-lower/inclusive-upper entry-sequence bounds until caught up",
       "owner": "product",
-      "enforcementPoint": "SagaExtractionService.ExtractionPageEntryTarget and GrimoireRepository.GetUnsummarizedEntriesAsync",
-      "userVisibleBehavior": "Every new entry is eventually reviewed oldest-first; an internal page never drops older work or splits a tool call/result timestamp group.",
+      "enforcementPoint": "SagaExtractionService.ExtractionPageEntryTarget and GrimoireRepository.GetSagaExtractionEntriesAsync",
+      "userVisibleBehavior": "Every enqueued entry is reviewed oldest-first; an internal page never drops older work or splits a tool call/result timestamp group within its frontier, a higher-sequence row sharing an older timestamp waits for its own provenance interval, and a missing earlier request's gap is reviewed without borrowing a later turn's policy.",
       "originalRationale": "A tail-window control selected only a recent slice and could silently skip older unextracted history.",
       "threatOrFailureModel": "One provider request needs a bounded context slice, but durable extraction must checkpoint and continue every slice.",
       "classification": "Arbitrary product restriction",
       "action": "replace with adaptive behavior",
-      "replacementOrContinuation": "Process oldest-first timestamp-group-safe checkpoint pages, advance the watermark only after successful persistence, and continue until caught up or cancelled.",
+      "replacementOrContinuation": "Process oldest-first timestamp-group-safe checkpoint pages inside one ordered provenance interval at a time, review any cursor-to-interval gap under deny-all provenance, advance the exact sequence cursor only after successful persistence, and continue until caught up or cancelled.",
       "tests": [
         "SagaExtractionServiceTests.ExtractForSessionAsync_MoreThanFormerTailWindow_ProcessesEveryEntryOldestFirst",
         "SagaExtractionServiceTests.ExtractForSessionAsync_PageBoundary_KeepsToolCallAndResultTogether",
+        "SagaExtractionServiceTests.ExecuteAsync_LaterIntervalMergedDuringFirstPage_DoesNotAuthorizeEarlierRemainder",
+        "SagaExtractionServiceTests.ExecuteAsync_LaterIntervalAlone_ProcessesUnpaidGapWithNoProvenanceAuthority",
+        "SagaExtractionServiceTests.ExecuteAsync_SharedTimestampAcrossFrontiers_ProcessesEachEntryExactlyOnce",
         "ConstraintInventoryTests",
         "UnrestrictedHarnessContractTests"
       ]

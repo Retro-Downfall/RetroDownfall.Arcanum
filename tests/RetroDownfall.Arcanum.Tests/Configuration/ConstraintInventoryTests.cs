@@ -8,10 +8,8 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConstraintInventoryTests
 {
-
     private static readonly HashSet<string> AllowedActions = new(StringComparer.Ordinal)
     {
-
         "retain",
 
         "remove",
@@ -19,12 +17,10 @@ public sealed class ConstraintInventoryTests
         "replace with adaptive behavior",
 
         "replace with explicit operator cancellation/policy",
-
     };
 
     private static readonly HashSet<string> AllowedClassifications = new(StringComparer.Ordinal)
     {
-
         "Required security boundary",
 
         "Required data-integrity or protocol invariant",
@@ -36,13 +32,11 @@ public sealed class ConstraintInventoryTests
         "Explicit operator policy",
 
         "Arbitrary product restriction",
-
     };
 
     [Fact]
     public void Inventory_has_complete_classified_actionable_records()
     {
-
         using JsonDocument inventory = LoadInventory();
 
         JsonElement constraints = inventory.RootElement.GetProperty("constraints");
@@ -57,7 +51,6 @@ public sealed class ConstraintInventoryTests
 
         foreach (JsonElement constraint in constraints.EnumerateArray())
         {
-
             string id = RequiredString(constraint, "id");
 
             Assert.True(ids.Add(id), $"Duplicate constraint id '{id}'.");
@@ -100,7 +93,6 @@ public sealed class ConstraintInventoryTests
 
             foreach (string symbol in coveredSymbols)
             {
-
                 Assert.True(
                     symbolOwners.TryAdd(symbol, id),
                     $"Covered symbol '{symbol}' is classified by both '{symbolOwners.GetValueOrDefault(symbol)}' and '{id}'.");
@@ -114,7 +106,6 @@ public sealed class ConstraintInventoryTests
                 Assert.False(
                     string.IsNullOrWhiteSpace(value.GetString()),
                     $"Constraint '{id}' has a blank value for '{symbol}'.");
-
             }
 
             Assert.NotEmpty(RequiredStringArray(constraint, "tests"));
@@ -127,15 +118,12 @@ public sealed class ConstraintInventoryTests
             string serialized = constraint.GetRawText();
 
             Assert.DoesNotContain("TheForge", serialized, StringComparison.OrdinalIgnoreCase);
-
         }
-
     }
 
     [Fact]
     public void Inventory_classifies_every_public_configuration_number_and_clamp()
     {
-
         using JsonDocument inventory = LoadInventory();
 
         HashSet<string> coveredSymbols = inventory.RootElement
@@ -157,14 +145,10 @@ public sealed class ConstraintInventoryTests
             | BindingFlags.Static
             | BindingFlags.DeclaredOnly))
         {
-
             if (!method.IsSpecialName)
             {
-
                 requiredSymbols.Add($"ArcanumSettingClamps.{method.Name}");
-
             }
-
         }
 
         string[] missing = requiredSymbols
@@ -175,13 +159,11 @@ public sealed class ConstraintInventoryTests
         Assert.True(
             missing.Length == 0,
             $"Public limits missing constraint-inventory classification:\n  {string.Join("\n  ", missing)}");
-
     }
 
     [Fact]
     public void Markdown_inventory_table_has_exact_json_row_parity()
     {
-
         using JsonDocument inventory = LoadInventory();
 
         string repositoryRoot = FindRepositoryRoot();
@@ -205,31 +187,24 @@ public sealed class ConstraintInventoryTests
 
         foreach (string line in File.ReadLines(reportPath))
         {
-
             if (line == "<!-- constraint-inventory:start -->")
             {
-
                 inInventory = true;
 
                 continue;
-
             }
 
             if (line == "<!-- constraint-inventory:end -->")
             {
-
                 inInventory = false;
 
                 break;
-
             }
 
             if (!inInventory
                 || !line.StartsWith("| `", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             int closingTick = line.IndexOf('`', 3);
@@ -237,13 +212,11 @@ public sealed class ConstraintInventoryTests
             Assert.True(closingTick > 3, $"Malformed inventory row: {line}");
 
             markdownIds.Add(line[3..closingTick]);
-
         }
 
         Assert.Equal(
             jsonIds.OrderBy(static id => id, StringComparer.Ordinal),
             markdownIds.OrderBy(static id => id, StringComparer.Ordinal));
-
     }
 
     private static void CollectNumericConfigurationSymbols(
@@ -252,7 +225,6 @@ public sealed class ConstraintInventoryTests
         HashSet<string> symbols,
         int depth)
     {
-
         Assert.True(depth <= 12, $"Configuration traversal exceeded depth at {prefix}.");
 
         foreach (PropertyInfo property in type.GetProperties(
@@ -260,12 +232,9 @@ public sealed class ConstraintInventoryTests
             | BindingFlags.Public
             | BindingFlags.DeclaredOnly))
         {
-
             if (property.SetMethod?.IsPublic != true)
             {
-
                 continue;
-
             }
 
             string symbol = $"{prefix}.{ToCamelCase(property.Name)}";
@@ -275,102 +244,64 @@ public sealed class ConstraintInventoryTests
 
             if (IsNumericOrTime(propertyType))
             {
-
                 symbols.Add(symbol);
 
                 continue;
-
             }
 
             if (TryGetDictionaryValue(propertyType, out Type? valueType))
             {
-
                 Type value = Nullable.GetUnderlyingType(valueType!) ?? valueType!;
 
                 if (IsNumericOrTime(value))
                 {
-
                     symbols.Add(symbol + "{}");
-
                 }
                 else if (IsConfigurationType(value))
                 {
-
                     CollectNumericConfigurationSymbols(
                         value,
                         symbol + "{}",
                         symbols,
                         depth + 1);
-
                 }
 
                 continue;
-
             }
 
             if (TryGetCollectionElement(propertyType, out Type? elementType))
             {
-
                 Type element = Nullable.GetUnderlyingType(elementType!) ?? elementType!;
 
                 if (IsNumericOrTime(element))
                 {
-
                     symbols.Add(symbol + "[]");
-
                 }
                 else if (IsConfigurationType(element))
                 {
-
                     CollectNumericConfigurationSymbols(
                         element,
                         symbol + "[]",
                         symbols,
                         depth + 1);
-
                 }
 
                 continue;
-
             }
 
             if (IsConfigurationType(propertyType))
             {
-
                 CollectNumericConfigurationSymbols(
                     propertyType,
                     symbol,
                     symbols,
                     depth + 1);
-
             }
-
         }
-
     }
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 
     private static bool IsConfigurationType(Type type) =>
         type.Namespace?.StartsWith(
@@ -393,7 +324,6 @@ public sealed class ConstraintInventoryTests
 
     private static JsonDocument LoadInventory()
     {
-
         string path = Path.Combine(
             FindRepositoryRoot(),
             "docs",
@@ -402,12 +332,10 @@ public sealed class ConstraintInventoryTests
         Assert.True(File.Exists(path), $"Missing structured constraint inventory: {path}");
 
         return JsonDocument.Parse(File.ReadAllText(path));
-
     }
 
     private static string RequiredString(JsonElement element, string propertyName)
     {
-
         Assert.True(
             element.TryGetProperty(propertyName, out JsonElement property),
             $"Constraint is missing '{propertyName}': {element.GetRawText()}");
@@ -419,12 +347,10 @@ public sealed class ConstraintInventoryTests
         Assert.False(string.IsNullOrWhiteSpace(value), $"Constraint '{propertyName}' is blank.");
 
         return value!;
-
     }
 
     private static string[] RequiredStringArray(JsonElement element, string propertyName)
     {
-
         Assert.True(
             element.TryGetProperty(propertyName, out JsonElement property),
             $"Constraint is missing '{propertyName}': {element.GetRawText()}");
@@ -435,7 +361,6 @@ public sealed class ConstraintInventoryTests
             .EnumerateArray()
             .Select(item =>
             {
-
                 Assert.Equal(JsonValueKind.String, item.ValueKind);
 
                 string? value = item.GetString();
@@ -443,10 +368,8 @@ public sealed class ConstraintInventoryTests
                 Assert.False(string.IsNullOrWhiteSpace(value), $"Constraint '{propertyName}' contains a blank value.");
 
                 return value!;
-
             })
             .ToArray();
-
     }
 
     private static string ToCamelCase(string value) =>
@@ -456,14 +379,11 @@ public sealed class ConstraintInventoryTests
 
     private static bool TryGetCollectionElement(Type type, out Type? elementType)
     {
-
         if (type.IsArray)
         {
-
             elementType = type.GetElementType();
 
             return true;
-
         }
 
         Type? enumerable = type
@@ -475,12 +395,10 @@ public sealed class ConstraintInventoryTests
         elementType = enumerable?.GetGenericArguments()[0];
 
         return elementType is not null;
-
     }
 
     private static bool TryGetDictionaryValue(Type type, out Type? valueType)
     {
-
         Type? dictionary = type
             .GetInterfaces()
             .Append(type)
@@ -490,7 +408,5 @@ public sealed class ConstraintInventoryTests
         valueType = dictionary?.GetGenericArguments()[1];
 
         return valueType is not null;
-
     }
-
 }

@@ -6,9 +6,9 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
 /// <summary>
-/// Kill-after-step coverage for issue #40: for every registered kind, a host that dies at each
-/// durable step must converge to an explicit terminal state, and repeating recovery must not repeat
-/// the handler's external work.
+/// Kill-after-step coverage for issue #40: every generically recoverable durable step must converge
+/// to an explicit terminal state without repeating external work. Owner-bound offline checkpoints
+/// must instead remain byte-for-byte untouched until the authenticated exact-owner path adopts them.
 /// </summary>
 /// <remarks>
 /// "Kill" here is the honest simulation of a crash rather than a sleep: the operation is left in the
@@ -38,7 +38,7 @@ public sealed class LongRunningOperationCrashRecoveryTests
 
     [Theory]
     [MemberData(nameof(CrashPoints))]
-    public async Task Crash_at_any_durable_step_converges_and_never_repeats_recovery(
+    public async Task Crash_at_any_durable_step_uses_only_its_authorized_recovery_path(
         string kind,
         LongRunningOperationState crashedIn,
         bool hadCheckpoint)
@@ -62,7 +62,8 @@ public sealed class LongRunningOperationCrashRecoveryTests
             store,
             [handler],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("restart-1");
         time.Advance(TimeSpan.FromMinutes(10));
@@ -71,6 +72,14 @@ public sealed class LongRunningOperationCrashRecoveryTests
         LongRunningOperation recovered = Assert.Single(
             store.Operations,
             operation => operation.Id == crashed.Id);
+
+        if (AwaitsExactOwner(crashed))
+        {
+            Assert.Empty(handler.Invocations);
+            Assert.Equal(crashed, recovered);
+
+            return;
+        }
 
         Assert.Single(handler.Invocations);
         Assert.Contains(
@@ -112,7 +121,8 @@ public sealed class LongRunningOperationCrashRecoveryTests
             store,
             [],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("restart-1");
 
@@ -122,6 +132,13 @@ public sealed class LongRunningOperationCrashRecoveryTests
 
         Assert.Contains(kind, reconciler.MissingHandlerKinds);
         Assert.NotEqual(LongRunningOperationState.Completed, recovered.State);
+
+        if (AwaitsExactOwner(crashed))
+        {
+            Assert.Equal(crashed, recovered);
+
+            return;
+        }
 
         // AbandonSafely is the one policy where "no handler" still has a correct answer, because the
         // work is by definition not resumable. Every other kind must ask for an operator.
@@ -137,6 +154,10 @@ public sealed class LongRunningOperationCrashRecoveryTests
                 recovered.TerminalErrorCode);
         }
     }
+
+    private static bool AwaitsExactOwner(LongRunningOperation operation) =>
+        LongRunningOperationRecoveryAdmission.Classify(operation, ownerEvidence: null).Kind
+        is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner;
 
     /// <summary>
     /// A crash that leaves a checkpoint no build understands must not be retried forever, and must
@@ -159,7 +180,8 @@ public sealed class LongRunningOperationCrashRecoveryTests
             store,
             [handler],
             time,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("restart-1");
         time.Advance(TimeSpan.FromHours(1));

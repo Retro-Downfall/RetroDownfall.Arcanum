@@ -26,9 +26,9 @@ on:
         default: false
         type: boolean
 
-  # Called by CI after every gate on a push to main has passed, with no version, so the number comes
-  # from Directory.Build.props the same way it would for a blank dispatch. One derivation, two ways
-  # in, rather than a second idea of what version this build is.
+  # Available to an explicit release orchestrator as well as manual dispatch. CI deliberately has
+  # no call site: a push never creates a release. A blank version still derives from
+  # Directory.Build.props, so both explicit entry points share one versioning rule.
   workflow_call:
     inputs:
       version:
@@ -36,8 +36,8 @@ on:
         required: false
         type: string
 
-      # Defaulted off and deliberately absent from CI's call site: a push to main assembles a draft,
-      # and no automatic path turns one public. Shipping stays a thing a person asks for.
+      # Defaulted off for every reusable caller, and CI has no call site. No automatic path turns a
+      # draft public; shipping stays a thing a person asks for.
       publish:
         description: "Publish the release publicly. CI leaves it a draft."
         required: false

@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </summary>
 public interface IBatchRepository
 {
-
     /// <summary>
     /// Creates a batch only when every input/output/error file reference resolves to current
     /// uploaded-file metadata in the same database write. A missing reference throws
@@ -24,7 +23,6 @@ public interface IBatchRepository
     /// response allocation; callers continue from the last returned position while work remains.
     /// </summary>
     Task<BatchListPage> ListPageAsync(
-
         string? status,
 
         BatchListPosition? after,
@@ -39,7 +37,6 @@ public interface IBatchRepository
     /// every queued batch without allocating the complete catalog.
     /// </summary>
     Task<IReadOnlyList<BatchRecord>> ListPendingPageAsync(
-
         int pageSize,
 
         CancellationToken cancellationToken = default);
@@ -50,7 +47,8 @@ public interface IBatchRepository
     /// <summary>
     /// Updates status and conditionally attaches output/error file ids only when their uploaded-file
     /// metadata exists in the same database write. A missing artifact reference throws
-    /// <see cref="BatchFileReferenceException"/> without changing the batch.
+    /// <see cref="BatchFileReferenceException"/> without changing the batch. A durable accounting
+    /// recovery claim rejects this general mutation so only recovery can publish the next status.
     /// </summary>
     Task UpdateStatusAsync(
         Guid id,
@@ -63,7 +61,8 @@ public interface IBatchRepository
     /// <summary>
     /// Atomically sets status (and optional completion/file fields) only when the row is still
     /// <paramref name="expectedStatus"/> and every supplied output/error id resolves to current
-    /// uploaded-file metadata. Returns <see langword="true"/> when exactly one row was updated.
+    /// uploaded-file metadata. A durable accounting recovery claim also makes the comparison fail.
+    /// Returns <see langword="true"/> when exactly one row was updated.
     /// </summary>
     Task<bool> TryCompareAndSetStatusAsync(
         Guid id,
@@ -79,7 +78,6 @@ public interface IBatchRepository
     /// bounded ranges while walking the input, so this is a page boundary rather than a total-work cap.
     /// </summary>
     Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
-
         Guid batchId,
 
         long firstLine,
@@ -93,7 +91,6 @@ public interface IBatchRepository
     /// <paramref name="afterLine"/>. Callers continue until an empty page is returned.
     /// </summary>
     Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
-
         Guid batchId,
 
         BatchLineCheckpointState state,
@@ -106,10 +103,10 @@ public interface IBatchRepository
 
     /// <summary>
     /// Atomically records that a provider request is about to be dispatched. Returns false when the
-    /// line already has any durable checkpoint or the batch is no longer in progress.
+    /// line already has any durable checkpoint, the batch is no longer in progress, or accounting
+    /// recovery owns the batch.
     /// </summary>
     Task<bool> TryBeginLineAsync(
-
         Guid batchId,
 
         long lineNumber,
@@ -122,10 +119,9 @@ public interface IBatchRepository
     /// Records a line that never reached a provider — a JSON-parse failure or a budget refusal —
     /// as a single durable terminal transition, so it is never observable in the
     /// provider-ambiguous <c>Dispatched</c> state. Returns false when the line already has any
-    /// durable checkpoint or the batch is no longer in progress.
+    /// durable checkpoint, the batch is no longer in progress, or accounting recovery owns it.
     /// </summary>
     Task<bool> TryRecordTerminalLineAsync(
-
         Guid batchId,
 
         long lineNumber,
@@ -145,7 +141,6 @@ public interface IBatchRepository
     /// exact completion is idempotent; conflicting terminal content is rejected.
     /// </summary>
     Task CompleteLineAsync(
-
         Guid batchId,
 
         long lineNumber,
@@ -160,20 +155,16 @@ public interface IBatchRepository
 
     /// <summary>Deletes checkpoints only after their terminal batch artifacts are durably linked.</summary>
     Task DeleteLineCheckpointsAsync(
-
         Guid batchId,
 
         CancellationToken cancellationToken = default);
-
 }
 
 public sealed class BatchFileReferenceException(Guid batchId)
     : InvalidOperationException(
         $"Batch '{batchId:D}' references uploaded file metadata that does not exist.")
 {
-
     public Guid BatchId { get; } = batchId;
-
 }
 
 public sealed record BatchRecord(
@@ -190,13 +181,11 @@ public sealed record BatchRecord(
     long FailedRequestCount = 0);
 
 public sealed record BatchListPosition(
-
     DateTimeOffset CreatedAt,
 
     Guid Id);
 
 public sealed record BatchListPage(
-
     IReadOnlyList<BatchRecord> Records,
 
     bool HasMore);
@@ -204,35 +193,28 @@ public sealed record BatchListPage(
 public enum BatchLineCheckpointState
 
 {
-
     Dispatched = 0,
 
     Completed = 1,
-
 }
 
 public enum BatchLineOutputKind
 
 {
-
     Output = 0,
 
     Error = 1,
-
 }
 
 public enum BatchRequestOutcome
 
 {
-
     Completed = 0,
 
     Failed = 1,
-
 }
 
 public sealed record BatchLineCheckpoint(
-
     Guid BatchId,
 
     long LineNumber,
@@ -254,7 +236,6 @@ public sealed record BatchLineCheckpoint(
 /// <summary>Lifecycle values for <see cref="BatchRecord.Status"/>: <c>validating → in_progress → completed/failed/cancelled/expired</c>.</summary>
 public static class BatchStatuses
 {
-
     public const string Validating = "validating";
 
     public const string InProgress = "in_progress";
@@ -272,5 +253,4 @@ public static class BatchStatuses
 
     public static bool IsStuck(string status) =>
         status == InProgress;
-
 }

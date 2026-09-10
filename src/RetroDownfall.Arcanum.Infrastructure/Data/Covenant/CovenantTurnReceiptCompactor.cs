@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInitializer initializer)
 {
-
     internal const int MaxReceiptsPerFold = 128;
 
     internal CovenantTurnReceiptCompactor()
@@ -38,7 +37,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(transaction);
 
         using CovenantSqliteAuthorizationScope authorization = initializer.Authorize(
@@ -51,9 +49,7 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         if (over <= 0)
         {
-
             return 0;
-
         }
 
         int take = (int)Math.Min(over, MaxReceiptsPerFold);
@@ -63,9 +59,7 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         if (rows.IsEmpty)
         {
-
             return 0;
-
         }
 
         AggregateRow current = await ReadAggregateAsync(transaction, sessionId, cancellationToken)
@@ -75,9 +69,7 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         foreach (FoldRow row in rows)
         {
-
             folded = Fold(folded, row);
-
         }
 
         await WriteAggregateAsync(transaction, sessionId, current.Exists, folded, cancellationToken)
@@ -86,15 +78,12 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         await DeleteAsync(transaction, rows, cancellationToken).ConfigureAwait(false);
 
         return rows.Length;
-
     }
 
     private static AggregateRow Fold(AggregateRow aggregate, FoldRow row)
     {
-
         return aggregate with
         {
-
             CoveredCount = checked(aggregate.CoveredCount + 1),
 
             EarliestCoveredAtUtc = aggregate.EarliestCoveredAtUtc ?? row.CreatedAtUtc,
@@ -122,9 +111,7 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
             // Chained rather than summed: the digest attests to an order, and a sum would fold two
             // different sequences of the same receipts to the same value.
             ChainDigest = Chain(aggregate.ChainDigest, row),
-
         };
-
     }
 
     /// <summary>
@@ -138,7 +125,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
     /// </remarks>
     private static CovenantDigest Chain(CovenantDigest head, FoldRow row)
     {
-
         using System.Security.Cryptography.IncrementalHash hash =
             System.Security.Cryptography.IncrementalHash.CreateHash(
                 System.Security.Cryptography.HashAlgorithmName.SHA256);
@@ -172,7 +158,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         hash.AppendData([(byte)row.FinalOutcome]);
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
 
     private static async ValueTask<long> CountAsync(
@@ -180,7 +165,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "SELECT COUNT(*) FROM covenant_turn_receipts WHERE SessionId = $session;";
@@ -190,7 +174,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async ValueTask<ImmutableArray<FoldRow>> ReadOldestAsync(
@@ -199,7 +182,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         int take,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -223,7 +205,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(
                 new FoldRow(
                     Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
@@ -239,11 +220,9 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
                     reader.GetInt64(10),
                     (CovenantFinalOutcome)reader.GetInt32(11),
                     reader.GetString(12)));
-
         }
 
         return [.. rows];
-
     }
 
     private static async ValueTask<AggregateRow> ReadAggregateAsync(
@@ -251,7 +230,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -269,7 +247,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return new AggregateRow(
                 Exists: false,
                 CoveredCount: 0,
@@ -283,7 +260,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
                 InterruptedOutcomeCount: 0,
                 MutationTotal: 0,
                 ChainDigest: new CovenantDigest(new byte[CovenantLimits.DigestBytes]));
-
         }
 
         return new AggregateRow(
@@ -299,7 +275,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
             reader.GetInt64(8),
             reader.GetInt64(9),
             new CovenantDigest((byte[])reader.GetValue(10)));
-
     }
 
     private static async ValueTask WriteAggregateAsync(
@@ -309,7 +284,6 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         AggregateRow aggregate,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = exists
@@ -342,9 +316,9 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         _ = command.Parameters.AddWithValue("$covered", aggregate.CoveredCount);
 
-        _ = command.Parameters.AddWithValue("$earliest", (object?)aggregate.EarliestCoveredAtUtc ?? DBNull.Value);
+        _ = UtcInstantSql.AddStoredParameter(command, "$earliest", aggregate.EarliestCoveredAtUtc);
 
-        _ = command.Parameters.AddWithValue("$latest", (object?)aggregate.LatestCoveredAtUtc ?? DBNull.Value);
+        _ = UtcInstantSql.AddStoredParameter(command, "$latest", aggregate.LatestCoveredAtUtc);
 
         _ = command.Parameters.AddWithValue("$confirmed", aggregate.ConfirmedTokenTotal);
 
@@ -362,12 +336,12 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
 
         _ = command.Parameters.AddWithValue("$chain", aggregate.ChainDigest.Bytes);
 
-        _ = command.Parameters.AddWithValue(
+        _ = UtcInstantSql.AddParameter(
+            command,
             "$updated",
-            DateTimeOffset.UtcNow.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture));
+            DateTimeOffset.UtcNow);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask DeleteAsync(
@@ -375,10 +349,8 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         ImmutableArray<FoldRow> rows,
         CancellationToken cancellationToken)
     {
-
         foreach (FoldRow row in rows)
         {
-
             await using SqliteCommand command = transaction.CreateCommand();
 
             command.CommandText = "DELETE FROM covenant_turn_receipts WHERE AssistantEntryId = $assistant;";
@@ -386,9 +358,7 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
             _ = command.Parameters.AddWithValue("$assistant", row.AssistantEntryId.ToString("D"));
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     private sealed record FoldRow(
@@ -419,5 +389,4 @@ internal sealed class CovenantTurnReceiptCompactor(ICovenantSqliteConnectionInit
         long InterruptedOutcomeCount,
         long MutationTotal,
         CovenantDigest ChainDigest);
-
 }

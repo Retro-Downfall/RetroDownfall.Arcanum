@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 
@@ -25,12 +26,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiClientTests
 {
-
     [Fact]
 
     public async Task PlanFactoryResetDataAsync_posts_the_typed_planning_request()
     {
-
         DataRetentionWorkspaceBinding workspace = new(
             Guid.Parse("44444444-4444-4444-4444-444444444444"),
             "/workspace");
@@ -59,7 +58,6 @@ public sealed class ArcanumApiClientTests
 
         RecordingHandler handler = new(requestMessage =>
         {
-
             sentJson = requestMessage.Content!
                 .ReadAsStringAsync()
                 .GetAwaiter()
@@ -71,11 +69,8 @@ public sealed class ArcanumApiClientTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -95,13 +90,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(
             "{\"scope\":\"Workspace\",\"workspace\":{\"campaignId\":\"44444444-4444-4444-4444-444444444444\",\"workspaceRoot\":\"/workspace\"}}",
             sentJson);
-
     }
 
     [Fact]
     public async Task ResetDataMemoryAsync_posts_the_preview_plan_id()
     {
-
         string? sentJson = null;
 
         DataRetentionApplyResult expected = new(
@@ -117,7 +110,6 @@ public sealed class ArcanumApiClientTests
 
         RecordingHandler handler = new(requestMessage =>
         {
-
             sentJson = requestMessage.Content!
                 .ReadAsStringAsync()
                 .GetAwaiter()
@@ -129,11 +121,8 @@ public sealed class ArcanumApiClientTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -154,7 +143,6 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(
             "{\"scope\":\"Covenant\",\"expectedPlanId\":\"memory-plan-53\"}",
             sentJson);
-
     }
 
     [Theory]
@@ -164,7 +152,6 @@ public sealed class ArcanumApiClientTests
         bool named,
         string expectedJson)
     {
-
         string? sentJson = null;
 
         DataRetentionApplyResult expected = new(
@@ -183,7 +170,6 @@ public sealed class ArcanumApiClientTests
 
         RecordingHandler handler = new(requestMessage =>
         {
-
             sentJson = requestMessage.Content!
                 .ReadAsStringAsync()
                 .GetAwaiter()
@@ -195,11 +181,8 @@ public sealed class ArcanumApiClientTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -216,13 +199,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsSuccess);
 
         Assert.Equal(expectedJson, sentJson);
-
     }
 
     [Fact]
     public async Task Installation_reset_online_validator_carries_the_matching_online_plan()
     {
-
         DataRetentionPlan onlinePlan = CreateDataRetentionPlan(
             "factory-plan-71",
             new DataRetentionCovenantInventory(
@@ -254,13 +235,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(HttpMethod.Post, request.Method);
 
         Assert.Equal("/api/data/factory-reset/plan", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public async Task Installation_reset_online_validator_returns_unreachable_failure()
     {
-
         RecordingHandler handler = new(_ => throw new HttpRequestException("unreachable"));
 
         InstallationResetOnlinePlanValidator validator = new(
@@ -275,13 +254,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(ErrorCodes.Connection.Unreachable, result.Error.Code);
 
         Assert.Single(handler.Requests);
-
     }
 
     [Fact]
     public async Task Installation_reset_online_validator_returns_missing_api_key_failure()
     {
-
         RecordingHandler handler = new(_ => throw new InvalidOperationException(
             "The request must not be sent without an API key."));
 
@@ -297,13 +274,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(ErrorCodes.Security.MissingApiKey, result.Error.Code);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
     public async Task Installation_reset_online_validator_propagates_other_host_failure()
     {
-
         RecordingHandler handler = new(_ => CreateDataRetentionPlanResponse(
             new ApiResponse<DataRetentionPlan>(
                 null,
@@ -321,13 +296,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Test.HostFailure", result.Error.Code);
-
     }
 
     [Fact]
     public async Task Installation_reset_online_validator_accepts_a_different_authenticated_plan_id()
     {
-
         DataRetentionPlan onlinePlan = CreateDataRetentionPlan("other-plan-75", covenant: null);
 
         RecordingHandler handler = new(_ => CreateDataRetentionPlanResponse(
@@ -350,16 +323,13 @@ public sealed class ArcanumApiClientTests
         Assert.NotEqual("factory-plan-75", result.Value.Plan?.PlanId);
 
         Assert.Equivalent(onlinePlan, result.Value.Plan, strict: true);
-
     }
 
     [Fact]
     public async Task ListLoreAsync_rejects_a_non_advancing_page_instead_of_using_a_total_page_limit()
     {
-
         RecordingHandler handler = new(_ =>
         {
-
             ListPageResult<LoreDto> page = new(
                 [new LoreDto("key", "value", DateTime.UtcNow)],
                 HasMore: true,
@@ -371,11 +341,8 @@ public sealed class ArcanumApiClientTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -387,13 +354,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Api.PaginationNoProgress", result.Error.Code);
 
         Assert.Single(handler.Requests);
-
     }
 
     [Fact]
     public async Task GetSpellCatalogPageAsync_sends_paged_filters_and_cursor()
     {
-
         SpellCatalogPage expected = new(
             [new SpellSummary(
                 "catalog-spell",
@@ -406,18 +371,14 @@ public sealed class ArcanumApiClientTests
 
         RecordingHandler handler = new(_ =>
         {
-
             byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
                 new ApiResponse<SpellCatalogPage>(expected, true, null),
                 ArcanumJsonContext.Default.ApiResponseSpellCatalogPage);
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(payload),
-
             };
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -452,7 +413,6 @@ public sealed class ArcanumApiClientTests
         Assert.Contains("tool=read_file", requestUri.Query, StringComparison.Ordinal);
 
         Assert.Contains("source=Workspace", requestUri.Query, StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -460,7 +420,6 @@ public sealed class ArcanumApiClientTests
     public async Task PreviewContextAsync_posts_typed_read_only_request()
 
     {
-
         ContextPreviewResult preview = ContextPreviewTestData.Create();
 
         string? sentJson = null;
@@ -468,27 +427,21 @@ public sealed class ArcanumApiClientTests
         RecordingHandler handler = new(request =>
 
         {
-
             sentJson = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
 
             return new HttpResponseMessage(HttpStatusCode.OK)
 
             {
-
                 Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(
-
                     new ApiResponse<ContextPreviewResult>(preview, true, null),
 
                     ArcanumJsonContext.Default.ApiResponseContextPreviewResult)),
-
             };
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
 
         ContextPreviewRequest request = new(
-
             Prompt: "hello",
 
             ShowContent: true,
@@ -506,35 +459,27 @@ public sealed class ArcanumApiClientTests
         Assert.Contains("\"showContent\":true", sentJson, StringComparison.Ordinal);
 
         Assert.Contains("\"noRetrieval\":true", sentJson, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public async Task Configuration_methods_use_config_api_contracts()
     {
-
         RecordingHandler handler = new(request =>
         {
-
             if (request.Method == HttpMethod.Get)
             {
-
                 byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
                     new ApiResponse<ArcanumSettings>(new ArcanumSettings(), true, null),
                     ArcanumJsonContext.Default.ApiResponseArcanumSettings);
 
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-
                     Content = new ByteArrayContent(payload),
-
                 };
-
             }
 
             return CreateBooleanResponse(new ApiResponse<bool>(true, true, null));
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -557,35 +502,27 @@ public sealed class ArcanumApiClientTests
             handler.Requests,
             request =>
             {
-
                 Assert.Equal(HttpMethod.Get, request.Method);
 
                 Assert.Equal("/api/config", request.RequestUri!.AbsolutePath);
-
             },
             request =>
             {
-
                 Assert.Equal(HttpMethod.Post, request.Method);
 
                 Assert.Equal("/api/config/validate", request.RequestUri!.AbsolutePath);
-
             },
             request =>
             {
-
                 Assert.Equal(HttpMethod.Put, request.Method);
 
                 Assert.Equal("/api/config", request.RequestUri!.AbsolutePath);
-
             });
-
     }
 
     [Fact]
     public async Task AskAsync_returns_failure_when_api_key_missing()
     {
-
         RecordingHandler handler = new();
 
         ArcanumApiClient client = CreateClient(handler, apiKey: null);
@@ -599,13 +536,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Security.MissingApiKey", result.Error.Code);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
-    public async Task AskAsync_posts_ping_request_with_api_key_header()
+    public async Task AskAsync_posts_ping_request_with_only_a_process_capability()
     {
-
         RecordingHandler handler = new(_ => CreatePromptResponse(
             new ApiResponse<PromptResponseDto>(
                 new PromptResponseDto("pong", null),
@@ -630,16 +565,95 @@ public sealed class ArcanumApiClientTests
 
         Assert.Equal("/api/intelligence/ping", request.RequestUri!.AbsolutePath);
 
-        Assert.True(request.Headers.TryGetValues(ArcanumApiHeaders.ApiKey, out IEnumerable<string>? keys));
+        Assert.False(request.Headers.Contains(ArcanumApiHeaders.ApiKey));
 
-        Assert.Equal("test-key", keys!.Single());
+        string capability = Assert.Single(
+            request.Headers.GetValues(ArcanumApiHeaders.ProcessCapability));
 
+        Assert.NotEqual("test-key", capability);
+
+        Assert.True(
+            ArcanumPresenceProofProtocol.TryDecode(
+                capability,
+                ArcanumProcessCapabilityService.TokenBytes,
+                out _));
+    }
+
+    [Fact]
+    public async Task AskAsync_never_discloses_the_reusable_key_to_a_replacement_listener()
+    {
+        RecordingHandler replacementListener = new(_ => new HttpResponseMessage(
+            HttpStatusCode.Unauthorized));
+
+        ArcanumApiClient client = CreateClient(
+            replacementListener,
+            apiKey: "replacement-listener-test-key");
+
+        Result<string> result = await client.AskAsync(
+            new PingRequest("hello"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.NotEmpty(replacementListener.Requests);
+
+        Assert.All(
+            replacementListener.Requests,
+            intercepted =>
+            {
+                Assert.False(intercepted.Headers.Contains(ArcanumApiHeaders.ApiKey));
+                Assert.True(intercepted.Headers.Contains(
+                    ArcanumApiHeaders.ProcessCapability));
+            });
+    }
+
+    [Fact]
+    public async Task AskAsync_renews_a_rejected_process_capability_once_and_retries()
+    {
+        int requestCount = 0;
+
+        RecordingHandler handler = new(_ =>
+        {
+            if (Interlocked.Increment(ref requestCount) == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            }
+
+            return CreatePromptResponse(
+                new ApiResponse<PromptResponseDto>(
+                    new PromptResponseDto("pong", null),
+                    true,
+                    null));
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<string> result = await client.AskAsync(
+            new PingRequest("hello"),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("pong", result.Value);
+        Assert.Equal(2, handler.Requests.Count);
+
+        string first = Assert.Single(
+            handler.Requests[0].Headers.GetValues(
+                ArcanumApiHeaders.ProcessCapability));
+
+        string second = Assert.Single(
+            handler.Requests[1].Headers.GetValues(
+                ArcanumApiHeaders.ProcessCapability));
+
+        Assert.NotEqual(first, second);
+        Assert.All(
+            handler.Requests,
+            request => Assert.False(
+                request.Headers.Contains(ArcanumApiHeaders.ApiKey)));
     }
 
     [Fact]
     public async Task AskAsync_returns_envelope_error_on_http_failure()
     {
-
         Error apiError = new("Api.RateLimited", "Too many requests.");
 
         RecordingHandler handler = new(_ => CreatePromptResponse(
@@ -655,13 +669,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(apiError, result.Error);
-
     }
 
     [Fact]
     public async Task AskAsync_returns_invalid_response_when_body_is_not_json()
     {
-
         // A non-JSON body (e.g. proxy HTML on a 401/429, or a truncated response) must not
         // escape as an unhandled JsonException; it should map to Api.InvalidResponse.
 
@@ -679,19 +691,16 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Api.InvalidResponse", result.Error.Code);
-
     }
 
     [Fact]
     public async Task AskAsync_returns_response_too_large_when_declared_content_length_exceeds_cap()
     {
-
         // A misbehaving/compromised local API declaring an oversized Content-Length must be rejected
         // before any buffering is attempted — the fake declared length here (100 MiB) exceeds
         // ArcanumApiClient's cap without this test needing to actually transfer that many bytes.
         RecordingHandler handler = new(_ =>
         {
-
             HttpResponseMessage response = new(HttpStatusCode.OK)
             {
                 Content = new ByteArrayContent(Encoding.UTF8.GetBytes("{}")),
@@ -700,7 +709,6 @@ public sealed class ArcanumApiClientTests
             response.Content.Headers.ContentLength = 100 * 1024 * 1024;
 
             return response;
-
         });
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -712,13 +720,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Api.ResponseTooLarge", result.Error.Code);
-
     }
 
     [Fact]
     public async Task AskAsync_returns_connection_error_when_handler_throws_http_request_exception()
     {
-
         RecordingHandler handler = new(_ => throw new HttpRequestException("connection refused"));
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -732,13 +738,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Connection.Unreachable", result.Error.Code);
 
         Assert.Contains("unreachable", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task AskAsync_returns_disconnected_error_when_handler_throws_io_exception()
     {
-
         RecordingHandler handler = new(_ => throw new IOException("connection reset by peer"));
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -752,13 +756,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Connection.Unreachable", result.Error.Code);
 
         Assert.Contains("lost before the response completed", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task AskAsync_returns_unexpected_error_result_when_handler_throws_unanticipated_exception()
     {
-
         // Any exception type not explicitly mapped (OperationCanceledException, HttpRequestException,
         // IOException) must still surface as a controlled Result.Failure — never propagate past the
         // client to a command's caller / ConsoleAppFramework's generic top-level exception handler.
@@ -773,13 +775,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Api.UnexpectedError", result.Error.Code);
-
     }
 
     [Fact]
     public async Task AskAsync_returns_timeout_when_bounded_client_exceeds_deadline()
     {
-
         RecordingHandler handler = new(async (_, cancellationToken) =>
         {
             await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
@@ -803,13 +803,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Connection.Timeout", result.Error.Code);
-
     }
 
     [Fact]
     public async Task AskStreamAsync_yields_error_when_stream_disconnects_mid_read()
     {
-
         IntelligenceEvent token = new(IntelligenceEventType.Token, "partial");
 
         byte[] firstLine = JsonSerializer.SerializeToUtf8Bytes(token, ArcanumJsonContext.Default.IntelligenceEvent);
@@ -834,7 +832,6 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(IntelligenceEventType.Error, events[1].Type);
 
         Assert.Contains("lost before the stream completed", events[1].Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
@@ -993,7 +990,6 @@ public sealed class ArcanumApiClientTests
     [Fact]
     public async Task StreamApprenticeChronicleAsync_parses_sse_frames_via_source_generated_context()
     {
-
         string sse =
             "data: {\"type\":\"tool_result\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"result\":\"did the thing\"}\n\n" +
             "data: {\"type\":\"status\"}\n\n" +
@@ -1026,13 +1022,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("status", frames[1].Message);
 
         Assert.Null(frames[1].Timestamp);
-
     }
 
     [Fact]
     public async Task StreamApprenticeChronicleAsync_skips_frames_with_malformed_json()
     {
-
         string sse =
             "data: not valid json\n\n" +
             "data: {\"type\":\"status\"}\n\n" +
@@ -1055,7 +1049,6 @@ public sealed class ArcanumApiClientTests
         Assert.Single(frames);
 
         Assert.Equal("status", frames[0].Type);
-
     }
 
     /// <summary>
@@ -1066,7 +1059,6 @@ public sealed class ArcanumApiClientTests
     [Fact]
     public void The_client_exposes_no_second_session_stream_reader()
     {
-
         string[] declared = [.. typeof(ArcanumApiClient)
             .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Select(static method => method.Name)
@@ -1076,13 +1068,11 @@ public sealed class ArcanumApiClientTests
         Assert.Contains("WatchSseAsync", declared);
 
         Assert.DoesNotContain("WatchSessionAsync", declared);
-
     }
 
     [Fact]
     public async Task ResearchWebAsync_surfaces_the_api_error_envelope_on_a_non_success_status()
     {
-
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
             new ApiResponse<string>(
                 null,
@@ -1113,13 +1103,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Auth.Unauthorized", only.Code);
 
         Assert.Equal("Invalid or missing API key.", only.Message);
-
     }
 
     [Fact]
     public async Task ResearchWebAsync_falls_back_to_the_status_line_when_the_body_is_not_an_envelope()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)
         {
             Content = new StringContent("<html>proxy failure</html>"),
@@ -1143,7 +1131,6 @@ public sealed class ArcanumApiClientTests
         Assert.Equal("Api.HttpError", only.Code);
 
         Assert.Contains("502", only.Message);
-
     }
 
     /// <summary>
@@ -1155,7 +1142,6 @@ public sealed class ArcanumApiClientTests
     [Fact]
     public async Task ResearchWebAsync_yields_an_error_frame_when_the_stream_disconnects_mid_read()
     {
-
         WebResearchStreamFrame progress = new()
         {
             Type = WebResearchStreamFrameType.Progress,
@@ -1192,13 +1178,11 @@ public sealed class ArcanumApiClientTests
             "lost before the stream completed",
             frames[1].Message,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task SubmitHumanResponseAsync_returns_success_when_envelope_data_is_true()
     {
-
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -1210,13 +1194,11 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.Value);
 
         Assert.Equal("/api/intelligence/human-response", handler.Requests[0].RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public async Task GetSessionAttachmentsAsync_deserializes_bound_rows()
     {
-
         Guid attachmentId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 
         Guid sessionId = Guid.Parse("11111111-2222-3333-4444-555555555555");
@@ -1269,13 +1251,11 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
 
         Assert.Equal($"/api/sessions/{sessionId:D}/attachments", handler.Requests[0].RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public async Task GetSessionAttachmentsAsync_returns_not_found_on_404()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         RecordingHandler handler = new(_ =>
@@ -1304,7 +1284,6 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
-
     }
 
     private static InstallationResetPlan CreateInstallationResetPlan(string dataPlanId) =>
@@ -1353,30 +1332,24 @@ public sealed class ArcanumApiClientTests
         ApiResponse<DataRetentionPlan> envelope,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
             envelope,
             ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
 
         HttpResponseMessage response = new(status)
         {
-
             Content = new ByteArrayContent(payload),
-
         };
 
         response.Content.Headers.ContentType =
             new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
         return response;
-
     }
 
     private static ArcanumApiClient CreateClient(HttpMessageHandler handler, string? apiKey)
     {
-
         return CreateClient(handler, apiKey, requestTimeout: null);
-
     }
 
     private static ArcanumApiClient CreateClient(
@@ -1384,18 +1357,15 @@ public sealed class ArcanumApiClientTests
         string? apiKey,
         TimeSpan? requestTimeout)
     {
-
         FakeHttpClientFactory factory = new(handler, requestTimeout);
 
-        FakeSecretStore secretStore = new() { ApiKey = apiKey };
-
-        return new ArcanumApiClient(factory, secretStore);
-
+        return new ArcanumApiClient(
+            factory,
+            ArcanumApiCredentialLeaseTestFactory.Create(apiKey));
     }
 
     private static HttpResponseMessage CreatePromptResponse(ApiResponse<PromptResponseDto> envelope, HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponsePromptResponseDto);
 
         HttpResponseMessage response = new(status)
@@ -1406,12 +1376,10 @@ public sealed class ArcanumApiClientTests
         response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
         return response;
-
     }
 
     private static HttpResponseMessage CreateBooleanResponse(ApiResponse<bool> envelope, HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponseBoolean);
 
         HttpResponseMessage response = new(status)
@@ -1422,7 +1390,6 @@ public sealed class ArcanumApiClientTests
         response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
         return response;
-
     }
 
     private static HttpResponseMessage CreateNdjsonResponse(string ndjson)
@@ -1437,7 +1404,6 @@ public sealed class ArcanumApiClientTests
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public string? ApiKey { get; set; }
 
     public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
@@ -1453,15 +1419,12 @@ public sealed class ArcanumApiClientTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler, TimeSpan? requestTimeout) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name)
         {
-
             HttpClient client = new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
@@ -1477,14 +1440,11 @@ public sealed class ArcanumApiClientTests
             }
 
             return client;
-
         }
-
     }
 
     private sealed class RecordingHandler : HttpMessageHandler
     {
-
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _responder;
 
         public RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null)
@@ -1505,7 +1465,6 @@ public sealed class ArcanumApiClientTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri)
             {
                 Content = request.Content,
@@ -1519,19 +1478,15 @@ public sealed class ArcanumApiClientTests
             Requests.Add(snapshot);
 
             return await _responder(request, cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     private sealed class DisconnectingStreamHandler(byte[] firstLineBytes) : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             byte[] payload = new byte[firstLineBytes.Length + 1];
 
             firstLineBytes.CopyTo(payload, 0);
@@ -1548,14 +1503,11 @@ public sealed class ArcanumApiClientTests
             response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-ndjson");
 
             return Task.FromResult(response);
-
         }
-
     }
 
     private sealed class DisconnectingResponseStream(byte[] firstChunk) : Stream
     {
-
         private bool _firstChunkDelivered;
 
         public override bool CanRead => true;
@@ -1578,9 +1530,7 @@ public sealed class ArcanumApiClientTests
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-
             throw new NotSupportedException();
-
         }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -1591,7 +1541,6 @@ public sealed class ArcanumApiClientTests
 
         public override int Read(Span<byte> buffer)
         {
-
             if (!_firstChunkDelivered)
             {
                 int copied = Math.Min(buffer.Length, firstChunk.Length);
@@ -1604,20 +1553,16 @@ public sealed class ArcanumApiClientTests
             }
 
             throw new IOException("Simulated mid-stream disconnect.");
-
         }
 
         public override async ValueTask<int> ReadAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             await Task.Yield();
 
             return Read(buffer.Span);
-
         }
-
     }
 
     private sealed class FragmentingStreamHandler(byte[] payload, int maxChunkBytes) : HttpMessageHandler
@@ -1684,5 +1629,4 @@ public sealed class ArcanumApiClientTests
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
-
 }

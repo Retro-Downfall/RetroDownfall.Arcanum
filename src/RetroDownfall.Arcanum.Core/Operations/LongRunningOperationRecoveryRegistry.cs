@@ -215,40 +215,43 @@ public static class LongRunningOperationRecoveryRegistry
 
             // BeforeStateWrites since #118. The priority belongs to the kind rather than to a
             // checkpoint version, so the legacy version-0 and version-2 arms move with it and stay
-            // compatible; what forces the move is version 3, whose optional Covenant arm means the
-            // interrupted mutation may be a reset caught between canonical erasure and its verified
-            // reopen. That is exactly the tree an ordinary durable writer would append to.
+            // compatible; what forces the move is version 4, the offline-transition launch, which
+            // means the interrupted mutation may be a reset caught between canonical erasure and its
+            // verified reopen. That is exactly the tree an ordinary durable writer would append to.
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.DataRetentionMutation,
                 LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
                 Owner: "DataRetentionService",
                 MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 3,
+                MaxCheckpointVersion: 4,
                 LongRunningOperationStartupPriority.BeforeStateWrites,
                 RecoveryIntent:
                     "Reconcile a partially applied retention mutation against its durable journal; a row still at "
-                    + "version 0 never reached that journal, so it is abandoned rather than parked. A version-3 "
-                    + "row carrying a Covenant arm is an interrupted erasure: its exclusive owner is rebuilt from "
-                    + "the checkpoint alone and admission stays closed until the reset is resumed or an operator "
-                    + "resolves it.",
+                    + "version 0 never reached that journal, so it is abandoned rather than parked. A version-4 "
+                    + "row is an offline-transition launch: it is an interrupted Covenant reset whose exclusive "
+                    + "owner is rebuilt from the launch alone, whose phase authority is the authenticated journal "
+                    + "beside the installation lock rather than this row, and whose admission stays closed until "
+                    + "the reset is resumed or an operator resolves it.",
                 ManualRepairGuidance: "Inspect 'arcanum retention status' before re-applying the policy change."),
 
             // Version 0 is the documented legacy arm and stays admitted: those rows carry no payload
-            // at all and are restarted idempotently from durable quarantine state. Version 1 is the
-            // healthy-catalog erasure checkpoint added by #118, which is resumed from its recorded
-            // phase rather than restarted, because a factory erasure that already applied its
-            // canonical deletion cannot prove that by inspecting the result.
+            // at all and are restarted idempotently from durable quarantine state. Version 2 is the
+            // healthy-catalog erasure launch, which is resumed rather than restarted, because a
+            // factory erasure that already applied its canonical deletion cannot prove that by
+            // inspecting the result — only by comparing the result against the target it committed
+            // to before it began.
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.DataRetentionFactoryReset,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 Owner: "DataRetentionService",
                 MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 1,
+                MaxCheckpointVersion: 2,
                 LongRunningOperationStartupPriority.BeforeStateWrites,
                 RecoveryIntent:
                     "Restart the reset from its durable quarantine state so a half-erased state root is never "
-                    + "presented as a working installation. A version-1 row is a healthy-catalog Covenant erasure "
-                    + "and is resumed from its recorded phase under the owner its checkpoint names.",
+                    + "presented as a working installation. A version-2 row is a healthy-catalog Covenant erasure "
+                    + "launch, resumed under the owner the launch names and from the phase its authenticated "
+                    + "journal records rather than from anything this row carries.",
                 ManualRepairGuidance:
                     "Re-run the factory reset; quarantined trees are listed by 'arcanum doctor' until removed."),
 

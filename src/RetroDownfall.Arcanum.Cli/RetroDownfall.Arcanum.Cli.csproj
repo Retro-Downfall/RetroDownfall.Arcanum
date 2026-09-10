@@ -4,6 +4,8 @@
 
     <OutputType>Exe</OutputType>
 
+    <ApplicationIcon>Assets/arcanum.ico</ApplicationIcon>
+
     <IsAotCompatible>true</IsAotCompatible>
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
@@ -14,54 +16,30 @@
 
   </PropertyGroup>
 
-  <PropertyGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
 
-    <!-- macOS 27 / Xcode 26+ ld-prime asserts on large Native AOT object files:
-         "Assertion failed: (_addend == uniqueIndex &amp;&amp; 'too many large addends')"
-         (dotnet/runtime#119380). ILC itself is fine — it emits the object file, and the failure is
-         entirely in Apple's linker, which ld_classic no longer exists to work around. LLVM's lld
-         does not have the bug, so macOS gets Native AOT whenever ld64.lld is installed and falls
-         back to a folder-based self-contained publish when it is not. See the ld-path LinkerArg
-         below; `brew install lld`. Shrinking the object does not avoid it: stripping debug info and
-         every size switch took it from 636 MB to 452 MB and it still asserted. -->
-    <_AppleLldPath Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')">/opt/homebrew/opt/lld/bin/ld64.lld</_AppleLldPath>
+    <!-- Every RID-qualified Arcanum publish is the shipping product and therefore Native AOT.
+         There is no managed or ReadyToRun fallback. The validation targets below also reject a
+         command-line attempt to turn this off. -->
+    <PublishAot>true</PublishAot>
 
-    <_AppleLldPath Condition="'$(_AppleLldPath)' == '' and Exists('/usr/local/opt/lld/bin/ld64.lld')">/usr/local/opt/lld/bin/ld64.lld</_AppleLldPath>
+    <SelfContained>true</SelfContained>
 
-    <_TargetsApple Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">true</_TargetsApple>
-
-    <!-- Do not enable on an empty RID (plain `dotnet build` / `dotnet run`) — that stamps
-         RuntimeFeature.IsDynamicCodeSupported=false into runtimeconfig and breaks EF Core LINQ
-         (queries are not precompiled; see EFPrecompileQueriesStage=none). -->
-    <PublishAot Condition="'$(RuntimeIdentifier)' != '' and '$(_TargetsApple)' != 'true'">true</PublishAot>
-
-    <PublishAot Condition="'$(RuntimeIdentifier)' != '' and '$(_TargetsApple)' == 'true' and '$(_AppleLldPath)' != ''">true</PublishAot>
-
-    <!-- Native AOT is inherently a single native image, so PublishSingleFile is meaningless there.
-         It stays off on the macOS fallback because the current toolchain produces single-file app
-         hosts that launch as broken executables. -->
-    <PublishSingleFile Condition="'$(_TargetsApple)' == 'true'">false</PublishSingleFile>
-
-    <PublishTrimmed Condition="'$(_TargetsApple)' == 'true' and '$(PublishAot)' != 'true'">false</PublishTrimmed>
+    <PublishSingleFile>false</PublishSingleFile>
 
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' == 'true'">
 
-    <!-- Keep the Native AOT object file small. Gated on PublishAot rather than on a RID list,
-         because the SDK emits every one of these as a runtimeconfig configProperty on the sole
-         condition that the property is set: an unguarded group also reaches plain `dotnet build` /
-         `dotnet run` and any untrimmed publish, where UseSystemResourceKeys=true has no trimmer to
-         justify it and simply degrades every BCL exception message to a bare resource key
-         ("Arg_NullReferenceException"). RuntimeIdentifier is named explicitly alongside PublishAot
-         even though PublishAot is only ever set with a RID: an explicit `-p:PublishAot=true` on a
-         RID-less build would otherwise reopen exactly that hole, and HostProjectFeatureSwitchTests
-         checks for the guard syntactically rather than trusting the transitive argument. -->
     <OptimizationPreference>Size</OptimizationPreference>
 
     <StackTraceSupport>false</StackTraceSupport>
 
     <DebuggerSupport>false</DebuggerSupport>
+
+    <DebugType>none</DebugType>
+
+    <NativeDebugSymbols>false</NativeDebugSymbols>
 
     <UseWindowsThreadPool>false</UseWindowsThreadPool>
 
@@ -71,39 +49,37 @@
 
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(_TargetsApple)' == 'true'">
+  <!-- EF Core 10 and Serilog publish known dependency-owned diagnostics even when Arcanum's
+       compiled model is closed for Native AOT. Keep ordinary shipping output warning-free, but
+       never trust this presentation layer as the audit: verify-aot-il-warnings.sh sets
+       ArcanumAotDiagnosticAudit=true, re-enables the diagnostics, and rejects every warning not
+       attributed to the reviewed dependency allowlist. IL2026 and IL3050 stay unsuppressed here so
+       a new incompatible call in Arcanum remains visible in every publish. -->
 
-    <!-- Apple ld64/clang .pcm notices on stderr are surfaced as MSBuild EXEC warnings during ilc;
-         not IL diagnostics. Symbols are kept on the non-AOT fallback, where the publish is a plain
-         managed folder and they cost little. An AOT image carries its own DWARF, and keeping it
-         quadruples the binary (477 MB against 103 MB), so the AOT path strips. -->
-    <StripSymbols Condition="'$(PublishAot)' != 'true'">false</StripSymbols>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' == 'true' and '$(ArcanumAotDiagnosticAudit)' != 'true'">
 
-    <StripSymbols Condition="'$(PublishAot)' == 'true'">true</StripSymbols>
+    <NoWarn>$(NoWarn);IL2104;IL3002;IL3053</NoWarn>
 
   </PropertyGroup>
 
-  <!-- Homebrew dotnet ships nonportable.txt, so Native AOT links keg-only openssl/brotli on macOS. Add search paths when present. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx')) and '$(PublishAot)' == 'true'">
 
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <StripSymbols>true</StripSymbols>
 
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
-
-    <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
-
-    <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
-
-    <LinkerArg Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')" Include="--ld-path=/opt/homebrew/opt/lld/bin/ld64.lld" />
-
-    <LinkerArg Condition="!Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and Exists('/usr/local/opt/lld/bin/ld64.lld')" Include="--ld-path=/usr/local/opt/lld/bin/ld64.lld" />
-
-  </ItemGroup>
+  </PropertyGroup>
 
   <ItemGroup>
 
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' == 'true'">
+
+    <RuntimeHostConfigurationOption
+      Include="Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported"
+      Value="false"
+      Trim="true" />
 
   </ItemGroup>
 
@@ -142,5 +118,14 @@
   <ItemGroup>
     <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
   </ItemGroup>
+
+  <Target
+    Name="RequireArcanumShippingNativeAot"
+    BeforeTargets="PrepareForPublish"
+    Condition="'$(RuntimeIdentifier)' != '' and '$(PublishAot)' != 'true'">
+    <Error
+      Code="ARC0001"
+      Text="Every RID-qualified Arcanum publish must use Native AOT. PublishAot cannot be disabled for a shipping build." />
+  </Target>
 
 </Project>

@@ -26,55 +26,65 @@ internal static class SseStreamWriter
 
     }
 
+    /// <summary>
+    /// Writes one SSE stream, ending it at a complete frame boundary when maintenance revokes it.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="quiescence"/> is a required parameter rather than an optional one, because a
+    /// stream that silently inherited "never quiesces" is exactly the stream that holds a transition
+    /// open until it times out. Every caller states which it is.
+    ///
+    /// <para>The two tokens are deliberately different and must stay that way. Revocation is linked
+    /// only into the token the producer enumerates on, so the producer stops; the frame writer and
+    /// the keep-alive keep <paramref name="cancellationToken"/>, so a write already under way runs to
+    /// its terminating blank line. A frame cancelled part way leaves bytes on the wire that no client
+    /// can parse and no later frame can repair, and those bytes cannot be withdrawn — so the only
+    /// safe place to stop is between frames.</para>
+    ///
+    /// <para>The terminal <c>[DONE]</c> is written here, on the quiesced path only, rather than by
+    /// each of the five routes. It is what both first-party parsers read as a deliberate end; without
+    /// it the CLI reports a disconnect that did not happen, and reporting an architectural refusal as
+    /// a network fault is the confusion the parent epic exists to remove. An ordinary end of stream
+    /// still writes nothing, because each route's own cancellation arm already owns that case.</para>
+    /// </remarks>
     public static async Task StreamAsync<T>(
         HttpContext httpContext,
         IAsyncEnumerable<T> source,
         Func<T, CancellationToken, Task> writeFrameAsync,
         TimeSpan heartbeatInterval,
+        GrimoireStreamQuiescence quiescence,
         CancellationToken cancellationToken)
     {
 
-        if (heartbeatInterval <= TimeSpan.Zero)
-        {
+        ArgumentNullException.ThrowIfNull(quiescence);
 
-            await foreach (T item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
+        // Owned by this writer so a disconnect or a revocation can unwind the producer and let the
+        // outstanding MoveNextAsync complete before the enumerator is disposed (see
+        // QuiesceAndDisposeAsync). Revocation belongs here and nowhere else.
+        //
+        // The link is skipped when there is nothing to add to the caller's own token — no revocation
+        // to carry and no heartbeat needing a source of its own — because the *identity* of the
+        // enumeration token is load-bearing on that path. A compiler-generated iterator combines the
+        // token it captured with the one it is enumerated on only when the two differ, so enumerating
+        // a source built over `RequestAborted` on a linked token makes a client disconnect's
+        // OperationCanceledException carry a combined token instead of `RequestAborted` itself — and
+        // ClientDisconnect compares by reference, so the route would stop classifying that disconnect
+        // and would write a terminal frame at a socket it has already been told is gone.
+        using CancellationTokenSource? producerCts =
+            quiescence.Revocation.CanBeCanceled || heartbeatInterval > TimeSpan.Zero
+                ? quiescence.LinkProducer(cancellationToken)
+                : null;
 
-                try
-                {
+        CancellationToken producerToken = producerCts?.Token ?? cancellationToken;
 
-                    await writeFrameAsync(item, cancellationToken).ConfigureAwait(false);
-
-                }
-                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
-                {
-
-                    // W3.4 Group A (S10): client disconnected mid-stream. Stop writing
-                    // silently — no error or DONE frame to a dead socket. The caller's
-                    // `using`/`finally` disposes the linked CTS, cancelling the producer
-                    // (event bus subscription / chronicle pump) promptly.
-
-                    return;
-
-                }
-
-            }
-
-            return;
-
-        }
-
-        // Owned by this writer so a disconnect can unwind the producer and let the outstanding
-        // MoveNextAsync complete before the enumerator is disposed (see QuiesceAndDisposeAsync).
-        using CancellationTokenSource streamCts =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(streamCts.Token);
+        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(producerToken);
 
         // Keep a single pending MoveNextAsync for the lifetime of each item wait.
         // Heartbeats must WhenAny against the same move task — never start a second
         // MoveNextAsync while one is outstanding (IAsyncEnumerator is not concurrent-safe).
         Task<bool>? pendingMove = null;
+
+        bool clientGone = false;
 
         try
         {
@@ -82,41 +92,85 @@ internal static class SseStreamWriter
             while (true)
             {
 
-                pendingMove ??= enumerator.MoveNextAsync().AsTask();
-
-                // Per-iteration linked source so a frame that wins the race releases the heartbeat
-                // timer and its registration immediately instead of leaving one TimerQueueTimer per
-                // delivered frame alive for the whole interval (matches the OpenAI /v1 writer).
-                using CancellationTokenSource delayCts =
-                    CancellationTokenSource.CreateLinkedTokenSource(streamCts.Token);
-
-                Task delay = Task.Delay(heartbeatInterval, delayCts.Token);
-
-                Task completed = await Task.WhenAny(pendingMove, delay).ConfigureAwait(false);
-
-                if (completed == delay)
+                // Tested before the move rather than after it, so a revocation that arrived while the
+                // previous frame was being written starts no next one — including the very first,
+                // which is the path a route falls through on after stopping its own replay.
+                if (quiescence.IsQuiescing)
                 {
 
-                    try
-                    {
-
-                        await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
-
-                    }
-                    catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
-                    {
-
-                        return;
-
-                    }
-
-                    continue;
+                    break;
 
                 }
 
-                delayCts.Cancel();
+                pendingMove ??= enumerator.MoveNextAsync().AsTask();
 
-                bool hasNext = await pendingMove.ConfigureAwait(false);
+                if (heartbeatInterval > TimeSpan.Zero)
+                {
+
+                    // Per-iteration linked source so a frame that wins the race releases the heartbeat
+                    // timer and its registration immediately instead of leaving one TimerQueueTimer per
+                    // delivered frame alive for the whole interval (matches the OpenAI /v1 writer).
+                    using CancellationTokenSource delayCts =
+                        CancellationTokenSource.CreateLinkedTokenSource(producerToken);
+
+                    Task delay = Task.Delay(heartbeatInterval, delayCts.Token);
+
+                    Task completed = await Task.WhenAny(pendingMove, delay).ConfigureAwait(false);
+
+                    if (completed == delay)
+                    {
+
+                        // A delay that completed because the producer source was revoked is not a
+                        // heartbeat interval elapsing; writing a keep-alive there would start a frame
+                        // after the stream was told to stop.
+                        if (quiescence.IsQuiescing)
+                        {
+
+                            break;
+
+                        }
+
+                        try
+                        {
+
+                            await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
+
+                        }
+                        catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                        {
+
+                            clientGone = true;
+
+                            break;
+
+                        }
+
+                        continue;
+
+                    }
+
+                    delayCts.Cancel();
+
+                }
+
+                bool hasNext;
+
+                try
+                {
+
+                    hasNext = await pendingMove.ConfigureAwait(false);
+
+                }
+                catch (OperationCanceledException) when (quiescence.IsQuiescing)
+                {
+
+                    // The producer unwound because maintenance revoked it. That is this method's own
+                    // signal rather than a fault, and the move it came from has already completed.
+                    pendingMove = null;
+
+                    break;
+
+                }
 
                 pendingMove = null;
 
@@ -136,7 +190,13 @@ internal static class SseStreamWriter
                 catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
                 {
 
-                    return;
+                    // W3.4 Group A (S10): client disconnected mid-stream. Stop writing
+                    // silently — no error or DONE frame to a dead socket. The caller's
+                    // `using`/`finally` disposes the linked CTS, cancelling the producer
+                    // (event bus subscription / chronicle pump) promptly.
+                    clientGone = true;
+
+                    break;
 
                 }
 
@@ -146,7 +206,14 @@ internal static class SseStreamWriter
         finally
         {
 
-            await QuiesceAndDisposeAsync(enumerator, pendingMove, streamCts).ConfigureAwait(false);
+            await QuiesceAndDisposeAsync(enumerator, pendingMove, producerCts).ConfigureAwait(false);
+
+        }
+
+        if (quiescence.IsQuiescing && !clientGone)
+        {
+
+            await WriteDoneAsync(httpContext).ConfigureAwait(false);
 
         }
 

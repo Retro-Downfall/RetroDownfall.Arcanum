@@ -1,16 +1,31 @@
 using System.Collections.Concurrent;
+
 using System.Diagnostics.CodeAnalysis;
+
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -19,16 +34,26 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// Loads standard <c>mcp.json</c> from the user profile and from each workspace, spawns MCP servers, and exposes merged tools as <see cref="AITool"/>.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: spawns and manages external MCP server subprocesses; non-spawn paths are covered via InProcessMcpTransport tests.
-public sealed partial class McpConnectionManager(
-    ILogger<McpConnectionManager> logger,
-    IHumanPromptRegistry humanPromptRegistry,
-    IServiceScopeFactory scopeFactory,
-    IUnseenServantPacer pacer,
-    IEventBus eventBus,
-    ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
-    IHttpClientFactory httpClientFactory,
-    IOptionsMonitor<ArcanumSettings> settings) : IMcpConnectionManager, IAsyncDisposable
+public sealed partial class McpConnectionManager :
+    IMcpConnectionManager,
+    IMcpGlobalInitializationCoordinator,
+    IAsyncDisposable
 {
+    private readonly ILogger<McpConnectionManager> logger;
+
+    private readonly IHumanPromptRegistry humanPromptRegistry;
+
+    private readonly IServiceScopeFactory scopeFactory;
+
+    private readonly IUnseenServantPacer pacer;
+
+    private readonly IEventBus eventBus;
+
+    private readonly ITrustedMcpWorkspaceStore trustedMcpWorkspaces;
+
+    private readonly IHttpClientFactory httpClientFactory;
+
+    private readonly IOptionsMonitor<ArcanumSettings> settings;
 
     /// <summary>Named <see cref="HttpClient"/> for the Streamable HTTP MCP transport (SSRF-guarded egress).</summary>
     public const string McpHttpClientName = "McpHttp";
@@ -80,18 +105,16 @@ public sealed partial class McpConnectionManager(
 
     private readonly object _internalSettingsCacheGate = new();
 
-    private string _cachedInternalToolSettingsFingerprint =
-        InternalCodingToolSettingsFingerprint.Build(
-            settings.CurrentValue.ResolveCodingTools());
+    private string _cachedInternalToolSettingsFingerprint;
 
     private long _toolSurfaceGeneration;
 
     private readonly WorkspaceCheckSettings _defaultWorkspaceCheckSettings =
         new();
 
-    private bool _globalInitialized;
-
     private bool _globalRegistryLoaded;
+
+    private long _globalSurfaceRevision = -1;
 
     /// <summary>
     /// Shared global bootstrap / surface-build operation so concurrent
@@ -101,46 +124,130 @@ public sealed partial class McpConnectionManager(
     /// </summary>
     private Task? _globalInitOperation;
 
+    private McpGlobalInitializationAuthority? _globalInitAuthority;
+
+    private IGrimoireConnectionAdmissionGate? _globalAdmission;
+
+    private GlobalLifecycleState _globalLifecycleState;
+
+    private TaskCompletionSource _reloadCompleted = CompletedSignal();
+
     private Dictionary<string, LoadedMcpToolRow> _globalFirstByToolName = new(StringComparer.Ordinal);
 
     private IReadOnlyList<AITool> _globalSurfaceTools = [];
 
     private volatile bool _disposed;
 
-    private readonly CancellationTokenSource _hostLifetimeCts = new();
+    private readonly CancellationTokenSource _globalInitializationLifetime = new();
+
+    private readonly McpLifecycleAdmission _lifecycleAdmission;
+
+    private readonly object _shutdownGate = new();
+
+    private Task? _stopOperation;
+
+    private readonly TaskCompletionSource _disposeCompleted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private int _disposeStarted;
+
+    public McpConnectionManager(
+        ILogger<McpConnectionManager> logger,
+        IHumanPromptRegistry humanPromptRegistry,
+        IServiceScopeFactory scopeFactory,
+        IUnseenServantPacer pacer,
+        IEventBus eventBus,
+        ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
+        IHttpClientFactory httpClientFactory,
+        IOptionsMonitor<ArcanumSettings> settings)
+    {
+        this.logger = logger;
+
+        this.humanPromptRegistry = humanPromptRegistry;
+
+        this.scopeFactory = scopeFactory;
+
+        this.pacer = pacer;
+
+        this.eventBus = eventBus;
+
+        this.trustedMcpWorkspaces = trustedMcpWorkspaces;
+
+        this.httpClientFactory = httpClientFactory;
+
+        this.settings = settings;
+
+        _elicitationBridge = new McpElicitationBridge(humanPromptRegistry);
+
+        _cachedInternalToolSettingsFingerprint =
+            InternalCodingToolSettingsFingerprint.Build(
+                settings.CurrentValue.ResolveCodingTools());
+
+        _lifecycleAdmission = new McpLifecycleAdmission(_globalInitializationLifetime);
+    }
 
     /// <inheritdoc />
     public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
         // BootstrapBlocksStartup awaits this before Kestrel accepts requests. Completing global
         // load (AlwaysOn starts + surface attach) preserves that contract while sharing one
         // in-flight operation across concurrent callers.
-        return EnsureGlobalLoadedAsync(cancellationToken);
+        return EnsureGlobalLoadedAsync(
+            McpGlobalInitializationAuthority.OrdinaryHostedWork,
+            cancellationToken);
+    }
+
+    Task IMcpGlobalInitializationCoordinator.InitializeGlobalAsync(
+        McpGlobalInitializationAuthority authority,
+        CancellationToken cancellationToken) =>
+        EnsureGlobalLoadedAsync(authority, cancellationToken);
+
+    internal void ConfigureGlobalAdmission(
+        IGrimoireConnectionAdmissionGate admission)
+    {
+        ArgumentNullException.ThrowIfNull(admission);
+
+        if (Interlocked.CompareExchange(
+                ref _globalAdmission,
+                admission,
+                comparand: null) is not null)
+        {
+            throw new InvalidOperationException(
+                "MCP global admission has already been configured.");
+        }
     }
 
     /// <inheritdoc />
-    public async Task StopAllAsync(CancellationToken cancellationToken = default)
+    public Task StopAllAsync(CancellationToken cancellationToken = default)
     {
+        Task stop = GetOrStartStopOperation();
 
-        if (_disposed)
-        {
-
-            return;
-
-        }
-
-        foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
-        {
-            await StopAsync(entry.Name, entry.ScopeWorkingDirectory, cancellationToken).ConfigureAwait(false);
-        }
+        return stop.WaitAsync(cancellationToken);
     }
 
     /// <inheritdoc />
     public async Task<Result> StartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_lifecycleAdmission.TryEnter(out IAsyncDisposable? admitted))
+        {
+            return ManagerStoppedError();
+        }
+
+        await using IAsyncDisposable lifecycle = admitted!;
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _globalInitializationLifetime.Token);
+
+        return await StartCoreAsync(name, workingDirectory, linked.Token).ConfigureAwait(false);
+    }
+
+    private async Task<Result> StartCoreAsync(
+        string name,
+        string? workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
 
         Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
 
@@ -341,7 +448,26 @@ public sealed partial class McpConnectionManager(
     /// <inheritdoc />
     public async Task<Result> RestartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_lifecycleAdmission.TryEnter(out IAsyncDisposable? admitted))
+        {
+            return ManagerStoppedError();
+        }
+
+        await using IAsyncDisposable lifecycle = admitted!;
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _globalInitializationLifetime.Token);
+
+        return await RestartCoreAsync(name, workingDirectory, linked.Token).ConfigureAwait(false);
+    }
+
+    private async Task<Result> RestartCoreAsync(
+        string name,
+        string? workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
 
         Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
 
@@ -354,7 +480,7 @@ public sealed partial class McpConnectionManager(
 
         if (entry.State is McpServerState.Stopped)
         {
-            return await StartAsync(name, workingDirectory, cancellationToken).ConfigureAwait(false);
+            return await StartCoreAsync(name, workingDirectory, cancellationToken).ConfigureAwait(false);
         }
 
         List<McpServerEvent> pendingEvents = [];
@@ -671,7 +797,9 @@ public sealed partial class McpConnectionManager(
                 return cached.Tools;
             }
 
-            await EnsureGlobalLoadedAsync(cancellationToken)
+            await EnsureGlobalLoadedAsync(
+                    McpGlobalInitializationAuthority.OrdinaryHostedWork,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             SemaphoreSlim workspaceLock = _workspaceInitLocks
@@ -783,7 +911,6 @@ public sealed partial class McpConnectionManager(
 
     private void InvalidateInternalToolCachesForSettingsChange()
     {
-
         string fingerprint =
             InternalCodingToolSettingsFingerprint.Build(
                 settings.CurrentValue.ResolveCodingTools());
@@ -792,13 +919,11 @@ public sealed partial class McpConnectionManager(
 
         lock (_internalSettingsCacheGate)
         {
-
             if (string.Equals(
                     fingerprint,
                     _cachedInternalToolSettingsFingerprint,
                     StringComparison.Ordinal))
             {
-
                 return;
             }
 
@@ -1056,206 +1181,499 @@ public sealed partial class McpConnectionManager(
     /// <inheritdoc />
     public async Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_lifecycleAdmission.TryEnter(out IAsyncDisposable? admitted))
+        {
+            throw ManagerStoppedException();
+        }
 
-        List<IMcpClient> retiredClients = [];
+        await using IAsyncDisposable lifecycle = admitted!;
 
-        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _globalInitializationLifetime.Token);
+
+        await ReloadCoreAsync(workingDirectory, linked.Token).ConfigureAwait(false);
+    }
+
+    private async Task ReloadCoreAsync(
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        Task? inFlightInitializer = null;
+
+        TaskCompletionSource? ownedReload = null;
+
+        while (ownedReload is null)
+        {
+            Task? existingReload = null;
+
+            await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                ThrowIfGlobalInitializationStopped();
+
+                if (_globalLifecycleState is GlobalLifecycleState.Reloading)
+                {
+                    existingReload = _reloadCompleted.Task;
+                }
+                else
+                {
+                    _globalLifecycleState = GlobalLifecycleState.Reloading;
+
+                    ownedReload = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+
+                    _reloadCompleted = ownedReload;
+
+                    if (_globalInitOperation is { IsCompleted: false } current)
+                    {
+                        inFlightInitializer = current;
+                    }
+                }
+            }
+            finally
+            {
+                _globalInitLock.Release();
+            }
+
+            if (existingReload is not null)
+            {
+                await existingReload.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        bool reloadStateEnded = false;
 
         try
         {
-            _ = Interlocked.Increment(
-                ref _toolSurfaceGeneration);
-
-            foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
+            if (inFlightInitializer is not null)
             {
-                await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await inFlightInitializer.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Observed a failed MCP initializer before reload invalidated its registry.");
+                }
+            }
+
+            List<IMcpClient> retiredClients = [];
+
+            await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                ThrowIfGlobalInitializationStopped();
+
+                await _registryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
                 try
                 {
-                    _ = await StopManagedServerCoreAsync(entry)
-                        .ConfigureAwait(false);
+                    _ = Interlocked.Increment(ref _toolSurfaceGeneration);
 
-                    entry.State = McpServerState.Stopped;
+                    ManagedMcpServerEntry[] entries = _registry.Values.ToArray();
 
-                    entry.Tools = [];
+                    foreach (ManagedMcpServerEntry entry in entries)
+                    {
+                        entry.MarkRetired();
+                    }
 
-                    entry.ErrorMessage = null;
+                    foreach (ManagedMcpServerEntry entry in entries)
+                    {
+                        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                        try
+                        {
+                            _ = await StopManagedServerCoreAsync(entry).ConfigureAwait(false);
+
+                            entry.State = McpServerState.Stopped;
+
+                            entry.Tools = [];
+
+                            entry.ErrorMessage = null;
+                        }
+                        finally
+                        {
+                            entry.Gate.Release();
+                        }
+                    }
+
+                    _registry.Clear();
+
+                    _globalRegistryLoaded = false;
+
+                    // Retired generations drain only after the cleared registry and surfaces are
+                    // visible, so one unbounded in-flight tool call cannot pin global reload.
+                    foreach (KeyValuePair<string, Lazy<McpPartitionClients>> partitionEntry in
+                             _partitionClients.ToArray())
+                    {
+                        if (!_partitionClients.TryRemove(partitionEntry))
+                        {
+                            continue;
+                        }
+
+                        if (!partitionEntry.Value.IsValueCreated)
+                        {
+                            continue;
+                        }
+
+                        retiredClients.AddRange(partitionEntry.Value.Value.DrainClients());
+                    }
+
+                    _mergedToolsByWorkspace.Clear();
+
+                    _globalFirstByToolName = new(StringComparer.Ordinal);
+
+                    _globalSurfaceTools = [];
+
+                    _globalLifecycleState = GlobalLifecycleState.Active;
+
+                    reloadStateEnded = true;
+
+                    ownedReload.TrySetResult();
                 }
                 finally
                 {
-                    entry.Gate.Release();
+                    _registryLock.Release();
                 }
             }
-
-            _registry.Clear();
-
-            _globalRegistryLoaded = false;
-
-            // The retired clients are collected here but disposed after the lock is released and
-            // after every cached surface has been dropped. Draining a generation can take as long as
-            // its longest in-flight call — ask_human and execute_command run with
-            // Timeout.InfiniteTimeSpan — so disposing under _globalInitLock, or before the caches
-            // are cleared, would leave the whole tool surface pinned to the retired generation (and
-            // _globalInitLock held) for the duration of an operator-answered prompt.
-            foreach (KeyValuePair<string, Lazy<McpPartitionClients>> partitionEntry in _partitionClients.ToArray())
+            finally
             {
-                if (!_partitionClients.TryRemove(partitionEntry))
-                {
-                    continue;
-                }
-
-                if (!partitionEntry.Value.IsValueCreated)
-                {
-                    continue;
-                }
-
-                retiredClients.AddRange(partitionEntry.Value.Value.DrainClients());
+                _globalInitLock.Release();
             }
 
-            _mergedToolsByWorkspace.Clear();
+            await DisposeRetiredReloadClientsAsync(retiredClients).ConfigureAwait(false);
 
-            _globalInitialized = false;
+            await AwaitRetiredPartitionDisposalsAsync().ConfigureAwait(false);
 
-            _globalInitOperation = null;
+            await EnsureGlobalLoadedAsync(
+                    McpGlobalInitializationAuthority.OrdinaryHostedWork,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-            _globalFirstByToolName = new(StringComparer.Ordinal);
+            logger.LogInformation(
+                "MCP connection manager reloaded (workspace hint: {WorkingDirectory}); global re-bootstrapped, all partitions cleared.",
+                string.IsNullOrWhiteSpace(workingDirectory) ? "(empty)" : workingDirectory);
+        }
+        finally
+        {
+            if (!reloadStateEnded)
+            {
+                await EndReloadStateAsync(ownedReload).ConfigureAwait(false);
+            }
+        }
+    }
 
-            _globalSurfaceTools = [];
+    private Task GetOrStartStopOperation()
+    {
+        TaskCompletionSource? owner = null;
+
+        Task stop;
+
+        lock (_shutdownGate)
+        {
+            if (_stopOperation is null)
+            {
+                owner = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                _stopOperation = owner.Task;
+            }
+
+            stop = _stopOperation;
+        }
+
+        if (owner is not null)
+        {
+            _ = CompleteStopOperationAsync(owner);
+        }
+
+        return stop;
+    }
+
+    private async Task CompleteStopOperationAsync(TaskCompletionSource owner)
+    {
+        try
+        {
+            await StopAndObserveAsync().ConfigureAwait(false);
+
+            owner.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            owner.TrySetException(ex);
+        }
+    }
+
+    private async Task StopAndObserveAsync()
+    {
+        Task lifecycleDrained = _lifecycleAdmission.CloseAndCancel();
+
+        // Closing admission is the only operation that can make this task complete.
+        // Observe it first so no later shutdown failure can abandon an admitted owner.
+        await lifecycleDrained.ConfigureAwait(false);
+
+        AggregateException? cancellationFailure =
+            _lifecycleAdmission.CancellationFailure;
+
+        if (cancellationFailure is not null)
+        {
+            logger.LogWarning(
+                cancellationFailure,
+                "An MCP lifecycle cancellation callback failed during shutdown; teardown will continue.");
+        }
+
+        Task? initializer;
+
+        await _globalInitLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            _globalLifecycleState = GlobalLifecycleState.Stopping;
+
+            _reloadCompleted.TrySetResult();
+
+            initializer = _globalInitOperation;
         }
         finally
         {
             _globalInitLock.Release();
         }
 
-        await DisposeRetiredReloadClientsAsync(retiredClients)
-            .ConfigureAwait(false);
+        Exception? observedFailure = null;
 
-        await AwaitRetiredPartitionDisposalsAsync()
-            .ConfigureAwait(false);
-
-        await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
-
-        logger.LogInformation(
-            "MCP connection manager reloaded (workspace hint: {WorkingDirectory}); global re-bootstrapped, all partitions cleared.",
-            string.IsNullOrWhiteSpace(workingDirectory) ? "(empty)" : workingDirectory);
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_disposed)
+        if (initializer is not null)
         {
-            return;
+            try
+            {
+                await initializer.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (_globalInitializationLifetime.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                observedFailure = ex;
+
+                logger.LogWarning(
+                    ex,
+                    "Observed a failed MCP initializer during shutdown.");
+            }
         }
 
-        _disposed = true;
+        observedFailure ??= cancellationFailure;
+
+        await AwaitPendingTransportEndedTasksAsync().ConfigureAwait(false);
+
+        await AwaitPendingWorkspaceRetirementsAsync().ConfigureAwait(false);
+
+        foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
+        {
+            try
+            {
+                _ = await StopAsync(
+                        entry.Name,
+                        entry.ScopeWorkingDirectory,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                observedFailure ??= ex;
+
+                logger.LogWarning(
+                    ex,
+                    "Error stopping MCP server {ServerName} during shutdown.",
+                    entry.Name);
+            }
+        }
+
+        if (observedFailure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                .Capture(observedFailure)
+                .Throw();
+        }
+    }
+
+    private async Task AwaitPendingTransportEndedTasksAsync()
+    {
+        while (true)
+        {
+            Task[] pending = _pendingTransportEndedTasks.Keys.ToArray();
+
+            if (pending.Length == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.WhenAll(pending).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(
+                    ex,
+                    "Error awaiting in-flight transport-ended handler(s) during shutdown.");
+            }
+        }
+    }
+
+    private async Task EndReloadStateAsync(TaskCompletionSource ownedReload)
+    {
+        await _globalInitLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
 
         try
         {
-            await _hostLifetimeCts.CancelAsync().ConfigureAwait(false);
+            if (_globalLifecycleState is GlobalLifecycleState.Reloading)
+            {
+                _globalLifecycleState = GlobalLifecycleState.Active;
+            }
+
+            ownedReload.TrySetResult();
         }
-        catch (ObjectDisposedException)
+        finally
         {
+            _globalInitLock.Release();
         }
-
-        // Awaited before StopAllAsync/gate disposal below: a HandleTransportEnded background task
-        // that was already past its own _disposed check when the flag flipped above could otherwise
-        // still be mid-flight — acquiring entry.Gate, mutating entry.Client, or publishing an event —
-        // concurrently with this method disposing that same gate and clearing the registry.
-        Task[] pendingTransportEndedTasks = _pendingTransportEndedTasks.Keys.ToArray();
-
-        if (pendingTransportEndedTasks.Length > 0)
-        {
-            try
-            {
-                await Task.WhenAll(pendingTransportEndedTasks).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug(ex, "Error awaiting in-flight transport-ended handler(s) during shutdown.");
-            }
-        }
-
-        await AwaitPendingWorkspaceRetirementsAsync()
-            .ConfigureAwait(false);
-
-        // Not StopAllAsync: _disposed is already set above, so that entry point short-circuits. A
-        // client only reaches a partition when a surface build attaches it, so an entry started
-        // through StartAsync and never used for inference would otherwise keep its stdio child
-        // alive past shutdown. StopManagedServerCoreAsync also unregisters from the partition, so
-        // the drain below stays correct for everything it does cover.
-        foreach (ManagedMcpServerEntry entry in _registry.Values)
-        {
-            if (entry.Client is null)
-            {
-                continue;
-            }
-
-            try
-            {
-                _ = await StopManagedServerCoreAsync(entry).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Error stopping MCP server {ServerName} during shutdown.", entry.Name);
-            }
-        }
-
-        foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
-        {
-            if (!partitionLazy.IsValueCreated)
-            {
-                continue;
-            }
-
-            McpPartitionClients partition = partitionLazy.Value;
-
-            IMcpClient[] drained = partition.DrainClients();
-
-            for (int i = drained.Length - 1; i >= 0; i--)
-            {
-                try
-                {
-                    await drained[i].DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Error disposing MCP client instance.");
-                }
-            }
-        }
-
-        await AwaitRetiredPartitionDisposalsAsync()
-            .ConfigureAwait(false);
-
-        _partitionClients.Clear();
-
-        _mergedToolsByWorkspace.Clear();
-
-        _globalInitLock.Dispose();
-
-        _registryLock.Dispose();
-
-        foreach (Lazy<SemaphoreSlim> slimLazy in _workspaceInitLocks.Values)
-        {
-            if (!slimLazy.IsValueCreated)
-            {
-                continue;
-            }
-
-            slimLazy.Value.Dispose();
-        }
-
-        _workspaceInitLocks.Clear();
-
-        foreach (ManagedMcpServerEntry entry in _registry.Values)
-        {
-            entry.Gate.Dispose();
-        }
-
-        _registry.Clear();
-
-        _hostLifetimeCts.Dispose();
     }
 
+    private void ThrowIfGlobalInitializationStopped()
+    {
+        if (_disposed || _globalLifecycleState is GlobalLifecycleState.Stopping)
+        {
+            throw ManagerStoppedException();
+        }
+    }
+
+    private static ObjectDisposedException ManagerStoppedException() =>
+        new(
+            nameof(McpConnectionManager),
+            "The MCP connection manager is stopping or has stopped.");
+
+    private static Error ManagerStoppedError() =>
+        new(
+            ErrorCodes.Mcp.ServerNotRunning,
+            "The MCP connection manager is stopping or has stopped.");
+
+    private static TaskCompletionSource CompletedSignal()
+    {
+        TaskCompletionSource completed = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        completed.TrySetResult();
+
+        return completed;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.CompareExchange(ref _disposeStarted, 1, 0) != 0)
+        {
+            return new ValueTask(_disposeCompleted.Task);
+        }
+
+        return new ValueTask(DisposeCoreAsync());
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        try
+        {
+            try
+            {
+                await GetOrStartStopOperation().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "MCP shutdown reported a failure while disposal continued draining resources.");
+            }
+
+            _disposed = true;
+
+            foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
+            {
+                if (!partitionLazy.IsValueCreated)
+                {
+                    continue;
+                }
+
+                McpPartitionClients partition = partitionLazy.Value;
+
+                IMcpClient[] drained = partition.DrainClients();
+
+                for (int i = drained.Length - 1; i >= 0; i--)
+                {
+                    try
+                    {
+                        await drained[i].DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Error disposing MCP client instance.");
+                    }
+                }
+            }
+
+            await AwaitRetiredPartitionDisposalsAsync().ConfigureAwait(false);
+
+            _partitionClients.Clear();
+
+            _mergedToolsByWorkspace.Clear();
+
+            _globalInitLock.Dispose();
+
+            _registryLock.Dispose();
+
+            foreach (Lazy<SemaphoreSlim> slimLazy in _workspaceInitLocks.Values)
+            {
+                if (!slimLazy.IsValueCreated)
+                {
+                    continue;
+                }
+
+                slimLazy.Value.Dispose();
+            }
+
+            _workspaceInitLocks.Clear();
+
+            foreach (ManagedMcpServerEntry entry in _registry.Values)
+            {
+                entry.Gate.Dispose();
+            }
+
+            _registry.Clear();
+
+            _lifecycleAdmission.Dispose();
+
+            _globalInitializationLifetime.Dispose();
+
+            _disposeCompleted.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            _disposeCompleted.TrySetException(ex);
+
+            throw;
+        }
+    }
+
+    private enum GlobalLifecycleState : byte
+    {
+        Active = 0,
+        Reloading = 1,
+        Stopping = 2,
+    }
 }

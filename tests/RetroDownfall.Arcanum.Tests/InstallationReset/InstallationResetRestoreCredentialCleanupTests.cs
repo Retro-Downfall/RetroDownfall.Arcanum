@@ -1,6 +1,8 @@
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Secrets.Security;
 
@@ -36,15 +38,39 @@ public sealed class InstallationResetRestoreCredentialCleanupTests
             3,
             (byte)InstallationResetRestoreCredentialCleanupPhase.InstallationIdentityRemoved);
 
-        Assert.Equal(4, (byte)InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent);
+        // Code 4 keeps the exact value and meaning it has always had. The enum is serialized as a
+        // number inside an in-flight active record, so a record resumed at 4 still reads as "the
+        // restore trio is gone" — it now also reads as "the transition pair is still owed", which is
+        // what such a record actually means once a slot exists to owe anything about.
+        Assert.Equal(
+            4,
+            (byte)InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent);
 
-        Assert.Equal(4, Enum.GetValues<InstallationResetRestoreCredentialCleanupPhase>().Length);
+        Assert.Equal(
+            5,
+            (byte)InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved);
+
+        Assert.Equal(6, (byte)InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved);
+
+        Assert.Equal(
+            7,
+            (byte)InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent);
+
+        Assert.Equal(7, Enum.GetValues<InstallationResetRestoreCredentialCleanupPhase>().Length);
 
         Assert.Equal(1, (byte)BackupRestoreFullResetTerminalArm.NeverRestoredAbsence);
 
         Assert.Equal(2, (byte)BackupRestoreFullResetTerminalArm.ClosedAnchor);
 
         Assert.Equal(2, Enum.GetValues<BackupRestoreFullResetTerminalArm>().Length);
+
+        Assert.Equal(
+            1,
+            (byte)GrimoireOfflineTransitionFullResetTerminalArm.NeverTransitionedAbsence);
+
+        Assert.Equal(2, (byte)GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor);
+
+        Assert.Equal(2, Enum.GetValues<GrimoireOfflineTransitionFullResetTerminalArm>().Length);
 
     }
 
@@ -96,7 +122,7 @@ public sealed class InstallationResetRestoreCredentialCleanupTests
 
         Assert.True(removed.IsSuccess, removed.Error.Message);
 
-        Assert.Equal(InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent, removed.Value);
+        Assert.Equal(InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent, removed.Value);
 
         Assert.Empty(store.Deletes);
 
@@ -132,7 +158,7 @@ public sealed class InstallationResetRestoreCredentialCleanupTests
 
         Assert.True(removed.IsSuccess, removed.Error.Message);
 
-        Assert.Equal(InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent, removed.Value);
+        Assert.Equal(InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent, removed.Value);
 
         // The anchor first: once it is gone no surviving journal can authenticate, so no partially
         // removed state can be mistaken for a restore in progress.
@@ -197,7 +223,7 @@ public sealed class InstallationResetRestoreCredentialCleanupTests
             Assert.True(removed.IsSuccess, removed.Error.Message);
 
             Assert.Equal(
-                InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent,
                 removed.Value);
 
             Assert.Equal(expectedDeletes, store.Deletes);

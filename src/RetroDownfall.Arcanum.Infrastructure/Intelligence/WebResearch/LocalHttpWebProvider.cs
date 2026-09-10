@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
@@ -18,17 +19,22 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
 
     private readonly WebPageContentExtractor _extractor;
 
+    private readonly IDnsResolver _dnsResolver;
+
     private readonly ILogger<LocalHttpWebProvider>? _logger;
 
     public LocalHttpWebProvider(
         IHttpClientFactory httpClientFactory,
         WebPageContentExtractor extractor,
+        IDnsResolver dnsResolver,
         ILogger<LocalHttpWebProvider>? logger = null)
     {
         _httpClientFactory = httpClientFactory
             ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _extractor = extractor
             ?? throw new ArgumentNullException(nameof(extractor));
+        _dnsResolver = dnsResolver
+            ?? throw new ArgumentNullException(nameof(dnsResolver));
         _logger = logger;
     }
 
@@ -108,6 +114,7 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
                     Result outbound = await OutboundUrlGuard
                         .ValidateUntrustedUrlAsync(
                             current.AbsoluteUri,
+                            _dnsResolver,
                             deadline.Token)
                         .ConfigureAwait(false);
 

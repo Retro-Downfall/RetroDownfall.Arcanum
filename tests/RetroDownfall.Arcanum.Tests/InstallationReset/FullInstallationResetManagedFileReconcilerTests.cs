@@ -722,7 +722,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     "ciphertext",
                     "tag"),
                 envelopeDigest,
-                InstallationResetActivePayloadV2.FromRecord(record),
+                InstallationResetActivePayloadV3.FromRecord(record),
                 new InstallationResetActiveAnchorV1(
                     1,
                     InstallationResetActiveAnchorState.Active,
@@ -1085,7 +1085,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
             }
 
-            Current = Bump(Current, InstallationResetActivePayloadV2.FromRecord(next));
+            Current = Bump(Current, InstallationResetActivePayloadV3.FromRecord(next));
 
             return Task.FromResult(
                 Result<InstallationResetActivePublication>.Success(Current));
@@ -1124,7 +1124,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
         private static InstallationResetActivePublication Bump(
             InstallationResetActivePublication current,
-            InstallationResetActivePayloadV2 payload)
+            InstallationResetActivePayloadV3 payload)
         {
 
             CovenantDigest envelopeDigest = new(

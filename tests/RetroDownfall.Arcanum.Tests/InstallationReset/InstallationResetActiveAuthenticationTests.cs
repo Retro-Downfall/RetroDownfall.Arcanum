@@ -172,7 +172,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         InstallationResetActiveEnvelopeV2 fixture = FixtureEnvelope();
 
-        InstallationResetActivePayloadV2 expectedPayload = FixturePayload();
+        InstallationResetActivePayloadV3 expectedPayload = LegacyFixturePayload();
 
         byte[] encoded = Value(
             InstallationResetActiveRecordAuthenticator.EncodeEnvelope(fixture));
@@ -191,7 +191,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
         using InstallationResetActiveRecordKeyLease openKey =
             InstallationResetActiveRecordKeyLease.Mint(openMaterial);
 
-        InstallationResetActivePayloadV2 opened = Value(
+        InstallationResetActivePayloadV3 opened = Value(
             InstallationResetActiveRecordAuthenticator.Open(
                 openKey,
                 location,
@@ -237,7 +237,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
                 fixture.InstallationId,
                 fixture.Revision,
                 fixture.PreviousEnvelopeDigest,
-                expectedPayload));
+                FixturePayload()));
 
         Assert.True(sealMaterial.All(static value => value == 0));
 
@@ -276,7 +276,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         InstallationResetActiveLocation location = FixtureLocation();
 
-        Result<InstallationResetActivePayloadV2>[] refusals =
+        Result<InstallationResetActivePayloadV3>[] refusals =
         [
             OpenFixture(
                 Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray(),
@@ -550,7 +550,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: rejecting or discarding the typed checkpoint after authenticating the
         // envelope prevents restart from retaining the journaled destructive-effect evidence.
-        InstallationResetActivePayloadV2 payload = CheckpointPayload();
+        InstallationResetActivePayloadV3 payload = CheckpointPayload();
 
         Result valid = InstallationResetActiveRecordAuthenticator.ValidatePayload(payload);
 
@@ -570,7 +570,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
                 InstallationResetActiveRecordAuthenticator.ZeroDigest,
                 payload));
 
-        InstallationResetActivePayloadV2 opened = Value(
+        InstallationResetActivePayloadV3 opened = Value(
             OpenFixture(
                 key,
                 FixtureLocation(),
@@ -591,14 +591,14 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: accepting a checkpoint outside its exact V1 claim/All-scope/recovery
         // owner shape would let unrelated or already-advanced reset state adopt its authority.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
 
         FullInstallationResetRemediationClaimV1 claim =
             valid.FullInstallationResetRemediationClaim!;
 
-        InstallationResetActivePayloadV2[] invalid =
+        InstallationResetActivePayloadV3[] invalid =
         [
             valid with
             {
@@ -654,7 +654,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: accepting equivalent-looking or substituted acceptance/digest evidence
         // would detach restart authorization from the exact authenticated claim publication.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
 
@@ -706,7 +706,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: treating the byte code as an ordinal/default or allowing Campaign
         // receipts before pair absence would authenticate skipped/regressed effect ordering.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
 
@@ -743,7 +743,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: trusting stored digests without recomputing their canonical owners lets
         // a nested projection, pair, inventory, or full-reset effect be substituted independently.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
 
@@ -784,7 +784,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: independently validating signed attestation A and coherent pair B lets
         // a recomputed pair digest detach restart evidence from the authenticated signed statement.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
 
@@ -841,7 +841,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: treating any valid 32-byte digest as interchangeable across lifecycle
         // domains would let an attacker substitute a reconstructed sibling commitment.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint = valid.HostToolsMarkerPairReset!;
 
@@ -894,7 +894,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: a private Infrastructure digest that omits or loosely decodes the
         // signature would diverge from Core's signature-inclusive canonical owner.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         FullInstallationResetRestartProofV1 proof =
             valid.HostToolsMarkerPairReset!.RestartProof;
@@ -937,7 +937,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
         // canonical source-generated spelling would admit ignored, missing, or reordered evidence.
         string canonical = JsonSerializer.Serialize(
             CheckpointPayload(),
-            InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+            InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3);
 
         string checkpointPrefix =
             "\"hostToolsMarkerPairReset\":{\"version\":1,\"phase\":1,";
@@ -980,7 +980,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: accepting a partially published Campaign receipt would let restart
         // interpret an incomplete vector/count barrier as durable preparation evidence.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
             valid.HostToolsMarkerPairReset!,
@@ -1009,7 +1009,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: binding count only to vector length permits a receipt for no Campaign,
         // too few Campaigns, or no intent despite authenticated nonempty inventory.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 emptyInventory =
             valid.HostToolsMarkerPairReset!;
@@ -1045,7 +1045,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: failing to validate and hash a defensive vector snapshot would admit
         // default, oversized, repeated, reordered, or backing-array-mutated intent evidence.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         Guid first = Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00");
 
@@ -1099,7 +1099,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: persisting incremental child totals would make an intermediate scan
         // indistinguishable from the single authenticated terminal receipt publication.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
             valid.HostToolsMarkerPairReset!,
@@ -1128,7 +1128,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         // Mutation caught: unchecked UInt64 addition can wrap a nonsensical terminal receipt back
         // to the authenticated intent count and falsely report complete reconciliation.
-        InstallationResetActivePayloadV2 valid = CheckpointPayload();
+        InstallationResetActivePayloadV3 valid = CheckpointPayload();
 
         HostToolsMarkerPairResetCheckpointV1 prepared = PreparedCheckpoint(
             valid.HostToolsMarkerPairReset!,
@@ -1193,7 +1193,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
         InstallationResetActiveEnvelopeV2 authenticated =
             AuthenticatedFixtureEnvelope(payloadJson);
 
-        Result<InstallationResetActivePayloadV2> opened = OpenFixture(
+        Result<InstallationResetActivePayloadV3> opened = OpenFixture(
             FixtureKey(),
             FixtureLocation(),
             authenticated.InstallationId,
@@ -1203,7 +1203,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         string reencoded = JsonSerializer.Serialize(
             opened.Value,
-            InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+            InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3);
 
         Assert.Contains(
             "\"fullInstallationResetRemediationClaim\"",
@@ -1216,7 +1216,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
         Assert.Equal(
             record.FullInstallationResetRemediationClaim,
-            InstallationResetActivePayloadV2
+            InstallationResetActivePayloadV3
                 .FromRecord(record)
                 .FullInstallationResetRemediationClaim);
 
@@ -1233,7 +1233,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
     public void V2_external_remediation_claim_is_bounded_and_matches_both_envelope_identities()
     {
 
-        InstallationResetActivePayloadV2 fixture = FixturePayload();
+        InstallationResetActivePayloadV3 fixture = FixturePayload();
 
         FullInstallationResetRemediationClaimV1 claim = new(
             Version: 1,
@@ -1244,7 +1244,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
             DigestRange(0x30),
             new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero));
 
-        InstallationResetActivePayloadV2 claimed = fixture with
+        InstallationResetActivePayloadV3 claimed = fixture with
         {
             LastErrorCode = ErrorCodes.Data.RecoveryRequired,
             FullInstallationResetRemediationClaim = claim,
@@ -1308,7 +1308,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
     public void V2_external_remediation_claim_requires_the_exact_pre_effect_checkpoint_shape()
     {
 
-        InstallationResetActivePayloadV2 fixture = FixturePayload();
+        InstallationResetActivePayloadV3 fixture = FixturePayload();
 
         FullInstallationResetRemediationClaimV1 claim = new(
             Version: 1,
@@ -1319,7 +1319,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
             DigestRange(0x30),
             new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero));
 
-        InstallationResetActivePayloadV2 claimed = fixture with
+        InstallationResetActivePayloadV3 claimed = fixture with
         {
             LastErrorCode = ErrorCodes.Data.RecoveryRequired,
             FullInstallationResetRemediationClaim = claim,
@@ -1328,7 +1328,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
         Assert.True(
             InstallationResetActiveRecordAuthenticator.ValidatePayload(claimed).IsSuccess);
 
-        InstallationResetActivePayloadV2[] invalidShapes =
+        InstallationResetActivePayloadV3[] invalidShapes =
         [
             claimed with { Scope = InstallationResetScope.Global },
             claimed with { Phase = InstallationResetPhase.DataResetComplete },
@@ -1749,7 +1749,7 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
 
     }
 
-    private static Result<InstallationResetActivePayloadV2> OpenFixture(
+    private static Result<InstallationResetActivePayloadV3> OpenFixture(
         byte[] key,
         InstallationResetActiveLocation location,
         Guid installationId,
@@ -1802,9 +1802,23 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
                 + "XmQZNyjqMjIKJtvnI_v6xP51kbbSlrKQiQX_lBXz8jVOVOMuUItqzOu5pfv0",
             AuthenticationTagBase64Url: "8KYWp71SRxBDaU46MaLFhg");
 
-    private static InstallationResetActivePayloadV2 FixturePayload() =>
+    /// <summary>
+    /// The one earlier payload version, which the pinned envelope vector below actually contains.
+    /// </summary>
+    /// <remarks>
+    /// Kept as its own fixture rather than folded into the current one, because the pinned ciphertext
+    /// is a record that was sealed before this build existed. Reading it back is the legacy contract
+    /// being exercised, not a convenience.
+    /// </remarks>
+    private static InstallationResetActivePayloadV3 LegacyFixturePayload() =>
+        FixturePayload() with
+        {
+            Version = InstallationResetActiveRecordAuthenticator.LegacyPayloadVersion,
+        };
+
+    private static InstallationResetActivePayloadV3 FixturePayload() =>
         new(
-            Version: 2,
+            Version: InstallationResetActiveRecordAuthenticator.PayloadVersion,
             OperationId: Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f"),
             PlanId: "plan-β",
             Scope: InstallationResetScope.All,
@@ -1827,10 +1841,10 @@ public sealed partial class InstallationResetActiveAuthenticationTests : IDispos
             OnlineDataCompletion: null,
             HostToolsMarkerPairReset: null);
 
-    private static InstallationResetActivePayloadV2 CheckpointPayload()
+    private static InstallationResetActivePayloadV3 CheckpointPayload()
     {
 
-        InstallationResetActivePayloadV2 fixture = FixturePayload();
+        InstallationResetActivePayloadV3 fixture = FixturePayload();
 
         HostProcessToolsMatchedPair pair = CheckpointPair();
 

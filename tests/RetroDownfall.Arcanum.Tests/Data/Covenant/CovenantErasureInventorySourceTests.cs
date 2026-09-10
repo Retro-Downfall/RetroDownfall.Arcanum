@@ -43,9 +43,15 @@ public sealed class CovenantErasureInventorySourceTests
 
         CovenantErasureInventorySource source = fixture.CreateSource();
 
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) =
+            await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
         Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation.CovenantReset,
             dataset,
+            period.Authority,
             CancellationToken.None);
 
         Assert.True(preflight.IsSuccess, preflight.IsFailure ? preflight.Error.Message : null);
@@ -70,6 +76,7 @@ public sealed class CovenantErasureInventorySourceTests
             Result<CovenantDatabaseErasureBatch> batch = await source.ReadNextDatabaseBatchAsync(
                 dataset,
                 databaseCursor,
+                period.Authority,
                 CancellationToken.None);
 
             Assert.True(batch.IsSuccess, batch.IsFailure ? batch.Error.Message : null);
@@ -125,6 +132,7 @@ public sealed class CovenantErasureInventorySourceTests
             Result<CovenantManagedFileErasureBatch> batch = await source.ReadNextManagedFileBatchAsync(
                 ErasureOperationId,
                 managedCursor,
+                period.Authority,
                 CancellationToken.None);
 
             Assert.True(batch.IsSuccess, batch.IsFailure ? batch.Error.Message : null);
@@ -168,27 +176,32 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.Equal(0, fixture.Drain.MaximumActiveCount);
 
-        Assert.Equal(9, fixture.OrdinaryConnections.Opened.Count);
+        // Same accounting, different factory. Nine owned snapshots — one preflight plus four pages
+        // of each kind — each released before the next began, which is what "bounded pages whose
+        // owned connections are gone before a kernel can run" means. They are counted on the
+        // maintenance factory now because admission is closed while an erasure inventories itself,
+        // and the ordinary factory the count used to come from is exactly what closure refuses.
+        Assert.Equal(9, opens.Opened);
 
-        Assert.All(
-            fixture.OrdinaryConnections.Kinds,
-            static kind => Assert.Equal(GrimoireOrdinaryFreshConnectionKind.ReadOnly, kind));
+        Assert.Equal(0, opens.LiveLeaseCount);
 
-        Assert.Equal(0, fixture.OrdinaryConnections.LiveLeaseCount);
+        // Nothing reached for an ordinary handle behind the closed period's back.
+        Assert.Empty(fixture.OrdinaryConnections.Opened);
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(CancellationToken.None);
 
         await fixture.ClosePrimaryConnectionAsync();
 
         CovenantCanonicalErasureTransaction canonical = new(
-            new CovenantV3MaintenanceTestConnectionFactory(
-                fixture.Factory,
-                CovenantSqliteConnectionInitializer.Instance),
             CovenantSqliteConnectionInitializer.Instance,
-            fixture.Drain,
             TimeProvider.System);
 
+        // The same closed period the inventory ran under. That the erasure which follows an inventory
+        // needs no second closure is the point of there being one authority per run.
         Result<Guid> applied = await canonical.ApplyAsync(
             CovenantExclusiveOperation.CovenantReset,
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+            preselected,
+            period.Authority,
             CancellationToken.None);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
@@ -207,9 +220,17 @@ public sealed class CovenantErasureInventorySourceTests
 
         CovenantErasureInventorySource source = fixture.CreateSource();
 
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) =
+            await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
         Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation.CovenantReset,
-            await fixture.ReadDatasetGenerationAsync(),
+            dataset,
+            period.Authority,
             CancellationToken.None);
 
         Assert.True(preflight.IsFailure);
@@ -218,11 +239,11 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
 
-        _ = Assert.Single(fixture.OrdinaryConnections.Opened);
+        Assert.Equal(1, opens.Opened);
 
-        Assert.Equal(
-            ConnectionState.Closed,
-            fixture.OrdinaryConnections.LastConnection!.State);
+        Assert.Equal(0, opens.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, opens.LastConnection!.State);
 
     }
 
@@ -236,9 +257,14 @@ public sealed class CovenantErasureInventorySourceTests
 
         CovenantErasureInventorySource source = fixture.CreateSource();
 
+        (CovenantClosedPeriodTestAuthority period, _) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
         Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation.CovenantReset,
             Guid.NewGuid(),
+            period.Authority,
             CancellationToken.None);
 
         Assert.True(preflight.IsFailure);
@@ -259,14 +285,27 @@ public sealed class CovenantErasureInventorySourceTests
 
         CovenantErasureInventorySource source = fixture.CreateSource();
 
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) =
+            await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
         Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
             CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
-            await fixture.ReadDatasetGenerationAsync(),
+            dataset,
+            period.Authority,
             CancellationToken.None);
 
         Assert.True(preflight.IsSuccess, preflight.IsFailure ? preflight.Error.Message : null);
 
-        _ = Assert.Single(fixture.OrdinaryConnections.Opened);
+        // One open, not two. The guard borrows the inventory's snapshot rather than acquiring a
+        // handle of its own — which under a closed period is not merely wasteful but impossible, and
+        // this is the assertion that says the borrowing is real rather than incidental.
+        Assert.Equal(1, opens.Opened);
+
+        Assert.Empty(fixture.OrdinaryConnections.Opened);
 
         Assert.Equal(0, fixture.Drain.MaximumActiveCount);
 
@@ -366,10 +405,17 @@ public sealed class CovenantErasureInventorySourceTests
 
         }
 
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, _) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
         Result<CovenantErasureInventorySummary> preflight = await fixture.CreateSource()
             .PreflightBeforeCanonicalAsync(
                 CovenantExclusiveOperation.CovenantReset,
-                await fixture.ReadDatasetGenerationAsync(),
+                dataset,
+                period.Authority,
                 CancellationToken.None);
 
         Assert.True(preflight.IsFailure);
@@ -394,11 +440,14 @@ public sealed class CovenantErasureInventorySourceTests
 
         CovenantErasureInventorySource source = fixture.CreateSource();
 
-        Task<Result<CovenantErasureInventorySummary>> reading =
-            source.PreflightBeforeCanonicalAsync(
-                CovenantExclusiveOperation.CovenantReset,
-                Guid.NewGuid(),
-                cancellation.Token);
+        // Through the source read rather than the preflight, and the change is forced rather than
+        // chosen. This asserts the lifecycle of the *ordinary* owned snapshot — enrolled, cancelled,
+        // closed, disposed, unregistered — and after the inventory moved inside the closed period the
+        // launch-time source read is the only caller that still takes that route. The preflight now
+        // opens a maintenance snapshot instead, which has a different owner and a different teardown,
+        // so pointing this at the preflight would silently stop testing the thing it is named for.
+        Task<Result<CovenantOfflineTransitionSourceState>> reading =
+            source.ReadOfflineTransitionSourceStateAsync(cancellation.Token);
 
         await fixture.OrdinaryConnections.OpenBlocked;
 
@@ -436,11 +485,10 @@ public sealed class CovenantErasureInventorySourceTests
         using ScopedConsumerPause pause = new(
             "CovenantErasureInventorySource.WithOwnedSnapshotAsync");
 
-        Task<Result<CovenantErasureInventorySummary>> reading = source
-            .PreflightBeforeCanonicalAsync(
-                CovenantExclusiveOperation.CovenantReset,
-                await fixture.ReadDatasetGenerationAsync(),
-                CancellationToken.None);
+        // The launch-time source read, for the same reason the cancellation test above uses it: it is
+        // the one remaining caller of the ordinary owned snapshot whose lease lifetime this asserts.
+        Task<Result<CovenantOfflineTransitionSourceState>> reading =
+            source.ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
 
         Task entered = pause.WaitUntilEnteredAsync();
 
@@ -471,7 +519,7 @@ public sealed class CovenantErasureInventorySourceTests
 
         }
 
-        Result<CovenantErasureInventorySummary> result = await reading;
+        Result<CovenantOfflineTransitionSourceState> result = await reading;
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
@@ -491,6 +539,105 @@ public sealed class CovenantErasureInventorySourceTests
         Guid.Parse($"20000000-0000-4000-8000-{index + 1:X12}");
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
+
+    /// <summary>
+    /// The offline-transition source read returns all four members of the tuple a launch binds to.
+    /// </summary>
+    /// <remarks>
+    /// The generation alone was enough while phase authority lived in the database, because a resumed
+    /// erasure could ask the row it was resuming from what it had already done. A journal-driven
+    /// transition has no such row, so the only way to tell its own canonical commit from an unrelated
+    /// one is to have committed to the exact epoch tuple beforehand — and a reader that returned three
+    /// of the four would leave the fourth to be inferred at the one moment inference is fatal.
+    /// </remarks>
+    [Fact]
+    public async Task Offline_transition_source_read_returns_the_generation_and_all_three_epochs()
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SetCanonicalEpochsAsync(accelerator: 7L, keyReclamation: 11L, envelopeKey: 13L);
+
+        Guid expected = await fixture.ReadDatasetGenerationAsync();
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantOfflineTransitionSourceState> read = await source
+            .ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
+
+        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
+
+        Assert.Equal(expected, read.Value.DatasetGeneration);
+
+        Assert.Equal(7UL, read.Value.AcceleratorEpoch);
+
+        Assert.Equal(11UL, read.Value.KeyReclamationEpoch);
+
+        Assert.Equal(13UL, read.Value.EnvelopeKeyEpoch);
+
+    }
+
+    /// <summary>
+    /// An epoch that cannot be advanced is refused here, before admission has closed.
+    /// </summary>
+    /// <remarks>
+    /// The persisted columns refuse a decrease and refuse any change at all once saturated, so a
+    /// target preselected from a ceiling source would be rejected by the database after the transition
+    /// had already stopped ordinary access — the one moment there is no safe answer left. Refusing at
+    /// the read costs an operator a message; refusing at the write costs them a closed Grimoire.
+    ///
+    /// <para>Saturation is the arm a well-formed database can actually reach. The reader refuses a
+    /// zero epoch too, but the column's own check constraint and the trigger's refusal to move one
+    /// backward mean no schema-respecting write can produce one, so that arm stays defensive rather
+    /// than exercised — a test that dropped the trigger to reach it would be proving something about
+    /// a database this product cannot produce.</para>
+    /// </remarks>
+    [Theory]
+    [InlineData(long.MaxValue, 4L, 5L)]
+    [InlineData(4L, long.MaxValue, 5L)]
+    [InlineData(4L, 5L, long.MaxValue)]
+    public async Task Offline_transition_source_read_refuses_an_epoch_it_cannot_preselect_a_successor_for(
+        long accelerator,
+        long keyReclamation,
+        long envelopeKey)
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SetCanonicalEpochsAsync(accelerator, keyReclamation, envelopeKey);
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantOfflineTransitionSourceState> read = await source
+            .ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
+
+    }
+
+    /// <summary>
+    /// A canonical singleton that is not there is a refusal rather than a default tuple.
+    /// </summary>
+    [Fact]
+    public async Task Offline_transition_source_read_refuses_an_absent_canonical_singleton()
+    {
+
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.DeleteCanonicalSingletonAsync();
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantOfflineTransitionSourceState> read = await source
+            .ReadOfflineTransitionSourceStateAsync(CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
+
+    }
 
     internal sealed class InventoryFixture : IAsyncDisposable
     {
@@ -790,9 +937,220 @@ public sealed class CovenantErasureInventorySourceTests
 
         }
 
+        internal async Task SetCanonicalEpochsAsync(
+            long accelerator,
+            long keyReclamation,
+            long envelopeKey)
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                UPDATE covenant_state
+                SET AcceleratorEpoch = $accelerator,
+                    KeyReclamationEpoch = $keyReclamation,
+                    EnvelopeKeyEpoch = $envelopeKey,
+                    UpdatedAtUtc = $now
+                WHERE StateKey = 1;
+                """;
+
+            command.Parameters.AddWithValue("$accelerator", accelerator);
+
+            command.Parameters.AddWithValue("$keyReclamation", keyReclamation);
+
+            command.Parameters.AddWithValue("$envelopeKey", envelopeKey);
+
+            command.Parameters.AddWithValue("$now", Now);
+
+            Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
+
+        }
+
+        internal async Task DeleteCanonicalSingletonAsync()
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = "DELETE FROM covenant_state WHERE StateKey = 1;";
+
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        internal async Task<CovenantCanonicalDatasetTransition> PreselectAsync(
+            CancellationToken cancellationToken)
+        {
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT DatasetGeneration, AcceleratorEpoch, KeyReclamationEpoch, EnvelopeKeyEpoch
+                FROM covenant_state
+                WHERE StateKey = 1;
+                """;
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            Assert.True(await reader.ReadAsync(cancellationToken));
+
+            CovenantOfflineTransitionEpochsV1 source = new(
+                (ulong)reader.GetInt64(1),
+                (ulong)reader.GetInt64(2),
+                (ulong)reader.GetInt64(3));
+
+            return new CovenantCanonicalDatasetTransition(
+                new Guid(reader.GetFieldValue<byte[]>(0)),
+                source,
+                Guid.NewGuid(),
+                new CovenantOfflineTransitionEpochsV1(
+                    source.AcceleratorEpoch + 1,
+                    source.KeyReclamationEpoch + 1,
+                    source.EnvelopeKeyEpoch + 1));
+
+        }
+
         internal Task ClosePrimaryConnectionAsync() => _database.Connection.CloseAsync();
 
+        /// <summary>The scratch file this fixture's inventory reads, for a gate that must resolve to it.</summary>
+        internal string DatabasePath => _database.DatabasePath;
+
+        /// <summary>
+        /// Closes a real admission gate over this fixture's file and counts what the inventory opens
+        /// through it.
+        /// </summary>
+        /// <remarks>
+        /// Every inventory read except the launch-time source read now happens inside a closed
+        /// period, so the accounting this suite exists to do — one owned snapshot per call, released
+        /// before a kernel could run — moved with it. The counter wraps the production factory rather
+        /// than replacing it, so what is being counted is still a real maintenance open.
+        ///
+        /// <para>The primary connection is deliberately left out of the drain. The snapshots here are
+        /// read-only and coexist with it happily, and the one test that goes on to run a canonical
+        /// erasure closes it by hand first — which is the moment its exclusive lock actually starts
+        /// to matter.</para>
+        /// </remarks>
+        internal async Task<(CovenantClosedPeriodTestAuthority Period, CountingMaintenanceFactory Opens)>
+            ClosedPeriodAsync()
+        {
+
+            CountingMaintenanceFactory? counter = null;
+
+            CovenantClosedPeriodTestAuthority period = await CovenantClosedPeriodTestAuthority.CloseAsync(
+                _database.DatabasePath,
+                CovenantSchemaScratchDatabase.ScratchPassphrase,
+                CovenantSqliteConnectionInitializer.Instance,
+                Drain,
+                inner => counter = new CountingMaintenanceFactory(inner));
+
+            return (period, counter!);
+
+        }
+
         public ValueTask DisposeAsync() => _database.DisposeAsync();
+
+        /// <summary>Counts the closed-period opens the inventory performs, and their release.</summary>
+        internal sealed class CountingMaintenanceFactory(IGrimoireMaintenanceConnectionFactory inner)
+            : IGrimoireMaintenanceConnectionFactory
+        {
+
+            /// <summary>How many maintenance snapshots the inventory has opened.</summary>
+            internal int Opened { get; private set; }
+
+            /// <summary>How many of those are still open.</summary>
+            internal int LiveLeaseCount { get; private set; }
+
+            /// <summary>The connection the most recent snapshot ran on.</summary>
+            internal SqliteConnection? LastConnection { get; private set; }
+
+            public async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken)
+            {
+
+                Opened++;
+
+                Result<IGrimoireMaintenanceConnectionLease> opened = await inner
+                    .OpenJournalInventorySnapshotAsync(capability, lane, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (opened.IsFailure)
+                {
+
+                    return opened;
+
+                }
+
+                LiveLeaseCount++;
+
+                LastConnection = opened.Value.Connection;
+
+                return Result<IGrimoireMaintenanceConnectionLease>.Success(
+                    new CountingLease(opened.Value, this));
+
+            }
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                inner.OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken);
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory truncates no journal.");
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory compacts nothing.");
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory compacts nothing.");
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory verifies no export.");
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory initializes no accelerator.");
+
+            public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+                IGrimoireMaintenanceConnectionCapability capability,
+                IGrimoireMaintenanceIoLane lane,
+                CancellationToken cancellationToken) =>
+                throw new NotSupportedException("The inventory reopens no candidate.");
+
+            private sealed class CountingLease(
+                IGrimoireMaintenanceConnectionLease inner,
+                CountingMaintenanceFactory owner) : IGrimoireMaintenanceConnectionLease
+            {
+
+                public SqliteConnection Connection => inner.Connection;
+
+                public async ValueTask DisposeAsync()
+                {
+
+                    await inner.DisposeAsync().ConfigureAwait(false);
+
+                    owner.LiveLeaseCount--;
+
+                }
+
+            }
+
+        }
 
         private static async Task InsertLabelAsync(
             SqliteTransaction transaction,

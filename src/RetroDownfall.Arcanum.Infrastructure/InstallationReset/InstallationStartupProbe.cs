@@ -19,7 +19,6 @@ internal sealed class InstallationStartupProbe(
     string protectedMasterStatePath,
     IOsCredentialStore credentialStore) : IInstallationStartupProbe
 {
-
     private readonly string _guardedRoot = guardedRoot;
 
     private readonly InstallationResetActiveStore _activeStore = new(
@@ -37,26 +36,21 @@ internal sealed class InstallationStartupProbe(
             ArcanumPaths.ConfigurationFile,
             ArcanumPaths.GrimoireDatabaseFile,
             ArcanumPaths.ApiKeyStoreFile,
-            new OsCredentialStore());
+            TestCredentialStorePolicy.CreateForCurrentProcess());
 
     public async Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
         CancellationToken cancellationToken = default)
     {
-
         Result<bool> parentAbsent = ActiveEvidenceParentIsAbsent();
 
         if (parentAbsent.IsFailure)
         {
-
             return Result<ActiveInstallationReset?>.Failure(parentAbsent.Error);
-
         }
 
         if (parentAbsent.Value)
         {
-
             return Result<ActiveInstallationReset?>.Success(null);
-
         }
 
         Result<AuthoritativePathState> root = ClassifyAuthoritativePath(
@@ -65,9 +59,19 @@ internal sealed class InstallationStartupProbe(
 
         if (root.IsFailure)
         {
-
             return Result<ActiveInstallationReset?>.Failure(root.Error);
+        }
 
+        Result<bool> presence = _activeStore.ProbePresence();
+
+        if (presence.IsFailure)
+        {
+            return Result<ActiveInstallationReset?>.Failure(presence.Error);
+        }
+
+        if (!presence.Value)
+        {
+            return Result<ActiveInstallationReset?>.Success(null);
         }
 
         Result<InstallationResetActiveRecoveryState> inspected = await _activeStore
@@ -76,9 +80,7 @@ internal sealed class InstallationStartupProbe(
 
         if (inspected.IsFailure)
         {
-
             return Result<ActiveInstallationReset?>.Failure(inspected.Error);
-
         }
 
         Result<InstallationResetStartupRecoveryState> projected =
@@ -86,24 +88,18 @@ internal sealed class InstallationStartupProbe(
 
         if (projected.IsFailure)
         {
-
             return Result<ActiveInstallationReset?>.Failure(projected.Error);
-
         }
 
         return Result<ActiveInstallationReset?>.Success(
             projected.Value.ActiveReset);
-
     }
 
     public Result<bool> IsFreshInstallation()
     {
-
-        // The file-only check runs first because it is local and cheap, while the active-reset read
-        // below reaches the OS credential store on nearly every invocation (its own fast path only
-        // fires when the guarded root's parent is absent, which is rare — see ReadActiveResetAsync).
-        // On any installation that has already been set up, an authoritative file is present and this
-        // loop answers the question without a credential-store round trip at all.
+        // The file-only check runs first because it is local and cheap. On any installation that has
+        // already been set up, an authoritative file is present and this loop answers the question
+        // without even probing the reset signal or reaching the OS credential store.
         string[] authoritativePaths =
         [
             configurationPath,
@@ -115,36 +111,28 @@ internal sealed class InstallationStartupProbe(
 
         foreach (string path in authoritativePaths)
         {
-
             Result<AuthoritativePathState> state = ClassifyAuthoritativePath(
                 path,
                 exactMustBeDirectory: false);
 
             if (state.IsFailure)
             {
-
                 return Result<bool>.Failure(state.Error);
-
             }
 
             if (state.Value is AuthoritativePathState.Present)
             {
-
                 return Result<bool>.Success(false);
-
             }
-
         }
 
         Result<ActiveInstallationReset?> active;
 
         try
         {
-
             active = ReadActiveResetAsync(CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -152,59 +140,21 @@ internal sealed class InstallationStartupProbe(
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return ActiveProbeFailure();
-
         }
 
         if (active.IsFailure)
         {
-
             return Result<bool>.Failure(active.Error);
-
         }
 
         if (active.Value is not null)
         {
-
             return Result<bool>.Success(false);
-
         }
 
-        OsCredentialStoreResult credential;
-
-        try
-        {
-
-            credential = credentialStore.TryGet(
-                ArcanumCredentialIdentity.Service,
-                ArcanumCredentialIdentity.MasterApiKeyAccount);
-
-        }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
-        {
-
-            return CredentialProbeFailure();
-
-        }
-
-        return credential.Status switch
-        {
-            OsCredentialStoreStatus.NotFound => Result<bool>.Success(true),
-            OsCredentialStoreStatus.Ok => Result<bool>.Success(false),
-            _ => CredentialProbeFailure(),
-        };
-
+        return Result<bool>.Success(true);
     }
-
-    private static Result<bool> CredentialProbeFailure() =>
-        Result<bool>.Failure(new Error(
-            ErrorCodes.Data.CredentialInventoryUnavailable,
-            "The fixed master credential could not be probed safely."));
 
     private static Result<bool> ActiveProbeFailure() =>
         Result<bool>.Failure(new Error(
@@ -213,7 +163,6 @@ internal sealed class InstallationStartupProbe(
 
     private Result<bool> ActiveEvidenceParentIsAbsent()
     {
-
         Result<AuthoritativePathState> state = ClassifyAuthoritativePath(
             _activeEvidenceParent,
             exactMustBeDirectory: true);
@@ -221,22 +170,18 @@ internal sealed class InstallationStartupProbe(
         return state.IsSuccess
             ? Result<bool>.Success(state.Value is AuthoritativePathState.Absent)
             : Result<bool>.Failure(state.Error);
-
     }
 
     private static Result<AuthoritativePathState> ClassifyAuthoritativePath(
         string path,
         bool exactMustBeDirectory)
     {
-
         Result<NoFollowPathTopologyKind> classified =
             NoFollowPathTopology.Classify(path);
 
         if (classified.IsFailure)
         {
-
             return AuthoritativePathFailure();
-
         }
 
         return classified.Value switch
@@ -252,7 +197,6 @@ internal sealed class InstallationStartupProbe(
                     AuthoritativePathState.Present),
             _ => AuthoritativePathFailure(),
         };
-
     }
 
     private static Result<AuthoritativePathState> AuthoritativePathFailure() =>
@@ -261,11 +205,8 @@ internal sealed class InstallationStartupProbe(
 
     private enum AuthoritativePathState : byte
     {
-
         Absent,
 
         Present,
-
     }
-
 }

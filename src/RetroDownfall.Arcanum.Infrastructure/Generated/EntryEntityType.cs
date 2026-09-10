@@ -3,8 +3,15 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.ChangeTracking.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Metadata.Internal;
+using Microsoft.EntityFrameworkCore.Sqlite.Storage.Internal;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Storage.Json;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 #pragma warning disable 219, 612, 618
@@ -35,12 +42,67 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 valueGenerated: ValueGenerated.OnAdd,
                 afterSaveBehavior: PropertySaveBehavior.Throw,
                 sentinel: new Guid("00000000-0000-0000-0000-000000000000"));
+            id.SetGetter(
+                Guid (Entry instance) => EntryUnsafeAccessors.Id(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.Id(instance) == new Guid("00000000-0000-0000-0000-000000000000"));
+            id.SetSetter(
+                Entry (Entry instance, Guid value) =>
+                {
+                    EntryUnsafeAccessors.Id(instance) = value;
+                    return instance;
+                });
+            id.SetMaterializationSetter(
+                Entry (Entry instance, Guid value) =>
+                {
+                    EntryUnsafeAccessors.Id(instance) = value;
+                    return instance;
+                });
+            id.SetAccessors(
+                Guid (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(0) ? entry.ReadStoreGeneratedValue<Guid>(0) : (entry.FlaggedAsTemporary(0) && EntryUnsafeAccessors.Id(((Entry)(entry.Entity))) == new Guid("00000000-0000-0000-0000-000000000000") ? entry.ReadTemporaryValue<Guid>(0) : EntryUnsafeAccessors.Id(((Entry)(entry.Entity))))),
+                Guid (IInternalEntry entry) => EntryUnsafeAccessors.Id(((Entry)(entry.Entity))),
+                Guid (IInternalEntry entry) => entry.ReadOriginalValue<Guid>(id, 0),
+                Guid (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<Guid>(id, 0));
+            id.SetPropertyIndexes(
+                index: 0,
+                originalValueIndex: 0,
+                shadowIndex: -1,
+                relationshipIndex: 0,
+                storeGenerationIndex: 0);
+            id.TypeMapping = SqliteGuidTypeMapping.Default;
+            id.SetCurrentValueComparer(new EntryCurrentValueComparer<Guid>(id));
 
             var content = runtimeEntityType.AddProperty(
                 "Content",
                 typeof(string),
                 propertyInfo: typeof(Entry).GetProperty("Content", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<Content>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+            content.SetGetter(
+                string (Entry instance) => EntryUnsafeAccessors.Content(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.Content(instance) == null);
+            content.SetSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.Content(instance) = value;
+                    return instance;
+                });
+            content.SetMaterializationSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.Content(instance) = value;
+                    return instance;
+                });
+            content.SetAccessors(
+                string (IInternalEntry entry) => EntryUnsafeAccessors.Content(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => EntryUnsafeAccessors.Content(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(content, 1),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(content));
+            content.SetPropertyIndexes(
+                index: 1,
+                originalValueIndex: 1,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            content.TypeMapping = SqliteStringTypeMapping.Default;
 
             var createdAt = runtimeEntityType.AddProperty(
                 "CreatedAt",
@@ -48,6 +110,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("CreatedAt", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<CreatedAt>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 sentinel: new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)));
+            createdAt.SetGetter(
+                DateTimeOffset (Entry instance) => EntryUnsafeAccessors.CreatedAt(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.CreatedAt(instance).EqualsExact(default(DateTimeOffset)));
+            createdAt.SetSetter(
+                Entry (Entry instance, DateTimeOffset value) =>
+                {
+                    EntryUnsafeAccessors.CreatedAt(instance) = value;
+                    return instance;
+                });
+            createdAt.SetMaterializationSetter(
+                Entry (Entry instance, DateTimeOffset value) =>
+                {
+                    EntryUnsafeAccessors.CreatedAt(instance) = value;
+                    return instance;
+                });
+            createdAt.SetAccessors(
+                DateTimeOffset (IInternalEntry entry) => EntryUnsafeAccessors.CreatedAt(((Entry)(entry.Entity))),
+                DateTimeOffset (IInternalEntry entry) => EntryUnsafeAccessors.CreatedAt(((Entry)(entry.Entity))),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 2),
+                DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(createdAt));
+            createdAt.SetPropertyIndexes(
+                index: 2,
+                originalValueIndex: 2,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            createdAt.TypeMapping = SqliteDateTimeOffsetTypeMapping.Default;
 
             var isPinned = runtimeEntityType.AddProperty(
                 "IsPinned",
@@ -56,6 +145,47 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 fieldInfo: typeof(Entry).GetField("<IsPinned>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 valueGenerated: ValueGenerated.OnAdd,
                 sentinel: false);
+            isPinned.SetGetter(
+                bool (Entry instance) => EntryUnsafeAccessors.IsPinned(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.IsPinned(instance) == false);
+            isPinned.SetSetter(
+                Entry (Entry instance, bool value) =>
+                {
+                    EntryUnsafeAccessors.IsPinned(instance) = value;
+                    return instance;
+                });
+            isPinned.SetMaterializationSetter(
+                Entry (Entry instance, bool value) =>
+                {
+                    EntryUnsafeAccessors.IsPinned(instance) = value;
+                    return instance;
+                });
+            isPinned.SetAccessors(
+                bool (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(3) ? entry.ReadStoreGeneratedValue<bool>(1) : (entry.FlaggedAsTemporary(3) && EntryUnsafeAccessors.IsPinned(((Entry)(entry.Entity))) == false ? entry.ReadTemporaryValue<bool>(1) : EntryUnsafeAccessors.IsPinned(((Entry)(entry.Entity))))),
+                bool (IInternalEntry entry) => EntryUnsafeAccessors.IsPinned(((Entry)(entry.Entity))),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(isPinned, 3),
+                bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(isPinned));
+            isPinned.SetPropertyIndexes(
+                index: 3,
+                originalValueIndex: 3,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: 1);
+            isPinned.TypeMapping = BoolTypeMapping.Default.Clone(
+                comparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                keyComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                providerValueComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "INTEGER"));
             isPinned.AddAnnotation("Relational:DefaultValue", false);
 
             var modelUsed = runtimeEntityType.AddProperty(
@@ -64,6 +194,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("ModelUsed", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<ModelUsed>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 maxLength: 256);
+            modelUsed.SetGetter(
+                string (Entry instance) => EntryUnsafeAccessors.ModelUsed(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.ModelUsed(instance) == null);
+            modelUsed.SetSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ModelUsed(instance) = value;
+                    return instance;
+                });
+            modelUsed.SetMaterializationSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ModelUsed(instance) = value;
+                    return instance;
+                });
+            modelUsed.SetAccessors(
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ModelUsed(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ModelUsed(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(modelUsed, 4),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(modelUsed));
+            modelUsed.SetPropertyIndexes(
+                index: 4,
+                originalValueIndex: 4,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            modelUsed.TypeMapping = SqliteStringTypeMapping.Default;
 
             var role = runtimeEntityType.AddProperty(
                 "Role",
@@ -71,6 +228,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("Role", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<Role>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 providerPropertyType: typeof(int));
+            role.SetGetter(
+                MessageRole (Entry instance) => EntryUnsafeAccessors.Role(instance),
+                bool (Entry instance) => object.Equals(((object)(EntryUnsafeAccessors.Role(instance))), ((object)(MessageRole.System))));
+            role.SetSetter(
+                Entry (Entry instance, MessageRole value) =>
+                {
+                    EntryUnsafeAccessors.Role(instance) = value;
+                    return instance;
+                });
+            role.SetMaterializationSetter(
+                Entry (Entry instance, MessageRole value) =>
+                {
+                    EntryUnsafeAccessors.Role(instance) = value;
+                    return instance;
+                });
+            role.SetAccessors(
+                MessageRole (IInternalEntry entry) => EntryUnsafeAccessors.Role(((Entry)(entry.Entity))),
+                MessageRole (IInternalEntry entry) => EntryUnsafeAccessors.Role(((Entry)(entry.Entity))),
+                MessageRole (IInternalEntry entry) => entry.ReadOriginalValue<MessageRole>(role, 5),
+                MessageRole (IInternalEntry entry) => entry.GetCurrentValue<MessageRole>(role));
+            role.SetPropertyIndexes(
+                index: 5,
+                originalValueIndex: 5,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            role.TypeMapping = NativeAotSqliteEnumTypeMappings.ForMessageRole();
             role.SetSentinelFromProviderValue(0);
 
             var sequence = runtimeEntityType.AddProperty(
@@ -79,6 +263,48 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("Sequence", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<Sequence>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 sentinel: 0L);
+            sequence.SetGetter(
+                long (Entry instance) => EntryUnsafeAccessors.Sequence(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.Sequence(instance) == 0L);
+            sequence.SetSetter(
+                Entry (Entry instance, long value) =>
+                {
+                    EntryUnsafeAccessors.Sequence(instance) = value;
+                    return instance;
+                });
+            sequence.SetMaterializationSetter(
+                Entry (Entry instance, long value) =>
+                {
+                    EntryUnsafeAccessors.Sequence(instance) = value;
+                    return instance;
+                });
+            sequence.SetAccessors(
+                long (IInternalEntry entry) => EntryUnsafeAccessors.Sequence(((Entry)(entry.Entity))),
+                long (IInternalEntry entry) => EntryUnsafeAccessors.Sequence(((Entry)(entry.Entity))),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(sequence, 6),
+                long (IInternalEntry entry) => entry.GetCurrentValue<long>(sequence));
+            sequence.SetPropertyIndexes(
+                index: 6,
+                originalValueIndex: 6,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            sequence.TypeMapping = LongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                keyComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "INTEGER"));
+            sequence.SetCurrentValueComparer(new EntryCurrentValueComparer<long>(sequence));
 
             var sessionId = runtimeEntityType.AddProperty(
                 "SessionId",
@@ -86,6 +312,34 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("SessionId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<SessionId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 sentinel: new Guid("00000000-0000-0000-0000-000000000000"));
+            sessionId.SetGetter(
+                Guid (Entry instance) => EntryUnsafeAccessors.SessionId(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.SessionId(instance) == new Guid("00000000-0000-0000-0000-000000000000"));
+            sessionId.SetSetter(
+                Entry (Entry instance, Guid value) =>
+                {
+                    EntryUnsafeAccessors.SessionId(instance) = value;
+                    return instance;
+                });
+            sessionId.SetMaterializationSetter(
+                Entry (Entry instance, Guid value) =>
+                {
+                    EntryUnsafeAccessors.SessionId(instance) = value;
+                    return instance;
+                });
+            sessionId.SetAccessors(
+                Guid (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(7) ? entry.ReadStoreGeneratedValue<Guid>(2) : (entry.FlaggedAsTemporary(7) && EntryUnsafeAccessors.SessionId(((Entry)(entry.Entity))) == new Guid("00000000-0000-0000-0000-000000000000") ? entry.ReadTemporaryValue<Guid>(2) : EntryUnsafeAccessors.SessionId(((Entry)(entry.Entity))))),
+                Guid (IInternalEntry entry) => EntryUnsafeAccessors.SessionId(((Entry)(entry.Entity))),
+                Guid (IInternalEntry entry) => entry.ReadOriginalValue<Guid>(sessionId, 7),
+                Guid (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<Guid>(sessionId, 1));
+            sessionId.SetPropertyIndexes(
+                index: 7,
+                originalValueIndex: 7,
+                shadowIndex: -1,
+                relationshipIndex: 1,
+                storeGenerationIndex: 2);
+            sessionId.TypeMapping = SqliteGuidTypeMapping.Default;
+            sessionId.SetCurrentValueComparer(new EntryCurrentValueComparer<Guid>(sessionId));
 
             var toolArguments = runtimeEntityType.AddProperty(
                 "ToolArguments",
@@ -93,6 +347,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("ToolArguments", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<ToolArguments>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 nullable: true);
+            toolArguments.SetGetter(
+                string (Entry instance) => EntryUnsafeAccessors.ToolArguments(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.ToolArguments(instance) == null);
+            toolArguments.SetSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ToolArguments(instance) = value;
+                    return instance;
+                });
+            toolArguments.SetMaterializationSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ToolArguments(instance) = value;
+                    return instance;
+                });
+            toolArguments.SetAccessors(
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ToolArguments(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ToolArguments(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(toolArguments, 8),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(toolArguments));
+            toolArguments.SetPropertyIndexes(
+                index: 8,
+                originalValueIndex: 8,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            toolArguments.TypeMapping = SqliteStringTypeMapping.Default;
 
             var toolCallId = runtimeEntityType.AddProperty(
                 "ToolCallId",
@@ -101,6 +382,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 fieldInfo: typeof(Entry).GetField("<ToolCallId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 nullable: true,
                 maxLength: 256);
+            toolCallId.SetGetter(
+                string (Entry instance) => EntryUnsafeAccessors.ToolCallId(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.ToolCallId(instance) == null);
+            toolCallId.SetSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ToolCallId(instance) = value;
+                    return instance;
+                });
+            toolCallId.SetMaterializationSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ToolCallId(instance) = value;
+                    return instance;
+                });
+            toolCallId.SetAccessors(
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ToolCallId(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ToolCallId(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(toolCallId, 9),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(toolCallId));
+            toolCallId.SetPropertyIndexes(
+                index: 9,
+                originalValueIndex: 9,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            toolCallId.TypeMapping = SqliteStringTypeMapping.Default;
 
             var toolName = runtimeEntityType.AddProperty(
                 "ToolName",
@@ -109,6 +417,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 fieldInfo: typeof(Entry).GetField("<ToolName>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 nullable: true,
                 maxLength: 256);
+            toolName.SetGetter(
+                string (Entry instance) => EntryUnsafeAccessors.ToolName(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.ToolName(instance) == null);
+            toolName.SetSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ToolName(instance) = value;
+                    return instance;
+                });
+            toolName.SetMaterializationSetter(
+                Entry (Entry instance, string value) =>
+                {
+                    EntryUnsafeAccessors.ToolName(instance) = value;
+                    return instance;
+                });
+            toolName.SetAccessors(
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ToolName(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => EntryUnsafeAccessors.ToolName(((Entry)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(toolName, 10),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(toolName));
+            toolName.SetPropertyIndexes(
+                index: 10,
+                originalValueIndex: 10,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            toolName.TypeMapping = SqliteStringTypeMapping.Default;
 
             var key = runtimeEntityType.AddKey(
                 new[] { id });
@@ -145,6 +480,32 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("Session", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<Session>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
 
+            session.SetGetter(
+                Session (Entry instance) => EntryUnsafeAccessors.Session(instance),
+                bool (Entry instance) => EntryUnsafeAccessors.Session(instance) == null);
+            session.SetSetter(
+                Entry (Entry instance, Session value) =>
+                {
+                    EntryUnsafeAccessors.Session(instance) = value;
+                    return instance;
+                });
+            session.SetMaterializationSetter(
+                Entry (Entry instance, Session value) =>
+                {
+                    EntryUnsafeAccessors.Session(instance) = value;
+                    return instance;
+                });
+            session.SetAccessors(
+                Session (IInternalEntry entry) => EntryUnsafeAccessors.Session(((Entry)(entry.Entity))),
+                Session (IInternalEntry entry) => EntryUnsafeAccessors.Session(((Entry)(entry.Entity))),
+                null,
+                Session (IInternalEntry entry) => entry.GetCurrentValue<Session>(session));
+            session.SetPropertyIndexes(
+                index: 0,
+                originalValueIndex: -1,
+                shadowIndex: -1,
+                relationshipIndex: 2,
+                storeGenerationIndex: -1);
             var entries = principalEntityType.AddNavigation("Entries",
                 runtimeForeignKey,
                 onDependent: false,
@@ -152,11 +513,87 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Session).GetProperty("Entries", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Session).GetField("<Entries>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
 
+            entries.SetGetter(
+                ICollection<Entry> (Session instance) => SessionUnsafeAccessors.Entries(instance),
+                bool (Session instance) => SessionUnsafeAccessors.Entries(instance) == null);
+            entries.SetSetter(
+                Session (Session instance, ICollection<Entry> value) =>
+                {
+                    SessionUnsafeAccessors.Entries(instance) = value;
+                    return instance;
+                });
+            entries.SetMaterializationSetter(
+                Session (Session instance, ICollection<Entry> value) =>
+                {
+                    SessionUnsafeAccessors.Entries(instance) = value;
+                    return instance;
+                });
+            entries.SetAccessors(
+                ICollection<Entry> (IInternalEntry entry) => SessionUnsafeAccessors.Entries(((Session)(entry.Entity))),
+                ICollection<Entry> (IInternalEntry entry) => SessionUnsafeAccessors.Entries(((Session)(entry.Entity))),
+                null,
+                ICollection<Entry> (IInternalEntry entry) => entry.GetCurrentValue<ICollection<Entry>>(entries));
+            entries.SetPropertyIndexes(
+                index: 0,
+                originalValueIndex: -1,
+                shadowIndex: -1,
+                relationshipIndex: 1,
+                storeGenerationIndex: -1);
+            entries.SetCollectionAccessor<Session, ICollection<Entry>, Entry>(
+                ICollection<Entry> (Session entity) => SessionUnsafeAccessors.Entries(entity),
+                (Session entity, ICollection<Entry> collection) => SessionUnsafeAccessors.Entries(entity) = ((ICollection<Entry>)collection),
+                (Session entity, ICollection<Entry> collection) => SessionUnsafeAccessors.Entries(entity) = ((ICollection<Entry>)collection),
+                ICollection<Entry> (Session entity, Action<Session, ICollection<Entry>> setter) => ClrCollectionAccessorFactory.CreateAndSetHashSet<Session, ICollection<Entry>, Entry>(entity, setter),
+                ICollection<Entry> () => ((ICollection<Entry>)(((ICollection<Entry>)(new HashSet<Entry>(ReferenceEqualityComparer.Instance))))));
             return runtimeForeignKey;
         }
 
         public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
         {
+            var id = runtimeEntityType.FindProperty("Id");
+            var content = runtimeEntityType.FindProperty("Content");
+            var createdAt = runtimeEntityType.FindProperty("CreatedAt");
+            var isPinned = runtimeEntityType.FindProperty("IsPinned");
+            var modelUsed = runtimeEntityType.FindProperty("ModelUsed");
+            var role = runtimeEntityType.FindProperty("Role");
+            var sequence = runtimeEntityType.FindProperty("Sequence");
+            var sessionId = runtimeEntityType.FindProperty("SessionId");
+            var toolArguments = runtimeEntityType.FindProperty("ToolArguments");
+            var toolCallId = runtimeEntityType.FindProperty("ToolCallId");
+            var toolName = runtimeEntityType.FindProperty("ToolName");
+            var key = runtimeEntityType.FindKey(new[] { id });
+            key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateSimpleNonNullableFactory<Guid>(key));
+            key.SetIdentityMapFactory(IdentityMapFactoryFactory.CreateFactory<Guid>(key));
+            var session = runtimeEntityType.FindNavigation("Session");
+            runtimeEntityType.SetOriginalValuesFactory(
+                ISnapshot (IInternalEntry source) =>
+                {
+                    var structuralType = ((Entry)(source.Entity));
+                    return ((ISnapshot)(new Snapshot<Guid, string, DateTimeOffset, bool, string, MessageRole, long, Guid, string, string, string>(((ValueComparer<Guid>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid>(id)), (source.GetCurrentValue<string>(content) == null ? null : ((ValueComparer<string>)(((IProperty)content).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(content))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), ((ValueComparer<bool>)(((IProperty)isPinned).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isPinned)), (source.GetCurrentValue<string>(modelUsed) == null ? null : ((ValueComparer<string>)(((IProperty)modelUsed).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(modelUsed))), ((ValueComparer<MessageRole>)(((IProperty)role).GetValueComparer())).Snapshot(source.GetCurrentValue<MessageRole>(role)), ((ValueComparer<long>)(((IProperty)sequence).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(sequence)), ((ValueComparer<Guid>)(((IProperty)sessionId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid>(sessionId)), (source.GetCurrentValue<string>(toolArguments) == null ? null : ((ValueComparer<string>)(((IProperty)toolArguments).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(toolArguments))), (source.GetCurrentValue<string>(toolCallId) == null ? null : ((ValueComparer<string>)(((IProperty)toolCallId).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(toolCallId))), (source.GetCurrentValue<string>(toolName) == null ? null : ((ValueComparer<string>)(((IProperty)toolName).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(toolName))))));
+                });
+            runtimeEntityType.SetStoreGeneratedValuesFactory(
+                ISnapshot () => ((ISnapshot)(new Snapshot<Guid, bool, Guid>(((ValueComparer<Guid>)(((IProperty)id).GetValueComparer())).Snapshot(default(Guid)), ((ValueComparer<bool>)(((IProperty)isPinned).GetValueComparer())).Snapshot(default(bool)), ((ValueComparer<Guid>)(((IProperty)sessionId).GetValueComparer())).Snapshot(default(Guid))))));
+            runtimeEntityType.SetTemporaryValuesFactory(
+                ISnapshot (IInternalEntry source) => ((ISnapshot)(new Snapshot<Guid, bool, Guid>(default(Guid), default(bool), default(Guid)))));
+            runtimeEntityType.SetShadowValuesFactory(
+                ISnapshot (IDictionary<string, object> source) => Snapshot.Empty);
+            runtimeEntityType.SetEmptyShadowValuesFactory(
+                ISnapshot () => Snapshot.Empty);
+            runtimeEntityType.SetRelationshipSnapshotFactory(
+                ISnapshot (IInternalEntry source) =>
+                {
+                    var structuralType = ((Entry)(source.Entity));
+                    return ((ISnapshot)(new Snapshot<Guid, Guid, object>(((ValueComparer<Guid>)(((IProperty)id).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Guid>(id)), ((ValueComparer<Guid>)(((IProperty)sessionId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Guid>(sessionId)), source.GetCurrentValue<Session>(session))));
+                });
+            runtimeEntityType.SetCounts(new PropertyCounts(
+                propertyCount: 11,
+                navigationCount: 1,
+                complexPropertyCount: 0,
+                complexCollectionCount: 0,
+                originalValueCount: 11,
+                shadowCount: 0,
+                relationshipCount: 3,
+                storeGeneratedCount: 3));
             runtimeEntityType.AddAnnotation("Relational:FunctionName", null);
             runtimeEntityType.AddAnnotation("Relational:Schema", null);
             runtimeEntityType.AddAnnotation("Relational:SqlQuery", null);

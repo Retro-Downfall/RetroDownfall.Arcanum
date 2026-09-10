@@ -14,6 +14,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
+using RetroDownfall.Arcanum.Api.Streaming;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -84,7 +85,7 @@ internal static class A2AServerEndpoints
 
         A2AServer server = ((IEndpointRouteBuilder)apiGroup).ServiceProvider.GetRequiredService<A2AServer>();
 
-        apiGroup.MapA2A(server, relative);
+        apiGroup.MapA2A(server, relative).WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
 
         // The A2A SDK's own JsonSerializerOptions already carries a source-generated resolver for AgentCard
         // (A2AJsonUtilities); extracting a concrete JsonTypeInfo<AgentCard> from it keeps this endpoint fully

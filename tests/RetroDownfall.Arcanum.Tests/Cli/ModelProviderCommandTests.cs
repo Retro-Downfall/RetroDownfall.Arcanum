@@ -16,11 +16,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class ModelProviderCommandTests
 {
-
     [Fact]
     public void Model_list_prints_themed_table()
     {
-
         ModelInfoDto model = new("mistral:latest", "test", "OpenAICompatible", "***", 8192);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -36,13 +34,11 @@ public sealed class ModelProviderCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/models", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Provider_list_prints_themed_table()
     {
-
         ProviderInfoDto provider = new(
             "test",
             "OpenAICompatible",
@@ -64,12 +60,10 @@ public sealed class ModelProviderCommandTests
         Assert.Equal(HttpMethod.Get, request.Method);
 
         Assert.Equal("/api/providers", request.RequestUri!.AbsolutePath);
-
     }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -84,8 +78,11 @@ public sealed class ModelProviderCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -93,19 +90,16 @@ public sealed class ModelProviderCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -116,33 +110,27 @@ public sealed class ModelProviderCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -151,7 +139,6 @@ public sealed class ModelProviderCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -161,9 +148,6 @@ public sealed class ModelProviderCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

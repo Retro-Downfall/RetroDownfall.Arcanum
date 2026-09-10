@@ -46,7 +46,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class MemoryEndpoints
 {
-
     /// <summary>
     /// Ceiling on the number of rows <c>POST /api/memory/search</c> materializes and returns, shared
     /// across every scope of one request rather than granted per scope.
@@ -84,7 +83,6 @@ internal static class MemoryEndpoints
 
     public static RouteGroupBuilder MapMemoryEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/memory/status",
             (ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
@@ -143,7 +141,6 @@ internal static class MemoryEndpoints
         .WithName("DeleteLexiconEntry");
 
         return apiGroup;
-
     }
 
     /// <summary>
@@ -156,13 +153,11 @@ internal static class MemoryEndpoints
     /// </remarks>
     private static async Task<MemoryScope> ResolveScopeAsync(Guid? sessionId, HttpContext context)
     {
-
         IMemoryScopeResolver? resolver = context.RequestServices.GetService<IMemoryScopeResolver>();
 
         return resolver is null
             ? MemoryScope.Installation
             : await resolver.ResolveForSessionAsync(sessionId, context.RequestAborted).ConfigureAwait(false);
-
     }
 
     private static async Task<IResult> HandleStatusAsync(
@@ -171,7 +166,6 @@ internal static class MemoryEndpoints
         IOptionsMonitor<ArcanumSettings> options,
         HttpContext context)
     {
-
         MemoryScope scope = await ResolveScopeAsync(sessionId, context).ConfigureAwait(false);
 
         Result<MemoryStatusDto> result = await BuildStatusAsync(
@@ -185,10 +179,8 @@ internal static class MemoryEndpoints
 
         if (result.IsSuccess)
         {
-
             result = Result<MemoryStatusDto>.Success(
                 result.Value with { CampaignScope = MemoryCampaignScopeReport.Describe(scope) });
-
         }
 
         string traceId = TraceId(context);
@@ -199,7 +191,6 @@ internal static class MemoryEndpoints
             statusCode: result.IsSuccess
                 ? StatusCodes.Status200OK
                 : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
     }
 
     private static async Task<IResult> HandleSourcesAsync(
@@ -208,7 +199,6 @@ internal static class MemoryEndpoints
         IOptionsMonitor<ArcanumSettings> options,
         HttpContext context)
     {
-
         Result<MemoryStatusDto> status = await BuildStatusAsync(
             sessionId,
             db,
@@ -222,13 +212,10 @@ internal static class MemoryEndpoints
 
         if (status.IsFailure)
         {
-
             result = Result<MemorySourcesDto>.Failure(status.Error);
-
         }
         else
         {
-
             MemorySourceDto[] sources = status.Value.Stores
                 .Select(static store => new MemorySourceDto(
                     store.Name,
@@ -241,7 +228,6 @@ internal static class MemoryEndpoints
 
             result = Result<MemorySourcesDto>.Success(
                 new MemorySourcesDto(status.Value.SessionId, sources));
-
         }
 
         return Results.Json(
@@ -250,7 +236,6 @@ internal static class MemoryEndpoints
             statusCode: result.IsSuccess
                 ? StatusCodes.Status200OK
                 : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
     }
 
     private static async Task<IResult> HandleExplainAsync(
@@ -259,7 +244,6 @@ internal static class MemoryEndpoints
         IOptionsMonitor<ArcanumSettings> options,
         HttpContext context)
     {
-
         MemoryScope scope = await ResolveScopeAsync(sessionId, context).ConfigureAwait(false);
 
         Result<MemoryStatusDto> status = await BuildStatusAsync(
@@ -275,13 +259,10 @@ internal static class MemoryEndpoints
 
         if (status.IsFailure)
         {
-
             result = Result<MemoryExplainDto>.Failure(status.Error);
-
         }
         else
         {
-
             Dictionary<string, MemoryStoreStatusDto> stores = status.Value.Stores
                 .ToDictionary(static store => store.Name, StringComparer.Ordinal);
 
@@ -340,7 +321,6 @@ internal static class MemoryEndpoints
                     status.Value.SessionTitle,
                     eligibility,
                     MemoryCampaignScopeReport.Describe(scope)));
-
         }
 
         return Results.Json(
@@ -349,7 +329,6 @@ internal static class MemoryEndpoints
             statusCode: result.IsSuccess
                 ? StatusCodes.Status200OK
                 : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
     }
 
     private static async Task<IResult> HandleSearchAsync(
@@ -360,10 +339,8 @@ internal static class MemoryEndpoints
         IGrimoireOrdinaryConnectionFactory connections,
         HttpContext context)
     {
-
         if (request is null || string.IsNullOrWhiteSpace(request.Query))
         {
-
             Result<MemorySearchResponse> invalid = Result<MemorySearchResponse>.Failure(
                 new Error(
                     ErrorCodes.Validation.InvalidBody,
@@ -373,12 +350,10 @@ internal static class MemoryEndpoints
                 ApiResponse<MemorySearchResponse>.FromResult(invalid, TraceId(context)),
                 ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
                 statusCode: StatusCodes.Status400BadRequest);
-
         }
 
         if (!IsKnownScope(request.Scope))
         {
-
             Result<MemorySearchResponse> invalid = Result<MemorySearchResponse>.Failure(
                 new Error(
                     ErrorCodes.Validation.InvalidBody,
@@ -388,7 +363,6 @@ internal static class MemoryEndpoints
                 ApiResponse<MemorySearchResponse>.FromResult(invalid, TraceId(context)),
                 ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
                 statusCode: StatusCodes.Status400BadRequest);
-
         }
 
         // Refused rather than clamped. A caller that asked for 50,000, silently got the budget, and
@@ -396,7 +370,6 @@ internal static class MemoryEndpoints
         if (request.Limit is { } requestedLimit
             && (requestedLimit < 1 || requestedLimit > SearchResultLimit))
         {
-
             Result<MemorySearchResponse> invalid = Result<MemorySearchResponse>.Failure(
                 new Error(
                     ErrorCodes.Validation.InvalidBody,
@@ -406,23 +379,6 @@ internal static class MemoryEndpoints
                 ApiResponse<MemorySearchResponse>.FromResult(invalid, TraceId(context)),
                 ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
                 statusCode: StatusCodes.Status400BadRequest);
-
-        }
-
-        if (request.SessionId is { } sessionId
-            && !await db.Sessions.AsNoTracking().AnyAsync(
-                session => session.Id == sessionId,
-                context.RequestAborted).ConfigureAwait(false))
-        {
-
-            Result<MemorySearchResponse> missing = Result<MemorySearchResponse>.Failure(
-                new Error(ErrorCodes.Session.NotFound, "Session was not found."));
-
-            return Results.Json(
-                ApiResponse<MemorySearchResponse>.FromResult(missing, TraceId(context)),
-                ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
-                statusCode: StatusCodes.Status404NotFound);
-
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(
@@ -430,7 +386,22 @@ internal static class MemoryEndpoints
             connections,
             context.RequestAborted).ConfigureAwait(false);
 
-        DbConnection connection = lease.Connection;
+        SqliteConnection connection = lease.Connection;
+
+        if (request.SessionId is { } sessionId
+            && !await SessionExistsAsync(
+                connection,
+                sessionId,
+                context.RequestAborted).ConfigureAwait(false))
+        {
+            Result<MemorySearchResponse> missing = Result<MemorySearchResponse>.Failure(
+                new Error(ErrorCodes.Session.NotFound, "Session was not found."));
+
+            return Results.Json(
+                ApiResponse<MemorySearchResponse>.FromResult(missing, TraceId(context)),
+                ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
+                statusCode: StatusCodes.Status404NotFound);
+        }
 
         string query = request.Query.Trim();
 
@@ -446,12 +417,10 @@ internal static class MemoryEndpoints
 
         if (Includes(request.Scope, MemorySearchScope.Session))
         {
-
             int slice = OpenSlice(MemorySearchScope.Session, results, budget, scopes);
 
             if (slice > 0)
             {
-
                 await SearchSessionAsync(
                     connection,
                     query,
@@ -461,19 +430,15 @@ internal static class MemoryEndpoints
                     context.RequestAborted).ConfigureAwait(false);
 
                 CloseSlice(MemorySearchScope.Session, results, budget, slice, scopes);
-
             }
-
         }
 
         if (Includes(request.Scope, MemorySearchScope.Attachments))
         {
-
             int slice = OpenSlice(MemorySearchScope.Attachments, results, budget, scopes);
 
             if (slice > 0)
             {
-
                 await SearchAttachmentsAsync(
                     connection,
                     query,
@@ -483,19 +448,15 @@ internal static class MemoryEndpoints
                     context.RequestAborted).ConfigureAwait(false);
 
                 CloseSlice(MemorySearchScope.Attachments, results, budget, slice, scopes);
-
             }
-
         }
 
         if (Includes(request.Scope, MemorySearchScope.Workspace))
         {
-
             int slice = OpenSlice(MemorySearchScope.Workspace, results, budget, scopes);
 
             if (slice > 0)
             {
-
                 await SearchWorkspaceAsync(
                     connection,
                     query,
@@ -505,19 +466,15 @@ internal static class MemoryEndpoints
                     context.RequestAborted).ConfigureAwait(false);
 
                 CloseSlice(MemorySearchScope.Workspace, results, budget, slice, scopes);
-
             }
-
         }
 
         if (Includes(request.Scope, MemorySearchScope.Saga))
         {
-
             int slice = OpenSlice(MemorySearchScope.Saga, results, budget, scopes);
 
             if (slice > 0)
             {
-
                 await SearchSagaAsync(
                     sagaStore,
                     query,
@@ -528,26 +485,21 @@ internal static class MemoryEndpoints
                     context.RequestAborted).ConfigureAwait(false);
 
                 CloseSlice(MemorySearchScope.Saga, results, budget, slice, scopes);
-
             }
-
         }
 
         if (Includes(request.Scope, MemorySearchScope.Lexicon))
         {
-
             int slice = OpenSlice(MemorySearchScope.Lexicon, results, budget, scopes);
 
             if (slice > 0)
             {
-
                 Result<IReadOnlyList<LexiconEntryDto>> entries = await lexicon
                     .ListAsync(context.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (entries.IsFailure)
                 {
-
                     Result<MemorySearchResponse> failed = Result<MemorySearchResponse>.Failure(
                         entries.Error);
 
@@ -555,15 +507,12 @@ internal static class MemoryEndpoints
                         ApiResponse<MemorySearchResponse>.FromResult(failed, TraceId(context)),
                         ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(entries.Error.Code));
-
                 }
 
                 AddLexiconMatches(entries.Value, query, results, slice + 1);
 
                 CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes);
-
             }
-
         }
 
         MemorySearchResponse payload = new(
@@ -578,7 +527,6 @@ internal static class MemoryEndpoints
                 Result<MemorySearchResponse>.Success(payload),
                 TraceId(context)),
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
-
     }
 
     /// <summary>
@@ -593,18 +541,14 @@ internal static class MemoryEndpoints
         int budget,
         List<MemorySearchScopeStatusDto> scopes)
     {
-
         int slice = budget - results.Count;
 
         if (slice <= 0)
         {
-
             scopes.Add(new MemorySearchScopeStatusDto(scope, 0, HasMore: true));
-
         }
 
         return slice;
-
     }
 
     /// <summary>
@@ -619,22 +563,18 @@ internal static class MemoryEndpoints
         int slice,
         List<MemorySearchScopeStatusDto> scopes)
     {
-
         int produced = results.Count - (budget - slice);
 
         bool hasMore = produced > slice;
 
         if (hasMore)
         {
-
             results.RemoveRange(budget, results.Count - budget);
 
             produced = slice;
-
         }
 
         scopes.Add(new MemorySearchScopeStatusDto(scope, produced, hasMore));
-
     }
 
     private static async Task<IResult> HandleLexiconListAsync(
@@ -642,7 +582,6 @@ internal static class MemoryEndpoints
         ILexiconService lexicon,
         HttpContext context)
     {
-
         Result<IReadOnlyList<LexiconEntryDto>> listed = await lexicon
             .ListAsync(context.RequestAborted)
             .ConfigureAwait(false);
@@ -651,27 +590,21 @@ internal static class MemoryEndpoints
 
         if (listed.IsFailure)
         {
-
             result = Result<LexiconListDto>.Failure(listed.Error);
-
         }
         else
         {
-
             IEnumerable<LexiconEntryDto> entries = listed.Value;
 
             if (!string.IsNullOrWhiteSpace(q))
             {
-
                 string query = q.Trim();
 
                 entries = entries.Where(entry => LexiconMatches(entry, query));
-
             }
 
             result = Result<LexiconListDto>.Success(
                 new LexiconListDto(entries.ToArray()));
-
         }
 
         return Results.Json(
@@ -680,7 +613,6 @@ internal static class MemoryEndpoints
             statusCode: result.IsSuccess
                 ? StatusCodes.Status200OK
                 : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
     }
 
     /// <remarks>
@@ -695,7 +627,6 @@ internal static class MemoryEndpoints
         ILexiconService lexicon,
         HttpContext context)
     {
-
         Result<LexiconEntryDto?> lookup = await lexicon
             .GetByNameAsync(name, LexiconScope.ForResolvedCampaign(campaignId), context.RequestAborted)
             .ConfigureAwait(false);
@@ -715,7 +646,6 @@ internal static class MemoryEndpoints
             statusCode: result.IsSuccess
                 ? StatusCodes.Status200OK
                 : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
     }
 
     /// <remarks>
@@ -730,7 +660,6 @@ internal static class MemoryEndpoints
         ICovenantSensitiveArtifactPurger purger,
         HttpContext context)
     {
-
         LexiconScope scope = LexiconScope.ForResolvedCampaign(campaignId);
 
         // Resolved to an identity first, because the purge boundary keys on the artifact's own id and
@@ -742,44 +671,36 @@ internal static class MemoryEndpoints
 
         if (existing.IsSuccess && existing.Value is { } entity)
         {
-
             Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
                 .DispatchAsync(purger, SensitiveArtifactKind.Lexicon, entity.Id, context.RequestAborted)
                 .ConfigureAwait(false);
 
             if (purged.IsFailure)
             {
-
                 return Results.Json(
                     ApiResponse<string>.FromResult(
                         Result<string>.Failure(purged.Error),
                         TraceId(context)),
                     ArcanumJsonContext.Default.ApiResponseString,
                     statusCode: ArcanumErrorMapper.ResolveStatusCode(purged.Error.Code));
-
             }
 
             CovenantSensitiveDeletion.MarkProtectedWhenPurged(context, purged.Value);
 
             if (purged.Value.IsBlocked)
             {
-
                 Error blocked = CovenantSensitiveDeletion.BlockedError(purged.Value);
 
                 return Results.Json(
                     ApiResponse<string>.FromResult(Result<string>.Failure(blocked), TraceId(context)),
                     ArcanumJsonContext.Default.ApiResponseString,
                     statusCode: ArcanumErrorMapper.ResolveStatusCode(blocked.Code));
-
             }
 
             if (purged.Value.WasPurged(entity.Id))
             {
-
                 return Results.NoContent();
-
             }
-
         }
 
         Result<bool> deleted = await lexicon
@@ -788,19 +709,16 @@ internal static class MemoryEndpoints
 
         if (deleted.IsFailure)
         {
-
             return Results.Json(
                 ApiResponse<string>.FromResult(
                     Result<string>.Failure(deleted.Error),
                     TraceId(context)),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: ArcanumErrorMapper.ResolveStatusCode(deleted.Error.Code));
-
         }
 
         if (!deleted.Value)
         {
-
             Error missing = new(
                 ErrorCodes.Lexicon.NotFound,
                 "Lexicon entity was not found.");
@@ -811,11 +729,9 @@ internal static class MemoryEndpoints
                     TraceId(context)),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: StatusCodes.Status404NotFound);
-
         }
 
         return Results.NoContent();
-
     }
 
     /// <summary>
@@ -839,12 +755,9 @@ internal static class MemoryEndpoints
         ICovenantManagementService? management,
         CancellationToken cancellationToken)
     {
-
         if (availability is null || management is null)
         {
-
             return null;
-
         }
 
         Result<CovenantStatusDto> status = await management
@@ -852,7 +765,6 @@ internal static class MemoryEndpoints
             .ConfigureAwait(false);
 
         return status.IsSuccess ? status.Value : null;
-
     }
 
     private static async Task<Result<MemoryStatusDto>> BuildStatusAsync(
@@ -864,34 +776,26 @@ internal static class MemoryEndpoints
         IGrimoireOrdinaryConnectionFactory connections,
         CancellationToken cancellationToken)
     {
-
-        Session? session = null;
-
-        if (sessionId is { } id)
-        {
-
-            session = await db.Sessions
-                .AsNoTracking()
-                .SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (session is null)
-            {
-
-                return new Error(
-                    ErrorCodes.Session.NotFound,
-                    "Session was not found.");
-
-            }
-
-        }
-
         await using IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(
             db,
             connections,
             cancellationToken).ConfigureAwait(false);
 
-        DbConnection connection = lease.Connection;
+        SqliteConnection connection = lease.Connection;
+
+        Session? session = null;
+
+        if (sessionId is { } id)
+        {
+            session = await ReadSessionAsync(connection, id, cancellationToken).ConfigureAwait(false);
+
+            if (session is null)
+            {
+                return new Error(
+                    ErrorCodes.Session.NotFound,
+                    "Session was not found.");
+            }
+        }
 
         int entries = await CountAsync(
             connection,
@@ -968,12 +872,7 @@ internal static class MemoryEndpoints
             cancellationToken).ConfigureAwait(false);
 
         string? workspacePath = session?.CampaignId is { } campaignId
-            ? await db.Campaigns
-                .AsNoTracking()
-                .Where(campaign => campaign.Id == campaignId)
-                .Select(static campaign => campaign.Path)
-                .SingleOrDefaultAsync(cancellationToken)
-                .ConfigureAwait(false)
+            ? await ReadCampaignPathAsync(connection, campaignId, cancellationToken).ConfigureAwait(false)
             : null;
 
         int workspace = sessionId is not null && workspacePath is null
@@ -1005,7 +904,6 @@ internal static class MemoryEndpoints
                 stores,
                 await BuildCovenantStatusAsync(availability, management, cancellationToken)
                     .ConfigureAwait(false)));
-
     }
 
     private static MemoryEligibilityDto Explain(
@@ -1049,7 +947,6 @@ internal static class MemoryEndpoints
         int limit,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -1077,7 +974,6 @@ internal static class MemoryEndpoints
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string title = reader.GetString(4);
 
             results.Add(new MemorySearchResultDto(
@@ -1089,7 +985,6 @@ internal static class MemoryEndpoints
                 reader.GetString(0)));
 
             taken++;
-
         }
 
         await reader.DisposeAsync().ConfigureAwait(false);
@@ -1100,9 +995,7 @@ internal static class MemoryEndpoints
 
         if (summaryLimit <= 0)
         {
-
             return;
-
         }
 
         await using DbCommand summaries = connection.CreateCommand();
@@ -1130,7 +1023,6 @@ internal static class MemoryEndpoints
 
         while (await summaryReader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string id = summaryReader.GetString(0);
 
             string title = summaryReader.GetString(1);
@@ -1142,7 +1034,6 @@ internal static class MemoryEndpoints
                 $"Session {(title.Length == 0 ? id : title)}, Summary field",
                 SessionRetention,
                 id));
-
         }
 
         await GrimoireScopedConsumerTestSeam
@@ -1152,7 +1043,6 @@ internal static class MemoryEndpoints
                 results.Count,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static async Task SearchAttachmentsAsync(
@@ -1163,7 +1053,6 @@ internal static class MemoryEndpoints
         int limit,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -1191,7 +1080,6 @@ internal static class MemoryEndpoints
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Attachments,
                 $"{reader.GetString(5)} chunk {reader.GetInt32(6)}",
@@ -1199,9 +1087,7 @@ internal static class MemoryEndpoints
                 $"Session {reader.GetString(1)}, attachment {reader.GetString(2)}, logical key {reader.GetString(3)}, version {reader.GetInt32(4)}, content hash {reader.GetString(8)}",
                 AttachmentIndexRetention,
                 reader.GetString(0)));
-
         }
-
     }
 
     private static async Task SearchWorkspaceAsync(
@@ -1212,14 +1098,12 @@ internal static class MemoryEndpoints
         int limit,
         CancellationToken cancellationToken)
     {
-
         string? workspacePath = null;
 
         string? workspaceLabel = null;
 
         if (!string.IsNullOrWhiteSpace(workspaceId))
         {
-
             await using DbCommand resolve = connection.CreateCommand();
 
             resolve.CommandText =
@@ -1233,20 +1117,15 @@ internal static class MemoryEndpoints
 
             if (await resolver.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 workspacePath = resolver.GetString(0);
 
                 workspaceLabel = resolver.GetString(1);
-
             }
-
         }
 
         if (!string.IsNullOrWhiteSpace(workspaceId) && workspacePath is null)
         {
-
             return;
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -1268,9 +1147,7 @@ internal static class MemoryEndpoints
 
         if (workspacePath is not null)
         {
-
             AddParameter(command, "@workspacePath", workspacePath);
-
         }
 
         await using DbDataReader reader = await command
@@ -1279,7 +1156,6 @@ internal static class MemoryEndpoints
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             string label = workspaceLabel ?? "indexed workspace";
 
             results.Add(new MemorySearchResultDto(
@@ -1289,9 +1165,7 @@ internal static class MemoryEndpoints
                 $"Workspace {label}, relative file {reader.GetString(2)}, chunk {reader.GetInt32(3)}",
                 WorkspaceRetention,
                 reader.GetString(0)));
-
         }
-
     }
 
     private static async Task SearchSagaAsync(
@@ -1303,7 +1177,6 @@ internal static class MemoryEndpoints
         int limit,
         CancellationToken cancellationToken)
     {
-
         MemoryCampaignScopeDto reported = MemoryCampaignScopeReport.Describe(scope);
 
         SagaMemoryDto[] memories = await store
@@ -1318,30 +1191,24 @@ internal static class MemoryEndpoints
 
         foreach (SagaMemoryDto memory in memories)
         {
-
             string provenance = memory.SessionId is null
                 ? "Saga memory with no originating session"
                 : $"Saga memory from session {memory.SessionId.Value:D}";
 
             if (!string.IsNullOrWhiteSpace(memory.Source))
             {
-
                 provenance += $", source {memory.Source}";
-
             }
 
             if (memory.AttachmentProvenance is { } attachmentSource)
             {
-
                 provenance += $"; {FormatAttachmentProvenance(attachmentSource)}";
-
             }
 
             // Per memory, so a result set spanning scopes is readable: the row says which Campaign owns
             // it, and the block on it says which scope this search drew from.
             provenance += memory.ScopeKind switch
             {
-
                 SagaMemoryScopeKind.Campaign => $"; campaign {memory.ScopeCampaignId:D}",
 
                 SagaMemoryScopeKind.Global => "; installation-scoped",
@@ -1349,7 +1216,6 @@ internal static class MemoryEndpoints
                 SagaMemoryScopeKind.LegacyUnresolved => "; ownership unresolved, retrievable nowhere",
 
                 _ => "; ownership not yet classified",
-
             };
 
             results.Add(new MemorySearchResultDto(
@@ -1360,9 +1226,7 @@ internal static class MemoryEndpoints
                 SagaRetention,
                 memory.Id,
                 reported));
-
         }
-
     }
 
     private static void AddLexiconMatches(
@@ -1371,24 +1235,18 @@ internal static class MemoryEndpoints
         List<MemorySearchResultDto> results,
         int limit)
     {
-
         int taken = 0;
 
         foreach (LexiconEntryDto entry in entries)
         {
-
             if (taken >= limit)
             {
-
                 break;
-
             }
 
             if (!LexiconMatches(entry, query))
             {
-
                 continue;
-
             }
 
             // The tier is part of the entity's identity now: two rows may share a name, and a listing that
@@ -1399,7 +1257,6 @@ internal static class MemoryEndpoints
 
             if (entry.FactProvenance is { Length: > 0 } factSources)
             {
-
                 string sources = string.Join(
                     "; ",
                     factSources
@@ -1407,7 +1264,6 @@ internal static class MemoryEndpoints
                         .Distinct(StringComparer.Ordinal));
 
                 provenance += $"; {sources}";
-
             }
 
             results.Add(new MemorySearchResultDto(
@@ -1419,9 +1275,7 @@ internal static class MemoryEndpoints
                 entry.Id.ToString("D")));
 
             taken++;
-
         }
-
     }
 
     private static bool LexiconMatches(
@@ -1440,7 +1294,6 @@ internal static class MemoryEndpoints
         string? workspacePath,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = workspacePath is null
@@ -1449,9 +1302,7 @@ internal static class MemoryEndpoints
 
         if (workspacePath is not null)
         {
-
             AddParameter(command, "@workspacePath", workspacePath);
-
         }
 
         object? value = await command
@@ -1469,7 +1320,6 @@ internal static class MemoryEndpoints
             .ConfigureAwait(false);
 
         return count;
-
     }
 
     private static async Task<int> CountAsync(
@@ -1478,7 +1328,6 @@ internal static class MemoryEndpoints
         Guid? sessionId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -1490,7 +1339,58 @@ internal static class MemoryEndpoints
             .ConfigureAwait(false);
 
         return Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
 
+    private static async Task<bool> SessionExistsAsync(
+        SqliteConnection connection,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM \"Sessions\" WHERE \"Id\" = $sessionId);";
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", sessionId);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is long exists && exists == 1;
+    }
+
+    private static async Task<Session?> ReadSessionAsync(
+        SqliteConnection connection,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"SELECT {GrimoireEntitySql.SessionColumns} FROM \"Sessions\" WHERE \"Id\" = $sessionId LIMIT 1;";
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", sessionId);
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadSession(reader)
+            : null;
+    }
+
+    private static async Task<string?> ReadCampaignPathAsync(
+        SqliteConnection connection,
+        Guid campaignId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT \"Path\" FROM \"Campaigns\" WHERE \"Id\" = $campaignId LIMIT 1;";
+
+        GrimoireEntitySql.AddParameter(command, "$campaignId", campaignId);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is string path ? path : null;
     }
 
     [GrimoireConnectionAcquisitionRoute]
@@ -1499,11 +1399,9 @@ internal static class MemoryEndpoints
         IGrimoireOrdinaryConnectionFactory connections,
         CancellationToken cancellationToken)
     {
-
         if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
-
         }
 
         Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
@@ -1515,13 +1413,10 @@ internal static class MemoryEndpoints
 
         if (acquired.IsFailure)
         {
-
             throw new GrimoireMaintenanceUnavailableException();
-
         }
 
         return acquired.Value;
-
     }
 
     /// <summary>
@@ -1549,19 +1444,15 @@ internal static class MemoryEndpoints
         DbCommand command,
         Guid? sessionId)
     {
-
         if (sessionId is not null)
         {
-
             AddParameter(command, "@sessionId", sessionId.Value.ToString("D"));
 
             AddParameter(
                 command,
                 "@canonicalSessionId",
                 sessionId.Value.ToString("D").ToUpperInvariant());
-
         }
-
     }
 
     private static void AddParameter(
@@ -1569,7 +1460,6 @@ internal static class MemoryEndpoints
         string name,
         object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1577,10 +1467,8 @@ internal static class MemoryEndpoints
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
 
     private static string TraceId(HttpContext context) =>
         Activity.Current?.Id ?? context.TraceIdentifier;
-
 }

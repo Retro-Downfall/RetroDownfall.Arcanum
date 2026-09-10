@@ -1,24 +1,37 @@
 using System.Collections.Concurrent;
+
 using System.Security.Cryptography;
+
 using System.Text.Json;
+
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed partial class McpConnectionManager
 {
-
     private async Task EnsureGlobalRegistryLoadedAsync(CancellationToken cancellationToken)
     {
         if (_globalRegistryLoaded)
@@ -59,11 +72,13 @@ public sealed partial class McpConnectionManager
         }
     }
 
-    private void RegisterFromConfigCore(
+    private bool RegisterFromConfigCore(
         McpConfig config,
         string? scopeWorkingDirectory,
         string? sourceDigest)
     {
+        bool globalAlwaysOnAdded = false;
+
         foreach (KeyValuePair<string, McpServerConfig> pair in config.McpServers!)
         {
             string serverName = pair.Key;
@@ -98,18 +113,17 @@ public sealed partial class McpConnectionManager
                 sourceDigest);
 
             _registry[key] = entry;
+
+            globalAlwaysOnAdded |= scopeWorkingDirectory is null && entry.AlwaysOn;
         }
+
+        return globalAlwaysOnAdded;
     }
 
-    // W3.3 Fix 2: the count-check + TryAdd must be serialized across concurrent
-    // registrations. The global path already holds _registryLock (see
-    // EnsureGlobalRegistryLoadedAsync); the workspace-build path did not, so
-    // parallel workspace loads could both pass the count check and overshoot
-    // Registry updates are serialized. This wrapper acquires _registryLock for the entire register+
-    // count-check so the cap is enforced atomically. Registration is synchronous
-    // (no awaits inside RegisterFromConfigCore), so the lock is never held across
-    // async work. Callers already holding _registryLock call RegisterFromConfigCore
-    // directly to avoid a non-re-entrant SemaphoreSlim deadlock.
+    // Global registration takes locks in the same global -> registry order as reload. That makes
+    // adding an AlwaysOn entry and advancing the projected-surface revision one atomic cutover:
+    // an initializer either includes the entry or observes the newer revision and rebuilds.
+    // Workspace callers already holding _registryLock use RegisterFromConfigCore directly.
     internal async Task RegisterFromConfigAsync(
         McpConfig config,
         string? scopeWorkingDirectory,
@@ -123,18 +137,36 @@ public sealed partial class McpConnectionManager
                 "Workspace MCP registration requires an exact source digest.");
         }
 
-        await _registryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            RegisterFromConfigCore(
-                config,
-                scopeWorkingDirectory: null,
-                sourceDigest: null);
+            ThrowIfGlobalInitializationStopped();
+
+            await _registryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                bool globalAlwaysOnAdded = RegisterFromConfigCore(
+                    config,
+                    scopeWorkingDirectory: null,
+                    sourceDigest: null);
+
+                if (globalAlwaysOnAdded)
+                {
+                    _ = Interlocked.Increment(ref _toolSurfaceGeneration);
+
+                    _mergedToolsByWorkspace.Clear();
+                }
+            }
+            finally
+            {
+                _registryLock.Release();
+            }
         }
         finally
         {
-            _registryLock.Release();
+            _globalInitLock.Release();
         }
     }
 
@@ -579,5 +611,4 @@ public sealed partial class McpConnectionManager
     private sealed record McpConfigSnapshot(
         McpConfig Config,
         string SourceDigest);
-
 }

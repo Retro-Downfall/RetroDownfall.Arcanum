@@ -28,6 +28,24 @@ internal static class InstallationResetActiveRecordAuthenticator
 
     internal const byte EnvelopeVersion = 2;
 
+    /// <summary>The only payload version this build seals.</summary>
+    /// <remarks>
+    /// The envelope format is unchanged, so it keeps its own version. What moved is the plaintext
+    /// inside it: a record now carries the nested offline-transition receipt, and the absence of that
+    /// receipt beside a nested claim is a refusal rather than a default. A version that reads as 2 to
+    /// one build and 3 to another could not carry a fact whose absence means "stop".
+    /// </remarks>
+    internal const byte PayloadVersion = 3;
+
+    /// <summary>The one earlier payload version that is still read, and never written.</summary>
+    /// <remarks>
+    /// A record sealed before this build exists is still that installation's evidence, so it is read
+    /// and migrated forward before its next effect rather than refused. It may not carry a receipt: a
+    /// version-2 payload had nowhere to put one, so a value 2 that arrives with one is a record
+    /// somebody assembled rather than one that was ever sealed.
+    /// </remarks>
+    internal const byte LegacyPayloadVersion = 2;
+
     internal const byte AnchorVersion = 1;
 
     internal const int MaxActivePayloadBytes = 4 * 1024 * 1024;
@@ -182,7 +200,7 @@ internal static class InstallationResetActiveRecordAuthenticator
         Guid installationId,
         ulong revision,
         CovenantDigest previousEnvelopeDigest,
-        InstallationResetActivePayloadV2 payload)
+        InstallationResetActivePayloadV3 payload)
     {
 
         ArgumentNullException.ThrowIfNull(key);
@@ -193,6 +211,7 @@ internal static class InstallationResetActiveRecordAuthenticator
             || !previousEnvelopeDigest.IsValid
             || ValidateLocation(location).IsFailure
             || ValidatePayload(payload).IsFailure
+            || payload.Version != PayloadVersion
             || !MatchesInstallation(payload, installationId))
         {
 
@@ -207,7 +226,7 @@ internal static class InstallationResetActiveRecordAuthenticator
 
             plaintext = JsonSerializer.SerializeToUtf8Bytes(
                 payload,
-                InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+                InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3);
 
         }
         catch (Exception exception) when (IsDecodeFailure(exception))
@@ -325,7 +344,7 @@ internal static class InstallationResetActiveRecordAuthenticator
         Guid installationId,
         ulong revision,
         CovenantDigest previousEnvelopeDigest,
-        InstallationResetActivePayloadV2 payload)
+        InstallationResetActivePayloadV3 payload)
     {
 
         if (location is null
@@ -354,7 +373,7 @@ internal static class InstallationResetActiveRecordAuthenticator
 
             plaintext = JsonSerializer.SerializeToUtf8Bytes(
                 payload,
-                InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+                InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3);
 
             if (plaintext.Length is 0 or > MaxActivePayloadBytes)
             {
@@ -407,7 +426,7 @@ internal static class InstallationResetActiveRecordAuthenticator
 
     }
 
-    internal static Result<InstallationResetActivePayloadV2> Open(
+    internal static Result<InstallationResetActivePayloadV3> Open(
         InstallationResetActiveRecordKeyLease key,
         InstallationResetActiveLocation expectedLocation,
         Guid expectedInstallationId,
@@ -426,7 +445,7 @@ internal static class InstallationResetActiveRecordAuthenticator
             || envelope.ActiveLocationDigest != expectedLocation.Digest)
         {
 
-            return Invalid<InstallationResetActivePayloadV2>();
+            return Invalid<InstallationResetActivePayloadV3>();
 
         }
 
@@ -458,7 +477,7 @@ internal static class InstallationResetActiveRecordAuthenticator
 
             CryptographicOperations.ZeroMemory(ciphertext);
 
-            return Invalid<InstallationResetActivePayloadV2>();
+            return Invalid<InstallationResetActivePayloadV3>();
 
         }
 
@@ -498,7 +517,7 @@ internal static class InstallationResetActiveRecordAuthenticator
             catch (CryptographicException)
             {
 
-                return Invalid<InstallationResetActivePayloadV2>();
+                return Invalid<InstallationResetActivePayloadV3>();
 
             }
             finally
@@ -508,20 +527,20 @@ internal static class InstallationResetActiveRecordAuthenticator
 
             }
 
-            InstallationResetActivePayloadV2? payload;
+            InstallationResetActivePayloadV3? payload;
 
             try
             {
 
                 payload = JsonSerializer.Deserialize(
                     plaintext,
-                    InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV2);
+                    InstallationResetActiveJsonContext.Default.InstallationResetActivePayloadV3);
 
             }
             catch (Exception exception) when (IsDecodeFailure(exception))
             {
 
-                return Invalid<InstallationResetActivePayloadV2>();
+                return Invalid<InstallationResetActivePayloadV3>();
 
             }
 
@@ -533,12 +552,12 @@ internal static class InstallationResetActiveRecordAuthenticator
                 canonical = JsonSerializer.SerializeToUtf8Bytes(
                     payload,
                     InstallationResetActiveJsonContext.Default
-                        .InstallationResetActivePayloadV2);
+                        .InstallationResetActivePayloadV3);
 
                 if (!plaintext.AsSpan().SequenceEqual(canonical))
                 {
 
-                    return Invalid<InstallationResetActivePayloadV2>();
+                    return Invalid<InstallationResetActivePayloadV3>();
 
                 }
 
@@ -546,7 +565,7 @@ internal static class InstallationResetActiveRecordAuthenticator
             catch (Exception exception) when (IsDecodeFailure(exception))
             {
 
-                return Invalid<InstallationResetActivePayloadV2>();
+                return Invalid<InstallationResetActivePayloadV3>();
 
             }
             finally
@@ -557,7 +576,7 @@ internal static class InstallationResetActiveRecordAuthenticator
             }
 
             if (payload is null
-                || payload.Version != EnvelopeVersion
+                || payload.Version is not (PayloadVersion or LegacyPayloadVersion)
                 || payload.OperationId != envelope.OperationId
                 || payload.Scope != envelope.Scope
                 || !string.Equals(payload.PlanId, envelope.PlanId, StringComparison.Ordinal)
@@ -565,7 +584,7 @@ internal static class InstallationResetActiveRecordAuthenticator
                 || !MatchesInstallation(payload, envelope.InstallationId))
             {
 
-                return Invalid<InstallationResetActivePayloadV2>();
+                return Invalid<InstallationResetActivePayloadV3>();
 
             }
 
@@ -815,12 +834,13 @@ internal static class InstallationResetActiveRecordAuthenticator
 
     }
 
-    internal static Result ValidatePayload(InstallationResetActivePayloadV2 payload)
+    internal static Result ValidatePayload(InstallationResetActivePayloadV3 payload)
     {
 
         if (payload is null
-            || payload.Version != EnvelopeVersion
-            || payload.OperationId == Guid.Empty)
+            || payload.Version is not (PayloadVersion or LegacyPayloadVersion)
+            || payload.OperationId == Guid.Empty
+            || ValidateNestedTransitionReceipt(payload).IsFailure)
         {
 
             return InvalidResult();
@@ -954,8 +974,53 @@ internal static class InstallationResetActiveRecordAuthenticator
 
     }
 
+    /// <summary>
+    /// Requires a nested receipt to describe one of the two states a nested transition is ever in.
+    /// </summary>
+    /// <remarks>
+    /// A claim carries no outcome and a completion carries both halves of one, so the two digests are
+    /// present exactly together and exactly at <see cref="InstallationResetNestedTransitionPhase.Completed"/>.
+    /// Every mixture describes a state the nested transition was never in, and a reader that accepted
+    /// one would have to guess which half to believe.
+    ///
+    /// <para>A legacy payload version may carry no receipt at all. The member did not exist when such
+    /// a record was sealed, so a value that arrives with one was assembled rather than sealed.</para>
+    /// </remarks>
+    private static Result ValidateNestedTransitionReceipt(
+        InstallationResetActivePayloadV3 payload)
+    {
+
+        if (payload.NestedTransitionReceipt is not { } receipt)
+        {
+
+            return Result.Success();
+
+        }
+
+        if (payload.Version != PayloadVersion
+            || receipt.Version != 1
+            || receipt.NestedOperationId == Guid.Empty
+            || !Enum.IsDefined(receipt.Phase))
+        {
+
+            return InvalidResult();
+
+        }
+
+        bool completed = receipt.Phase is InstallationResetNestedTransitionPhase.Completed;
+
+        return completed
+            == (receipt.NestedEffectDigest is { IsValid: true }
+                && receipt.TerminalWinnerDigest is { IsValid: true })
+            && (completed
+                || (receipt.NestedEffectDigest is null && receipt.TerminalWinnerDigest is null))
+            ? Result.Success()
+            : InvalidResult();
+
+    }
+
     private static Result ValidateCheckpoint(
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         HostToolsMarkerPairResetCheckpointV1 checkpoint)
     {
 
@@ -1332,7 +1397,7 @@ internal static class InstallationResetActiveRecordAuthenticator
         && osMarker.MarkerBytesDigest == signed.OsMarkerDigest;
 
     private static bool MatchesInstallation(
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         Guid installationId) =>
         payload.FullInstallationResetRemediationClaim is not { } claim
         || claim.InstallationId == installationId;

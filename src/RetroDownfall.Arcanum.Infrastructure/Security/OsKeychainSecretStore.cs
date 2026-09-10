@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 {
-
     private readonly IOsCredentialStore _osStore;
 
     private readonly DataProtectionSecretStore _dataProtectionStore;
@@ -30,7 +29,6 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         IApiKeyDigestCache apiKeyDigestCache,
         ILogger<OsKeychainSecretStore>? logger = null)
     {
-
         _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
 
         _dataProtectionStore = dataProtectionStore ?? throw new ArgumentNullException(nameof(dataProtectionStore));
@@ -38,61 +36,50 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         _apiKeyDigestCache = apiKeyDigestCache ?? throw new ArgumentNullException(nameof(apiKeyDigestCache));
 
         _logger = logger;
-
     }
 
     public void Dispose()
     {
-
         _gate.Dispose();
 
         _dataProtectionStore.Dispose();
-
     }
 
     public async Task<string?> GetApiKeyAsync()
     {
-
         SecretStoreReadResult result = await GetApiKeyReadResultAsync().ConfigureAwait(false);
 
         return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
-
     }
 
     public async Task<SecretStoreReadResult> GetApiKeyReadResultAsync()
     {
-
         await _gate.WaitAsync().ConfigureAwait(false);
 
         try
         {
-
             OsCredentialStoreResult os = _osStore.TryGet(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.MasterApiKeyAccount);
 
             if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
             {
+                await SynchronizeApiKeyMirrorAsync(os.Value).ConfigureAwait(false);
 
                 return SecretStoreReadResult.Ok(os.Value);
-
             }
 
             if (os.Status is OsCredentialStoreStatus.Failed)
             {
-
                 _logger?.LogWarning("OS credential store read failed: {Message}", os.Message);
-
             }
 
             SecretStoreReadResult legacy = await _dataProtectionStore.GetApiKeyReadResultAsync().ConfigureAwait(false);
 
             if (legacy.Status == SecretStoreReadStatus.Ok && !string.IsNullOrWhiteSpace(legacy.Value))
             {
-
                 if (os.Status is OsCredentialStoreStatus.NotFound or OsCredentialStoreStatus.Ok)
                 {
-
                     OsCredentialStoreResult migrate = _osStore.Set(
                         ArcanumCredentialIdentity.Service,
                         ArcanumCredentialIdentity.MasterApiKeyAccount,
@@ -100,41 +87,31 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
                     if (migrate.Status == OsCredentialStoreStatus.Ok)
                     {
-
                         _logger?.LogInformation(
                             "Migrated master API key from security.dat into the OS credential store ({Service}/{Account}).",
                             ArcanumCredentialIdentity.Service,
                             ArcanumCredentialIdentity.MasterApiKeyAccount);
-
                     }
                     else
                     {
-
                         _logger?.LogWarning(
                             "Could not migrate master API key into the OS credential store: {Message}. Using security.dat fallback.",
                             migrate.Message);
-
                     }
-
                 }
                 else if (os.Status == OsCredentialStoreStatus.Unavailable)
                 {
-
                     _logger?.LogWarning(
                         "OS credential store unavailable ({Message}); using legacy security.dat for the master API key.",
                         os.Message);
-
                 }
 
                 return legacy;
-
             }
 
             if (legacy.Status == SecretStoreReadStatus.Corrupted)
             {
-
                 return legacy;
-
             }
 
             // A read that FAILED leaves the credential's existence unknown, so it must not collapse to
@@ -143,23 +120,50 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             // Unavailable is different: the backend is absent, so nothing of ours can be living in it.
             if (os.Status == OsCredentialStoreStatus.Failed)
             {
-
                 return SecretStoreReadResult.Corrupted(
                     "OS key storage failed while reading the master API key. "
                     + (os.Message ?? "Restore the credential before retrying."));
-
             }
 
             return SecretStoreReadResult.Missing();
-
         }
         finally
         {
-
             _gate.Release();
-
         }
+    }
 
+    /// <summary>
+    /// Makes the encrypted local copy agree with the canonical OS credential before a host can
+    /// publish its presence proof. The CLI reads this copy first, so a normal launch opens Keychain
+    /// only in the server process instead of immediately opening it again in the client process.
+    /// </summary>
+    private async Task SynchronizeApiKeyMirrorAsync(string apiKey)
+    {
+        try
+        {
+            SecretStoreReadResult mirror = await _dataProtectionStore
+                .GetApiKeyReadResultAsync()
+                .ConfigureAwait(false);
+
+            if (mirror.Status == SecretStoreReadStatus.Ok
+                && string.Equals(mirror.Value, apiKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            await _dataProtectionStore
+                .SaveApiKeyMirrorAsync(apiKey)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // The OS credential remains authoritative. A mirror failure must not make a healthy
+            // installation unavailable; the client can still use the primary credential path.
+            _logger?.LogWarning(
+                exception,
+                "The master API key was read from OS storage, but its encrypted local mirror could not be synchronized.");
+        }
     }
 
     /// <summary>
@@ -169,12 +173,10 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
     /// </summary>
     public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
     {
-
         await _gate.WaitAsync().ConfigureAwait(false);
 
         try
         {
-
             OsCredentialStoreResult os = _osStore.TryGet(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.MasterApiKeyAccount);
@@ -182,18 +184,14 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             if (os.Status == OsCredentialStoreStatus.Ok
                 && !string.IsNullOrWhiteSpace(os.Value))
             {
-
                 return SecretStoreReadResult.Ok(os.Value);
-
             }
 
             if (os.Status == OsCredentialStoreStatus.Failed)
             {
-
                 return SecretStoreReadResult.Corrupted(
                     "OS key storage failed while peeking at the master API key. "
                     + (os.Message ?? "Restore the credential before retrying."));
-
             }
 
             SecretStoreReadResult fallback = await _dataProtectionStore
@@ -201,27 +199,21 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 .ConfigureAwait(false);
 
             return NormalizePeekFallback(fallback);
-
         }
         finally
         {
-
             _gate.Release();
-
         }
-
     }
 
     public async Task SaveApiKeyAsync(string apiKey)
     {
-
         ArgumentNullException.ThrowIfNull(apiKey);
 
         await _gate.WaitAsync().ConfigureAwait(false);
 
         try
         {
-
             OsCredentialStoreResult os = _osStore.Set(
                 ArcanumCredentialIdentity.Service,
                 ArcanumCredentialIdentity.MasterApiKeyAccount,
@@ -229,25 +221,19 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
             if (os.Status == OsCredentialStoreStatus.Ok)
             {
-
                 _apiKeyDigestCache.Invalidate();
 
                 // Best-effort mirror to security.dat so emergency fallback stays usable.
                 try
                 {
-
                     await _dataProtectionStore.SaveApiKeyAsync(apiKey).ConfigureAwait(false);
-
                 }
                 catch (Exception ex)
                 {
-
                     _logger?.LogWarning(ex, "OS keychain save succeeded but security.dat mirror failed.");
-
                 }
 
                 return;
-
             }
 
             _logger?.LogWarning(
@@ -260,15 +246,11 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             await _dataProtectionStore.SaveApiKeyAsync(apiKey).ConfigureAwait(false);
 
             _apiKeyDigestCache.Invalidate();
-
         }
         finally
         {
-
             _gate.Release();
-
         }
-
     }
 
     /// <summary>
@@ -279,21 +261,17 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
     /// </summary>
     private void PurgeSupersededOsCredential(OsCredentialStoreResult save)
     {
-
         OsCredentialStoreResult purge = _osStore.Delete(
             ArcanumCredentialIdentity.Service,
             ArcanumCredentialIdentity.MasterApiKeyAccount);
 
         if (purge.Status is OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound)
         {
-
             return;
-
         }
 
         if (!_osStore.IsAvailable)
         {
-
             // No reachable backend at all: security.dat is the documented operating mode here, and
             // every read in this state resolves through it.
             _logger?.LogWarning(
@@ -302,7 +280,6 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 purge.Message);
 
             return;
-
         }
 
         throw new InvalidOperationException(
@@ -310,7 +287,6 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             + $"superseded OS credential could not be removed ({purge.Status}): "
             + (purge.Message ?? "no detail reported.")
             + " The previous key would keep authenticating, so nothing was changed.");
-
     }
 
     public Task<string?> GetGrimoireEncryptionSecretAsync() =>
@@ -467,5 +443,4 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         && string.IsNullOrWhiteSpace(fallback.Value)
             ? SecretStoreReadResult.Missing()
             : fallback;
-
 }

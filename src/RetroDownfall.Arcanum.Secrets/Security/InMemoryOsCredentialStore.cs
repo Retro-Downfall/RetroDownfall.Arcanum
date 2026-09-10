@@ -3,16 +3,27 @@ using System.Collections.Concurrent;
 namespace RetroDownfall.Arcanum.Secrets.Security;
 
 /// <summary>In-process store for unit tests and environments without an OS keychain.</summary>
-public sealed class InMemoryOsCredentialStore : IOsCredentialStore
+public sealed class InMemoryOsCredentialStore :
+    IOsCredentialStore,
+    IOsCredentialPresenceProbe
 {
-
     private readonly ConcurrentDictionary<string, string> _secrets = new(StringComparer.Ordinal);
 
     public bool IsAvailable => true;
 
+    public OsCredentialStoreStatus ProbePresence(string service, string account)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(service);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(account);
+
+        return _secrets.ContainsKey(Key(service, account))
+            ? OsCredentialStoreStatus.Ok
+            : OsCredentialStoreStatus.NotFound;
+    }
+
     public OsCredentialStoreResult TryGet(string service, string account)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(account);
@@ -20,12 +31,10 @@ public sealed class InMemoryOsCredentialStore : IOsCredentialStore
         return _secrets.TryGetValue(Key(service, account), out string? value)
             ? OsCredentialStoreResult.Ok(value)
             : OsCredentialStoreResult.NotFound();
-
     }
 
     public OsCredentialStoreResult Set(string service, string account, string secret)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(account);
@@ -35,12 +44,10 @@ public sealed class InMemoryOsCredentialStore : IOsCredentialStore
         _secrets[Key(service, account)] = secret;
 
         return OsCredentialStoreResult.Ok(secret);
-
     }
 
     public OsCredentialStoreResult Delete(string service, string account)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(account);
@@ -48,9 +55,7 @@ public sealed class InMemoryOsCredentialStore : IOsCredentialStore
         _ = _secrets.TryRemove(Key(service, account), out _);
 
         return OsCredentialStoreResult.Ok(string.Empty);
-
     }
 
     private static string Key(string service, string account) => service + "\0" + account;
-
 }

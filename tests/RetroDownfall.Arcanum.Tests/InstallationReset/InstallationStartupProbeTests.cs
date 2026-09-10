@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed class InstallationStartupProbeTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     public Task InitializeAsync() => _workspace.InitializeAsync();
@@ -26,7 +25,6 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
     [Fact]
     public void Backup_files_alone_leave_the_installation_fresh_without_writes()
     {
-
         string root = _workspace.CreateSubdir("arcanum");
 
         _ = _workspace.WriteFile("arcanum/backups/kept.arcbackup", "backup");
@@ -47,15 +45,12 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
         Assert.True(result.Value);
 
-        Assert.Contains(
-            ArcanumCredentialIdentity.MasterApiKeyAccount,
-            credentials.ReadAccounts);
+        Assert.Equal(0, credentials.ReadCount);
 
         Assert.Equal(before, Directory.GetFileSystemEntries(
             _workspace.Root,
             "*",
             SearchOption.AllDirectories));
-
     }
 
     [Theory]
@@ -67,34 +62,30 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
     public void Authoritative_file_state_makes_the_installation_nonfresh(
         string relativePath)
     {
-
         string root = _workspace.CreateSubdir("arcanum");
 
         _ = _workspace.WriteFile("arcanum/" + relativePath, "state");
 
-        InstallationStartupProbe probe = CreateProbe(
-            root,
-            new RecordingCredentialStore(OsCredentialStoreResult.NotFound()));
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.NotFound());
+
+        InstallationStartupProbe probe = CreateProbe(root, credentials);
 
         Result<bool> result = probe.IsFreshInstallation();
 
         Assert.True(result.IsSuccess);
 
         Assert.False(result.Value);
-
     }
 
     /// <summary>
-    /// An authoritative file already proves the installation non-fresh, so the credential-backed
-    /// active-reset read (which reaches the OS credential store on every ordinary invocation, per the
-    /// finding) must never run for it — checking the cheap, local file state first is what keeps an
-    /// established installation off the credential store's potentially slow or interactive round trip
-    /// on the common `arcanum run` path.
+    /// An authoritative file already proves the installation non-fresh, so no credential probe is
+    /// needed. This keeps an established installation off the credential store's potentially slow or
+    /// interactive round trip on the common `arcanum run` path.
     /// </summary>
     [Fact]
     public void Authoritative_file_state_never_reaches_the_credential_store()
     {
-
         string root = _workspace.CreateSubdir("arcanum");
 
         _ = _workspace.WriteFile("arcanum/arcanum.db", "state");
@@ -110,13 +101,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.False(result.Value);
 
         Assert.Equal(0, credentials.ReadCount);
-
     }
 
     [Fact]
-    public void Fixed_master_credential_makes_the_installation_nonfresh()
+    public void Fixed_master_credential_alone_neither_suppresses_setup_nor_gets_read()
     {
-
         string root = _workspace.CreateSubdir("arcanum");
 
         RecordingCredentialStore credentials = new(
@@ -128,26 +117,18 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
-        Assert.False(result.Value);
+        Assert.True(result.Value);
 
-        Assert.Equal(
-            1,
-            credentials.ReadAccounts.Count(static account =>
-                string.Equals(
-                    account,
-                    ArcanumCredentialIdentity.MasterApiKeyAccount,
-                    StringComparison.Ordinal)));
+        Assert.Equal(0, credentials.ReadCount);
 
         Assert.Equal(0, credentials.WriteCount);
 
         Assert.Equal(0, credentials.DeleteCount);
-
     }
 
     [Fact]
     public async Task Active_reset_probe_reads_the_bounded_record_without_mutation()
     {
-
         string root = _workspace.CreateSubdir("arcanum");
 
         InstallationResetActiveStore activeStore = new(root);
@@ -158,9 +139,10 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
             record,
             CancellationToken.None)).IsSuccess);
 
-        InstallationStartupProbe probe = CreateProbe(
-            root,
-            new RecordingCredentialStore(OsCredentialStoreResult.NotFound()));
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.NotFound());
+
+        InstallationStartupProbe probe = CreateProbe(root, credentials);
 
         byte[] before = await File.ReadAllBytesAsync(activeStore.ActivePath);
 
@@ -186,12 +168,12 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
         Assert.Equal(before, await File.ReadAllBytesAsync(activeStore.ActivePath));
 
+        Assert.NotEmpty(credentials.ReadAccounts);
     }
 
     [Fact]
     public async Task Missing_active_record_is_a_no_create_probe()
     {
-
         string guardedRoot = Path.Combine(_workspace.Root, "missing-arcanum");
 
         InstallationStartupProbe probe = CreateProbe(
@@ -208,13 +190,136 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Null(result.Value);
 
         Assert.Equal(before, Directory.GetFileSystemEntries(_workspace.Root));
+    }
 
+    [Fact]
+    public async Task Existing_installation_without_active_reset_never_reaches_the_credential_store()
+    {
+        string root = _workspace.CreateSubdir("arcanum-existing");
+
+        _ = _workspace.WriteFile("arcanum-existing/arcanum.db", "existing-state");
+
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.Unavailable("credential access must stay cold"),
+            failAllReads: true);
+
+        InstallationStartupProbe probe = CreateProbe(root, credentials);
+
+        Result<ActiveInstallationReset?> result = await probe
+            .ReadActiveResetAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Null(result.Value);
+
+        Assert.Equal(0, credentials.ReadCount);
+
+        Assert.Equal(2, credentials.PresenceProbeCount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Orphaned_authenticated_credential_evidence_cannot_take_the_absent_fast_path(
+        bool retainAnchor)
+    {
+        string root = _workspace.CreateSubdir(
+            retainAnchor ? "arcanum-orphan-anchor" : "arcanum-orphan-key");
+
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.NotFound());
+
+        InstallationResetActiveStore activeStore = new(root, credentials);
+
+        using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+                   ArcanumMaintenanceLock.TryAcquire(root)))
+        {
+            _ = Value(await activeStore.BeginAsync(
+                held,
+                Guid.Parse("91919191-9191-4191-8191-919191919191"),
+                CreateActiveRecord(),
+                CancellationToken.None));
+        }
+
+        BackupRestoreProfileNamespace profile = Value(
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(root));
+
+        string anchorAccount =
+            ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(
+                profile.AccountSuffix);
+
+        string keyAccount =
+            ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(
+                profile.AccountSuffix);
+
+        credentials.RemoveStored(retainAnchor ? keyAccount : anchorAccount);
+
+        File.Delete(activeStore.ActivePath);
+
+        int readsBefore = credentials.ReadCount;
+
+        Result<ActiveInstallationReset?> result = await CreateProbe(root, credentials)
+            .ReadActiveResetAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.Error.Code);
+
+        Assert.True(credentials.ReadCount > readsBefore);
+
+        Assert.Contains(
+            retainAnchor ? anchorAccount : keyAccount,
+            credentials.PresenceProbeAccounts);
+    }
+
+    [Fact]
+    public async Task Temporary_active_record_residue_fails_before_any_secret_read()
+    {
+        string root = _workspace.CreateSubdir("arcanum-temporary-residue");
+
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.NotFound());
+
+        InstallationResetActiveStore activeStore = new(root, credentials);
+
+        await File.WriteAllTextAsync(
+            activeStore.ActivePath + ".tmp.injected",
+            "incomplete-publication");
+
+        Result<ActiveInstallationReset?> result = await CreateProbe(root, credentials)
+            .ReadActiveResetAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.Error.Code);
+
+        Assert.Equal(0, credentials.ReadCount);
+
+        Assert.Equal(0, credentials.PresenceProbeCount);
+    }
+
+    [Fact]
+    public async Task Indeterminate_presence_fails_closed_without_reading_secret_data()
+    {
+        string root = _workspace.CreateSubdir("arcanum-indeterminate-presence");
+
+        RecordingCredentialStore credentials = new(
+            OsCredentialStoreResult.NotFound(),
+            presenceStatus: OsCredentialStoreStatus.Failed);
+
+        Result<ActiveInstallationReset?> result = await CreateProbe(root, credentials)
+            .ReadActiveResetAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(1, credentials.PresenceProbeCount);
+
+        Assert.Equal(0, credentials.ReadCount);
     }
 
     [Fact]
     public async Task Missing_retained_parent_is_a_no_create_absence_not_an_authentication_error()
     {
-
         string missingParent = Path.Combine(_workspace.Root, "missing-parent");
 
         string guardedRoot = Path.Combine(missingParent, "arcanum");
@@ -247,13 +352,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
             _workspace.Root,
             "*",
             SearchOption.AllDirectories));
-
     }
 
     [Fact]
     public async Task Ordinary_file_at_the_guarded_root_fails_closed_without_mutation()
     {
-
         string guardedRoot = _workspace.WriteFile(
             "guarded-root-file",
             "ordinary-file");
@@ -277,13 +380,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.DoesNotContain(
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             credentials.ReadAccounts);
-
     }
 
     [Fact]
     public async Task Dangling_symlink_at_the_guarded_root_fails_closed_without_mutation()
     {
-
         string guardedRoot = Path.Combine(_workspace.Root, "guarded-root-link");
 
         Directory.CreateSymbolicLink(
@@ -309,13 +410,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.DoesNotContain(
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             credentials.ReadAccounts);
-
     }
 
     [Fact]
     public async Task Symlink_to_directory_at_the_guarded_root_fails_closed_without_mutation()
     {
-
         string target = _workspace.CreateSubdir("guarded-root-target");
 
         string guardedRoot = Path.Combine(_workspace.Root, "guarded-root-link");
@@ -343,22 +442,18 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.DoesNotContain(
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             credentials.ReadAccounts);
-
     }
 
     [SkippableFact]
     public async Task Inaccessible_ancestor_of_the_guarded_root_fails_closed_without_mutation()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what makes the ancestor inaccessible here.");
 
         // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         string retainedParent = _workspace.CreateSubdir("inaccessible-parent");
@@ -374,7 +469,6 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
         try
         {
-
             File.SetUnixFileMode(retainedParent, UnixFileMode.None);
 
             InstallationStartupProbe probe = CreateProbe(guardedRoot, credentials);
@@ -391,23 +485,18 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
             Assert.DoesNotContain(
                 ArcanumCredentialIdentity.MasterApiKeyAccount,
                 credentials.ReadAccounts);
-
         }
         finally
         {
-
             File.SetUnixFileMode(retainedParent, originalMode);
-
         }
 
         Assert.Empty(Directory.GetFileSystemEntries(guardedRoot));
-
     }
 
     [Fact]
     public async Task Existing_nondirectory_retained_parent_still_fails_closed()
     {
-
         string retainedParent = _workspace.WriteFile(
             "not-a-directory",
             "ordinary-file");
@@ -428,13 +517,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.True(fresh.IsFailure);
 
         Assert.Equal("ordinary-file", await File.ReadAllTextAsync(retainedParent));
-
     }
 
     [Fact]
     public async Task Existing_dangling_symlink_retained_parent_still_fails_closed()
     {
-
         string retainedParent = Path.Combine(_workspace.Root, "linked-parent");
 
         Directory.CreateSymbolicLink(
@@ -455,13 +542,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.True(fresh.IsFailure);
 
         Assert.NotNull(new DirectoryInfo(retainedParent).LinkTarget);
-
     }
 
     [Fact]
     public async Task Nondirectory_ancestor_of_the_retained_parent_fails_closed()
     {
-
         string obstructingAncestor = _workspace.WriteFile(
             "file-ancestor",
             "ordinary-file");
@@ -482,13 +567,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.True(fresh.IsFailure);
 
         Assert.Equal("ordinary-file", await File.ReadAllTextAsync(obstructingAncestor));
-
     }
 
     [Fact]
     public async Task Dangling_symlink_ancestor_of_the_retained_parent_fails_closed()
     {
-
         string obstructingAncestor = Path.Combine(_workspace.Root, "linked-ancestor");
 
         Directory.CreateSymbolicLink(
@@ -511,13 +594,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.True(fresh.IsFailure);
 
         Assert.NotNull(new DirectoryInfo(obstructingAncestor).LinkTarget);
-
     }
 
     [Fact]
     public async Task Authenticated_v2_probe_projects_the_exact_record_without_mutation()
     {
-
         string root = _workspace.CreateSubdir("arcanum-v2");
 
         RecordingCredentialStore credentials = new(
@@ -530,13 +611,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(root)))
         {
-
             _ = Value(await activeStore.BeginAsync(
                 held,
                 Guid.Parse("51515151-5151-4151-8151-515151515151"),
                 record,
                 CancellationToken.None));
-
         }
 
         byte[] before = await File.ReadAllBytesAsync(activeStore.ActivePath);
@@ -571,13 +650,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Equal(writesBefore, credentials.WriteCount);
 
         Assert.Equal(deletesBefore, credentials.DeleteCount);
-
     }
 
     [Fact]
     public async Task Authenticated_full_claim_projects_no_ordinary_host_handoff()
     {
-
         string root = _workspace.CreateSubdir("arcanum-full-claim");
 
         RecordingCredentialStore credentials = new(
@@ -618,13 +695,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(root)))
         {
-
             _ = Value(await activeStore.BeginAsync(
                 held,
                 installationId,
                 record,
                 CancellationToken.None));
-
         }
 
         InstallationStartupProbe probe = CreateProbe(root, credentials);
@@ -644,13 +719,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.False(active.OnlineDataCompletionDurable);
 
         Assert.True(active.RequiresExternalRemediationAttestation);
-
     }
 
     [Fact]
     public async Task Authenticated_v2_beside_an_absent_guarded_root_remains_active_and_nonfresh()
     {
-
         string root = _workspace.CreateSubdir("arcanum-v2-root-removed");
 
         RecordingCredentialStore credentials = new(
@@ -663,13 +736,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(root)))
         {
-
             _ = Value(await activeStore.BeginAsync(
                 held,
                 Guid.Parse("81818181-8181-4181-8181-818181818181"),
                 record,
                 CancellationToken.None));
-
         }
 
         byte[] before = await File.ReadAllBytesAsync(activeStore.ActivePath);
@@ -702,13 +773,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Equal(deletesBefore, credentials.DeleteCount);
 
         Assert.False(Directory.Exists(root));
-
     }
 
     [Fact]
     public async Task Bounded_v1_beside_an_absent_guarded_root_remains_active_and_nonfresh()
     {
-
         string root = _workspace.CreateSubdir("arcanum-v1-root-removed");
 
         RecordingCredentialStore credentials = new(
@@ -748,7 +817,6 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Equal(0, credentials.DeleteCount);
 
         Assert.False(Directory.Exists(root));
-
     }
 
     [Theory]
@@ -757,7 +825,6 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
     public async Task Missing_v2_authentication_is_neither_null_nor_a_fresh_installation(
         bool removeAnchor)
     {
-
         string root = _workspace.CreateSubdir(
             removeAnchor ? "arcanum-missing-anchor" : "arcanum-missing-key");
 
@@ -769,13 +836,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(root)))
         {
-
             _ = Value(await activeStore.BeginAsync(
                 held,
                 Guid.Parse("71717171-7171-4171-8171-717171717171"),
                 CreateActiveRecord(),
                 CancellationToken.None));
-
         }
 
         BackupRestoreProfileNamespace profile = Value(
@@ -803,13 +868,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.True(fresh.IsFailure);
 
         Assert.Equal(before, await File.ReadAllBytesAsync(activeStore.ActivePath));
-
     }
 
     [Fact]
     public async Task Authenticated_probe_rejects_the_one_ahead_window_without_advancing_it()
     {
-
         string root = _workspace.CreateSubdir("arcanum-one-ahead");
 
         RecordingCredentialStore credentials = new(
@@ -822,13 +885,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
                    ArcanumMaintenanceLock.TryAcquire(root)))
         {
-
             publication = Value(await activeStore.BeginAsync(
                 held,
                 Guid.Parse("61616161-6161-4161-8161-616161616161"),
                 CreateActiveRecord(),
                 CancellationToken.None));
-
         }
 
         BackupRestoreProfileNamespace profile = Value(
@@ -869,13 +930,11 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Equal(writesBefore, credentials.WriteCount);
 
         Assert.Equal(deletesBefore, credentials.DeleteCount);
-
     }
 
     [Fact]
     public async Task Corrupt_active_evidence_is_neither_null_nor_a_fresh_installation()
     {
-
         string root = _workspace.CreateSubdir("arcanum-corrupt");
 
         RecordingCredentialStore credentials = new(
@@ -903,36 +962,36 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
         Assert.Equal(0, credentials.WriteCount);
 
         Assert.Equal(0, credentials.DeleteCount);
-
     }
 
     [Fact]
-    public async Task Credential_probe_failure_is_neither_null_nor_a_fresh_installation()
+    public async Task Indeterminate_presence_fails_closed_before_a_failing_secret_read()
     {
-
         string root = _workspace.CreateSubdir("arcanum-credential-error");
 
         RecordingCredentialStore credentials = new(
             OsCredentialStoreResult.Unavailable("injected"),
-            failAllReads: true);
+            failAllReads: true,
+            presenceStatus: OsCredentialStoreStatus.Failed);
 
         InstallationStartupProbe probe = CreateProbe(root, credentials);
 
         Result<ActiveInstallationReset?> active = await probe.ReadActiveResetAsync(
             CancellationToken.None);
 
-        Result<bool> fresh = probe.IsFreshInstallation();
-
         Assert.True(active.IsFailure);
 
-        Assert.True(fresh.IsFailure);
+        Assert.Equal(ErrorCodes.Data.ControlPathUnavailable, active.Error.Code);
+
+        Assert.True(credentials.PresenceProbeCount > 0);
+
+        Assert.Equal(0, credentials.ReadCount);
 
         Assert.False(Directory.Exists(Path.Combine(_workspace.Root, "unexpected")));
 
         Assert.Equal(0, credentials.WriteCount);
 
         Assert.Equal(0, credentials.DeleteCount);
-
     }
 
     private static InstallationStartupProbe CreateProbe(
@@ -947,7 +1006,6 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
     private static InstallationResetActiveRecord CreateActiveRecord()
     {
-
         InstallationResetAcceptedBinding binding = new(
             "binding",
             ["/selected"],
@@ -973,36 +1031,37 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
             CredentialResults: [],
             LastErrorCode: null,
             DataHandoff: InstallationResetDataHandoff.HostFactoryErasure);
-
     }
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.Error.Message);
 
         return result.Value;
-
     }
 
-    private sealed class RecordingCredentialStore : IOsCredentialStore
+    private sealed class RecordingCredentialStore :
+        IOsCredentialStore,
+        IOsCredentialPresenceProbe
     {
-
         private readonly OsCredentialStoreResult _masterReadResult;
 
         private readonly bool _failAllReads;
+
+        private readonly OsCredentialStoreStatus? _presenceStatus;
 
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
 
         public RecordingCredentialStore(
             OsCredentialStoreResult masterReadResult,
-            bool failAllReads = false)
+            bool failAllReads = false,
+            OsCredentialStoreStatus? presenceStatus = null)
         {
-
             _masterReadResult = masterReadResult;
 
             _failAllReads = failAllReads;
 
+            _presenceStatus = presenceStatus;
         }
 
         public bool IsAvailable => true;
@@ -1011,15 +1070,32 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
         public List<string> ReadAccounts { get; } = [];
 
+        public int PresenceProbeCount { get; private set; }
+
+        public List<string> PresenceProbeAccounts { get; } = [];
+
         public int WriteCount { get; private set; }
 
         public int DeleteCount { get; private set; }
 
         public void RemoveStored(string account) => _ = _values.Remove(account);
 
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            PresenceProbeCount++;
+
+            PresenceProbeAccounts.Add(account);
+
+            Assert.Equal(ArcanumCredentialIdentity.Service, service);
+
+            return _presenceStatus
+                ?? (_values.ContainsKey(account)
+                    ? OsCredentialStoreStatus.Ok
+                    : OsCredentialStoreStatus.NotFound);
+        }
+
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             ReadCount++;
 
             ReadAccounts.Add(account);
@@ -1028,16 +1104,12 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
 
             if (_failAllReads)
             {
-
                 return _masterReadResult;
-
             }
 
             if (_values.TryGetValue(account, out string? value))
             {
-
                 return OsCredentialStoreResult.Ok(value);
-
             }
 
             return string.Equals(
@@ -1046,7 +1118,6 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
                 StringComparison.Ordinal)
                 ? _masterReadResult
                 : OsCredentialStoreResult.NotFound();
-
         }
 
         public OsCredentialStoreResult Set(
@@ -1054,26 +1125,20 @@ public sealed class InstallationStartupProbeTests : IAsyncLifetime
             string account,
             string secret)
         {
-
             WriteCount++;
 
             _values[account] = secret;
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             DeleteCount++;
 
             _ = _values.Remove(account);
 
             return OsCredentialStoreResult.Ok(string.Empty);
-
         }
-
     }
-
 }

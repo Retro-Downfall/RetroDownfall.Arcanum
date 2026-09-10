@@ -29,12 +29,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// </remarks>
 public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 {
-
     public async Task<Result<TurnCommitReceipt>> CommitTurnAsync(
         TurnCommitRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         using IDisposable writeLock = await SessionEntryPersistence
@@ -43,15 +41,12 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                 () => CommitWithinImmediateTransactionAsync(request, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             _logger.LogWarning(
                 exception,
                 "The turn for assistant entry {AssistantEntryId} could not be finalized; nothing was published.",
@@ -60,16 +55,13 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             return new Error(
                 ErrorCodes.Grimoire.WriteFailed,
                 "The conversation turn could not be finalized.");
-
         }
-
     }
 
     private async Task<Result<TurnCommitReceipt>> CommitWithinImmediateTransactionAsync(
         TurnCommitRequest request,
         CancellationToken cancellationToken)
     {
-
         if (_db.Database.GetDbConnection() is not SqliteConnection connection)
         {
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
@@ -99,10 +91,9 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
         try
         {
-
             // Resolve the guard before anything else. A retry after a committed response has to
             // recover the durable answer rather than run a second, partial finalization.
-            AssistantFinalizationOutcome? existing = await ReadFinalizationGuardAsync(
+            FinalizationGuard? existing = await ReadFinalizationGuardAsync(
                 connection,
                 sqliteTransaction,
                 request,
@@ -110,17 +101,20 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             if (existing is { } resolved)
             {
-
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 await PauseAfterTurnTransactionAsync(
                     GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
-                    resolved,
+                    resolved.Outcome,
                     cancellationToken).ConfigureAwait(false);
 
                 return Result<TurnCommitReceipt>.Success(
-                    new TurnCommitReceipt(request.AssistantEntryId, resolved, Replayed: true, []));
-
+                    new TurnCommitReceipt(
+                        request.AssistantEntryId,
+                        resolved.Outcome,
+                        Replayed: true,
+                        [],
+                        resolved.ThroughEntrySequence));
             }
 
             Result applied = request.Outcome is AssistantFinalizationOutcome.Discarded
@@ -129,7 +123,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             if (applied.IsFailure)
             {
-
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 await PauseAfterTurnTransactionAsync(
@@ -138,14 +131,12 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                     cancellationToken).ConfigureAwait(false);
 
                 return applied.Error;
-
             }
 
             ImmutableArray<CovenantMutationReceipt> receipts = [];
 
             if (!request.Mutations.IsEmpty)
             {
-
                 Result<ImmutableArray<CovenantMutationReceipt>> published = await PublishCovenantBatchAsync(
                     request,
                     connection,
@@ -154,7 +145,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
                 if (published.IsFailure)
                 {
-
                     await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     await PauseAfterTurnTransactionAsync(
@@ -163,11 +153,9 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                         cancellationToken).ConfigureAwait(false);
 
                     return published.Error;
-
                 }
 
                 receipts = published.Value;
-
             }
 
             Result capacity = await EnsureFinalizationCapacityAsync(
@@ -177,7 +165,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             if (capacity.IsFailure)
             {
-
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 await PauseAfterTurnTransactionAsync(
@@ -186,7 +173,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                     cancellationToken).ConfigureAwait(false);
 
                 return capacity.Error;
-
             }
 
             Result labelled = await LabelAssistantEntryAsync(
@@ -197,7 +183,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             if (labelled.IsFailure)
             {
-
                 await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 await PauseAfterTurnTransactionAsync(
@@ -206,13 +191,17 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                     cancellationToken).ConfigureAwait(false);
 
                 return labelled.Error;
-
             }
+
+            long? throughEntrySequence = await ReadLatestEntrySequenceAsync(
+                request.SessionId,
+                cancellationToken).ConfigureAwait(false);
 
             await InsertFinalizationGuardAsync(
                 connection,
                 sqliteTransaction,
                 request,
+                throughEntrySequence,
                 cancellationToken).ConfigureAwait(false);
 
             await efTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -227,12 +216,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                     request.AssistantEntryId,
                     request.Outcome,
                     Replayed: false,
-                    receipts));
-
+                    receipts,
+                    throughEntrySequence));
         }
         catch
         {
-
             await efTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             await PauseAfterTurnTransactionAsync(
@@ -241,9 +229,32 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 CancellationToken.None).ConfigureAwait(false);
 
             throw;
-
         }
+    }
 
+    private async Task<long?> ReadLatestEntrySequenceAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT MAX("Sequence")
+            FROM "Entries"
+            WHERE "SessionId" = $sessionId;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$sessionId",
+            GrimoireEntitySql.Format(sessionId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull
+            ? null
+            : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
     private static ValueTask PauseAfterTurnTransactionAsync(
@@ -276,12 +287,9 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         if (request.Outcome is AssistantFinalizationOutcome.Discarded)
         {
-
             return Result.Success();
-
         }
 
         Result<LabeledArtifactWriteReceipt> labelled = await ArtifactSensitivityLedger.WriteWithinAsync(
@@ -291,27 +299,35 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             cancellationToken).ConfigureAwait(false);
 
         return labelled.IsFailure ? labelled.Error : Result.Success();
-
     }
 
     private async Task<Result> PersistAssistantContentAsync(
         TurnCommitRequest request,
         CancellationToken cancellationToken)
     {
-
-        int updated = await _db.Entries
-            .Where(entry => entry.Id == request.AssistantEntryId
-                && entry.Role == MessageRole.Assistant)
-            .ExecuteUpdateAsync(
-                setters => setters.SetProperty(entry => entry.Content, request.FinalText),
-                cancellationToken).ConfigureAwait(false);
+        int updated = await ExecuteNonQueryAsync(
+            """
+            UPDATE "Entries"
+            SET "Content" = $content
+            WHERE "Id" = $entryId
+              AND "Role" = $assistantRole;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$content", request.FinalText);
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$entryId",
+                    GrimoireEntitySql.Format(request.AssistantEntryId));
+                GrimoireEntitySql.AddParameter(command, "$assistantRole", (int)MessageRole.Assistant);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         return updated == 0
             ? Result.Failure(new Error(
                 ErrorCodes.Grimoire.WriteFailed,
                 "No assistant placeholder matched this finalization."))
             : Result.Success();
-
     }
 
     /// <summary>
@@ -327,36 +343,57 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         TurnCommitRequest request,
         CancellationToken cancellationToken)
     {
-
-        int deleted = await _db.Entries
-            .Where(entry => entry.Id == request.AssistantEntryId
-                && entry.Role == MessageRole.Assistant
-                && entry.Content == string.Empty)
-            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        int deleted = await ExecuteNonQueryAsync(
+            """
+            DELETE FROM "Entries"
+            WHERE "Id" = $entryId
+              AND "Role" = $assistantRole
+              AND "Content" = '';
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$entryId",
+                    GrimoireEntitySql.Format(request.AssistantEntryId));
+                GrimoireEntitySql.AddParameter(command, "$assistantRole", (int)MessageRole.Assistant);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         if (deleted > 0)
         {
-
             await _entryPersistence
                 .DecrementUnsummarizedEntryCountIfKnownAsync(request.SessionId, 1, cancellationToken)
                 .ConfigureAwait(false);
 
             return Result.Success();
-
         }
 
-        bool holdsContent = await _db.Entries
-            .AsNoTracking()
-            .AnyAsync(
-                entry => entry.Id == request.AssistantEntryId && entry.Content != string.Empty,
-                cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT 1
+            FROM "Entries"
+            WHERE "Id" = $entryId
+              AND "Content" <> ''
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(
+            command,
+            "$entryId",
+            GrimoireEntitySql.Format(request.AssistantEntryId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        bool holdsContent = value is not null and not DBNull;
 
         return holdsContent
             ? Result.Failure(new Error(
                 ErrorCodes.Grimoire.WriteFailed,
                 "An assistant entry that already carries content cannot be discarded."))
             : Result.Success();
-
     }
 
     private async Task<Result<ImmutableArray<CovenantMutationReceipt>>> PublishCovenantBatchAsync(
@@ -365,14 +402,11 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         if (_covenantKernel is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant mutation kernel is not composed in this host.");
-
         }
 
         CovenantMutationBatchBinding binding = request.MutationBinding!;
@@ -393,7 +427,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         return published.IsFailure
             ? published.Error
             : Result<ImmutableArray<CovenantMutationReceipt>>.Success([.. published.Value]);
-
     }
 
     /// <summary>
@@ -412,7 +445,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await SeedSessionCapacityRowAsync(request.SessionId, transaction, cancellationToken)
             .ConfigureAwait(false);
 
@@ -427,7 +459,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 cancellationToken).ConfigureAwait(false);
 
         return allocated.IsFailure ? allocated.Error : Result.Success();
-
     }
 
     /// <summary>
@@ -444,7 +475,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -459,7 +489,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         _ = command.Parameters.AddWithValue("$sessionId", sessionId);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -467,7 +496,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
     /// </summary>
     private static Guid DeriveReservationId(Guid assistantEntryId)
     {
-
         Span<byte> preimage = stackalloc byte[16 + AssistantFinalizationReservationDomain.Length];
 
         AssistantFinalizationReservationDomain.CopyTo(preimage);
@@ -479,7 +507,6 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         _ = System.Security.Cryptography.SHA256.HashData(preimage, digest);
 
         return new Guid(digest[..16]);
-
     }
 
     private static ReadOnlySpan<byte> AssistantFinalizationReservationDomain =>
@@ -489,19 +516,18 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
     /// Reads the one-shot guard, failing closed when the same entry is replayed with a different
     /// request.
     /// </summary>
-    private static async Task<AssistantFinalizationOutcome?> ReadFinalizationGuardAsync(
+    private static async Task<FinalizationGuard?> ReadFinalizationGuardAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         TurnCommitRequest request,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
 
         command.CommandText = """
-            SELECT OutcomeCode, RequestDigest
+            SELECT OutcomeCode, RequestDigest, ThroughEntrySequence
             FROM assistant_entry_finalizations
             WHERE AssistantEntryId = $assistantEntryId;
             """;
@@ -521,23 +547,22 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
         if (!storedDigest.AsSpan().SequenceEqual(request.RequestDigest.Bytes.AsSpan()))
         {
-
             throw new InvalidOperationException(
                 "This assistant entry was already finalized for a different request.");
-
         }
 
-        return (AssistantFinalizationOutcome)reader.GetInt64(0);
-
+        return new FinalizationGuard(
+            (AssistantFinalizationOutcome)reader.GetInt64(0),
+            reader.IsDBNull(2) ? null : reader.GetInt64(2));
     }
 
     private static async Task InsertFinalizationGuardAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         TurnCommitRequest request,
+        long? throughEntrySequence,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -552,7 +577,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 RequestDigest,
                 FinalReceiptDigest,
                 SourceEvidenceDigest,
-                FinalizedAtUtc)
+                FinalizedAtUtc,
+                ThroughEntrySequence)
             VALUES (
                 $assistantEntryId,
                 $sessionId,
@@ -562,7 +588,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 $requestDigest,
                 $finalReceiptDigest,
                 NULL,
-                $finalizedAtUtc);
+                $finalizedAtUtc,
+                $throughEntrySequence);
             """;
 
         _ = command.Parameters.AddWithValue("$assistantEntryId", request.AssistantEntryId);
@@ -589,10 +616,16 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
         _ = command.Parameters.AddWithValue(
             "$finalizedAtUtc",
-            DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+        _ = command.Parameters.AddWithValue(
+            "$throughEntrySequence",
+            throughEntrySequence is { } sequence ? sequence : DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
+    private sealed record FinalizationGuard(
+        AssistantFinalizationOutcome Outcome,
+        long? ThroughEntrySequence);
 }

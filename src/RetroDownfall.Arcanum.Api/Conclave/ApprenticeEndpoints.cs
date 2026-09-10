@@ -410,21 +410,32 @@ internal static class ApprenticeEndpoints
                         FullMode = BoundedChannelFullMode.DropOldest,
                     });
 
-                using CancellationTokenSource pumpCts = CancellationTokenSource.CreateLinkedTokenSource(
-                    httpContext.RequestAborted);
+                GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
 
-                Task pumpTask = PumpChronicleLiveAsync(id, runtime, liveBuffer.Writer, pumpCts.Token);
-
+                // Everything that can throw is computed before the pump starts, so that nothing sits
+                // between starting it and entering the try whose finally cancels it. `DeserializePlan`
+                // is the one that matters: it parses operator-influenced JSON off the Apprentice row,
+                // and a fault there used to unwind through `using pumpCts` — disposing the linked
+                // source without cancelling it, which unlinks it from RequestAborted for good and
+                // strands the pump and its chronicle subscription for the life of the host. The
+                // session stream already keeps this ordering and records the same reason.
                 List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
                 TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
                     ArcanumSettingClamps.EventBusHeartbeatSeconds(
                         settings.CurrentValue.ResolveEventBus().HeartbeatSeconds));
 
+                // Revocation reaches the pump and never the frame writes below. Cancelling the pump
+                // completes the channel, so the live loop observes an ordinary end of stream after
+                // whichever frame it was writing, rather than a cancellation inside one.
+                using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
+
+                Task pumpTask = PumpChronicleLiveAsync(id, runtime, liveBuffer.Writer, pumpCts.Token);
+
                 try
                 {
 
-                    if (plan.Count > 0)
+                    if (!quiescence.IsQuiescing && plan.Count > 0)
                     {
 
                         await sseWriter.WriteEventAsync(
@@ -439,7 +450,8 @@ internal static class ApprenticeEndpoints
 
                     }
 
-                    if (ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
+                    if (!quiescence.IsQuiescing
+                        && ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
                     {
 
                         ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
@@ -457,7 +469,8 @@ internal static class ApprenticeEndpoints
 
                     }
 
-                    if (apprentice.CurrentStep < plan.Count
+                    if (!quiescence.IsQuiescing
+                        && apprentice.CurrentStep < plan.Count
                         && string.Equals(plan[apprentice.CurrentStep].Status, "in_progress", StringComparison.OrdinalIgnoreCase))
                     {
 
@@ -476,7 +489,9 @@ internal static class ApprenticeEndpoints
 
                     }
 
-                    while (liveBuffer.Reader.TryRead(out ApprenticeEvent? buffered) && buffered is not null)
+                    while (!quiescence.IsQuiescing
+                        && liveBuffer.Reader.TryRead(out ApprenticeEvent? buffered)
+                        && buffered is not null)
                     {
 
                         await sseWriter.WriteEventAsync(buffered, httpContext.RequestAborted)
@@ -489,6 +504,7 @@ internal static class ApprenticeEndpoints
                         liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
                         (ev, ct) => sseWriter.WriteEventAsync(ev, ct),
                         heartbeatInterval,
+                        quiescence,
                         httpContext.RequestAborted).ConfigureAwait(false);
 
                 }
@@ -532,7 +548,8 @@ internal static class ApprenticeEndpoints
                 }
 
             })
-        .WithName("GetApprenticeChronicle");
+        .WithName("GetApprenticeChronicle")
+        .WithMetadata(GrimoireStreamRouteMetadata.Quiesceable);
 
         return apiGroup;
     }

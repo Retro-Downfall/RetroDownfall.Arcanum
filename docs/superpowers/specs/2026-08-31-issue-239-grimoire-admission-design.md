@@ -1,6 +1,6 @@
 # Issue #239: Host-wide Grimoire Admission and Offline Transitions
 
-**Status:** Approved umbrella; #243/#244 integrated; #245/#246 delivered; #247–#257 pending.
+**Status:** Approved umbrella; #243/#244 integrated; #245–#256 delivered; #257 and parent #239 remain open.
 
 **Branch:** `codex/issue-239-grimoire-admission`, cut from `origin/main` at
 `988a469c765346132e5a2ea1bf3906519f6bdf00`.
@@ -773,21 +773,34 @@ Ordinary non-Covenant long-running-operation checkpoints are unchanged.
 
 ## 12. Sub-issue and branch plan
 
-### 12.0 Current #246 boundary
+### 12.0 Current #256 delivery boundary
 
-#246 now supplies the singleton-composed serving EF interceptor and physical drain, the ordinary
-raw-connection factory, stage-two open-ticket/handle/pool closure ordering, capability-and-lane-bound
-journal maintenance acquisition, exact stopped-host installation-reset opens, and the bidirectional
-source inventory. Its temporary V3 adapter remains per call site, requires the existing #124 exclusive
-lease, and identifies #248 as its removal owner. #246 is **delivered** after focused RED/GREEN proof,
-bounded final review, a warning-free Release solution build, changed-file style verification, and a
-clean branch diff. This boundary does not qualify the parent or activate a journal handler.
+At its delivery boundary, #247 supplied the strict `CovenantOfflineTransitionLaunchV4` and
+`DataRetentionFactoryTransitionLaunchV2` checkpoint codecs and their immutable
+operation/kind/recovery/effect/source/target/starting-revision launch fields, the single projection
+that turns either shape into the journal launch binding, the domain-separated
+`DatabaseOperationLaunchBindingDigest` and the journal-binding constructor that derives it rather than
+accepting it — the expected row revision remains the caller's to read back after the launch commit, and
+is refused unless it is past the revision the launch itself recorded — the unconditional refusal that
+stops a legacy V3/V1
+checkpoint becoming a launch, and the exact terminal reconciler: one compare-exchange to `Completed`
+or to a journal-proven pre-effect `Failed`, a winner reread under the same rules, an idempotent
+already-terminal arm carrying the identical winner digest, and separate non-writing refusals for a
+missing, conflicting, moved, or foreign-terminal row, none of which permits journal retirement.
+Existing V3 and V1 decoders are untouched strict legacy reads; no production path writes V4/V2, and
+the recovery window, both recovery handlers, and the pre-readiness adopter still pin 3 and 1. #247 is
+**delivered** after focused RED/GREEN proof, bounded final review, a warning-free Release solution
+build, changed-file style verification, and a clean branch diff. This boundary does not qualify the
+parent or activate a journal handler.
 
-#247 remains responsible for V4/V2 immutable launch binding and terminal database reconciliation.
-#248 remains responsible for the typed Covenant reset/factory effect handler, canonical target binding,
-compaction and sidecar recovery, factory-row preservation, runtime-authority publication, and removal
-of the exact V3 adapter entries. #257 alone owns the final full-host, cross-platform, Native AOT, and
-umbrella qualification on the reviewed final SHA.
+#248 through #255 subsequently delivered the typed transition, startup, request/stream, and first
+three background-producer slices. #256 is **delivered**: the remaining application hosted services
+now have exact ordinary admission or concrete nonordinary authority, Batch owns one effect frontier
+per existing 64-line accounting page, and the manager-owned MCP initializer holds the authority of
+the actual shared operation rather than any caller's cancellable wait. The final source inventory is
+bijective over all 23 hosted-service registrations and their relevant scope, connection, provider,
+filesystem, and frontier sites, including exact backup caller-authority joins. #257 alone owns the
+final full-host, cross-platform, Native AOT, and umbrella qualification on the reviewed final SHA.
 
 Issue #239 remains the umbrella and closes only after every child is integrated and the final branch
 is delivered. Create these separately reviewable children in dependency order:

@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 [Collection("Grimoire")]
 public sealed class SessionRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -29,39 +28,29 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
     public SessionRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     /// <summary>
@@ -91,7 +80,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task An_imported_Session_pages_its_entries_over_the_spelling_its_writer_stored()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.Parse("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d");
@@ -129,7 +117,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Entry only = Assert.Single(beforeCursor);
 
         Assert.Equal(firstEntryId, only.Id);
-
     }
 
     /// <summary>
@@ -142,14 +129,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedImportedSessionAsync(Guid sessionId, Guid firstEntryId, Guid secondEntryId)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -176,19 +160,15 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             """;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task<string> StoredSessionIdAsync()
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(CancellationToken.None);
-
         }
 
         await using DbCommand read = connection.CreateCommand();
@@ -198,13 +178,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             """;
 
         return (string)(await read.ExecuteScalarAsync(CancellationToken.None))!;
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_persists_and_returns_active_session()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -218,13 +196,114 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal("Alpha thread", loaded!.Title);
 
         Assert.Equal("active", loaded.Status);
+    }
 
+    [SkippableFact]
+    public async Task Multiple_raw_operations_do_not_accumulate_connection_open_leases()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ArcanumDbContext db = _db!;
+
+        SessionRepository repository = new(
+            db,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(db));
+
+        Session created = await repository.CreateAsync(
+            campaignId: null,
+            title: "Scoped connection",
+            CancellationToken.None);
+
+        _ = await repository.GetByIdAsync(created.Id, CancellationToken.None);
+
+        _ = await repository.AddEntryAsync(
+            created.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "Keep one connection lease.",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        _ = await repository.GetEntriesAscendingAsync(
+            created.Id,
+            takeLast: 1,
+            CancellationToken.None);
+
+        db.Database.CloseConnection();
+
+        Assert.Equal(
+            System.Data.ConnectionState.Closed,
+            db.Database.GetDbConnection().State);
+    }
+
+    [SkippableFact]
+    public async Task Raw_timestamp_format_matches_canonical_UTC_EF_storage()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset updatedAt = new(
+            2025,
+            3,
+            4,
+            5,
+            6,
+            7,
+            TimeSpan.Zero);
+
+        updatedAt = updatedAt.AddTicks(1_234_567);
+
+        DateTime summarizedAt = new DateTime(
+            2025,
+            3,
+            4,
+            5,
+            6,
+            7,
+            DateTimeKind.Utc).AddTicks(7_654_321);
+
+        Session session = NewSession(Guid.NewGuid(), "Timestamp format", updatedAt);
+
+        session.LastSummarizedMessageAt = summarizedAt;
+
+        _db!.Sessions.Add(session);
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText =
+            "SELECT \"UpdatedAt\", \"LastSummarizedMessageAt\" FROM \"Sessions\" WHERE \"Id\" = $id;";
+
+        DbParameter id = command.CreateParameter();
+
+        id.ParameterName = "$id";
+
+        id.Value = session.Id;
+
+        _ = command.Parameters.Add(id);
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        Assert.True(await reader.ReadAsync(CancellationToken.None));
+
+        Assert.Equal("2025-03-04T05:06:07.1234567Z", reader.GetString(0));
+
+        Assert.Equal("2025-03-04T05:06:07.7654321Z", reader.GetString(1));
+
+        Assert.Equal(reader.GetString(0), GrimoireEntitySql.Format(updatedAt));
+
+        Assert.Equal(reader.GetString(1), GrimoireEntitySql.Format(summarizedAt));
     }
 
     [SkippableFact]
     public async Task AddEntryAsync_sets_title_from_first_user_message()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -257,13 +336,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.NotNull(loadedEntry);
 
         Assert.Equal(entry.Content, loadedEntry!.Content);
-
     }
 
     [SkippableFact]
     public async Task ForkAsync_large_source_pages_entries_and_attachments_without_aggregate_tracking()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const int entryCount = 750;
@@ -282,7 +359,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int index = 0; index < entryCount; index++)
         {
-
             Guid entryId = Guid.NewGuid();
 
             sourceEntryIds.Add(entryId);
@@ -293,7 +369,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
                 $"large-fork-entry-{index}",
                 baseline.AddSeconds(index),
                 sequence: index + 1L));
-
         }
 
         await _db.SaveChangesAsync(CancellationToken.None);
@@ -335,17 +410,14 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             forkRecords: sourceAttachments,
             copyForkPage: (_, plans, _) =>
             {
-
                 copyCalls++;
 
                 largestCopyPage = Math.Max(largestCopyPage, plans.Count);
 
                 return Task.CompletedTask;
-
             },
             insertForkPage: (_, plans, _) =>
             {
-
                 insertCalls++;
 
                 largestInsertPage = Math.Max(largestInsertPage, plans.Count);
@@ -360,7 +432,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
                         .OfType<Guid>());
 
                 return Task.CompletedTask;
-
             });
 
         RecordingAttachmentIndexQueue indexQueue = new();
@@ -416,13 +487,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.All(
             indexQueue.Requests,
             request => Assert.Equal(result.Value.Id, request.SessionId));
-
     }
 
     [SkippableFact]
     public async Task ArchiveAsync_marks_session_archived()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -436,13 +505,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.NotNull(archived);
 
         Assert.Equal("archived", archived!.Status);
-
     }
 
     [SkippableFact]
     public async Task GetAnalyticsAsync_counts_sessions_and_entries()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -470,13 +537,51 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(before.TotalEntries + 1, after.TotalEntries);
 
         Assert.Equal(before.UserEntries + 1, after.UserEntries);
+    }
 
+    [SkippableFact]
+    public async Task GetAnalyticsAsync_combines_model_names_using_its_case_insensitive_contract()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(
+            _db!,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(_db!));
+
+        Session session = await repository.CreateAsync(
+            campaignId: null,
+            title: "Model spelling",
+            CancellationToken.None);
+
+        foreach (string model in new[] { "GPT-Oracle", "gpt-oracle" })
+        {
+            Result<Entry> added = await repository.AddEntryAsync(
+                session.Id,
+                new Entry
+                {
+                    Id = Guid.NewGuid(),
+                    Role = MessageRole.User,
+                    Content = model,
+                    ModelUsed = model,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                },
+                CancellationToken.None);
+
+            Assert.True(added.IsSuccess);
+        }
+
+        SessionAnalytics analytics = await repository.GetAnalyticsAsync(CancellationToken.None);
+
+        Assert.Single(analytics.EntriesByModel);
+
+        Assert.Equal(2, analytics.EntriesByModel["GPT-Oracle"]);
     }
 
     [SkippableFact]
     public async Task AddEntryAsync_EntryTooLarge_ReturnsFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ArcanumSettings settings = new();
@@ -506,13 +611,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Session.EntryTooLarge, result.Error.Code);
 
         Assert.StartsWith("Session.EntryTooLarge:", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task AddEntryAsync_NotFound_ReturnsFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -534,13 +637,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
 
         Assert.Equal("Session was not found.", result.Error.Message);
-
     }
 
     [SkippableFact]
     public async Task AddEntryAsync_Archived_ReturnsFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -568,13 +669,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Session.Archived, result.Error.Code);
 
         Assert.Equal("Cannot append entries to an archived session.", result.Error.Message);
-
     }
 
     [SkippableFact]
     public async Task AddEntryAsync_increments_unsummarized_entry_count()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -612,13 +711,71 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.NotNull(reloaded);
 
         Assert.Equal(2, reloaded!.UnsummarizedEntryCount);
+    }
 
+    [SkippableFact]
+    public async Task AddEntryAsync_preserves_a_title_changed_after_its_session_read()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
+
+        Session session = await repository.CreateAsync(
+            campaignId: null,
+            title: null,
+            CancellationToken.None);
+
+        await using (DbCommand createTrigger = _db!.Database.GetDbConnection().CreateCommand())
+        {
+            createTrigger.CommandText =
+                """
+                CREATE TEMP TRIGGER rename_session_after_entry_insert
+                AFTER INSERT ON "Entries"
+                BEGIN
+                    UPDATE "Sessions"
+                    SET "Title" = 'Concurrent title'
+                    WHERE "Id" = NEW."SessionId";
+                END;
+                """;
+
+            _ = await createTrigger.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            Result<Entry> appended = await repository.AddEntryAsync(
+                session.Id,
+                new Entry
+                {
+                    Id = Guid.NewGuid(),
+                    Role = MessageRole.User,
+                    Content = "Automatic title candidate",
+                    ModelUsed = "test-model",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                },
+                CancellationToken.None);
+
+            Assert.True(appended.IsSuccess, appended.Error.Code);
+        }
+        finally
+        {
+            await using DbCommand dropTrigger = _db.Database.GetDbConnection().CreateCommand();
+
+            dropTrigger.CommandText = "DROP TRIGGER IF EXISTS rename_session_after_entry_insert;";
+
+            _ = await dropTrigger.ExecuteNonQueryAsync();
+        }
+
+        Session? reloaded = await repository.GetByIdAsync(session.Id, CancellationToken.None);
+
+        Assert.NotNull(reloaded);
+
+        Assert.Equal("Concurrent title", reloaded!.Title);
     }
 
     [SkippableFact]
     public async Task UpdateSessionAsync_does_not_clobber_unsummarized_entry_count()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -656,13 +813,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal("After patch", afterPatch!.Title);
 
         Assert.Equal(1, afterPatch.UnsummarizedEntryCount);
-
     }
 
     [SkippableFact]
     public async Task GetEntriesAscendingAsync_returns_entries_in_created_at_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -694,13 +849,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(new[] { e2, e3 }, recent.Select(e => e.Id).ToArray());
 
         Assert.Equal(new[] { "msg-2", "msg-3" }, recent.Select(e => e.Content).ToArray());
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_orders_by_updated_at_desc_and_paginates()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset baseline = new(2025, 5, 1, 9, 0, 0, TimeSpan.Zero);
@@ -744,13 +897,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(new[] { s2, s1 }, secondPage.Summaries.Select(x => x.Id).ToArray());
 
         Assert.Null(secondPage.NextBeforeUpdatedAt);
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_filters_by_updated_at_range()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset baseline = new(2025, 6, 1, 10, 0, 0, TimeSpan.Zero);
@@ -783,13 +934,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(new[] { s3, s2 }, result.Summaries.Select(x => x.Id).ToArray());
-
     }
 
     [SkippableFact]
     public async Task GetEntriesAfterAsync_returns_entries_after_sequence_cursor_in_append_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -831,13 +980,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(new[] { e3, e4 }, after.Select(e => e.Id).ToArray());
 
         Assert.Equal(new[] { "after-3", "after-4" }, after.Select(e => e.Content).ToArray());
-
     }
 
     [SkippableFact]
     public async Task GetEntriesAsync_paginates_before_cursor_in_descending_order()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -883,13 +1030,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             ct: CancellationToken.None);
 
         Assert.Equal(new[] { e2, e1 }, secondPage.Select(e => e.Id).ToArray());
-
     }
 
     [SkippableFact]
     public async Task GetEntriesAsync_orders_same_instant_turn_by_append_order_not_entry_id()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -944,13 +1089,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(
             new[] { promptId, answerId },
             newestFirst.AsEnumerable().Reverse().Select(e => e.Id).ToArray());
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_search_matches_entry_content_via_fts_json_each()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -994,13 +1137,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Contains(match.Id, ids);
 
         Assert.DoesNotContain(noise.Id, ids);
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_search_reaches_sessions_beyond_the_former_fts_id_total()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const int formerFtsSessionIdLimit = 2_048;
@@ -1011,7 +1152,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int index = 0; index <= formerFtsSessionIdLimit; index++)
         {
-
             Guid sessionId = Guid.NewGuid();
 
             DateTimeOffset timestamp = baseline.AddSeconds(index);
@@ -1029,7 +1169,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
                 sequence: 1));
 
             insertedIds.Add(sessionId);
-
         }
 
         await _db!.SaveChangesAsync(CancellationToken.None);
@@ -1055,14 +1194,10 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await using (DbDataReader reader = await formerlyBoundQuery.ExecuteReaderAsync(CancellationToken.None))
         {
-
             while (await reader.ReadAsync(CancellationToken.None))
             {
-
                 formerlyReachable.Add(reader.GetGuid(0));
-
             }
-
         }
 
         Guid expectedId = Assert.Single(
@@ -1090,13 +1225,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Contains(result.Summaries, session => session.Id == expectedId);
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_filters_by_role_and_model_via_exists_subqueries()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset baseline = new(2025, 8, 1, 4, 0, 0, TimeSpan.Zero);
@@ -1146,7 +1279,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(new[] { assistantOnly }, byModel.Summaries.Select(x => x.Id).ToArray());
-
     }
 
     // W3.4 Group E #10: JSON export must not accumulate every entry batch into one List<T>
@@ -1158,7 +1290,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task ExportAsync_json_preserves_session_export_payload_wire_shape()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
@@ -1209,7 +1340,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(JsonValueKind.Array, entriesEl.ValueKind);
 
         Assert.Equal(2, entriesEl.GetArrayLength());
-
     }
 
     // W3.4 Group E #10: a session exceeding the export batch size (500) must export ALL
@@ -1218,7 +1348,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     [SkippableFact]
     public async Task ExportAsync_json_streams_all_entries_across_multiple_batches()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ArcanumSettings settings = new();
@@ -1231,7 +1360,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int i = 0; i < entryCount; i++)
         {
-
             _ = await repository.AddEntryAsync(
                 session.Id,
                 new Entry
@@ -1243,7 +1371,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
                     CreatedAt = DateTimeOffset.UtcNow,
                 },
                 CancellationToken.None);
-
         }
 
         Result<SessionExportResult> result = await repository.ExportAsync(
@@ -1258,13 +1385,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.True(doc.RootElement.TryGetProperty("entries", out JsonElement entriesEl));
 
         Assert.Equal(entryCount, entriesEl.GetArrayLength());
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_paginates_every_session_that_shares_an_updated_at()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset newest = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
@@ -1299,7 +1424,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int page = 0; page < 10; page++)
         {
-
             SessionQueryResult result = await repository.QueryAsync(
                 new SessionQueryRequest(Limit: 2, BeforeUpdatedAt: cursor),
                 CancellationToken.None);
@@ -1308,25 +1432,20 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
             if (!result.HasMore)
             {
-
                 break;
-
             }
 
             cursor = result.NextBeforeUpdatedAt;
-
         }
 
         Assert.Equal(4, seen.Count);
 
         Assert.Equal(new HashSet<Guid> { s1, s2, s3, s4 }, seen.ToHashSet());
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_paginates_when_a_whole_page_shares_one_updated_at()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset tied = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
@@ -1355,7 +1474,6 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int page = 0; page < 10; page++)
         {
-
             SessionQueryResult result = await repository.QueryAsync(
                 new SessionQueryRequest(Limit: 1, BeforeUpdatedAt: cursor),
                 CancellationToken.None);
@@ -1364,32 +1482,122 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
             if (!result.HasMore)
             {
-
                 break;
-
             }
 
             cursor = result.NextBeforeUpdatedAt;
-
         }
 
         Assert.Equal(new HashSet<Guid> { s1, s2, s3 }, seen.ToHashSet());
+    }
 
+    [SkippableFact]
+    public async Task QueryAsync_keeps_an_equal_instant_together_across_stored_offsets()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tiedInstant = new(2025, 6, 1, 8, 0, 0, TimeSpan.Zero);
+
+        Guid east = Guid.NewGuid();
+
+        Guid west = Guid.NewGuid();
+
+        Guid older = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(
+            east,
+            "tied-east",
+            tiedInstant.ToOffset(TimeSpan.FromHours(1))));
+
+        _db.Sessions.Add(NewSession(
+            west,
+            "tied-west",
+            tiedInstant.ToOffset(TimeSpan.FromHours(-5))));
+
+        _db.Sessions.Add(NewSession(
+            older,
+            "older",
+            tiedInstant.AddMinutes(-5).ToOffset(TimeSpan.FromHours(3))));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        SessionRepository repository = new(
+            _db,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(_db));
+
+        SessionQueryResult first = await repository.QueryAsync(
+            new SessionQueryRequest(Limit: 1),
+            CancellationToken.None);
+
+        Assert.Equal(
+            new HashSet<Guid> { east, west },
+            first.Summaries.Select(summary => summary.Id).ToHashSet());
+
+        Assert.True(first.HasMore);
+
+        Assert.NotNull(first.NextBeforeUpdatedAt);
+
+        Assert.Equal(tiedInstant, first.NextBeforeUpdatedAt.Value);
+
+        SessionQueryResult second = await repository.QueryAsync(
+            new SessionQueryRequest(
+                Limit: 1,
+                BeforeUpdatedAt: first.NextBeforeUpdatedAt),
+            CancellationToken.None);
+
+        Assert.Equal([older], second.Summaries.Select(summary => summary.Id));
+
+        Assert.False(second.HasMore);
+
+        Assert.Null(second.NextBeforeUpdatedAt);
+    }
+
+    [SkippableFact]
+    public async Task QueryAsync_widened_final_tie_does_not_advertise_an_empty_page()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
+
+        Guid first = Guid.NewGuid();
+
+        Guid second = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(first, "tied-a", tied));
+
+        _db.Sessions.Add(NewSession(second, "tied-b", tied));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        SessionRepository repository = new(
+            _db,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor(),
+            FixtureOrdinaryConnectionFactory.For(_db!));
+
+        SessionQueryResult result = await repository.QueryAsync(
+            new SessionQueryRequest(Limit: 1),
+            CancellationToken.None);
+
+        Assert.Equal(new HashSet<Guid> { first, second }, result.Summaries.Select(x => x.Id).ToHashSet());
+
+        Assert.False(result.HasMore);
+
+        Assert.Null(result.NextBeforeUpdatedAt);
     }
 
     [SkippableFact]
     public async Task QueryAsync_refuses_to_widen_past_the_tie_group_bound()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset tied = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
 
         for (int index = 0; index <= SessionRepository.MaxTieGroupWidening; index++)
         {
-
             _db!.Sessions.Add(NewSession(Guid.NewGuid(), "tied-" + index, tied));
-
         }
 
         await _db!.SaveChangesAsync(CancellationToken.None);
@@ -1405,13 +1613,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
                 CancellationToken.None));
 
         Assert.Contains("tie group", error.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
     public async Task QueryAsync_reports_entry_counts_per_session()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset baseline = new(2025, 7, 1, 9, 0, 0, TimeSpan.Zero);
@@ -1443,7 +1649,24 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(3, result.Summaries.Single(x => x.Id == busy).EntryCount);
 
         Assert.Equal(1, result.Summaries.Single(x => x.Id == quiet).EntryCount);
+    }
 
+    [SkippableFact]
+    public async Task InsertEntriesAsync_rejects_null_elements_before_opening_the_context_connection()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _db!.Database.CloseConnectionAsync();
+
+        SessionEntryPersistence persistence = new(
+            _db,
+            FixtureOrdinaryConnectionFactory.For(_db));
+
+        ArgumentException error = await Assert.ThrowsAsync<ArgumentException>(
+            () => persistence.InsertEntriesAsync([null!], CancellationToken.None));
+
+        Assert.Equal("entries", error.ParamName);
+        Assert.Equal(System.Data.ConnectionState.Closed, _db.Database.GetDbConnection().State);
     }
 
     private static Session NewSession(Guid id, string title, DateTimeOffset updatedAt, string status = "active") =>
@@ -1483,18 +1706,13 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
     private sealed class RecordingAttachmentIndexQueue : ISessionAttachmentIndexQueue
     {
-
         internal List<SessionAttachmentIndexRequest> Requests { get; } = [];
 
         public bool TryEnqueue(SessionAttachmentIndexRequest request)
         {
-
             Requests.Add(request);
 
             return true;
-
         }
-
     }
-
 }

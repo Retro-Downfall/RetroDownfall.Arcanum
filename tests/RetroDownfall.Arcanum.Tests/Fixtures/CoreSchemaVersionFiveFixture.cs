@@ -171,7 +171,7 @@ internal static class CoreSchemaVersionFiveFixture
     /// </remarks>
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionSixFixture.Objects
             .Select(static definition => definition.Name switch
             {
 

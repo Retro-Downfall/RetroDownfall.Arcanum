@@ -49,6 +49,7 @@ using RetroDownfall.Arcanum.Infrastructure.Chronosync;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -81,7 +82,6 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services)
         where TService : class, IHostedService
     {
-
         services.TryAddSingleton<TService>();
 
         services.AddHostedService(static sp =>
@@ -90,7 +90,6 @@ public static class ServiceCollectionExtensions
                 sp.GetService<InstallationResetApiAdmission>()));
 
         return services;
-
     }
 
     /// <summary>
@@ -119,9 +118,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddArcanumClientMutationCoordination(
         this IServiceCollection services)
     {
-
-        services.TryAddSingleton<IOsCredentialStore>(static _ =>
-            new OsCredentialStore());
+        services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
 
         services.TryAddSingleton<IInstallationStartupProbe>(static sp =>
             new InstallationStartupProbe(
@@ -165,7 +162,6 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ArcanumClientMutationBoundary>());
 
         return services;
-
     }
 
     /// <summary>
@@ -180,12 +176,11 @@ public static class ServiceCollectionExtensions
             IConfigurationPresetService,
             IConfigurationPresetService>? decorate = null)
     {
-
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
             .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
 
-        services.TryAddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
+        services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
 
         services.TryAddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
 
@@ -213,18 +208,15 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton<IConfigurationPresetService>(sp =>
         {
-
             IConfigurationPresetService inner =
                 sp.GetRequiredService<ConfigurationPresetService>();
 
             return decorate is null
                 ? inner
                 : decorate(sp, inner);
-
         });
 
         return services;
-
     }
 
     /// <summary>
@@ -354,8 +346,33 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<GrimoireCliInitialization>());
         services.AddSingleton<IGrimoireCliStoppedHostInitialization>(static provider =>
             provider.GetRequiredService<GrimoireCliInitialization>());
-        services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+
+        // Bootstrap may adopt either current erasure launch while it owns the stopped installation.
+        // Compose only the exact-settlement path here: no generic discovery, no background pass, and
+        // no IDataRetentionService facade are available to the CLI container.
+        services.AddScoped<LongRunningOperationStore>();
+        services.AddScoped<ILongRunningOperationStore>(static sp =>
+            sp.GetRequiredService<LongRunningOperationStore>());
+        services.AddScoped<ILongRunningOperationMaintenanceLeaseAdoption>(static sp =>
+            sp.GetRequiredService<LongRunningOperationStore>());
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
+        services.AddScoped<CovenantLaunchGapRecovery>();
+        services.AddScoped<
+            ILongRunningOperationRecoveryHandler,
+            CovenantLaunchGapMutationRecoveryHandler>();
+        services.AddScoped<
+            ILongRunningOperationRecoveryHandler,
+            CovenantLaunchGapFactoryResetRecoveryHandler>();
+        services.AddScoped(static sp => new LongRunningOperationReconciler(
+            sp.GetRequiredService<ILongRunningOperationStore>(),
+            sp.GetServices<ILongRunningOperationRecoveryHandler>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<LongRunningOperationReconciler>>(),
+            sp.GetRequiredService<LongRunningOperationOwnership>(),
+            discovery: null,
+            classifiedLeaseAcquisition: null,
+            scopeFactory: null));
+        services.AddGrimoireOfflineTransitionHandlerDispatch();
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
         services.AddScoped<BlobEncryptionFileProcessor>();
         services.AddScoped<BlobEncryptionLifecycleService>();
@@ -366,17 +383,28 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Registers the one scope-owning dispatcher shared by host startup and stopped-host bootstrap.
+    /// </summary>
+    private static IServiceCollection AddGrimoireOfflineTransitionHandlerDispatch(
+        this IServiceCollection services)
+    {
+        services.TryAddSingleton<IGrimoireOfflineTransitionHandlerDispatch>(
+            static sp => new GrimoireOfflineTransitionHandlerDispatch(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        return services;
+    }
+
+    /// <summary>
     /// Registers the OS keychain–backed master API key store with Data Protection fallback/mirror,
     /// plus the concrete <see cref="DataProtectionSecretStore"/> used for Grimoire encryption secrets.
     /// </summary>
     public static IServiceCollection AddArcanumSecretStore(this IServiceCollection services)
     {
-
-        // Must use the parameterless-ctor factory, not TryAddSingleton<IOsCredentialStore, OsCredentialStore>():
-        // the generic overload lets the container pick OsCredentialStore's test-seam constructor
-        // (OsCredentialStore(IOsCredentialStore inner)), which requests IOsCredentialStore again and
-        // self-cycles at resolution time.
-        services.TryAddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
+        // A factory keeps the test-only constructor out of DI activation and admits the in-memory
+        // implementation only behind TestCredentialStorePolicy's three fail-closed gates.
+        services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
 
         services.AddSingleton<DataProtectionSecretStore>();
 
@@ -392,8 +420,17 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IApiKeyDigestCache>(),
             sp.GetService<ILogger<OsKeychainSecretStore>>()));
 
-        services.AddSingleton<FileEncryptionKeyProvider>();
+        services.AddSingleton<IEncryptedBlobPresenceInspector, EncryptedBlobPresenceInspector>();
+        services.AddSingleton<FileEncryptionRuntimeStatus>();
+        services.AddSingleton<IFileEncryptionRuntimeStatus>(
+            static sp => sp.GetRequiredService<FileEncryptionRuntimeStatus>());
+        services.AddSingleton(static sp => new FileEncryptionKeyProvider(
+            sp.GetRequiredService<ISecretStore>(),
+            sp.GetRequiredService<IEncryptedBlobPresenceInspector>(),
+            sp.GetRequiredService<FileEncryptionRuntimeStatus>()));
         services.AddSingleton<IFileEncryptionKeyProvider>(
+            static sp => sp.GetRequiredService<FileEncryptionKeyProvider>());
+        services.AddSingleton<IFileEncryptionKeyStartupValidator>(
             static sp => sp.GetRequiredService<FileEncryptionKeyProvider>());
         services.AddSingleton<IFileEncryptionKeyRing>(
             static sp => sp.GetRequiredService<FileEncryptionKeyProvider>());
@@ -403,7 +440,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEncryptedBlobDiagnostics, EncryptedBlobDiagnostics>();
 
         return services;
-
     }
 
     /// <summary>
@@ -462,6 +498,12 @@ public static class ServiceCollectionExtensions
 
         services.TryAddScoped<IInstallationResetActiveStore>(provider =>
             provider.GetRequiredService<InstallationResetActiveStore>());
+
+        // The one production resolver. A nested transition learns it is nested by reading the broader
+        // record, so the same registration serves a first entry and a recovery in a fresh process.
+        services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(provider =>
+            new InstallationResetNestedTransitionReceiptResolver(
+                provider.GetRequiredService<IInstallationResetActiveStore>()));
 
         services.TryAddScoped<IInstallationResetDatabaseIdentityReader>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
@@ -571,19 +613,14 @@ public static class ServiceCollectionExtensions
                         provider.GetRequiredService<IOsCredentialStore>())),
                 provider.GetRequiredService<InstallationResetRestoreCredentialCleanup>(),
                 provider.GetRequiredService<IOsCredentialStore>(),
+                new GrimoireTransitions.GrimoireOfflineTransitionJournalAnchorStore(
+                    provider.GetRequiredService<IOsCredentialStore>()),
                 ArcanumPaths.GrimoireDatabaseFile));
 
-        // A deferred resolution for the same reason the marker-pair coordinator is one: planning and
-        // the ordinary reset paths must keep working on an installation this graph cannot serve.
-        services.TryAddScoped<Func<IFullInstallationResetTerminalContinuation>>(provider =>
-            provider.GetRequiredService<IFullInstallationResetTerminalContinuation>);
-
-        // A deferred resolution, not a constructor dependency. The reset service must resolve and
-        // plan on an installation whose Grimoire is absent or locked, and the coordinator's graph
-        // reaches the encrypted database; binding it eagerly would make every restricted path
-        // require what only the full-reset path actually needs.
-        services.TryAddScoped<Func<IHostToolsMarkerPairResetCoordinator>>(provider =>
-            provider.GetRequiredService<IHostToolsMarkerPairResetCoordinator>);
+        // One typed deferred resolver preserves the restricted planning paths without turning the
+        // full-reset protocol into a pair of opaque callback factories.
+        services.TryAddScoped<IInstallationResetDeferredServices>(provider =>
+            new InstallationResetDeferredServices(provider));
 
         services.TryAddScoped(static _ =>
             new InstallationResetControlPaths(ArcanumPaths.GrimoireDirectory));
@@ -610,7 +647,6 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArcanumBackup(this IServiceCollection services)
     {
-
         services.AddArcanumClientMutationCoordination();
 
         services.TryAddSingleton(BackupStatePaths.Default);
@@ -655,7 +691,6 @@ public static class ServiceCollectionExtensions
                 serviceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
                 new BackupRestoreServiceOptions
                 {
-
                     EmbeddingDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
                         serviceProvider
                             .GetService<IOptionsMonitor<ArcanumSettings>>()?
@@ -670,12 +705,10 @@ public static class ServiceCollectionExtensions
                     // Same rule for the full-restore arm: absent means this installation has never
                     // held protected state, so there is nothing to reconcile and nothing to close.
                     RestoreStaging = ResolveRestoreStaging(serviceProvider),
-
                 },
                 serviceProvider.GetRequiredService<InstallationMaintenanceCoordination>()));
 
         return services;
-
     }
 
     /// <summary>
@@ -688,7 +721,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static CovenantBackupServices? ResolveCovenantBackupServices(IServiceProvider serviceProvider)
     {
-
         bool enabled = serviceProvider
             .GetService<IOptionsMonitor<ArcanumSettings>>()?
             .CurrentValue.Features.Covenant
@@ -696,9 +728,7 @@ public static class ServiceCollectionExtensions
 
         if (!enabled)
         {
-
             return null;
-
         }
 
         ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
@@ -719,7 +749,6 @@ public static class ServiceCollectionExtensions
                         ? installationId
                         : Guid.Empty,
                     serviceProvider.GetRequiredService<TimeProvider>()));
-
     }
 
     /// <summary>
@@ -732,7 +761,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static CovenantSelectiveImportServices? ResolveSelectiveImport(IServiceProvider serviceProvider)
     {
-
         bool enabled = serviceProvider
             .GetService<IOptionsMonitor<ArcanumSettings>>()?
             .CurrentValue.Features.Covenant
@@ -740,9 +768,7 @@ public static class ServiceCollectionExtensions
 
         if (!enabled)
         {
-
             return null;
-
         }
 
         ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
@@ -754,7 +780,6 @@ public static class ServiceCollectionExtensions
                 new ProtectedArtifactTransferStore(
                     CovenantSqliteConnectionInitializer.Instance,
                     serviceProvider.GetRequiredService<TimeProvider>()));
-
     }
 
     /// <summary>
@@ -771,7 +796,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static CovenantRestoreStagingServices? ResolveRestoreStaging(IServiceProvider serviceProvider)
     {
-
         bool enabled = serviceProvider
             .GetService<IOptionsMonitor<ArcanumSettings>>()?
             .CurrentValue.Features.Covenant
@@ -779,9 +803,7 @@ public static class ServiceCollectionExtensions
 
         if (!enabled)
         {
-
             return null;
-
         }
 
         ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
@@ -792,9 +814,7 @@ public static class ServiceCollectionExtensions
 
         if (gate is null || markers is null || credentials is null)
         {
-
             return null;
-
         }
 
         BackupRestoreJournalInstallationIdentityProvider identities = new(credentials);
@@ -808,7 +828,6 @@ public static class ServiceCollectionExtensions
             identities,
             keys,
             new BackupRestoreEffectDigestCalculator());
-
     }
 
     /// <summary>
@@ -1052,7 +1071,41 @@ public static class ServiceCollectionExtensions
                 ArcanumPaths.GrimoireDirectory,
                 new InstallationResetActiveStore(
                     ArcanumPaths.GrimoireDirectory,
-                    sp.GetRequiredService<IOsCredentialStore>())));
+                    sp.GetRequiredService<IOsCredentialStore>()),
+                new GrimoireOfflineTransitionLifecycleStore(
+                    new GrimoireOfflineTransitionJournalStore(
+                        sp.GetRequiredService<IOsCredentialStore>()),
+                    GrimoireOfflineTransitionHandlerRegistry.Production)));
+
+        services.AddSingleton<IGrimoireRecoveryOnlyUnlock>(
+            static sp => new GrimoireRecoveryOnlyUnlock(
+                sp.GetRequiredService<ISecretStore>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
+
+        services.AddSingleton<ICovenantRecoveryAuthorityBootstrapper>(
+            static sp => new CovenantRecoveryAuthorityBootstrapper(
+                sp.GetRequiredService<CovenantOperationGate>(),
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
+                sp.GetRequiredService<CovenantAvailability>(),
+                sp.GetRequiredService<IHostProcessToolsRuntimePolicy>(),
+                sp.GetRequiredService<ISecretStore>(),
+                // Built here from the same closed Declared list rather than resolved, because this
+                // pass runs before any request scope exists and the scoped registration below would
+                // be a captive dependency. The decision that registration records — a handler must
+                // not capture a scope it outlives — is preserved: what is shared is the declaration,
+                // not an instance, and the closure suite compares both tables against Declared.
+                GrimoireOfflineTransitionEffectHandlerRegistry
+                    .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                    .Value));
+
+        services.AddGrimoireOfflineTransitionHandlerDispatch();
+
+        services.AddSingleton<IGrimoireOfflineTransitionStartupRecovery>(
+            static sp => new GrimoireOfflineTransitionStartupRecovery(
+                sp.GetRequiredService<IGrimoireRecoveryOnlyUnlock>(),
+                sp.GetRequiredService<ICovenantRecoveryAuthorityBootstrapper>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()));
 
         services.AddSingleton(
             static sp => new GrimoireDatabaseHostedService(
@@ -1063,10 +1116,16 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>(),
                 sp.GetRequiredService<IInstallationResetStartupRecovery>(),
                 sp.GetRequiredService<HostLockSerilogFileSink>(),
-                ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync,
+                cancellationToken => ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync(
+                        sp.GetRequiredService<ISecretStore>(),
+                        sp.GetRequiredService<IOsCredentialStore>(),
+                        sp.GetRequiredService<IApiKeyDigestCache>(),
+                        static () => File.Exists(ArcanumPaths.GrimoireDatabaseFile),
+                        cancellationToken),
                 sp.GetRequiredService<InstallationResetApiAdmission>(),
-                startupCoordination:
-                    sp.GetRequiredService<InstallationMaintenanceCoordination>()));
+                sp.GetRequiredService<InstallationMaintenanceCoordination>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionStartupRecovery>(),
+                sp.GetService<IGrimoirePostTopologyStartupAction>()));
 
         services.AddHostedService(
             static sp => sp.GetRequiredService<GrimoireDatabaseHostedService>());
@@ -1079,6 +1138,11 @@ public static class ServiceCollectionExtensions
             static sp => sp.GetRequiredService<CovenantFeatureConfigurationPublisher>());
 
         services.AddHostedService<PidFileService>();
+
+        // Establish whether ciphertext already requires a recoverable file-encryption key before
+        // any background producer can write a blob. Fresh installations remain credential-free
+        // until the first write; an uncertain inventory fails closed before secure storage opens.
+        services.AddInstallationResetRecoveryAwareHostedService<FileEncryptionKeyBootstrapHostedService>();
 
         // Must run after the encrypted Grimoire is migrated and before durable workloads below
         // begin accepting potentially conflicting work.
@@ -1122,7 +1186,12 @@ public static class ServiceCollectionExtensions
         // successful turn), not polling, so registering it unconditionally is safe on the hot path.
         // Registered as a singleton (not just a hosted service) so the hub can resolve it directly to
         // call EnqueueExtraction, mirroring WorkspaceIndexingService's singleton+hosted-factory pattern.
-        services.AddSingleton<SagaExtractionService>();
+        services.AddSingleton<SagaExtractionService>(static sp =>
+            new SagaExtractionService(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<ILogger<SagaExtractionService>>()));
         services.AddInstallationResetRecoveryAwareHostedService<SagaExtractionService>();
 
         // The Tapestry (§21.11) — idles unless Arcanum:Features:Tapestry is enabled, so registering it
@@ -1135,8 +1204,6 @@ public static class ServiceCollectionExtensions
         services.AddInstallationResetRecoveryAwareHostedService<ArcanumSettingsClampStartupLogger>();
 
         services.AddInstallationResetRecoveryAwareHostedService<ArcanumSecurityStartupChecks>();
-
-        services.AddInstallationResetRecoveryAwareHostedService<FileEncryptionKeyBootstrapHostedService>();
 
         // Options must be fully configured here — pooled contexts reject OnConfiguring mutations
         // (including AddInterceptors). Passphrase is set by GrimoireDatabaseHostedService before
@@ -1160,13 +1227,36 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IBudgetReservationService, BudgetReservationService>();
 
-        services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+        services.AddScoped<LongRunningOperationStore>();
+
+        services.AddScoped<ILongRunningOperationStore>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
+        services.AddScoped<ILongRunningOperationGenericRecoveryDiscovery>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
+        services.AddScoped<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
+        services.AddScoped<ILongRunningOperationSameOwnerLeaseResumption>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
+        // The same store, reached through the one contract whose evidence is a held installation
+        // maintenance lock. Registered separately rather than folded into the Core contract, so an
+        // expiry-free lease acquisition is not available to every caller of the ordinary store — and
+        // resolved from the concrete type rather than by casting the interface, because a composition
+        // that decorates the ordinary store is decorating ordinary behaviour, not this one.
+        services.AddScoped<ILongRunningOperationMaintenanceLeaseAdoption>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
 
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
 
         services.AddScoped<DataRetentionService>();
 
         services.AddScoped<IDataRetentionService>(
+            static provider => provider.GetRequiredService<DataRetentionService>());
+
+        services.AddScoped<IDataRetentionHostedSweep>(
             static provider => provider.GetRequiredService<DataRetentionService>());
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionRecoveryHandler>();
@@ -1189,7 +1279,15 @@ public static class ServiceCollectionExtensions
 
         services.AddInstallationResetRecoveryAwareHostedService<DataRetentionSweepHostedService>();
 
-        services.AddScoped<LongRunningOperationReconciler>();
+        services.AddScoped(static sp => new LongRunningOperationReconciler(
+            sp.GetRequiredService<ILongRunningOperationStore>(),
+            sp.GetServices<ILongRunningOperationRecoveryHandler>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<LongRunningOperationReconciler>>(),
+            sp.GetRequiredService<LongRunningOperationOwnership>(),
+            sp.GetRequiredService<ILongRunningOperationGenericRecoveryDiscovery>(),
+            sp.GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(),
+            sp.GetRequiredService<IServiceScopeFactory>()));
         services.AddScoped<IDurableOperationDiagnostics, DurableOperationDiagnostics>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
 
@@ -1217,6 +1315,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAttachmentSourceResolver, AttachmentSourceResolver>();
 
         services.AddScoped<IBatchRepository, BatchRepository>();
+
+        services.AddScoped<IBatchAccountingRecoveryStore, BatchAccountingRecoveryStore>();
 
         services.AddScoped<ISanctumBreachRepository, SanctumBreachRepository>();
 
@@ -1267,6 +1367,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPromptRepository, PromptRepository>();
         services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
         services.AddScoped<IConclaveArchmage, ConclaveArchmage>();
+        services.TryAddSingleton<IDnsResolver, SystemDnsResolver>();
         // A Sending blocks until the remote agent reaches a terminal state, and remote work can run far
         // longer than HttpClient's 100-second default. Per issue #55 the bound is on establishing the
         // connection, not on the operation as a whole; caller/host cancellation ends the work.
@@ -1393,9 +1494,28 @@ public static class ServiceCollectionExtensions
                 return handler;
             });
 
-        services.AddSingleton<McpConnectionManager>();
+        services.AddSingleton(static sp =>
+        {
+            McpConnectionManager manager = new(
+                sp.GetRequiredService<ILogger<McpConnectionManager>>(),
+                sp.GetRequiredService<IHumanPromptRegistry>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IUnseenServantPacer>(),
+                sp.GetRequiredService<IEventBus>(),
+                sp.GetRequiredService<ITrustedMcpWorkspaceStore>(),
+                sp.GetRequiredService<IHttpClientFactory>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>());
+
+            manager.ConfigureGlobalAdmission(
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>());
+
+            return manager;
+        });
 
         services.AddSingleton<IMcpConnectionManager>(static sp => sp.GetRequiredService<McpConnectionManager>());
+
+        services.AddSingleton<IMcpGlobalInitializationCoordinator>(
+            static sp => sp.GetRequiredService<McpConnectionManager>());
 
         services.AddInstallationResetRecoveryAwareHostedService<McpServerBootstrapHostedService>();
 
@@ -1492,7 +1612,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddCovenantAuthority(this IServiceCollection services)
     {
-
         services.AddSingleton<IOperatorAuthorityContextIssuer>(
             static sp => new OperatorAuthorityContextIssuer(
                 sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>()));
@@ -1529,7 +1648,6 @@ public static class ServiceCollectionExtensions
             static sp => sp.GetRequiredService<CovenantAuthorityTransitionPublisher>());
 
         return services.AddHostProcessToolsAuthority();
-
     }
 
     /// <summary>
@@ -1547,7 +1665,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddHostProcessToolsAuthority(this IServiceCollection services)
     {
-
         services.AddSingleton<HostProcessToolsRuntimePolicy>();
 
         services.AddSingleton<IHostProcessToolsRuntimePolicy>(
@@ -1566,7 +1683,6 @@ public static class ServiceCollectionExtensions
                 sp.GetService<IOptions<ArcanumSettings>>()));
 
         return services;
-
     }
 
     /// <summary>
@@ -1584,7 +1700,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddCampaignPathIdentity(this IServiceCollection services)
     {
-
         services.AddSingleton<CampaignRootIdentityKeyProvider>();
 
         services.AddSingleton<ICampaignRootIdentityKeyProvider>(
@@ -1627,7 +1742,6 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICampaignRootIdentityRecoveryKeyProvider>()));
 
         return services;
-
     }
 
     /// <summary>
@@ -1645,7 +1759,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddCovenantPersistence(this IServiceCollection services)
     {
-
         // Explicit factories rather than type registrations: these components declare internal
         // constructors on purpose, so the container is handed exactly the dependency graph the tier
         // intends instead of whatever a reflective activator can reach.
@@ -1668,13 +1781,29 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAuthoritySnapshotProvider>(
             static sp => sp.GetRequiredService<CovenantAuthoritySnapshotProvider>());
 
+        // Where the maintenance purposes point is resolved by an injected authority rather than read
+        // from a static inside the gate. A suite that drives a real erasure has to be able to say
+        // which database that is, and a gate that answered from the installation's own paths would
+        // point every one of those tests at the developer's Grimoire and then prove the bytes gone.
+        services.TryAddSingleton<IGrimoireMaintenancePathAuthority>(
+            static _ => GrimoireInstallationMaintenancePaths.Instance);
+
         services.AddSingleton(
             static sp => new GrimoireConnectionAdmissionGate(
                 sp.GetRequiredService<TimeProvider>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>()));
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>()));
 
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
+
+        // Scoped, and deliberately not resolved by anything at composition time. Whoever owns a scope
+        // populates it — an HTTP request through the admission middleware, nobody at all in a startup,
+        // recovery or background scope — and the container's reverse-order disposal is what holds the
+        // lease past the pooled context and past every response-completed writer.
+        services.AddScoped(
+            static sp => new GrimoireRequestAdmissionScope(
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>()));
 
         // Its enrolment set is the proof a drain owns. Every direct Covenant handle in the process
         // therefore has to meet the same instance, whichever request scope opened it.
@@ -1803,18 +1932,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(static sp =>
             sp.GetRequiredService<StoppedHostGrimoireConnectionFactory>());
 
-        services.AddSingleton<CovenantV3MaintenanceConnectionFactory>(
-            static sp => new CovenantV3MaintenanceConnectionFactory(
-                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                sp.GetRequiredService<ISqliteNativeRuntime>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
-
-        services.AddSingleton<ICovenantV3MaintenanceConnectionFactory>(
-            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
-
-        services.AddSingleton<ICovenantV3MaintenancePathAuthority>(
-            static sp => sp.GetRequiredService<CovenantV3MaintenanceConnectionFactory>());
-
         services.AddSingleton(
             static sp => new CovenantHealthyCatalogErasureGuard(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
@@ -1830,9 +1947,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantCanonicalErasureTransaction(
-                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton<ICovenantCanonicalErasure>(
@@ -1840,10 +1955,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(
             static sp => new CovenantLocalErasureStorageHealth(
-                sp.GetRequiredService<ICovenantV3MaintenanceConnectionFactory>(),
-                sp.GetRequiredService<ICovenantV3MaintenancePathAuthority>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton<ICovenantLocalErasureStorageHealth>(
@@ -1915,7 +2030,6 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
 
         return services.AddCovenantErasureAndMaintenance();
-
     }
 
     /// <summary>
@@ -1932,7 +2046,6 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddCovenantErasureAndMaintenance(this IServiceCollection services)
     {
-
         services.AddSingleton<IManagedFileCapabilityOpener>(static _ => new ManagedFileCapabilityOpener());
 
         services.AddSingleton<IManagedFileOwnershipVerifier>(static _ => new ManagedFileOwnershipVerifier());
@@ -1991,6 +2104,90 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IManagedFileOwnershipVerifier>(),
                 sp.GetRequiredService<TimeProvider>()));
 
+        // The offline-transition journal is the durable phase authority of a Covenant reset or a
+        // healthy-catalog factory erasure. Its store is a singleton because the slot it owns is one
+        // per profile; the authority above it is scoped because reading this installation's identity
+        // is.
+        services.AddSingleton<IGrimoireOfflineTransitionJournalStore>(
+            static sp => new GrimoireOfflineTransitionJournalStore(
+                sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.AddSingleton(static _ => GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        // Scoped and composed, unlike the payload table above. Decoding a journal depends on nothing
+        // but the bytes and can be a process-wide constant; deciding what a transition of that kind
+        // owes is reached through the same scope its journal session and operation store are, and a
+        // process-wide instance would invite one of its handlers to capture a scope it outlives.
+        services.AddScoped(
+            static _ => GrimoireOfflineTransitionEffectHandlerRegistry
+                .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                .Value);
+
+        services.AddSingleton(
+            static sp => new GrimoireOfflineTransitionLifecycleStore(
+                sp.GetRequiredService<IGrimoireOfflineTransitionJournalStore>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionHandlerRegistry>()));
+
+        // Scoped rather than singleton: the terminal compare-exchange it performs goes through the
+        // scoped operation store, and a singleton holding one would capture a scope it outlives.
+        services.AddScoped(
+            static sp => new GrimoireOfflineTransitionDatabaseReconciler(
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<TimeProvider>()));
+
+        // The CLI graph composes the erasure coordinator without the host services around it, so the
+        // accessor may not exist yet. It is added rather than assumed because a CLI holds no
+        // installation lock and must therefore refuse to open a journal — which is the correct answer
+        // for a process that cannot run an offline transition, and a clearer one than a missing
+        // registration.
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
+
+        services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
+            static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
+
+        // The concrete reader only, never the interface. The installation-reset graph registers its
+        // own implementation of that interface with TryAdd, and this block composes ahead of it in the
+        // CLI stack - so claiming the interface here would silently take the reset service's reader
+        // away from it and hand it one that opens the database, which is exactly what a reset must not
+        // do while it is deciding whether a database is there at all.
+        services.TryAddScoped<InstallationResetDatabaseIdentityReader>();
+
+        // The claim the coordinator takes for the length of a run, so generic reconciliation leaves a
+        // row alone whose lease this process deliberately stopped renewing.
+        services.TryAddSingleton<LongRunningOperationOwnership>();
+
+        // Scoped, because it names the scoped database context's own connection - the exact object
+        // the operation store issues its statements on, which is what makes a scoped permit over it
+        // keep the terminal compare-exchange working while ordinary admission is shut.
+        services.TryAddScoped<ICovenantClosedPeriodLedgerConnection,
+            CovenantClosedPeriodLedgerConnection>();
+
+        // The one production resolver, registered beside the authority that needs it. A nested
+        // transition learns it is nested by reading the broader record, so this same registration
+        // serves a first entry and a recovery in a fresh process.
+        // The concrete store is tried as well as the interface. The composition that registers the
+        // phase authority registers `InstallationResetActiveStore` itself rather than the interface
+        // over it, so resolving only the interface would hand every daemon transition the unparented
+        // resolver — and a transition answering "no parent" while its reset record claimed it is
+        // exactly the standalone downgrade the evidence matrix fails closed on.
+        services.TryAddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(
+            static sp =>
+                (sp.GetService<IInstallationResetActiveStore>()
+                    ?? sp.GetService<InstallationResetActiveStore>()) is { } activeStore
+                        ? new InstallationResetNestedTransitionReceiptResolver(activeStore)
+                        : new GrimoireOfflineTransitionUnparentedReceiptResolver());
+
+        services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
+            static sp => new GrimoireOfflineTransitionPhaseAuthority(
+                sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                sp.GetRequiredService<IInstallationResetMaintenanceLockAccessor>(),
+                sp.GetService<IInstallationResetDatabaseIdentityReader>()
+                    ?? sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<IOsCredentialStore>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionParentReceiptResolver>(),
+                ArcanumPaths.GrimoireDirectory));
+
         services.AddScoped(
             static sp => new CovenantErasureInventorySource(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
@@ -2021,6 +2218,17 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantErasureInventorySource>(),
                 sp.GetRequiredService<ICovenantErasureTransition>(),
                 sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionEffectHandlerRegistry>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                sp.GetRequiredService<GrimoireRequestAdmissionScope>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
+                sp.GetRequiredService<LongRunningOperationOwnership>(),
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>()));
 
@@ -2074,7 +2282,5 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantFamilyReinitializeRecoveryHandler>();
 
         return services;
-
     }
-
 }

@@ -30,7 +30,6 @@ internal sealed partial class SagaMemoryStore(
     IOptionsMonitor<ArcanumSettings> options,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ISagaMemoryStore
 {
-
     public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
@@ -62,7 +61,6 @@ internal sealed partial class SagaMemoryStore(
         AttachmentMemoryProvenance provenance,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(provenance);
 
         return InsertCoreAsync(
@@ -75,7 +73,6 @@ internal sealed partial class SagaMemoryStore(
             embedding,
             provenance,
             cancellationToken);
-
     }
 
     private Task<SagaMemoryWriteOutcome> InsertCoreAsync(
@@ -89,22 +86,18 @@ internal sealed partial class SagaMemoryStore(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
-
         int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
             options.CurrentValue.Integrations.Embeddings.Dimensions);
 
         if (embedding.Length != expectedDimensions)
         {
-
             throw new InvalidOperationException(
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting insert to avoid corrupting the vec0 index.""");
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // Transaction and commands are created fresh on every invocation of this delegate: if
@@ -130,7 +123,6 @@ internal sealed partial class SagaMemoryStore(
 
                 if (suppressionKey is not null)
                 {
-
                     (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
                         SuppressionDigests(suppressionKey, scopeKind, scopeCampaignId, content);
 
@@ -150,13 +142,10 @@ internal sealed partial class SagaMemoryStore(
 
                     if (hit is not null)
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return SagaMemoryWriteOutcome.Suppressed;
-
                     }
-
                 }
 
                 await using DbCommand memoryCmd = connection.CreateCommand();
@@ -178,7 +167,7 @@ internal sealed partial class SagaMemoryStore(
 
                 AddParameter(memoryCmd, "@content", content);
 
-                AddParameter(memoryCmd, "@createdAt", createdAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(memoryCmd, "@createdAt", UtcInstantText.Format(createdAt));
 
                 AddParameter(memoryCmd, "@sessionId", sessionId is null ? DBNull.Value : sessionId.Value.ToString());
 
@@ -190,19 +179,16 @@ internal sealed partial class SagaMemoryStore(
 
                 if (provenance is not null)
                 {
-
                     await InsertProvenanceAsync(
                         connection,
                         transaction,
                         id,
                         provenance,
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 if (options.CurrentValue.Features.Annals)
                 {
-
                     // Inside the memory's own transaction, and reusing the scope the classifier just
                     // derived rather than deriving a second one. Two derivations of one authority
                     // eventually disagree, and the disagreement would land on what a turn may recall.
@@ -227,7 +213,6 @@ internal sealed partial class SagaMemoryStore(
                         createdAt,
                         sessionId,
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
@@ -252,7 +237,6 @@ internal sealed partial class SagaMemoryStore(
 
                 if (availability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -268,25 +252,20 @@ internal sealed partial class SagaMemoryStore(
                     AddParameter(vecCmd, "@embedding", blob);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return SagaMemoryWriteOutcome.Written;
-
             },
             cancellationToken);
-
     }
 
     public async Task<int> CountAsync(CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -296,19 +275,15 @@ internal sealed partial class SagaMemoryStore(
                 object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
                 return Convert.ToInt32(result, CultureInfo.InvariantCulture);
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -323,10 +298,8 @@ internal sealed partial class SagaMemoryStore(
                 object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
                 return Convert.ToInt32(result, CultureInfo.InvariantCulture);
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<SagaMemoryDto[]> ListAsync(
@@ -337,11 +310,9 @@ internal sealed partial class SagaMemoryStore(
         int offset,
         CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -363,20 +334,16 @@ internal sealed partial class SagaMemoryStore(
 
                 if (!string.IsNullOrWhiteSpace(query))
                 {
-
                     sql.Append(" AND m.\"Content\" LIKE @query ESCAPE '\\'");
 
                     AddParameter(cmd, "@query", "%" + EscapeLikePattern(query) + "%");
-
                 }
 
                 if (sessionId is not null)
                 {
-
                     sql.Append(" AND m.\"SessionId\" = @sessionId");
 
                     AddParameter(cmd, "@sessionId", sessionId.Value.ToString());
-
                 }
 
                 // The same ownership predicate retrieval ranks by, so this never shows a memory a turn
@@ -389,10 +356,8 @@ internal sealed partial class SagaMemoryStore(
                 // operator has to be able to see what they took out in order to put it back.
                 if (scope.IsEnforced)
                 {
-
                     if (scope.CampaignId is { } campaignId)
                     {
-
                         sql.Append(
                             " AND (m.ScopeKindCode = @globalScopeKind"
                             + " OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId))");
@@ -403,17 +368,13 @@ internal sealed partial class SagaMemoryStore(
                         // to select the same candidate set, so a spelling that halved one would have to
                         // halve the other or the promise above this block is false.
                         AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
-
                     }
                     else
                     {
-
                         sql.Append(" AND m.ScopeKindCode = @globalScopeKind");
-
                     }
 
                     AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
-
                 }
 
                 sql.Append(" ORDER BY m.\"CreatedAt\" DESC LIMIT @limit OFFSET @offset");
@@ -430,33 +391,26 @@ internal sealed partial class SagaMemoryStore(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     results.Add(ReadMemory(reader));
-
                 }
 
                 return results.ToArray();
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
         IReadOnlyList<string> ids,
         CancellationToken cancellationToken)
     {
-
         if (ids.Count == 0)
         {
             return new Dictionary<string, SagaMemoryDto>(0);
-
         }
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -465,13 +419,11 @@ internal sealed partial class SagaMemoryStore(
 
                 for (int i = 0; i < ids.Count; i++)
                 {
-
                     string parameterName = "@id" + i.ToString(CultureInfo.InvariantCulture);
 
                     parameterNames[i] = parameterName;
 
                     AddParameter(cmd, parameterName, ids[i]);
-
                 }
 
                 cmd.CommandText =
@@ -495,46 +447,36 @@ internal sealed partial class SagaMemoryStore(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     SagaMemoryDto memory = ReadMemory(reader);
 
                     results[memory.Id] = memory;
-
                 }
 
                 return (IReadOnlyDictionary<string, SagaMemoryDto>)results;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
     {
-
         // The guard, not the purge. A caller that reached this method without going through the
         // sensitivity purge boundary would remove a labelled Saga fact and leave its label behind,
         // pointing at content nothing admits is tainted (§10.20.2).
         if (labeledArtifactGuard is { } guard && Guid.TryParse(id, out Guid memoryId))
         {
-
             Result unlabeled = await guard
                 .EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, memoryId, cancellationToken)
                 .ConfigureAwait(false);
 
             if (unlabeled.IsFailure)
             {
-
                 throw new InvalidOperationException(unlabeled.Error.Message);
-
             }
-
         }
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -562,11 +504,9 @@ internal sealed partial class SagaMemoryStore(
 
                 if (affected == 0)
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     return false;
-
                 }
 
                 await using DbCommand embeddingCmd = connection.CreateCommand();
@@ -581,7 +521,6 @@ internal sealed partial class SagaMemoryStore(
 
                 if (availability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -591,7 +530,6 @@ internal sealed partial class SagaMemoryStore(
                     AddParameter(vecCmd, "@id", id);
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 // Deliberately ungated. A claim written while the Annals was enabled has to stay
@@ -607,38 +545,30 @@ internal sealed partial class SagaMemoryStore(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task DeleteAllAsync(CancellationToken cancellationToken)
     {
-
         // A set-based delete examines no identity at all, so there is no single artifact to ask about.
         // The only honest question is whether the kind still has a labelled member anywhere, and the
         // only safe answer for "yes" is to refuse rather than remove rows nothing ever examined.
         if (labeledArtifactGuard is { } guard)
         {
-
             Result none = await guard
                 .EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, cancellationToken)
                 .ConfigureAwait(false);
 
             if (none.IsFailure)
             {
-
                 throw new InvalidOperationException(none.Error.Message);
-
             }
-
         }
 
         await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -677,7 +607,6 @@ internal sealed partial class SagaMemoryStore(
 
                 if (availability.IsVecAvailable)
                 {
-
                     await using DbCommand vecCmd = connection.CreateCommand();
 
                     vecCmd.Transaction = transaction;
@@ -685,7 +614,6 @@ internal sealed partial class SagaMemoryStore(
                     vecCmd.CommandText = """DELETE FROM "saga_memory_embeddings_vec" """;
 
                     _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 // Saga's claims and no others. The Lexicon's stay exactly where they are, which is what
@@ -697,19 +625,15 @@ internal sealed partial class SagaMemoryStore(
                     cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     public async Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -729,7 +653,6 @@ internal sealed partial class SagaMemoryStore(
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     return new SagaStats(0, 0, null, null);
-
                 }
 
                 int totalCount = reader.GetInt32(0);
@@ -738,26 +661,22 @@ internal sealed partial class SagaMemoryStore(
 
                 DateTimeOffset? oldest = reader.IsDBNull(2)
                     ? null
-                    : DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture);
+                    : UtcInstantText.Parse(reader.GetString(2));
 
                 DateTimeOffset? newest = reader.IsDBNull(3)
                     ? null
-                    : DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture);
+                    : UtcInstantText.Parse(reader.GetString(3));
 
                 return new SagaStats(totalCount, sessionCount, oldest, newest);
-
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-
         return await SqliteBusyRetry.ExecuteAsync<DateTimeOffset?>(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
@@ -777,59 +696,135 @@ internal sealed partial class SagaMemoryStore(
                 if (result is null or DBNull)
                 {
                     return null;
-
                 }
 
-                return DateTimeOffset.Parse((string)result, CultureInfo.InvariantCulture);
-
+                return UtcInstantText.Parse((string)result);
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
-    public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken)
+    public async Task<SagaExtractionCursor?> GetExtractionCursorAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
     {
-
-        return SqliteBusyRetry.ExecuteAsync(
+        return await SqliteBusyRetry.ExecuteAsync<SagaExtractionCursor?>(
             async () =>
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand cmd = connection.CreateCommand();
 
                 cmd.CommandText =
                     """
-                    INSERT INTO "saga_extraction_watermarks" ("SessionId", "LastExtractedEntryCreatedAt")
-                    VALUES (@sessionId, @lastExtractedEntryCreatedAt)
-                    ON CONFLICT("SessionId") DO UPDATE SET
-                        "LastExtractedEntryCreatedAt" = @lastExtractedEntryCreatedAt
+                    SELECT "LastExtractedEntrySequence", "LastExtractedEntryCreatedAt"
+                    FROM "saga_extraction_watermarks"
+                    WHERE "SessionId" = @sessionId
+                    LIMIT 1
                     """;
 
                 AddParameter(cmd, "@sessionId", sessionId.ToString());
 
-                AddParameter(cmd, "@lastExtractedEntryCreatedAt", lastExtractedEntryCreatedAt.ToString("o", CultureInfo.InvariantCulture));
+                await using DbDataReader reader =
+                    await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
 
+                return new SagaExtractionCursor(
+                    reader.GetInt64(0),
+                    UtcInstantText.Parse(reader.GetString(1)));
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task SetExtractionCursorAsync(
+        Guid sessionId,
+        SagaExtractionCursor cursor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(cursor);
+
+        ArgumentOutOfRangeException.ThrowIfNegative(cursor.EntrySequence);
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await UpsertExtractionCursorAsync(
+                    connection,
+                    sessionId,
+                    cursor,
+                    cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
+    }
 
+    public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken)
+    {
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                long sequence = await SagaExtractionCursorResolver.ResolveContiguousPrefixAsync(
+                    connection,
+                    transaction: null,
+                    sessionId.ToString(),
+                    lastExtractedEntryCreatedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+                await UpsertExtractionCursorAsync(
+                    connection,
+                    sessionId,
+                    new SagaExtractionCursor(sequence, lastExtractedEntryCreatedAt),
+                    cancellationToken).ConfigureAwait(false);
+            },
+            cancellationToken);
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
+    }
 
+    private static async Task UpsertExtractionCursorAsync(
+        DbConnection connection,
+        Guid sessionId,
+        SagaExtractionCursor cursor,
+        CancellationToken cancellationToken)
+    {
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            INSERT INTO "saga_extraction_watermarks"
+                ("SessionId", "LastExtractedEntryCreatedAt", "LastExtractedEntrySequence")
+            VALUES (@sessionId, @lastExtractedEntryCreatedAt, @lastExtractedEntrySequence)
+            ON CONFLICT("SessionId") DO UPDATE SET
+                "LastExtractedEntryCreatedAt" = @lastExtractedEntryCreatedAt,
+                "LastExtractedEntrySequence" = @lastExtractedEntrySequence
+            """;
+
+        AddParameter(cmd, "@sessionId", sessionId.ToString());
+
+        AddParameter(
+            cmd,
+            "@lastExtractedEntryCreatedAt",
+            UtcInstantText.Format(cursor.EntryCreatedAt));
+
+        AddParameter(cmd, "@lastExtractedEntrySequence", cursor.EntrySequence);
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -879,7 +874,6 @@ internal sealed partial class SagaMemoryStore(
         string? campaignId,
         string content)
     {
-
         string? settled = SagaMemoryScopeClassifier.CanonicalCampaignIdentity(campaignId);
 
         return (SagaSuppressionDigest.Compute(suppressionKey, scopeKind, settled, content),
@@ -888,12 +882,10 @@ internal sealed partial class SagaMemoryStore(
                 scopeKind,
                 settled?.ToLowerInvariant(),
                 content));
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -901,7 +893,6 @@ internal sealed partial class SagaMemoryStore(
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static string EscapeLikePattern(string value) =>
@@ -911,12 +902,11 @@ internal sealed partial class SagaMemoryStore(
 
     private static SagaMemoryDto ReadMemory(DbDataReader reader)
     {
-
         string id = reader.GetString(0);
 
         string content = reader.GetString(1);
 
-        DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture);
+        DateTimeOffset createdAt = UtcInstantText.Parse(reader.GetString(2));
 
         Guid? sessionId = reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3));
 
@@ -932,7 +922,7 @@ internal sealed partial class SagaMemoryStore(
                 reader.GetString(8),
                 reader.GetInt32(9),
                 reader.GetString(10),
-                DateTimeOffset.Parse(reader.GetString(11), CultureInfo.InvariantCulture),
+                UtcInstantText.Parse(reader.GetString(11)),
                 reader.GetString(12),
                 reader.GetInt32(13) == 1
                     ? AttachmentSourceAvailability.Available
@@ -940,11 +930,11 @@ internal sealed partial class SagaMemoryStore(
 
         DateTimeOffset? retiredAtUtc = reader.IsDBNull(16)
             ? null
-            : DateTimeOffset.Parse(reader.GetString(16), CultureInfo.InvariantCulture);
+            : UtcInstantText.Parse(reader.GetString(16));
 
         DateTimeOffset? pinnedAtUtc = reader.IsDBNull(17)
             ? null
-            : DateTimeOffset.Parse(reader.GetString(17), CultureInfo.InvariantCulture);
+            : UtcInstantText.Parse(reader.GetString(17));
 
         return new SagaMemoryDto(
             id,
@@ -958,7 +948,6 @@ internal sealed partial class SagaMemoryStore(
             reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
             retiredAtUtc,
             pinnedAtUtc);
-
     }
 
     private static async Task InsertProvenanceAsync(
@@ -968,7 +957,6 @@ internal sealed partial class SagaMemoryStore(
         AttachmentMemoryProvenance provenance,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -998,12 +986,10 @@ internal sealed partial class SagaMemoryStore(
         AddParameter(
             command,
             "@materializedAt",
-            provenance.MaterializedAt.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(provenance.MaterializedAt));
 
         AddParameter(command, "@sourceType", provenance.SourceType);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
-
 }

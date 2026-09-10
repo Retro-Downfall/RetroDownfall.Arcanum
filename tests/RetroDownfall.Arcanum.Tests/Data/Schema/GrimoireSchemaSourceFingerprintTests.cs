@@ -20,23 +20,86 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class GrimoireSchemaSourceFingerprintTests
 {
+    [Fact]
+    public void Version_nine_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(
+            CoreSchemaVersionNineFixture.PublishedFingerprint,
+            CoreSchemaVersionNineFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.Equal(CoreSchemaVersionNineFixture.Fingerprint, core.SourceDefinitionFingerprintFor(9));
+    }
+
+    [Fact]
+    public void Version_eight_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(
+            CoreSchemaVersionEightFixture.PublishedFingerprint,
+            CoreSchemaVersionEightFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.Equal(CoreSchemaVersionEightFixture.Fingerprint, core.SourceDefinitionFingerprintFor(8));
+    }
+
+    [Fact]
+    public void Covenant_version_three_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(
+            CovenantCanonicalSchemaVersionThreeFixture.PublishedFingerprint,
+            CovenantCanonicalSchemaVersionThreeFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain canonical = GrimoireSchemaVersionChains.Default
+            .ForTier(GrimoireSchemaTransactionTier.CovenantCanonical);
+
+        Assert.Equal(
+            CovenantCanonicalSchemaVersionThreeFixture.Fingerprint,
+            canonical.SourceDefinitionFingerprintFor(3));
+    }
+
+    [Fact]
+    public void Version_seven_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(
+            "814D62096F2A034B8CD8092FBA4D5A6A83BE22E2976EE4EECFEB6D3C9FB1E24A",
+            CoreSchemaVersionSevenFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.Equal(CoreSchemaVersionSevenFixture.Fingerprint, core.SourceDefinitionFingerprintFor(7));
+    }
+
+    [Fact]
+    public void Version_six_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(
+            "410CB4FD182E22CB7FA72955E337296177A2A0E92ACB4AF73137236285B0D8CB",
+            CoreSchemaVersionSixFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.Equal(CoreSchemaVersionSixFixture.Fingerprint, core.SourceDefinitionFingerprintFor(6));
+    }
 
     [Fact]
     public void A_reindented_and_recommented_head_tree_publishes_the_same_core_fingerprint()
     {
-
         IReadOnlyList<GrimoireSchemaObject> reformatted = Reformatted(GrimoireSchemaCatalog.CoreObjects);
 
         Assert.Equal(
             GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CoreObjects),
             GrimoireSchemaCatalog.ComputeSourceFingerprint(reformatted));
-
     }
 
     [Fact]
     public void A_changed_statement_still_moves_the_core_fingerprint()
     {
-
         IReadOnlyList<GrimoireSchemaObject> changed =
         [
             .. GrimoireSchemaCatalog.CoreObjects
@@ -52,29 +115,26 @@ public sealed class GrimoireSchemaSourceFingerprintTests
         Assert.NotEqual(
             GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CoreObjects),
             GrimoireSchemaCatalog.ComputeSourceFingerprint(changed));
-
     }
 
     /// <summary>
     /// The pinned computation is still reachable and still reads the file's bytes.
     /// </summary>
     /// <remarks>
-    /// Every pin a shipped step carries - Core 2 through 6, Covenant canonical 2 and 3 - was taken
-    /// before normalization existed, and a fixture reconstructing one of those trees has to reproduce
-    /// the value the same way. That makes the raw computation a permanent part of the contract rather
-    /// than dead code, so it is asserted to still disagree with the normalized one for exactly the
-    /// input normalization exists to forgive.
+    /// Core pins through version 6 and every Covenant canonical pin were taken with the raw computation,
+    /// and a fixture reconstructing one of those trees has to reproduce the value the same way. That
+    /// makes the raw computation a permanent part of the contract rather than dead code, so it is
+    /// asserted to still disagree with the normalized one for exactly the input normalization exists
+    /// to forgive.
     /// </remarks>
     [Fact]
     public void The_pinned_raw_computation_still_reads_the_bytes()
     {
-
         IReadOnlyList<GrimoireSchemaObject> reformatted = Reformatted(GrimoireSchemaCatalog.CoreObjects);
 
         Assert.NotEqual(
             GrimoireSchemaCatalog.ComputeRawSourceFingerprint(GrimoireSchemaCatalog.CoreObjects),
             GrimoireSchemaCatalog.ComputeRawSourceFingerprint(reformatted));
-
     }
 
     /// <summary>
@@ -87,7 +147,6 @@ public sealed class GrimoireSchemaSourceFingerprintTests
     [Fact]
     public void Version_five_reconstruction_matches_the_pinned_fingerprint()
     {
-
         Assert.Equal(
             "EFD0E3F2981B3462337E83BAAD2BE696AD3279452E85A11903CA6B636AC1B6F9",
             CoreSchemaVersionFiveFixture.Fingerprint);
@@ -96,7 +155,6 @@ public sealed class GrimoireSchemaSourceFingerprintTests
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
 
         Assert.Equal(CoreSchemaVersionFiveFixture.Fingerprint, core.SourceDefinitionFingerprintFor(5));
-
     }
 
     /// <summary>
@@ -115,5 +173,4 @@ public sealed class GrimoireSchemaSourceFingerprintTests
         + "/* and a block comment beside it */\n"
         + string.Join("\n", sql.Split('\n').Select(static line => "    " + line))
         + "\n\n-- and one after the statement\n";
-
 }

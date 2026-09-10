@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Api.Primitives;
 
 internal static class ArcanumErrorMapper
 {
-
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
@@ -113,7 +112,8 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Saga.AlreadyRetired =>
                 StatusCodes.Status409Conflict,
 
-            ErrorCodes.Covenant.Unavailable
+            ErrorCodes.Workspace.IndexingUnavailable
+                or ErrorCodes.Covenant.Unavailable
                 or ErrorCodes.Covenant.OperatorAuthorityUnavailable
                 or ErrorCodes.Covenant.HostToolsTransitionRequired
                 or ErrorCodes.Covenant.MaintenanceFailed
@@ -126,7 +126,14 @@ internal static class ArcanumErrorMapper
                 // on purpose and will give it back, so the caller is being asked to retry. The
                 // refusal used to travel as Covenant.Unavailable and was already answered here;
                 // giving it a code of its own must not turn a planned window into "Arcanum broke".
-                or GrimoireMaintenanceUnavailableException.Code =>
+                or GrimoireMaintenanceUnavailableException.Code
+
+                // A transformation that could not take the database offline because ordinary work
+                // would not drain in time. It belongs with them for the same reason: nothing was
+                // erased, ordinary admission is open again, and asking once the database is quieter
+                // is the action. Answering 500 would tell an operator their installation broke when
+                // what actually happened is that something else was still using it.
+                or ErrorCodes.Grimoire.WorkDrainTimeout =>
                 StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Hub.Model =>
@@ -176,7 +183,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Attachment.TooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
 
-            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Scrying.InvalidImageData or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
+            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Scrying.InvalidImageData or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.ClientTools.ModelUnsupported or ErrorCodes.ClientTools.ToolChoiceUnavailable or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
                 StatusCodes.Status400BadRequest,
 
             ErrorCodes.Scrying.FeatureDisabled =>
@@ -217,10 +224,13 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status429TooManyRequests,
 
             // The server's own 401 is Auth.Unauthorized, written directly by ApiKeyEndpointFilter and
-            // never routed through this mapper. Security.MissingApiKey is client-synthesized (CLI /
-            // The Forge, when no key is configured locally); it is kept here so a Result carrying
-            // either code still resolves to 401 rather than the default 500 arm.
-            ErrorCodes.Auth.Unauthorized or ErrorCodes.Security.MissingApiKey =>
+            // never routed through this mapper. These Security codes are client-synthesized by a
+            // local client before any authenticated request is sent; keeping them here means a
+            // Result carrying any authentication-bound refusal never falls into the default 500 arm.
+            ErrorCodes.Auth.Unauthorized
+                or ErrorCodes.Security.MissingApiKey
+                or ErrorCodes.Security.CredentialUnreadable
+                or ErrorCodes.Security.UnverifiedLocalApi =>
                 StatusCodes.Status401Unauthorized,
 
             ErrorCodes.Connection.Timeout or ErrorCodes.WebBrowsing.Timeout or ErrorCodes.WebResearch.Timeout or ErrorCodes.Mcp.DiagnosticTimeout =>
@@ -253,7 +263,6 @@ internal static class ArcanumErrorMapper
     /// </summary>
     public static int ResolveStatusCodeDefaultBadRequest(string errorCode)
     {
-
         if (errorCode is ErrorCodes.ProvingGrounds.InferenceFailed
             or ErrorCodes.Workspace.WriteFailed
             or ErrorCodes.Workspace.DeleteFailed
@@ -261,9 +270,7 @@ internal static class ArcanumErrorMapper
             or ErrorCodes.Saga.SearchFailed
             or ErrorCodes.Hub.Error)
         {
-
             return ResolveStatusCode(errorCode);
-
         }
 
         int mapped = ResolveStatusCode(errorCode);
@@ -271,7 +278,5 @@ internal static class ArcanumErrorMapper
         return mapped == StatusCodes.Status500InternalServerError
             ? StatusCodes.Status400BadRequest
             : mapped;
-
     }
-
 }

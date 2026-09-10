@@ -9,6 +9,7 @@ public sealed record ModelInfoDto(
     string Endpoint,
     int ContextWindowLimit,
     bool SupportsVision = false,
+    bool SupportsTools = true,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ReasoningWireDialect? WireDialect = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

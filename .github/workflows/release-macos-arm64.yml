@@ -141,19 +141,10 @@ jobs:
       - name: Setup .NET 10
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
 
-      # Apple's ld-prime asserts on the CLI's ~450 MB Native AOT object file
-      # (dotnet/runtime#119380) and ld_classic no longer exists to fall back to, so the csproj
-      # routes the AOT link through LLVM lld when ld64.lld is present. Without it the publish
-      # silently degrades to the non-AOT self-contained folder, which still ships and still passes
-      # -- the release would just quietly stop being Native AOT. Verified, not assumed.
-      - name: Install LLVM lld for the Native AOT link
-        run: |
-          set -euo pipefail
-          brew install lld
-          test -x /opt/homebrew/opt/lld/bin/ld64.lld
-          /opt/homebrew/opt/lld/bin/ld64.lld --version
+      - name: Install ripgrep for the warning-free publish gate
+        run: command -v rg >/dev/null 2>&1 || brew install ripgrep
 
       - name: Print dotnet --info (post-setup)
         run: |
@@ -165,11 +156,11 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          CERT_PATH: ${{ runner.temp }}/developer-id.p12
+          KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
           KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/arcanum-signing.keychain-db"
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -207,8 +198,6 @@ jobs:
           # The PKCS#12 has served its purpose the moment the key is in the keychain. Removing it
           # here rather than in the cleanup step means it does not sit on disk for the whole job.
           rm -f "$CERT_PATH"
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
       # The requirement step above checks the *shape* of APPLE_SIGNING_IDENTITY. Nothing checked that
       # the certificate in APPLE_CERTIFICATE is the one that name refers to, and the first release run
@@ -223,6 +212,7 @@ jobs:
       - name: Require the certificate to be the identity the release names
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
         run: |
           set -euo pipefail
           FOUND="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
@@ -245,15 +235,23 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          # Fail the release rather than quietly shipping the CoreCLR fallback if ld64.lld is
-          # missing. Every other check in the packaging script passes on the fallback.
-          ARCANUM_REQUIRE_MACOS_AOT: "true"
         run: |
           set -euo pipefail
           chmod +x scripts/packaging/macos/build-arcanum.sh
           ./scripts/packaging/macos/build-arcanum.sh \
             --version "${{ steps.ver.outputs.version }}" \
             --output-dir dist
+
+      - name: Verify exact notarized Arcanum provider-contract smoke
+        env:
+          ARCANUM_ARCHIVE: dist/arcanum-osx-arm64.zip
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="$(mktemp -d "${RUNNER_TEMP:?}/arcanum-package-smoke.XXXXXX")"
+          trap 'rm -rf "$SMOKE_DIR"' EXIT
+          ditto -x -k "$ARCANUM_ARCHIVE" "$SMOKE_DIR"
+          bash scripts/verify-published-apphost.sh \
+            --executable "$SMOKE_DIR/arcanum-osx-arm64/arcanum"
 
       - name: Package Compendium (notarized DMG)
         env:
@@ -342,8 +340,54 @@ jobs:
 
       - name: Cleanup keychain
         if: always()
+        env:
+          CERT_PATH: ${{ runner.temp }}/developer-id.p12
+          KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
         run: |
           set -euo pipefail
-          if [[ -n "${KEYCHAIN_PATH:-}" && -f "${KEYCHAIN_PATH}" ]]; then
-            security delete-keychain "$KEYCHAIN_PATH" || true
+          if [[ -e "$CERT_PATH" ]]; then
+            rm -f "$CERT_PATH"
+          fi
+
+          if [[ -e "$CERT_PATH" ]]; then
+            echo "error: could not remove the temporary Developer ID P12: $CERT_PATH" >&2
+            exit 1
+          fi
+
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+            cleanup_complete=0
+
+            for attempt in 1 2 3; do
+              if security delete-keychain "$KEYCHAIN_PATH"; then
+                :
+              fi
+              listed_keychains="$(security list-keychains -d user)"
+              keychain_registered=0
+
+              while IFS= read -r keychain; do
+                keychain="${keychain#"${keychain%%[![:space:]]*}"}"
+                keychain="${keychain%"${keychain##*[![:space:]]}"}"
+                keychain="${keychain#\"}"
+                keychain="${keychain%\"}"
+
+                if [[ "$keychain" == "$KEYCHAIN_PATH" ]]; then
+                  keychain_registered=1
+                  break
+                fi
+              done <<<"$listed_keychains"
+
+              if [[ ! -e "$KEYCHAIN_PATH" && "$keychain_registered" -eq 0 ]]; then
+                cleanup_complete=1
+                break
+              fi
+
+              if [[ "$attempt" -lt 3 ]]; then
+                sleep 0.1
+              fi
+            done
+
+            if [[ "$cleanup_complete" -ne 1 ]]; then
+              echo "error: could not remove the ephemeral release keychain after three attempts: $KEYCHAIN_PATH" >&2
+              exit 1
+            fi
           fi

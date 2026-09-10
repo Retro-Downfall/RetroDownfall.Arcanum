@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 
 using Microsoft.Extensions.Logging;
@@ -30,8 +31,14 @@ public sealed class GrimoireTurnWriter(
     ISessionTurnBeginStore turnBeginStore,
     SessionEventHub sessionEventHub,
     ILogger<GrimoireTurnWriter> logger,
-    IGrimoireTurnCommitter? turnCommitter = null)
+    IGrimoireTurnCommitter? turnCommitter = null,
+    SessionTurnConcurrencyGate? sessionTurnGate = null) : IDisposable
 {
+
+    private readonly SessionTurnConcurrencyGate _sessionTurnGate =
+        sessionTurnGate ?? new SessionTurnConcurrencyGate();
+
+    private readonly ConcurrentDictionary<TurnHandle, byte> _ownedTurnHandles = new();
 
     public const string PublicFinalizeFailureMessage =
         "The conversation reply could not be saved. Please try again.";
@@ -39,11 +46,23 @@ public sealed class GrimoireTurnWriter(
     public sealed class TurnHandle
     {
 
+        private IDisposable? _sessionTurnLease;
+
         public Guid? AssistantEntryId { get; internal set; }
+
+        internal long? SagaExtractionThroughSequence { get; set; }
+
+        internal long SagaExtractionAfterSequenceExclusive { get; set; }
 
         public Guid? SessionId { get; internal set; }
 
         public bool IsFinalized { get; internal set; }
+
+        internal void AttachSessionTurnLease(IDisposable lease) =>
+            _sessionTurnLease = lease;
+
+        internal void ReleaseSessionTurnLease() =>
+            Interlocked.Exchange(ref _sessionTurnLease, null)?.Dispose();
 
     }
 
@@ -235,7 +254,6 @@ public sealed class GrimoireTurnWriter(
 
         if (handle.IsFinalized)
         {
-
             return true;
 
         }
@@ -249,7 +267,11 @@ public sealed class GrimoireTurnWriter(
 
         if (resolved)
         {
+
             handle.IsFinalized = true;
+
+            ReleaseTurnHandle(handle);
+
         }
 
         return resolved;
@@ -798,51 +820,79 @@ public sealed class GrimoireTurnWriter(
 
         }
 
-        Result<AssistantReplyBeginReceipt> receipt = await turnBeginStore
-            .BeginAssistantReplyAsync(sessionId.Value, campaign, prompt, targetModel, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (receipt.IsFailure)
+        if (!_sessionTurnGate.TryAcquire(sessionId.Value, out IDisposable? sessionTurnLease))
         {
 
-            logger.LogWarning(beginFailureLogMessage, targetModel);
-
-            return receipt.Error;
+            return new Error(
+                ErrorCodes.Hub.SessionTurnBusy,
+                "This Session already has a turn in flight, so a second one cannot claim it.");
 
         }
-
-        TurnHandle handle = new()
-        {
-            SessionId = receipt.Value.SessionId,
-            AssistantEntryId = receipt.Value.AssistantEntryId,
-        };
 
         try
         {
 
-            await PublishLatestSavedEntriesAsync(receipt.Value.SessionId, 2, cancellationToken)
+            Result<AssistantReplyBeginReceipt> receipt = await turnBeginStore
+                .BeginAssistantReplyAsync(sessionId.Value, campaign, prompt, targetModel, cancellationToken)
                 .ConfigureAwait(false);
 
+            if (receipt.IsFailure)
+            {
+
+                logger.LogWarning(beginFailureLogMessage, targetModel);
+
+                return receipt.Error;
+
+            }
+
+            TurnHandle handle = new()
+            {
+                SessionId = receipt.Value.SessionId,
+                AssistantEntryId = receipt.Value.AssistantEntryId,
+                SagaExtractionAfterSequenceExclusive =
+                    receipt.Value.Preflight.PreRequestHistoryRevision,
+            };
+
+            handle.AttachSessionTurnLease(sessionTurnLease!);
+
+            _ownedTurnHandles.TryAdd(handle, 0);
+
+            sessionTurnLease = null;
+
+            try
+            {
+
+                await PublishLatestSavedEntriesAsync(receipt.Value.SessionId, 2, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                throw;
+
+            }
+            catch (Exception ex)
+            {
+
+                // Publication is best-effort on purpose: the rows are already committed, and failing the
+                // turn here would discard a durable answer over an event nobody is required to receive.
+                logger.LogWarning(
+                    ex,
+                    "Session event hub could not publish begin-assistant entries for model {ModelName}.",
+                    targetModel);
+
+            }
+
+            return Result<TurnHandle>.Success(handle);
+
         }
-        catch (OperationCanceledException)
+        finally
         {
 
-            throw;
+            sessionTurnLease?.Dispose();
 
         }
-        catch (Exception ex)
-        {
-
-            // Publication is best-effort on purpose: the rows are already committed, and failing the
-            // turn here would discard a durable answer over an event nobody is required to receive.
-            logger.LogWarning(
-                ex,
-                "Session event hub could not publish begin-assistant entries for model {ModelName}.",
-                targetModel);
-
-        }
-
-        return Result<TurnHandle>.Success(handle);
 
     }
 
@@ -951,6 +1001,14 @@ public sealed class GrimoireTurnWriter(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        if (committed.IsSuccess
+            && committed.Value.ThroughEntrySequence is { } throughEntrySequence)
+        {
+
+            handle.SagaExtractionThroughSequence = throughEntrySequence;
+
+        }
+
         return committed.IsFailure
             ? Result<bool>.Failure(committed.Error)
             : Result<bool>.Success(true);
@@ -1018,9 +1076,19 @@ public sealed class GrimoireTurnWriter(
             if (!committed.Value)
             {
 
-                await grimoire
-                    .FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken)
+                long? throughEntrySequence = await grimoire
+                    .FinalizeAssistantEntryWithFrontierAsync(
+                        finalizeId,
+                        finalText,
+                        cancellationToken)
                     .ConfigureAwait(false);
+
+                if (throughEntrySequence is not null)
+                {
+
+                    handle.SagaExtractionThroughSequence = throughEntrySequence;
+
+                }
 
             }
 
@@ -1034,14 +1102,11 @@ public sealed class GrimoireTurnWriter(
                 try
                 {
 
-                    await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
+                    await PublishSavedEntryByIdAsync(
+                            publishSessionId,
+                            finalizeId,
+                            CancellationToken.None)
                         .ConfigureAwait(false);
-
-                }
-                catch (OperationCanceledException)
-                {
-
-                    throw;
 
                 }
                 catch (Exception ex)
@@ -1091,7 +1156,49 @@ public sealed class GrimoireTurnWriter(
 
             handle.IsFinalized = true;
 
+            ReleaseTurnHandle(handle);
+
             return false;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Releases this turn's process-local Session ownership after its Saga request has been handed to
+    /// the extraction queue.
+    /// </summary>
+    /// <remarks>
+    /// Successful database finalization deliberately does not release the lease. The request's
+    /// attachment provenance and inclusive entry frontier are enqueued immediately afterwards by the
+    /// Wizard; admitting the next same-Session turn in between would let its wider frontier reach the
+    /// queue first and classify both turns under the later turn's provenance.
+    /// </remarks>
+    internal void CompleteSagaExtractionHandoff(TurnHandle handle)
+    {
+
+        ArgumentNullException.ThrowIfNull(handle);
+
+        ReleaseTurnHandle(handle);
+
+    }
+
+    private void ReleaseTurnHandle(TurnHandle handle)
+    {
+
+        _ = _ownedTurnHandles.TryRemove(handle, out _);
+
+        handle.ReleaseSessionTurnLease();
+
+    }
+
+    public void Dispose()
+    {
+
+        foreach (TurnHandle handle in _ownedTurnHandles.Keys)
+        {
+
+            ReleaseTurnHandle(handle);
 
         }
 

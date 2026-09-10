@@ -12,9 +12,11 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -24,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection("ProcessEnvironment")]
 public sealed class GrimoireCliInitializationTests : IDisposable
 {
-
     private readonly Dictionary<string, string?> _originalEnvironment = new();
 
     private readonly string _testHome =
@@ -32,7 +33,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
     public GrimoireCliInitializationTests()
     {
-
         Directory.CreateDirectory(_testHome);
 
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
@@ -40,13 +40,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
 
         SetEnvironment("ARCANUM_TEST_HOME", _testHome);
-
     }
 
     [Fact]
     public async Task RunExclusiveAsync_serializes_calls_and_holds_the_lock_through_each_callback()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -69,7 +67,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Task<int> first = initialization.RunExclusiveWithBootstrapAsync(
             async (_, token) =>
             {
-
                 using ArcanumMaintenanceLock? competing =
                     ArcanumMaintenanceLock.AcquireDetailed(
                         ArcanumPaths.GrimoireDirectory).Lock;
@@ -87,7 +84,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
                 await releaseFirstCallback.Task.WaitAsync(token);
 
                 return 17;
-
             },
             CancellationToken.None);
 
@@ -98,11 +94,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Task<int> second = initialization.RunExclusiveWithBootstrapAsync(
             (_, _) =>
             {
-
                 Interlocked.Increment(ref secondCallbackCount);
 
                 return Task.FromResult(23);
-
             },
             CancellationToken.None);
 
@@ -132,13 +126,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             ArcanumPaths.GrimoireDirectory);
 
         Assert.NotNull(released);
-
     }
 
     [Fact]
     public async Task RunExclusiveAsync_without_bootstrap_preserves_a_fresh_installation()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -157,11 +149,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         int value = await initialization.RunExclusiveAsync(
             (_, _) =>
             {
-
                 Interlocked.Increment(ref callbackCount);
 
                 return Task.FromResult(31);
-
             },
             CancellationToken.None);
 
@@ -178,13 +168,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile + ".kdf"));
 
         Assert.False(provider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
-
     }
 
     [Fact]
     public async Task Stopped_host_run_refuses_contention_before_scope_or_callback()
     {
-
         await using ServiceProvider provider = CreateServices();
 
         CountingScopeFactory scopeFactory = new(
@@ -210,24 +198,20 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             initialization.RunAsync(
                 (_, _, _) =>
                 {
-
                     callbackCount++;
 
                     return Task.FromResult(0);
-
                 },
                 CancellationToken.None));
 
         Assert.Equal(0, callbackCount);
 
         Assert.Equal(0, scopeFactory.CreateCount);
-
     }
 
     [Fact]
     public async Task Stopped_host_run_scopes_exact_lock_authority_and_both_locks_to_callback()
     {
-
         await using ServiceProvider provider = CreateServices();
 
         IGrimoireCliStoppedHostInitialization initialization =
@@ -243,7 +227,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         int value = await initialization.RunAsync(
             async (_, issuer, _) =>
             {
-
                 capturedIssuer = issuer;
 
                 using ArcanumMaintenanceLock? competingMaintenance =
@@ -266,7 +249,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
                 await issued.Value.DisposeAsync();
 
                 return 73;
-
             },
             CancellationToken.None);
 
@@ -280,13 +262,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.True(after.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidScope, after.Error.Code);
-
     }
 
     [Fact]
     public async Task RunExclusiveAsync_retains_the_client_mutation_mutex_for_the_whole_callback()
     {
-
         await using ServiceProvider provider = CreateServices();
 
         GrimoireCliInitialization initialization = new(
@@ -300,7 +280,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             await initialization.RunExclusiveAsync(
                 (_, _) =>
                 {
-
                     ArcanumClientMutationLockAcquisitionResult competing =
                         ArcanumClientMutationLock.AcquireDetailed(
                             ArcanumPaths.GrimoireDirectory);
@@ -308,20 +287,17 @@ public sealed class GrimoireCliInitializationTests : IDisposable
                     competing.Lock?.Dispose();
 
                     return Task.FromResult(competing.Disposition);
-
                 },
                 CancellationToken.None);
 
         Assert.Equal(
             ArcanumClientMutationLockAcquisitionDisposition.Contended,
             disposition);
-
     }
 
     [Fact]
     public async Task RunExclusiveAsync_after_bootstrap_failure_releases_lock_and_retries()
     {
-
         GatedSecretStore secretStore = new(apiKey: null, gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -353,18 +329,17 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             ArcanumPaths.GrimoireDirectory);
 
         Assert.NotNull(released);
-
     }
 
     [Fact]
     public async Task Standalone_lock_owning_cli_adopts_current_erasure_and_freezes_the_gate()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
-        GrimoireDbPassphraseSource passphraseSource = new();
+        await using ServiceProvider provider = CreateProductionCliServices(secretStore);
 
-        await using ServiceProvider provider = CreateServices();
+        GrimoireDbPassphraseSource passphraseSource = Assert.IsType<GrimoireDbPassphraseSource>(
+            provider.GetRequiredService<IGrimoireDbPassphraseSource>());
 
         IServiceScopeFactory scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
 
@@ -387,31 +362,41 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             static (_, _) => Task.FromResult(0),
             CancellationToken.None);
 
-        CovenantOperationGate gate = provider.GetRequiredService<CovenantOperationGate>();
+        await AssertLaunchGapSettledAndFrozenAsync(provider, owner);
+    }
 
-        Result<CovenantExclusiveLease> resumed = await gate.ResumeExclusiveAsync(
-            owner,
+    [Fact]
+    public async Task Standalone_lock_owning_cli_finishes_current_factory_erasure_before_readiness()
+    {
+        GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
+
+        await using ServiceProvider provider = CreateProductionCliServices(secretStore);
+
+        GrimoireDbPassphraseSource passphraseSource = Assert.IsType<GrimoireDbPassphraseSource>(
+            provider.GetRequiredService<IGrimoireDbPassphraseSource>());
+
+        IServiceScopeFactory scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
             CancellationToken.None);
 
-        Assert.True(
-            resumed.IsSuccess
-                || !string.Equals(
-                    resumed.Error.Code,
-                    ErrorCodes.Covenant.ManualRecoveryRequired,
-                    StringComparison.Ordinal));
+        CovenantExclusiveRecoveryOwner owner = await SeedCurrentFactoryErasureAsync(passphraseSource);
 
-        if (resumed.IsSuccess)
-        {
+        GrimoireCliInitialization initialization = new(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            new FakeStartupProbe(),
+            ClearClientMutationBoundary());
 
-            await resumed.Value.DisposeAsync();
+        _ = await initialization.RunExclusiveWithBootstrapAsync(
+            static (_, _) => Task.FromResult(0),
+            CancellationToken.None);
 
-        }
-
-        Assert.Throws<InvalidOperationException>(() => gate.AdoptDurableRecoveryOwner(
-            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
-            scope: null,
-            cleanupOnlyHistoricalCampaign: false));
-
+        await AssertLaunchGapSettledAndFrozenAsync(provider, owner);
     }
 
     [Theory]
@@ -421,7 +406,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
     public async Task Contended_cli_operation_fails_before_bootstrap_or_callback(
         string cooperativeOwner)
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -448,11 +432,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             () => initialization.RunExclusiveAsync(
                 (_, _) =>
                 {
-
                     Interlocked.Increment(ref callbackCount);
 
                     return Task.FromResult(0);
-
                 },
                 CancellationToken.None));
 
@@ -463,13 +445,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.Equal(0, secretStore.ApiKeyReadCount);
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Unsafe_lock_topology_fails_before_cli_bootstrap_mutates_the_installation()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -508,13 +488,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Direct_root_symlink_fails_before_cli_bootstrap_writes_through_it()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -546,13 +524,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.Empty(Directory.GetFileSystemEntries(target));
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Acquired_cli_revalidates_root_after_restore_recovery_before_any_writer()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -586,13 +562,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.Empty(Directory.GetFileSystemEntries(target));
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Active_installation_reset_fails_before_cli_bootstrap_or_callback()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -618,11 +592,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             () => initialization.RunExclusiveAsync(
                 (_, _) =>
                 {
-
                     Interlocked.Increment(ref callbackCount);
 
                     return Task.FromResult(0);
-
                 },
                 CancellationToken.None));
 
@@ -637,13 +609,11 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Fact]
     public async Task Indeterminate_installation_reset_state_fails_before_cli_bootstrap_or_callback()
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -668,11 +638,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             () => initialization.RunExclusiveAsync(
                 (_, _) =>
                 {
-
                     Interlocked.Increment(ref callbackCount);
 
                     return Task.FromResult(0);
-
                 },
                 CancellationToken.None));
 
@@ -685,7 +653,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
-
     }
 
     [Theory]
@@ -693,7 +660,6 @@ public sealed class GrimoireCliInitializationTests : IDisposable
     [InlineData(true)]
     public async Task Callback_failure_or_cancellation_releases_the_exact_lock(bool cancellation)
     {
-
         GatedSecretStore secretStore = new("test-master-key", gateApiKeyRead: false);
 
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -713,61 +679,45 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         if (cancellation)
         {
-
             _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
                 initialization.RunExclusiveAsync(operation, CancellationToken.None));
-
         }
         else
         {
-
             _ = await Assert.ThrowsAsync<TestOperationException>(() =>
                 initialization.RunExclusiveAsync(operation, CancellationToken.None));
-
         }
 
         using ArcanumMaintenanceLock? released = ArcanumMaintenanceLock.TryAcquire(
             ArcanumPaths.GrimoireDirectory);
 
         Assert.NotNull(released);
-
     }
 
     public void Dispose()
     {
-
         SqliteConnection.ClearAllPools();
 
         foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
         {
-
             global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
         }
 
         try
         {
-
             if (Directory.Exists(_testHome))
             {
-
                 Directory.Delete(_testHome, recursive: true);
-
             }
-
         }
         catch
         {
-
             // Best-effort cleanup for the uniquely owned test root.
-
         }
-
     }
 
     private static ServiceProvider CreateServices()
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
@@ -782,7 +732,33 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         services.AddLogging();
 
         return services.BuildServiceProvider();
+    }
 
+    /// <summary>
+    /// The exact stopped-host Grimoire graph the shipped CLI uses.
+    /// </summary>
+    private static ServiceProvider CreateProductionCliServices(ISecretStore secretStore)
+    {
+        ArgumentNullException.ThrowIfNull(secretStore);
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<ISecretStore>(secretStore);
+
+        services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+        services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+
+        services.AddLogging();
+
+        _ = services.AddArcanumGrimoireForCli();
+
+        return services.BuildServiceProvider(
+            new ServiceProviderOptions
+            {
+                ValidateScopes = true,
+            });
     }
 
     private static IArcanumClientMutationBoundary ClearClientMutationBoundary() =>
@@ -790,31 +766,143 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             ArcanumPaths.GrimoireDirectory,
             new ClearClientMutationEvidenceProbe());
 
+    private static async Task AssertLaunchGapSettledAndFrozenAsync(
+        ServiceProvider provider,
+        CovenantExclusiveRecoveryOwner owner)
+    {
+        CovenantOperationGate gate = provider.GetRequiredService<CovenantOperationGate>();
+
+        Result<CovenantExclusiveLease> resumed = await gate.ResumeExclusiveAsync(
+            owner,
+            CancellationToken.None);
+
+        Assert.True(resumed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, resumed.Error.Code);
+
+        await using AsyncServiceScope verificationScope = provider.CreateAsyncScope();
+
+        LongRunningOperation? settled = await verificationScope.ServiceProvider
+            .GetRequiredService<ILongRunningOperationStore>()
+            .GetAsync(owner.OperationId, CancellationToken.None);
+
+        Assert.NotNull(settled);
+
+        Assert.True(
+            settled.State is LongRunningOperationState.Completed
+                or LongRunningOperationState.Failed
+                or LongRunningOperationState.Abandoned);
+
+        Assert.True(provider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
+
+        Assert.Throws<InvalidOperationException>(() => gate.AdoptDurableRecoveryOwner(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair),
+            scope: null,
+            cleanupOnlyHistoricalCampaign: false));
+    }
+
+    /// <summary>
+    /// Writes the one durable row a standalone CLI is expected to adopt: an interrupted Covenant
+    /// reset, recorded as the launch it committed to.
+    /// </summary>
+    /// <remarks>
+    /// Seeded as a full launch rather than as the fields the adopter happens to read, because the
+    /// adopter reconstructs the exclusive owner from the payload alone. A row assembled from
+    /// whatever the current reader looked at would keep passing after the codec started refusing the
+    /// payload for a field nobody here thought about — and the CLI would then be proven to adopt an
+    /// erasure that the real recovery path would have refused to resume.
+    /// </remarks>
     private static async Task<CovenantExclusiveRecoveryOwner> SeedCurrentErasureAsync(
         IGrimoireDbPassphraseSource passphraseSource)
     {
-
         Guid operationId = Guid.NewGuid();
 
         CovenantDigest digest = CovenantOperationGateFixture.Digest(17);
 
-        CovenantExclusiveRecoveryOwner owner = new(
+        Guid sourceGeneration = Guid.NewGuid();
+
+        Guid targetGeneration = Guid.NewGuid();
+
+        CovenantOfflineTransitionLaunchV4 launch = new(
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             operationId,
+            LongRunningOperationKinds.DataRetentionMutation,
+            nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
             CovenantExclusiveOperation.CovenantReset,
-            digest);
+            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
+            sourceGeneration,
+            targetGeneration,
+            new CovenantOfflineTransitionEpochsV1(11, 22, 33),
+            new CovenantOfflineTransitionEpochsV1(12, 23, 34),
+            StartingRevision: 0);
 
-        byte[] payload = CovenantRecoveryCheckpointCodec.Encode(
-            new DataRetentionMutationCheckpointV3(
-                DataRetentionMutationCheckpointV3.CurrentVersion,
-                "reset-memory",
-                ((int)MemoryResetScope.Covenant).ToString(
-                    System.Globalization.CultureInfo.InvariantCulture),
-                new CovenantResetEffectArmV1(
-                    operationId,
-                    CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
-                    owner.Operation,
-                    CovenantResetPhase.InventoryPrepared)));
+        Result<CovenantExclusiveRecoveryOwner> owner =
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(launch);
 
+        Assert.True(owner.IsSuccess, owner.Error.Message);
+
+        return await PersistLaunchAsync(
+            passphraseSource,
+            owner.Value,
+            operationId,
+            LongRunningOperationKinds.DataRetentionMutation,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
+            CovenantRecoveryCheckpointCodec.Encode(launch));
+    }
+
+    /// <summary>
+    /// Writes the other launch shape the stopped-host CLI may adopt: an interrupted healthy-catalog
+    /// factory erasure that committed its immutable launch before publishing the first journal.
+    /// </summary>
+    private static async Task<CovenantExclusiveRecoveryOwner> SeedCurrentFactoryErasureAsync(
+        IGrimoireDbPassphraseSource passphraseSource)
+    {
+        Guid operationId = Guid.NewGuid();
+
+        CovenantDigest digest = CovenantOperationGateFixture.Digest(29);
+
+        Guid sourceGeneration = Guid.NewGuid();
+
+        Guid targetGeneration = Guid.NewGuid();
+
+        DataRetentionFactoryTransitionLaunchV2 launch = new(
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            operationId,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(digest),
+            sourceGeneration,
+            targetGeneration,
+            new CovenantOfflineTransitionEpochsV1(31, 41, 51),
+            new CovenantOfflineTransitionEpochsV1(32, 42, 52),
+            StartingRevision: 0);
+
+        Result<CovenantExclusiveRecoveryOwner> owner =
+            CovenantRecoveryCheckpointCodec.RecoveryOwner(launch);
+
+        Assert.True(owner.IsSuccess, owner.Error.Message);
+
+        return await PersistLaunchAsync(
+            passphraseSource,
+            owner.Value,
+            operationId,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            CovenantRecoveryCheckpointCodec.Encode(launch));
+    }
+
+    private static async Task<CovenantExclusiveRecoveryOwner> PersistLaunchAsync(
+        IGrimoireDbPassphraseSource passphraseSource,
+        CovenantExclusiveRecoveryOwner owner,
+        Guid operationId,
+        string kind,
+        LongRunningOperationRecoveryPolicy policy,
+        int checkpointVersion,
+        byte[] payload)
+    {
         string connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = ArcanumPaths.GrimoireDatabaseFile,
@@ -840,13 +928,13 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         _ = command.Parameters.AddWithValue("@id", operationId.ToString("N"));
 
-        _ = command.Parameters.AddWithValue("@kind", LongRunningOperationKinds.DataRetentionMutation);
+        _ = command.Parameters.AddWithValue("@kind", kind);
 
         _ = command.Parameters.AddWithValue("@state", (int)LongRunningOperationState.Running);
 
         _ = command.Parameters.AddWithValue(
             "@policy",
-            (int)LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
+            (int)policy);
 
         _ = command.Parameters.AddWithValue("@created", DateTimeOffset.UtcNow.ToString("O"));
 
@@ -854,34 +942,30 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         _ = command.Parameters.AddWithValue(
             "@version",
-            DataRetentionMutationCheckpointV3.CurrentVersion);
+            checkpointVersion);
 
         _ = command.Parameters.AddWithValue("@payload", payload);
 
         _ = command.Parameters.AddWithValue(
             "@reference",
             CovenantResetCheckpointInitiator.CheckpointReference(
-                LongRunningOperationKinds.DataRetentionMutation,
+                kind,
                 operationId));
 
         _ = await command.ExecuteNonQueryAsync();
 
         return owner;
-
     }
 
     private void SetEnvironment(string name, string value)
     {
-
         _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
-
     }
 
     private sealed class GatedSecretStore(string? apiKey, bool gateApiKeyRead) : ISecretStore
     {
-
         private readonly TaskCompletionSource _apiKeyReadStarted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -898,20 +982,16 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         public async Task<string?> GetApiKeyAsync()
         {
-
             Interlocked.Increment(ref _apiKeyReadCount);
 
             _apiKeyReadStarted.TrySetResult();
 
             if (gateApiKeyRead)
             {
-
                 await _releaseApiKeyRead.Task.ConfigureAwait(false);
-
             }
 
             return apiKey;
-
         }
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -927,22 +1007,18 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
-
             _encryptionSecret = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
 
         public void ReleaseApiKeyRead() => _releaseApiKeyRead.TrySetResult();
-
     }
 
     private sealed class FakeStartupProbe(
         ActiveInstallationReset? activeReset = null,
         Error? probeError = null) : IInstallationStartupProbe
     {
-
         private int _readCount;
 
         public int ReadCount => Volatile.Read(ref _readCount);
@@ -950,34 +1026,27 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken = default)
         {
-
             Interlocked.Increment(ref _readCount);
 
             return Task.FromResult(
                 probeError is null
                     ? Result<ActiveInstallationReset?>.Success(activeReset)
                     : Result<ActiveInstallationReset?>.Failure(probeError.Value));
-
         }
 
         public Result<bool> IsFreshInstallation() => Result<bool>.Success(false);
-
     }
 
     private sealed class ClearClientMutationEvidenceProbe :
         IClientMutationEvidenceProbe
     {
-
         public Task<ClientMutationEvidenceResult> InspectAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(ClientMutationEvidenceResult.Clear());
-
         }
-
     }
 
     private sealed class TestOperationException : Exception;
@@ -986,93 +1055,70 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         IServiceScopeFactory inner,
         Action mutateOnce) : IServiceScopeFactory
     {
-
         private int _mutated;
 
         public IServiceScope CreateScope()
         {
-
             IServiceScope scope = inner.CreateScope();
 
             return Interlocked.Exchange(ref _mutated, 1) == 0
                 ? new MutatingScope(scope, mutateOnce)
                 : scope;
-
         }
 
         private sealed class MutatingScope(
             IServiceScope innerScope,
             Action mutate) : IServiceScope, IAsyncDisposable
         {
-
             private int _disposed;
 
             public IServiceProvider ServiceProvider => innerScope.ServiceProvider;
 
             public void Dispose()
             {
-
                 if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 {
-
                     return;
-
                 }
 
                 innerScope.Dispose();
 
                 mutate();
-
             }
 
             public async ValueTask DisposeAsync()
             {
-
                 if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 {
-
                     return;
-
                 }
 
                 if (innerScope is IAsyncDisposable asyncDisposable)
                 {
-
                     await asyncDisposable.DisposeAsync().ConfigureAwait(false);
-
                 }
                 else
                 {
-
                     innerScope.Dispose();
-
                 }
 
                 mutate();
-
             }
-
         }
-
     }
 
     private sealed class CountingScopeFactory(
         IServiceScopeFactory inner) : IServiceScopeFactory
     {
-
         private int _createCount;
 
         public int CreateCount => Volatile.Read(ref _createCount);
 
         public IServiceScope CreateScope()
         {
-
             Interlocked.Increment(ref _createCount);
 
             return inner.CreateScope();
-
         }
-
     }
-
 }

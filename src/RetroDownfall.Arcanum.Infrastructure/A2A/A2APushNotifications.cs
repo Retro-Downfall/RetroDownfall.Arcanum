@@ -12,6 +12,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.A2A;
@@ -21,10 +22,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// </summary>
 public static class A2APushNotificationHeaders
 {
-
     /// <summary>Per-task shared secret minted by whichever side registered the callback.</summary>
     public const string NotificationToken = "X-A2A-Notification-Token";
-
 }
 
 /// <summary>
@@ -40,9 +39,9 @@ public static class A2APushNotificationHeaders
 /// </remarks>
 public sealed class A2APushNotificationRegistry(
     IOptionsMonitor<ArcanumSettings> options,
+    IDnsResolver dnsResolver,
     ILogger<A2APushNotificationRegistry> logger)
 {
-
     /// <summary>
     /// Bound on remembered callbacks. Keys come from peer-supplied task ids, so this is a memory guard
     /// on a derived index rather than a limit on how many Sendings may be in flight; the oldest
@@ -67,40 +66,37 @@ public sealed class A2APushNotificationRegistry(
         PushNotificationConfig? config,
         CancellationToken cancellationToken = default)
     {
-
         if (!Enabled)
         {
-
             return Result<PushNotificationConfig>.Failure(new Error(
                 ErrorCodes.Sending.PushNotificationsDisabled,
                 "Push notifications are not enabled on this Arcanum instance "
                 + "(Arcanum:Integrations:A2A:PushNotifications)."));
-
         }
 
         if (string.IsNullOrWhiteSpace(taskId) || config is null || string.IsNullOrWhiteSpace(config.Url))
         {
-
             return Result<PushNotificationConfig>.Failure(new Error(
                 ErrorCodes.Sending.PushNotificationRejected,
                 "A push-notification config requires a task id and an absolute callback URL."));
-
         }
 
         ConclaveA2ASettings a2a = options.CurrentValue.ResolveA2A();
 
-        Result allowed = await ValidateCallbackUrlAsync(config.Url!, a2a, cancellationToken).ConfigureAwait(false);
+        Result allowed = await ValidateCallbackUrlAsync(
+            config.Url!,
+            a2a,
+            dnsResolver,
+            cancellationToken).ConfigureAwait(false);
 
         if (allowed.IsFailure)
         {
-
             logger.LogWarning(
                 "A2A: refusing a peer push-notification callback for task {TaskId}: {Reason}",
                 taskId,
                 allowed.Error.Message);
 
             return Result<PushNotificationConfig>.Failure(allowed.Error);
-
         }
 
         PushNotificationConfig stored = new()
@@ -116,7 +112,6 @@ public sealed class A2APushNotificationRegistry(
         Evict();
 
         return Result<PushNotificationConfig>.Success(stored);
-
     }
 
     /// <summary>The callback registered for a task, or <c>null</c> when the peer registered none.</summary>
@@ -136,32 +131,28 @@ public sealed class A2APushNotificationRegistry(
     public static async Task<Result> ValidateCallbackUrlAsync(
         string url,
         ConclaveA2ASettings a2a,
+        IDnsResolver dnsResolver,
         CancellationToken cancellationToken)
     {
-
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
             || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Sending.PushNotificationRejected,
                 "A push-notification callback URL must be an absolute http(s) URL."));
-
         }
 
         string[] allowlist = a2a.AllowedRemoteAgents ?? [];
 
         if (allowlist.Length > 0 && !IsAllowed(parsed, allowlist))
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Sending.AgentNotAllowed,
                 "The push-notification callback URL is not in the configured AllowedRemoteAgents allowlist."));
-
         }
 
         Result guard = await OutboundUrlGuard
-            .ValidateUntrustedUrlAsync(parsed.ToString(), cancellationToken)
+            .ValidateUntrustedUrlAsync(parsed.ToString(), dnsResolver, cancellationToken)
             .ConfigureAwait(false);
 
         return guard.IsFailure
@@ -169,15 +160,12 @@ public sealed class A2APushNotificationRegistry(
                 ErrorCodes.Sending.PushNotificationRejected,
                 $"The push-notification callback URL was rejected by outbound URL policy: {guard.Error.Message}"))
             : Result.Success();
-
     }
 
     private static bool IsAllowed(Uri target, string[] allowlist)
     {
-
         foreach (string entry in allowlist)
         {
-
             if (!string.IsNullOrWhiteSpace(entry)
                 && Uri.TryCreate(entry.Trim(), UriKind.Absolute, out Uri? allowed)
                 && string.Equals(
@@ -185,38 +173,27 @@ public sealed class A2APushNotificationRegistry(
                     target.GetLeftPart(UriPartial.Authority),
                     StringComparison.OrdinalIgnoreCase))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     private void Evict()
     {
-
         while (_byTask.Count > MaxRegistrations)
         {
-
             KeyValuePair<string, Registration> oldest = _byTask
                 .OrderBy(static entry => entry.Value.Sequence)
                 .FirstOrDefault();
 
             if (oldest.Key is null || !_byTask.TryRemove(oldest.Key, out _))
             {
-
                 return;
-
             }
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -230,9 +207,9 @@ public sealed class A2APushNotificationRegistry(
 public sealed class A2APushNotificationDispatcher(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> options,
+    IDnsResolver dnsResolver,
     ILogger<A2APushNotificationDispatcher> logger)
 {
-
     /// <summary>Bound on one notification POST. A slow callback must not stall the Chronicle relay.</summary>
     private static readonly TimeSpan DeliveryTimeout = TimeSpan.FromSeconds(15);
 
@@ -242,35 +219,33 @@ public sealed class A2APushNotificationDispatcher(
         string state,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(config);
 
         if (string.IsNullOrWhiteSpace(config.Url))
         {
-
             return;
-
         }
 
         try
         {
-
             // Re-checked at delivery time, not only at registration: the allowlist and DNS can both
             // change between a peer registering a callback and a long Sending reaching a terminal state.
             Result allowed = await A2APushNotificationRegistry
-                .ValidateCallbackUrlAsync(config.Url!, options.CurrentValue.ResolveA2A(), cancellationToken)
+                .ValidateCallbackUrlAsync(
+                    config.Url!,
+                    options.CurrentValue.ResolveA2A(),
+                    dnsResolver,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             if (allowed.IsFailure)
             {
-
                 logger.LogWarning(
                     "A2A: not delivering a push notification for task {TaskId}: {Reason}",
                     taskId,
                     allowed.Error.Message);
 
                 return;
-
             }
 
             using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -290,18 +265,14 @@ public sealed class A2APushNotificationDispatcher(
 
             if (!string.IsNullOrWhiteSpace(config.Token))
             {
-
                 request.Headers.TryAddWithoutValidation(
                     A2APushNotificationHeaders.NotificationToken,
                     config.Token);
-
             }
 
             if (config.Authentication is { Scheme.Length: > 0 } auth)
             {
-
                 request.Headers.Authorization = new AuthenticationHeaderValue(auth.Scheme, auth.Credentials);
-
             }
 
             using HttpResponseMessage response = await client
@@ -310,24 +281,17 @@ public sealed class A2APushNotificationDispatcher(
 
             if (!response.IsSuccessStatusCode)
             {
-
                 logger.LogInformation(
                     "A2A: push notification for task {TaskId} was answered {StatusCode}.",
                     taskId,
                     (int)response.StatusCode);
-
             }
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-
             logger.LogInformation(ex, "A2A: could not deliver a push notification for task {TaskId}.", taskId);
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -340,11 +304,9 @@ public sealed class A2APushNotificationDispatcher(
 /// </remarks>
 public sealed record A2APushNotificationPayload
 {
-
     public string TaskId { get; init; } = string.Empty;
 
     public string State { get; init; } = string.Empty;
-
 }
 
 /// <summary>Source-generated contract so push-notification delivery stays Native AOT-safe.</summary>
@@ -364,13 +326,11 @@ internal sealed partial class A2APushNotificationJsonContext : JsonSerializerCon
 /// </remarks>
 public static class A2ACallbackConfigId
 {
-
     /// <summary>Mints the id a peer posts its notifications back to.</summary>
     public static string Mint() => Guid.NewGuid().ToString("N");
 
     /// <summary>Whether <paramref name="configId"/> has the shape <see cref="Mint"/> produces.</summary>
     public static bool IsWellFormed(string? configId) => Guid.TryParseExact(configId, "N", out _);
-
 }
 
 /// <summary>
@@ -383,7 +343,6 @@ public static class A2ACallbackConfigId
 /// </remarks>
 public static class A2ACallbackToken
 {
-
     /// <summary>Mints a 256-bit callback secret.</summary>
     public static string Mint() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
 
@@ -394,18 +353,13 @@ public static class A2ACallbackToken
     /// <summary>Constant-time check of a presented token against a stored digest.</summary>
     public static bool Matches(string? presented, string? expectedHash)
     {
-
         if (string.IsNullOrEmpty(presented) || string.IsNullOrEmpty(expectedHash))
         {
-
             return false;
-
         }
 
         return CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(Hash(presented)),
             Encoding.UTF8.GetBytes(expectedHash));
-
     }
-
 }

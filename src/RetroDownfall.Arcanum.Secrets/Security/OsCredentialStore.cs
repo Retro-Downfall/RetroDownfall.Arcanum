@@ -10,9 +10,10 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 /// and answering the weaker question makes a save throw on precisely the headless hosts §11.2 item 4
 /// promises the mirror still serves.
 /// </remarks>
-public sealed class OsCredentialStore : IOsCredentialStore
+public sealed class OsCredentialStore :
+    IOsCredentialStore,
+    IOsCredentialPresenceProbe
 {
-
     private const int Unknown = 0;
 
     private const int Reachable = 1;
@@ -25,17 +26,13 @@ public sealed class OsCredentialStore : IOsCredentialStore
 
     public OsCredentialStore()
     {
-
         _inner = CreatePlatformStore();
-
     }
 
     /// <summary>Test seam: wrap an arbitrary store (e.g. <see cref="InMemoryOsCredentialStore"/>).</summary>
     public OsCredentialStore(IOsCredentialStore inner)
     {
-
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
-
     }
 
     /// <summary>True when a credential backend answers this process.</summary>
@@ -51,22 +48,33 @@ public sealed class OsCredentialStore : IOsCredentialStore
     /// </remarks>
     public bool IsAvailable
     {
-
         get
         {
-
             int observed = Volatile.Read(ref _observed);
 
             return observed == Unknown
                 ? _inner.IsAvailable
                 : observed == Reachable;
-
         }
-
     }
 
     public OsCredentialStoreResult TryGet(string service, string account) =>
         Observe(_inner.TryGet(service, account));
+
+    public OsCredentialStoreStatus ProbePresence(string service, string account)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(service);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(account);
+
+        OsCredentialStoreStatus status = _inner is IOsCredentialPresenceProbe probe
+            ? probe.ProbePresence(service, account)
+            : OsCredentialStoreStatus.Failed;
+
+        Volatile.Write(ref _observed, Evidence(status));
+
+        return status;
+    }
 
     public OsCredentialStoreResult Set(string service, string account, string secret) =>
         Observe(_inner.Set(service, account, secret));
@@ -77,111 +85,104 @@ public sealed class OsCredentialStore : IOsCredentialStore
     /// <summary>Records what one completed operation proved about the backend's reachability.</summary>
     private OsCredentialStoreResult Observe(OsCredentialStoreResult result)
     {
-
         Volatile.Write(ref _observed, Evidence(result.Status));
 
         return result;
-
     }
 
     private static int Evidence(OsCredentialStoreStatus status)
     {
-
         if (status == OsCredentialStoreStatus.Unavailable)
         {
-
             return Unreachable;
-
         }
 
         if (status == OsCredentialStoreStatus.Failed)
         {
-
             return Unknown;
-
         }
 
         return Reachable;
-
     }
 
     private static IOsCredentialStore CreatePlatformStore()
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             // Credential Manager is part of the OS and has no separate service to reach; a locked or
             // policy-restricted store surfaces per call as a status the callers already handle.
             return new PlatformOsCredentialStore(
                 reachable: static () => true,
+                probePresence: WindowsOsCredentialStore.ProbePresence,
                 get: WindowsOsCredentialStore.TryGet,
                 set: WindowsOsCredentialStore.Set,
                 delete: WindowsOsCredentialStore.Delete);
-
         }
 
         if (OperatingSystem.IsMacOS())
         {
-
             // Security.framework ships with the OS for the same reason, and a locked keychain is
             // likewise a per-call status rather than an absent backend.
             return new PlatformOsCredentialStore(
                 reachable: static () => true,
+                probePresence: MacOsCredentialStore.ProbePresence,
                 get: MacOsCredentialStore.TryGet,
                 set: MacOsCredentialStore.Set,
                 delete: MacOsCredentialStore.Delete);
-
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             if (!LinuxOsCredentialStore.ProbeAvailable())
             {
-
                 return new UnavailableOsCredentialStore(
                     "Linux Secret Service is unavailable (install libsecret-1 and ensure a keyring daemon is running).");
-
             }
 
             // The only platform whose backend is a separate service that may simply not be there, so
             // the only one whose reachability has to be asked rather than assumed.
             return new PlatformOsCredentialStore(
                 reachable: LinuxOsCredentialStore.ProbeReachable,
+                probePresence: static (_, _) => OsCredentialStoreStatus.Failed,
                 get: LinuxOsCredentialStore.TryGet,
                 set: LinuxOsCredentialStore.Set,
                 delete: LinuxOsCredentialStore.Delete);
-
         }
 
         return new UnavailableOsCredentialStore("OS credential store is not supported on this platform.");
-
     }
 
     private sealed class PlatformOsCredentialStore(
         Func<bool> reachable,
+        Func<string, string, OsCredentialStoreStatus> probePresence,
         Func<string, string, OsCredentialStoreResult> get,
         Func<string, string, string, OsCredentialStoreResult> set,
-        Func<string, string, OsCredentialStoreResult> delete) : IOsCredentialStore
+        Func<string, string, OsCredentialStoreResult> delete) :
+        IOsCredentialStore,
+        IOsCredentialPresenceProbe
     {
-
         public bool IsAvailable => reachable();
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(service);
+
+            ArgumentException.ThrowIfNullOrWhiteSpace(account);
+
+            return probePresence(service, account);
+        }
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
             ArgumentException.ThrowIfNullOrWhiteSpace(account);
 
             return get(service, account);
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
             ArgumentException.ThrowIfNullOrWhiteSpace(account);
@@ -189,26 +190,32 @@ public sealed class OsCredentialStore : IOsCredentialStore
             ArgumentNullException.ThrowIfNull(secret);
 
             return set(service, account, secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account)
         {
-
             ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
             ArgumentException.ThrowIfNullOrWhiteSpace(account);
 
             return delete(service, account);
-
         }
-
     }
 
-    private sealed class UnavailableOsCredentialStore(string message) : IOsCredentialStore
+    private sealed class UnavailableOsCredentialStore(string message) :
+        IOsCredentialStore,
+        IOsCredentialPresenceProbe
     {
-
         public bool IsAvailable => false;
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(service);
+
+            ArgumentException.ThrowIfNullOrWhiteSpace(account);
+
+            return OsCredentialStoreStatus.Unavailable;
+        }
 
         public OsCredentialStoreResult TryGet(string service, string account) =>
             OsCredentialStoreResult.Unavailable(message);
@@ -218,7 +225,5 @@ public sealed class OsCredentialStore : IOsCredentialStore
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Unavailable(message);
-
     }
-
 }

@@ -41,7 +41,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class MemorySagaCurationCommandTests
 {
-
     private const string MemoryId = "m-1";
 
     private const string StoredContent = "the operator prefers tabs";
@@ -60,7 +59,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Show_renders_the_lifecycle_and_the_eligibility_reason()
     {
-
         RecordingHandler handler = new()
         {
             Detail = Detail(retiredAtUtc: DateTimeOffset.UnixEpoch, eligibility: SagaRetrievalEligibility.Retired),
@@ -75,7 +73,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Contains("Retrieval:    Retired", result.Output, StringComparison.Ordinal);
 
         Assert.Contains(StoredContent, result.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -89,7 +86,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Show_prints_the_content_hash_the_write_verbs_require()
     {
-
         RecordingHandler handler = new() { Detail = Detail() };
 
         CliTestResult result = await RunAsync(handler, ["memory", "saga", "show", MemoryId]);
@@ -104,13 +100,11 @@ public sealed class MemorySagaCurationCommandTests
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory(StoredContent)));
 
         Assert.Contains($"Content hash: {ServerContentHash}", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Show_names_the_memory_the_host_could_not_find()
     {
-
         RecordingHandler handler = new()
         {
             Failure = (HttpStatusCode.NotFound, new Error(ErrorCodes.Saga.NotFound, "No Saga memory exists with that identity.")),
@@ -121,7 +115,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
 
         Assert.Contains("No Saga memory exists with that identity.", result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -132,7 +125,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Correct_reads_the_replacement_text_from_piped_standard_input()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(
@@ -153,7 +145,6 @@ public sealed class MemorySagaCurationCommandTests
             $"\"expectedContentHash\":\"{ServerContentHash}\"",
             handler.Bodies[0],
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     /// <summary>
@@ -166,7 +157,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task A_missing_replacement_file_is_refused_before_the_operator_is_asked()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         string absent = Path.Combine(Path.GetTempPath(), $"arcanum-saga-absent-{Guid.NewGuid():N}.txt");
@@ -190,7 +180,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains(absent, result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -212,7 +201,6 @@ public sealed class MemorySagaCurationCommandTests
     public async Task A_replacement_file_holding_nothing_is_refused_because_a_path_cannot_say_it_was_meant(
         string contents)
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunCorrectAsync(handler, contents);
@@ -229,13 +217,11 @@ public sealed class MemorySagaCurationCommandTests
 
         // And an operator who meant blank text is told where it is accepted rather than left guessing.
         Assert.Contains("/api/memory/saga", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Correct_reports_the_memory_whose_text_it_replaced()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunCorrectAsync(handler, "a better sentence");
@@ -257,7 +243,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.DoesNotContain("Unchanged", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("No other memory store was touched.", result.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -267,7 +252,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Correcting_to_the_text_already_stored_says_so_rather_than_claiming_a_change()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Unchanged };
 
         CliTestResult result = await RunCorrectAsync(handler, StoredContent);
@@ -280,7 +264,6 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Corrected Saga memory", result.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -290,7 +273,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Correcting_a_retired_memory_is_refused_with_the_hosts_own_remedy()
     {
-
         RecordingHandler handler = new()
         {
             Failure = (
@@ -308,13 +290,11 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Corrected Saga memory", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Retire_reports_the_memory_it_took_out_of_retrieval()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(
@@ -335,7 +315,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Contains($"Retired Saga memory '{MemoryId}'.", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Already", result.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -349,7 +328,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Retiring_a_memory_that_is_already_retired_succeeds_and_says_it_was_already_retired()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.AlreadyRetired };
 
         CliTestResult result = await RunAsync(
@@ -364,13 +342,11 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Retired Saga memory", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Retire_asks_before_it_acts_and_does_nothing_when_the_operator_declines()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(
@@ -384,7 +360,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("cancelled", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     /// <summary>
@@ -397,7 +372,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task A_retirement_without_the_hash_it_names_never_reaches_a_route()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(handler, ["memory", "saga", "retire", MemoryId]);
@@ -410,13 +384,11 @@ public sealed class MemorySagaCurationCommandTests
             "--expected-content-hash",
             result.Output + result.Error,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Reinstate_reports_the_memory_it_put_back_into_retrieval()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(
@@ -435,7 +407,6 @@ public sealed class MemorySagaCurationCommandTests
         Assert.Contains($"Reinstated Saga memory '{MemoryId}'.", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Not retired", result.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -444,7 +415,6 @@ public sealed class MemorySagaCurationCommandTests
     [Fact]
     public async Task Reinstating_a_memory_that_was_never_retired_succeeds_and_says_it_was_not_retired()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.NotRetired };
 
         CliTestResult result = await RunAsync(
@@ -459,13 +429,11 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Reinstated Saga memory", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Pin_reports_the_memory_retention_will_now_keep()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(handler, ["memory", "saga", "pin", MemoryId, "--yes"]);
@@ -483,13 +451,11 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Unpinned", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Pinning_a_memory_the_host_cannot_find_fails_rather_than_reporting_a_pin()
     {
-
         RecordingHandler handler = new()
         {
             Failure = (HttpStatusCode.NotFound, new Error(ErrorCodes.Saga.NotFound, "No Saga memory exists with that identity.")),
@@ -502,13 +468,11 @@ public sealed class MemorySagaCurationCommandTests
         Assert.DoesNotContain("Pinned Saga memory", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("No Saga memory exists with that identity.", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Unpin_reports_the_memory_retention_may_prune_again()
     {
-
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(handler, ["memory", "saga", "unpin", MemoryId, "--yes"]);
@@ -525,13 +489,11 @@ public sealed class MemorySagaCurationCommandTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Retention will not prune it", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Every_curation_verb_is_registered_under_memory_saga()
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -544,29 +506,22 @@ public sealed class MemorySagaCurationCommandTests
 
         foreach (string verb in new[] { "show", "correct", "retire", "reinstate", "pin", "unpin" })
         {
-
             Assert.NotNull(Descend(root, "memory", "saga", verb));
-
         }
-
     }
 
     private static Command Descend(Command root, params string[] path)
     {
-
         Command current = root;
 
         foreach (string name in path)
         {
-
             current = Assert.Single(
                 current.Subcommands,
                 candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
-
         }
 
         return current;
-
     }
 
     /// <summary>
@@ -575,14 +530,12 @@ public sealed class MemorySagaCurationCommandTests
     /// </summary>
     private static async Task<CliTestResult> RunCorrectAsync(RecordingHandler handler, string replacement)
     {
-
         string path = Path.Combine(Path.GetTempPath(), $"arcanum-saga-{Guid.NewGuid():N}.txt");
 
         await File.WriteAllTextAsync(path, replacement);
 
         try
         {
-
             return await RunAsync(
                 handler,
                 [
@@ -596,15 +549,11 @@ public sealed class MemorySagaCurationCommandTests
                     path,
                     "--yes",
                 ]);
-
         }
         finally
         {
-
             File.Delete(path);
-
         }
-
     }
 
     private static Task<CliTestResult> RunAsync(
@@ -613,7 +562,6 @@ public sealed class MemorySagaCurationCommandTests
         string? input = null,
         bool? confirm = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -628,17 +576,18 @@ public sealed class MemorySagaCurationCommandTests
 
         services.AddSingleton<ISecretStore>(new FixedSecretStore());
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "arc_test_0123456789abcdef0123456789abcdef");
+
         if (confirm is { } answer)
         {
-
             services.RemoveAll<IConfirmationPrompt>();
 
             services.AddSingleton<IConfirmationPrompt>(new FixedConfirmation(answer));
-
         }
 
         return CliTestHarness.RunAsync(services, args, input);
-
     }
 
     private static SagaMemoryDetail Detail(
@@ -661,15 +610,12 @@ public sealed class MemorySagaCurationCommandTests
 
     private sealed class FixedConfirmation(bool answer) : IConfirmationPrompt
     {
-
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken) =>
             Task.FromResult(answer);
-
     }
 
     private sealed class FixedSecretStore : ISecretStore
     {
-
         private const string Key = "arc_test_0123456789abcdef0123456789abcdef";
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(Key);
@@ -682,19 +628,16 @@ public sealed class MemorySagaCurationCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class SingleHandlerFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-                BaseAddress = new Uri("http://127.0.0.1:9/"),
+                BaseAddress = new Uri("http://localhost:5001/"),
                 Timeout = Timeout.InfiniteTimeSpan,
             };
-
     }
 
     /// <summary>
@@ -706,7 +649,6 @@ public sealed class MemorySagaCurationCommandTests
     /// </remarks>
     private sealed class RecordingHandler : HttpMessageHandler
     {
-
         internal List<string> Requests { get; } = [];
 
         internal List<string> Bodies { get; } = [];
@@ -721,7 +663,6 @@ public sealed class MemorySagaCurationCommandTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
 
             Bodies.Add(request.Content is null
@@ -732,7 +673,6 @@ public sealed class MemorySagaCurationCommandTests
 
             if (Failure is { } failure)
             {
-
                 return isDetailRoute
                     ? Json(
                         failure.Status,
@@ -742,7 +682,6 @@ public sealed class MemorySagaCurationCommandTests
                         failure.Status,
                         new ApiResponse<SagaCurationResult>(null, false, failure.Error),
                         ArcanumJsonContext.Default.ApiResponseSagaCurationResult);
-
             }
 
             SagaMemoryDetail detail = Detail ?? MemorySagaCurationCommandTests.Detail();
@@ -756,7 +695,6 @@ public sealed class MemorySagaCurationCommandTests
                     HttpStatusCode.OK,
                     new ApiResponse<SagaCurationResult>(new SagaCurationResult(Outcome, detail), true, null),
                     ArcanumJsonContext.Default.ApiResponseSagaCurationResult);
-
         }
 
         private static HttpResponseMessage Json<T>(
@@ -767,7 +705,5 @@ public sealed class MemorySagaCurationCommandTests
             {
                 Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo)),
             };
-
     }
-
 }

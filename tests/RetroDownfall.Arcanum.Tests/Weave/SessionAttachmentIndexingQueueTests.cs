@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -16,17 +18,13 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentIndexingQueueTests
 {
-
     [Fact]
 
     public void TryEnqueue_WhenAutomaticQueueIsTemporarilyFull_ReturnsFalseWithoutThrowing()
     {
-
         ArcanumSettings settings = new()
         {
-
             Features = new FeatureSettings { AttachmentRetrieval = true },
-
         };
 
         IServiceScopeFactory scopes = new ServiceCollection()
@@ -36,17 +34,16 @@ public sealed class SessionAttachmentIndexingQueueTests
         SessionAttachmentIndexingService service = new(
             scopes,
             new TestOptionsMonitor<ArcanumSettings>(settings),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            TimeProvider.System,
             NullLogger<SessionAttachmentIndexingService>.Instance);
 
         for (int index = 0; index < ArcanumRuntimeDefaults.Embeddings.Attachments.QueueCapacity; index++)
         {
-
             Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), Guid.NewGuid())));
-
         }
 
         Assert.False(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), Guid.NewGuid())));
-
     }
 
     [Theory]
@@ -59,8 +56,8 @@ public sealed class SessionAttachmentIndexingQueueTests
 
     public void AutomaticRetry_HasNoAttemptCeiling(int attempt, int expectedNextAttempt)
     {
-
         SessionAttachmentIndexOutcome outcome = new(
+            SessionAttachmentIndexDisposition.Concluded,
             SessionAttachmentIndexStatus.Failed,
             ShouldRetry: true);
 
@@ -72,24 +69,20 @@ public sealed class SessionAttachmentIndexingQueueTests
         Assert.Equal(
             expectedNextAttempt,
             SessionAttachmentIndexingService.NextAttempt(attempt));
-
     }
 
     [Fact]
 
     public async Task WaitForWork_KeepsOneChannelWaiterAliveAcrossIdleReconciliationPeriods()
     {
-
         Channel<SessionAttachmentIndexRequest> channel = Channel.CreateBounded<SessionAttachmentIndexRequest>(
             new BoundedChannelOptions(8)
             {
-
                 FullMode = BoundedChannelFullMode.Wait,
 
                 SingleReader = true,
 
                 SingleWriter = false,
-
             });
 
         SessionAttachmentIndexingService.QueueWait wait = new();
@@ -98,7 +91,6 @@ public sealed class SessionAttachmentIndexingQueueTests
 
         for (int period = 0; period < 5; period++)
         {
-
             Assert.Equal(
                 SessionAttachmentIndexingService.QueueSignal.ReconciliationDue,
                 await SessionAttachmentIndexingService.WaitForWorkAsync(
@@ -113,7 +105,6 @@ public sealed class SessionAttachmentIndexingQueueTests
             // write drains it — cancelling it does not unlink it — so issuing a fresh one every
             // reconciliation period grows that list without bound on a host nobody attaches files to.
             Assert.Same(issued, wait.PendingRead);
-
         }
 
         Assert.True(channel.Writer.TryWrite(new SessionAttachmentIndexRequest(Guid.NewGuid(), Guid.NewGuid())));
@@ -128,19 +119,51 @@ public sealed class SessionAttachmentIndexingQueueTests
 
         // The consumed waiter must not be reused: its next await would return the stale answer.
         Assert.Null(wait.PendingRead);
+    }
 
+    [Fact]
+    public async Task ObserveQueueWaitCompletion_JoinsBothRetainedRaceParticipants()
+    {
+        TaskCompletionSource<bool> read = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource period = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SessionAttachmentIndexingService.QueueWait wait = new()
+        {
+            PendingRead = read.Task,
+            PendingPeriod = period.Task,
+        };
+
+        Task observation =
+            SessionAttachmentIndexingService.ObserveQueueWaitCompletionAsync(wait);
+
+        Assert.False(observation.IsCompleted);
+
+        read.SetResult(true);
+
+        Assert.False(observation.IsCompleted);
+
+        period.SetResult();
+
+        await observation;
+
+        Assert.Null(wait.PendingRead);
+
+        Assert.Null(wait.PendingPeriod);
     }
 
     [Fact]
 
     public void AutomaticRetry_StopsWhenServiceIsCancelled()
     {
-
         using CancellationTokenSource cancellation = new();
 
         cancellation.Cancel();
 
         SessionAttachmentIndexOutcome outcome = new(
+            SessionAttachmentIndexDisposition.Concluded,
             SessionAttachmentIndexStatus.Failed,
             ShouldRetry: true);
 
@@ -148,7 +171,5 @@ public sealed class SessionAttachmentIndexingQueueTests
             SessionAttachmentIndexingService.ShouldAutomaticallyRetry(
                 outcome,
                 cancellation.Token));
-
     }
-
 }

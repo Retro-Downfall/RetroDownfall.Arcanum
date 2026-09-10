@@ -1,17 +1,33 @@
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging.Abstractions;
+
 using CallToolResult = ModelContextProtocol.Protocol.CallToolResult;
+
 using RetroDownfall.Arcanum.Api.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Sanctum;
+
 using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+
 using RetroDownfall.Arcanum.Tests.Support;
+
 using System.Security.Cryptography;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
@@ -19,7 +35,6 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 [Collection("ProcessEnvironment")]
 public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
     private string? _originalDotnetEnvironment;
@@ -30,7 +45,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -63,12 +77,10 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
               }
             }
             """);
-
     }
 
     public async Task DisposeAsync()
     {
-
         global::System.Environment.SetEnvironmentVariable(
             "DOTNET_ENVIRONMENT",
             _originalDotnetEnvironment);
@@ -80,13 +92,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             _originalTestHome);
 
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
     public async Task GetAvailableToolsAsync_untrusted_workspace_does_not_register_local_servers()
     {
-
         await using McpConnectionManager manager = CreateManager(new UntrustedWorkspaceStore());
 
         await manager.GetAvailableToolsAsync(_workspace.Root);
@@ -94,13 +104,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         McpServerInfo? status = await manager.GetStatusAsync("untrusted-local", _workspace.Root);
 
         Assert.Null(status);
-
     }
 
     [Fact]
     public async Task RestartAsync_after_trust_revoke_returns_WorkspaceNotTrusted()
     {
-
         ToggleableTrustStore trust = new() { Trusted = true };
 
         await using McpConnectionManager manager = CreateManager(trust);
@@ -141,13 +149,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Equal("Mcp.WorkspaceNotTrusted", restart.Error.Code);
 
         Assert.Contains("trust-workspace", restart.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Workspace_admission_uses_digest_of_the_exact_bytes_parsed()
     {
-
         const string config =
             """
             {
@@ -174,13 +180,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Equal(expectedDigest, trust.LastAdmissionDigest);
 
         Assert.NotNull(await manager.GetStatusAsync("digest-bound", _workspace.Root));
-
     }
 
     [Fact]
     public async Task Read_then_trust_swap_cannot_authorize_previously_parsed_bytes()
     {
-
         const string configA =
             """
             {
@@ -229,13 +233,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Null(await manager.GetStatusAsync("config-a", _workspace.Root));
 
         Assert.Null(await manager.GetStatusAsync("config-b", _workspace.Root));
-
     }
 
     [Fact]
     public async Task Config_B_retires_same_name_config_A_and_removed_entries()
     {
-
         const string configA =
             """
             {
@@ -295,13 +297,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.True(removedStart.IsFailure);
 
         Assert.Equal(ErrorCodes.Mcp.ServerNotFound, removedStart.Error.Code);
-
     }
 
     [Fact]
     public async Task GetAllStatuses_reuses_one_workspace_trust_snapshot_for_all_entries()
     {
-
         string path = _workspace.WriteFile(
             "mcp.json",
             """
@@ -325,13 +325,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.Equal(2, statuses.Length);
         Assert.Equal(1, trust.SnapshotCalls);
-
     }
 
     [Fact]
     public async Task Workspace_surface_cache_is_reused_while_its_digest_remains_trusted()
     {
-
         string path = _workspace.WriteFile(
             "mcp.json",
             """
@@ -351,13 +349,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.Equal(1, trust.AdmissionCalls);
         Assert.Equal(1, trust.SnapshotCalls);
-
     }
 
     [Fact]
     public async Task Generation_move_during_a_workspace_build_leaves_internal_tools_callable()
     {
-
         string path = _workspace.WriteFile(
             "mcp.json",
             """
@@ -432,13 +428,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.NotNull(listed);
-
     }
 
     [Fact]
     public async Task Retiring_running_entry_releases_registry_lock_before_blocked_disposal()
     {
-
         const string configA =
             """
             {
@@ -491,7 +485,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         client.AllowDispose.TrySetResult();
 
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
-
     }
 
     [Fact]
@@ -857,7 +850,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
     [Fact]
     public async Task Start_resolved_before_retirement_cannot_restart_removed_entry()
     {
-
         const string configA =
             """
             {
@@ -912,13 +904,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Mcp.ServerNotFound, startResult.Error.Code);
 
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
-
     }
 
     [Fact]
     public async Task Oversized_workspace_config_retires_previously_registered_entries()
     {
-
         const string config =
             """
             {
@@ -953,13 +943,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.True(start.IsFailure);
 
         Assert.Equal(ErrorCodes.Mcp.ServerNotFound, start.Error.Code);
-
     }
 
     [Fact]
     public async Task Global_entries_do_not_require_workspace_source_digest()
     {
-
         ThrowingTrustStore trust = new();
 
         await using McpConnectionManager manager = CreateManager(trust);
@@ -984,13 +972,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.True(start.IsFailure);
 
         Assert.Equal("Mcp.SseNotSupported", start.Error.Code);
-
     }
 
     [Fact]
     public async Task TrustWorkspaceAsync_returns_sanitized_actionable_store_failure()
     {
-
         await using McpConnectionManager manager = CreateManager(new FailingTrustStore());
 
         Result result = await manager.TrustWorkspaceAsync(_workspace.Root);
@@ -1002,13 +988,11 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Contains("Remove it", result.Error.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain(_workspace.Root, result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task TrustWorkspaceAsync_preserves_cancellation()
     {
-
         await using McpConnectionManager manager = CreateManager(new CancelingTrustStore());
 
         using CancellationTokenSource canceled = new();
@@ -1017,12 +1001,10 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => manager.TrustWorkspaceAsync(_workspace.Root, canceled.Token));
-
     }
 
     private McpConnectionManager CreateManager(ITrustedMcpWorkspaceStore trustStore)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
@@ -1044,7 +1026,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        return new McpConnectionManager(
+        McpConnectionManager manager = new(
             NullLogger<McpConnectionManager>.Instance,
             humanPrompts,
             scopeFactory,
@@ -1054,11 +1036,14 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
+        manager.ConfigureGlobalAdmission(
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        return manager;
     }
 
     private sealed class UntrustedWorkspaceStore : ITrustedMcpWorkspaceStore
     {
-
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
 
@@ -1081,12 +1066,10 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class ToggleableTrustStore : ITrustedMcpWorkspaceStore
     {
-
         public bool Trusted { get; set; }
 
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
@@ -1119,12 +1102,10 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class DigestTrustStore : ITrustedMcpWorkspaceStore
     {
-
         public string ApprovedDigest { get; set; } = string.Empty;
 
         public string? LastAdmissionDigest { get; private set; }
@@ -1145,14 +1126,12 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string workspaceRootPath,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(string.Equals(
                 ComputeSha256Hex(Path.Combine(workspaceRootPath, "mcp.json")),
                 ApprovedDigest,
                 StringComparison.OrdinalIgnoreCase));
-
         }
 
         public Task<bool> IsTrustedAsync(
@@ -1160,7 +1139,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string sourceDigest,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             bool trusted = string.Equals(sourceDigest, ApprovedDigest, StringComparison.OrdinalIgnoreCase)
@@ -1170,7 +1148,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
                     StringComparison.OrdinalIgnoreCase);
 
             return Task.FromResult(trusted);
-
         }
 
         public async Task<bool> IsApprovedDigestAsync(
@@ -1178,7 +1155,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string sourceDigest,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             LastAdmissionDigest = sourceDigest;
@@ -1203,7 +1179,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
                 sourceDigest,
                 ApprovedDigest,
                 StringComparison.OrdinalIgnoreCase);
-
         }
 
         public async Task<TrustedMcpWorkspaceSnapshot> GetSnapshotAsync(
@@ -1239,20 +1214,16 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string workspaceRootPath,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             ApprovedDigest = ComputeSha256Hex(Path.Combine(workspaceRootPath, "mcp.json"));
 
             return Task.CompletedTask;
-
         }
-
     }
 
     private sealed class ThrowingTrustStore : ITrustedMcpWorkspaceStore
     {
-
         public Task<bool> IsTrustedAsync(
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
@@ -1279,12 +1250,10 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Global entries must not query workspace trust.");
-
     }
 
     private sealed class FailingTrustStore : ITrustedMcpWorkspaceStore
     {
-
         public Task<bool> IsTrustedAsync(
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
@@ -1312,12 +1281,10 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             throw new TrustedMcpWorkspaceStoreException(
                 "The MCP approval store is corrupt. Remove it and retry.");
-
     }
 
     private sealed class CancelingTrustStore : ITrustedMcpWorkspaceStore
     {
-
         public Task<bool> IsTrustedAsync(
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
@@ -1344,25 +1311,20 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string workspaceRootPath,
             CancellationToken cancellationToken = default) =>
             Task.FromCanceled(cancellationToken);
-
     }
 
     private static async Task<string> ComputeSha256HexAsync(string path)
     {
-
         byte[] bytes = await File.ReadAllBytesAsync(path);
 
         return Convert.ToHexString(SHA256.HashData(bytes));
-
     }
 
     private static string ComputeSha256Hex(string path)
     {
-
         byte[] bytes = File.ReadAllBytes(path);
 
         return Convert.ToHexString(SHA256.HashData(bytes));
-
     }
 
     private static async Task WaitUntilAsync(
@@ -1459,7 +1421,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -1496,19 +1457,15 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
 
         public IAsyncEnumerable<T> Subscribe<T>(CancellationToken cancellationToken) where T : notnull =>
             AsyncEnumerable.Empty<T>();
-
     }
-
 }

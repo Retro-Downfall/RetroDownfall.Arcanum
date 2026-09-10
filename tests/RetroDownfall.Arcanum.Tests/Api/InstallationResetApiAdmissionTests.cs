@@ -27,43 +27,69 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class InstallationResetApiAdmissionTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public InstallationResetApiAdmissionTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [Fact]
-    public void Production_routes_mark_only_health_quit_and_factory_replay_for_recovery_admission()
+    public void Production_routes_explicitly_classify_the_only_four_recovery_safe_calls()
     {
-
         _ = _factory.CreateAuthenticatedClient();
 
         EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
 
-        string[] admittedNames =
+        (string Name, string Method, bool Authenticated, bool GrimoireExempt)[] admitted =
         [
-            "GetHealth",
-            "QuitServer",
-            "FactoryResetDataRetention",
+            ("GetArcanumPresenceProof", "GET", false, true),
+            ("GetHealth", "GET", true, true),
+            ("QuitServer", "POST", true, true),
+            ("FactoryResetDataRetention", "POST", true, false),
         ];
 
-        foreach (string endpointName in admittedNames)
-        {
+        string[] classified =
+        [
+            .. endpoints.Endpoints
+                .Where(static endpoint => endpoint.Metadata
+                    .GetMetadata<InstallationResetRecoveryApiRouteMetadata>() is not null)
+                .Select(static endpoint => endpoint.Metadata
+                    .GetMetadata<IEndpointNameMetadata>()?.EndpointName ?? "<unnamed>")
+                .Order(StringComparer.Ordinal),
+        ];
 
+        Assert.Equal(
+            admitted.Select(static route => route.Name).Order(StringComparer.Ordinal),
+            classified);
+
+        foreach ((string name, string method, bool authenticated, bool grimoireExempt) in admitted)
+        {
             Endpoint endpoint = Assert.Single(endpoints.Endpoints, candidate =>
                 string.Equals(
                     candidate.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName,
-                    endpointName,
+                    name,
                     StringComparison.Ordinal));
 
-            Assert.NotNull(
-                endpoint.Metadata.GetMetadata<InstallationResetRecoveryApiRouteMetadata>());
+            InstallationResetRecoveryApiRouteMetadata recovery = Assert.IsType<
+                InstallationResetRecoveryApiRouteMetadata>(endpoint.Metadata.GetMetadata<
+                    InstallationResetRecoveryApiRouteMetadata>());
 
+            Assert.Equal(method, recovery.Method);
+
+            Assert.Equal(
+                authenticated,
+                endpoint.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is not null);
+
+            Assert.Equal(
+                grimoireExempt,
+                endpoint.Metadata.GetMetadata<GrimoireAdmissionExemptRouteMetadata>() is not null);
+
+            Assert.Null(
+                endpoint.Metadata.GetMetadata<InstallationResetRecoveryHiddenRouteMetadata>());
+
+            Assert.Null(
+                endpoint.Metadata.GetMetadata<InstallationResetRecoveryBlockedRouteMetadata>());
         }
 
         string[] blockedNames =
@@ -75,7 +101,6 @@ public sealed class InstallationResetApiAdmissionTests
 
         foreach (string endpointName in blockedNames)
         {
-
             Endpoint endpoint = Assert.Single(endpoints.Endpoints, candidate =>
                 string.Equals(
                     candidate.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName,
@@ -84,22 +109,18 @@ public sealed class InstallationResetApiAdmissionTests
 
             Assert.Null(
                 endpoint.Metadata.GetMetadata<InstallationResetRecoveryApiRouteMetadata>());
-
         }
-
     }
 
     [Fact]
     public void Every_mapped_application_route_is_covered_by_auth_recovery_or_hidden_recovery_admission()
     {
-
         _ = _factory.CreateAuthenticatedClient();
 
         EndpointDataSource endpoints = _factory.Services.GetRequiredService<EndpointDataSource>();
 
         foreach (RouteEndpoint endpoint in endpoints.Endpoints.OfType<RouteEndpoint>())
         {
-
             bool authenticated = endpoint.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is not null;
 
             bool hidden = endpoint.Metadata
@@ -108,18 +129,25 @@ public sealed class InstallationResetApiAdmissionTests
             bool blocked = endpoint.Metadata
                 .GetMetadata<InstallationResetRecoveryBlockedRouteMetadata>() is not null;
 
+            bool recoverySafe = endpoint.Metadata
+                .GetMetadata<InstallationResetRecoveryApiRouteMetadata>() is not null;
+
             Assert.True(
-                authenticated || hidden || blocked,
+                authenticated || hidden || blocked || recoverySafe,
                 $"Route '{endpoint.RoutePattern.RawText}' has no recovery admission boundary.");
 
+            if (!authenticated && recoverySafe)
+            {
+                Assert.Equal(
+                    "GetArcanumPresenceProof",
+                    endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName);
+            }
         }
-
     }
 
     [SkippableFact]
     public async Task Production_pipeline_authenticates_first_then_blocks_recovery_ineligible_routes_with_typed_conflict()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using ArcanumWebApplicationFactory factory = new();
@@ -170,13 +198,11 @@ public sealed class InstallationResetApiAdmissionTests
         Assert.NotNull(openAiBody);
 
         Assert.Equal("installation_reset_in_progress", openAiBody.Error.Code);
-
     }
 
     [Fact]
     public async Task Recovery_mode_hides_the_peer_callback_before_registry_or_ledger_access()
     {
-
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
         builder.WebHost.UseTestServer();
@@ -215,7 +241,6 @@ public sealed class InstallationResetApiAdmissionTests
 
         try
         {
-
             using HttpClient client = app.GetTestClient();
 
             using HttpResponseMessage response = await client.PostAsync(
@@ -223,21 +248,16 @@ public sealed class InstallationResetApiAdmissionTests
                 content: null);
 
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
         }
         finally
         {
-
             await app.DisposeAsync();
-
         }
-
     }
 
     [Fact]
     public async Task Api_composition_without_recovery_state_service_remains_a_normal_authenticated_host()
     {
-
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
         builder.WebHost.UseTestServer();
@@ -261,7 +281,6 @@ public sealed class InstallationResetApiAdmissionTests
 
         try
         {
-
             using HttpClient client = app.GetTestClient();
 
             client.DefaultRequestHeaders.Add(
@@ -271,21 +290,16 @@ public sealed class InstallationResetApiAdmissionTests
             using HttpResponseMessage response = await client.GetAsync("/api/probe");
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
         }
         finally
         {
-
             await app.DisposeAsync();
-
         }
-
     }
 
     [Fact]
     public void Recovery_gate_precedes_covenant_authority_and_parameter_binding_in_the_auth_middleware()
     {
-
         string source = Assert.Single(
             ProductionSourceInventory.Sources(),
             static candidate => candidate.IsExactOwner(
@@ -304,7 +318,6 @@ public sealed class InstallationResetApiAdmissionTests
         Assert.True(
             covenant > recovery,
             "Covenant authority was issued before recovery-mode admission");
-
     }
 
     private static ActiveInstallationReset CreateActive(string planId, Guid operationId) =>
@@ -316,5 +329,4 @@ public sealed class InstallationResetApiAdmissionTests
             InstallationResetPhase.Prepared,
             InstallationResetDataHandoff.HostFactoryErasure,
             OnlineDataCompletionDurable: false);
-
 }

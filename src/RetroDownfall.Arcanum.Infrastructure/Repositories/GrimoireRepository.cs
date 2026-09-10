@@ -1,5 +1,3 @@
-using System.Data;
-using System.Data.Common;
 using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -130,9 +128,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid assistantEntryId = Guid.NewGuid();
         DateTimeOffset now = DateTimeOffset.UtcNow;
         bool useExistingThread = sessionId is { } existingId
-            && await _db.Sessions
-                .AnyAsync(c => c.Id == existingId, cancellationToken)
-                .ConfigureAwait(false);
+            && await SessionExistsCoreAsync(existingId, cancellationToken).ConfigureAwait(false);
         if (useExistingThread)
         {
             Guid sid = sessionId!.Value;
@@ -150,40 +146,39 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
                 if (limitError is not null)
                 {
-
                     throw new InvalidOperationException(limitError.Value.Message);
-
                 }
 
                 long turnSequence = await _entryPersistence
                     .ReserveSequenceRangeAsync(sid, count: 2, cancellationToken)
                     .ConfigureAwait(false);
 
-                _db.Entries.Add(new Entry
-                {
-                    Id = userEntryId,
-                    SessionId = sid,
-                    Role = MessageRole.User,
-                    Content = prompt,
-                    ModelUsed = model,
-                    CreatedAt = now,
-                    Sequence = turnSequence,
-                });
-
-                _db.Entries.Add(new Entry
-                {
-                    Id = assistantEntryId,
-                    SessionId = sid,
-                    Role = MessageRole.Assistant,
-                    Content = string.Empty,
-                    ModelUsed = model,
-                    CreatedAt = now,
-                    Sequence = turnSequence + 1L,
-                });
+                await _entryPersistence.InsertEntriesAsync(
+                    [
+                        new Entry
+                        {
+                            Id = userEntryId,
+                            SessionId = sid,
+                            Role = MessageRole.User,
+                            Content = prompt,
+                            ModelUsed = model,
+                            CreatedAt = now,
+                            Sequence = turnSequence,
+                        },
+                        new Entry
+                        {
+                            Id = assistantEntryId,
+                            SessionId = sid,
+                            Role = MessageRole.Assistant,
+                            Content = string.Empty,
+                            ModelUsed = model,
+                            CreatedAt = now,
+                            Sequence = turnSequence + 1L,
+                        },
+                    ],
+                    cancellationToken).ConfigureAwait(false);
 
                 await _entryPersistence.BumpSessionUpdatedAtAsync(sid, now, cancellationToken).ConfigureAwait(false);
-
-                await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
 
                 await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sid, 2, cancellationToken).ConfigureAwait(false);
 
@@ -205,45 +200,65 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         if (newSessionLimitError is not null)
         {
-
             throw new InvalidOperationException(newSessionLimitError.Value.Message);
-
         }
 
-        _db.Sessions.Add(new Session
-        {
-            Id = newSessionId,
-            CreatedAt = now,
-            UpdatedAt = now,
-            Status = "active",
-            Title = TruncateTitle(prompt),
+        await using IDbContextTransaction transaction =
+            await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-            // Seeded on the inserted row rather than bumped by a follow-up statement, so the counter
-            // and the two entries land in the same SQLite transaction. A crash between the two
-            // statements would otherwise leave a session the Campaign Logger never summarizes.
-            UnsummarizedEntryCount = 2,
-        });
-        _db.Entries.Add(new Entry
+        try
         {
-            Id = userEntryId,
-            SessionId = newSessionId,
-            Role = MessageRole.User,
-            Content = prompt,
-            ModelUsed = model,
-            CreatedAt = now,
-            Sequence = 1L,
-        });
-        _db.Entries.Add(new Entry
+            _db.Sessions.Add(new Session
+            {
+                Id = newSessionId,
+                CreatedAt = now,
+                UpdatedAt = now,
+                Status = "active",
+                Title = TruncateTitle(prompt),
+
+                // Seeded on the inserted row rather than bumped by a follow-up statement, so the counter
+                // and the two entries land in the same SQLite transaction. A crash between the two
+                // statements would otherwise leave a session the Campaign Logger never summarizes.
+                UnsummarizedEntryCount = 2,
+            });
+
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.SaveChangesAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            await _entryPersistence.InsertEntriesAsync(
+                [
+                    new Entry
+                    {
+                        Id = userEntryId,
+                        SessionId = newSessionId,
+                        Role = MessageRole.User,
+                        Content = prompt,
+                        ModelUsed = model,
+                        CreatedAt = now,
+                        Sequence = 1L,
+                    },
+                    new Entry
+                    {
+                        Id = assistantEntryId,
+                        SessionId = newSessionId,
+                        Role = MessageRole.Assistant,
+                        Content = string.Empty,
+                        ModelUsed = model,
+                        CreatedAt = now,
+                        Sequence = 2L,
+                    },
+                ],
+                cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
         {
-            Id = assistantEntryId,
-            SessionId = newSessionId,
-            Role = MessageRole.Assistant,
-            Content = string.Empty,
-            ModelUsed = model,
-            CreatedAt = now,
-            Sequence = 2L,
-        });
-        await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+            throw;
+        }
 
         return (newSessionId, assistantEntryId);
     }
@@ -253,21 +268,38 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default)
     {
-        Guid sessionId = await _db.Entries
-            .AsNoTracking()
-            .Where(m => m.Id == assistantEntryId)
-            .Select(m => m.SessionId)
-            .FirstOrDefaultAsync(cancellationToken)
+        _ = await FinalizeAssistantEntryWithFrontierAsync(
+            assistantEntryId,
+            fullContent,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<long?> FinalizeAssistantEntryWithFrontierAsync(
+        Guid assistantEntryId,
+        string fullContent,
+        CancellationToken cancellationToken = default)
+    {
+        Guid sessionId = await ReadEntrySessionIdAsync(assistantEntryId, cancellationToken)
             .ConfigureAwait(false);
 
         using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
+        long? throughEntrySequence = await ReadSessionLatestEntrySequenceAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
         int updated = await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Entries
-                .Where(m => m.Id == assistantEntryId)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(m => m.Content, fullContent),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                UPDATE "Entries"
+                SET "Content" = $content
+                WHERE "Id" = $entryId;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$content", fullContent);
+                    GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(assistantEntryId));
+                },
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
         if (updated == 0)
@@ -279,16 +311,15 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             throw new InvalidOperationException(
                 "Assistant entry could not be finalized; no matching row was updated in Grimoire.");
         }
+
+        return throughEntrySequence;
     }
 
     public async Task DiscardAssistantEntryAsync(
         Guid assistantEntryId,
         CancellationToken cancellationToken = default)
     {
-        Entry? entry = await _db.Entries
-            .AsNoTracking()
-            .FirstOrDefaultAsync(m => m.Id == assistantEntryId, cancellationToken)
-            .ConfigureAwait(false);
+        Entry? entry = await ReadEntryAsync(assistantEntryId, cancellationToken).ConfigureAwait(false);
 
         if (entry is null)
         {
@@ -319,9 +350,19 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             Guid sessionId = entry.SessionId;
 
             int deleted = await SqliteBusyRetry.ExecuteAsync(
-                () => _db.Entries
-                    .Where(m => m.Id == assistantEntryId && m.Role == MessageRole.Assistant && m.Content == string.Empty)
-                    .ExecuteDeleteAsync(cancellationToken),
+                () => ExecuteNonQueryAsync(
+                    """
+                    DELETE FROM "Entries"
+                    WHERE "Id" = $entryId
+                      AND "Role" = $assistantRole
+                      AND "Content" = '';
+                    """,
+                    command =>
+                    {
+                        GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(assistantEntryId));
+                        GrimoireEntitySql.AddParameter(command, "$assistantRole", (int)MessageRole.Assistant);
+                    },
+                    cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
             if (deleted == 0)
@@ -369,40 +410,41 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
             if (toolLimitError is not null)
             {
-
                 throw new InvalidOperationException(toolLimitError.Value.Message);
-
             }
 
             long toolSequence = await _entryPersistence
                 .ReserveSequenceRangeAsync(sessionId, count: 2, cancellationToken)
                 .ConfigureAwait(false);
 
-            _db.Entries.Add(new Entry
-            {
-                Id = Guid.NewGuid(),
-                SessionId = sessionId,
-                Role = MessageRole.Assistant,
-                Content = callLine,
-                ModelUsed = modelUsed,
-                CreatedAt = now,
-                Sequence = toolSequence,
-                ToolName = toolName,
-                ToolArguments = arguments,
-            });
-            _db.Entries.Add(new Entry
-            {
-                Id = Guid.NewGuid(),
-                SessionId = sessionId,
-                Role = MessageRole.System,
-                Content = resultLine,
-                ModelUsed = modelUsed,
-                CreatedAt = now,
-                Sequence = toolSequence + 1L,
-            });
-            await _entryPersistence.BumpSessionUpdatedAtAsync(sessionId, now, cancellationToken).ConfigureAwait(false);
+            await _entryPersistence.InsertEntriesAsync(
+                [
+                    new Entry
+                    {
+                        Id = Guid.NewGuid(),
+                        SessionId = sessionId,
+                        Role = MessageRole.Assistant,
+                        Content = callLine,
+                        ModelUsed = modelUsed,
+                        CreatedAt = now,
+                        Sequence = toolSequence,
+                        ToolName = toolName,
+                        ToolArguments = arguments,
+                    },
+                    new Entry
+                    {
+                        Id = Guid.NewGuid(),
+                        SessionId = sessionId,
+                        Role = MessageRole.System,
+                        Content = resultLine,
+                        ModelUsed = modelUsed,
+                        CreatedAt = now,
+                        Sequence = toolSequence + 1L,
+                    },
+                ],
+                cancellationToken).ConfigureAwait(false);
 
-            await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
+            await _entryPersistence.BumpSessionUpdatedAtAsync(sessionId, now, cancellationToken).ConfigureAwait(false);
 
             await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
 
@@ -456,9 +498,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
             if (exchangeLimitError is not null)
             {
-
                 throw new InvalidOperationException(exchangeLimitError.Value.Message);
-
             }
 
             _db.Sessions.Add(new Session
@@ -489,7 +529,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 CreatedAt = now,
                 Sequence = 2L,
             });
-            await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.SaveChangesAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
 
             await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
 
@@ -516,11 +558,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         if (_attachmentIndex is not null)
         {
-
             await _attachmentIndex.DeleteForSessionInAmbientTransactionAsync(
                 sessionId,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         await SqliteBusyRetry.ExecuteAsync(
@@ -532,9 +572,16 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             cancellationToken).ConfigureAwait(false);
 
         await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Entries
-                .Where(m => m.SessionId == sessionId)
-                .ExecuteDeleteAsync(cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                DELETE FROM "Entries"
+                WHERE "SessionId" = $sessionId;
+                """,
+                command => GrimoireEntitySql.AddParameter(
+                    command,
+                    "$sessionId",
+                    GrimoireEntitySql.Format(sessionId)),
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
         int removed = await DeleteSessionRowInAmbientTransactionAsync(
@@ -545,11 +592,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         if (!_attachments.TryDeleteSessionDirectory(sessionId))
         {
-
             _logger.LogWarning(
                 "Purged session {SessionId} from Grimoire but attachment directory cleanup failed; reconcile will retry.",
                 sessionId);
-
         }
 
         return removed;
@@ -569,68 +614,59 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
-        using CovenantSqliteAuthorizationScope retention =
-            CovenantSqliteConnectionInitializer.Instance.Authorize(
-                (SqliteConnection)_db.Database.GetDbConnection(),
-                CovenantSqliteAuthorizationKind.SessionRetention);
-
         return await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(c => c.Id == sessionId)
-                .ExecuteDeleteAsync(cancellationToken),
-            cancellationToken).ConfigureAwait(false);
+            async () =>
+            {
+                await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+                    _db,
+                    """
+                    DELETE FROM "Sessions"
+                    WHERE "Id" = $sessionId;
+                    """,
+                    cancellationToken).ConfigureAwait(false);
 
+                GrimoireEntitySql.AddParameter(
+                    command,
+                    "$sessionId",
+                    GrimoireEntitySql.Format(sessionId));
+
+                using CovenantSqliteAuthorizationScope retention =
+                    CovenantSqliteConnectionInitializer.Instance.Authorize(
+                        command.Connection!,
+                        CovenantSqliteAuthorizationKind.SessionRetention);
+
+                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
 
         if (ambient is null)
         {
-
             throw new InvalidOperationException("Entry embedding purge requires an ambient transaction.");
-
         }
-
-        DbConnection connection = _db.Database.GetDbConnection();
-
-        DbTransaction transaction = ambient.GetDbTransaction();
 
         foreach (string table in new[] { "entry_embeddings_vec", "entry_embeddings" })
         {
+            await using SqliteCommand exists = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = $table LIMIT 1;",
+                cancellationToken).ConfigureAwait(false);
 
-            await using DbCommand exists = connection.CreateCommand();
-
-            exists.Transaction = transaction;
-
-            exists.CommandText =
-                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = @table LIMIT 1";
-
-            DbParameter tableParameter = exists.CreateParameter();
-
-            tableParameter.ParameterName = "@table";
-
-            tableParameter.Value = table;
-
-            exists.Parameters.Add(tableParameter);
+            GrimoireEntitySql.AddParameter(exists, "$table", table);
 
             if (await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
             {
-
                 continue;
-
             }
 
-            await using DbCommand delete = connection.CreateCommand();
-
-            delete.Transaction = transaction;
-
-            delete.CommandText =
+            await using SqliteCommand delete = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
                 $"""
                 DELETE FROM "{table}"
                 WHERE lower(replace("EntryId", '-', '')) IN (
@@ -638,32 +674,22 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                     FROM "Entries"
                     WHERE lower(replace(CAST("SessionId" AS TEXT), '-', '')) = @sessionId
                 )
-                """;
+                """,
+                cancellationToken).ConfigureAwait(false);
 
-            DbParameter sessionParameter = delete.CreateParameter();
-
-            sessionParameter.ParameterName = "@sessionId";
-
-            sessionParameter.Value = sessionId.ToString("N");
-
-            delete.Parameters.Add(sessionParameter);
+            GrimoireEntitySql.AddParameter(delete, "@sessionId", sessionId.ToString("N"));
 
             _ = await SqliteBusyRetry.ExecuteAsync(
                 () => delete.ExecuteNonQueryAsync(cancellationToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     public async Task<Session?> GetSessionAsync(
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        Session? session = await _db.Sessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
-            .ConfigureAwait(false);
+        Session? session = await ReadSessionAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (session is null)
         {
@@ -679,12 +705,10 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         if (watermark is { } watermarkValue)
         {
-
             afterWatermarkCount = await CountEntriesAfterAsync(
                 id,
                 new DateTimeOffset(watermarkValue, TimeSpan.Zero),
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         int take = EntryWindowPolicy.ResolveTake(
@@ -694,9 +718,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             afterWatermarkCount: afterWatermarkCount);
 
         List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescending(_db, id, take)
-            .AsNoTracking()
-            .ToListAsync(cancellationToken)
+            .LoadRecentDescendingAsync(_db, id, take, cancellationToken)
             .ConfigureAwait(false);
 
         recent.Reverse();
@@ -709,18 +731,13 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     public async Task<Session?> GetSessionHeaderAsync(
         Guid id,
         CancellationToken cancellationToken = default) =>
-        await _db.Sessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
-            .ConfigureAwait(false);
+        await ReadSessionAsync(id, cancellationToken).ConfigureAwait(false);
 
     public async Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-        bool exists = await _db.Sessions
-            .AnyAsync(c => c.Id == sessionId, cancellationToken)
-            .ConfigureAwait(false);
+        bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         if (!exists)
         {
@@ -735,9 +752,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             maxMessages);
 
         List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescending(_db, sessionId, take)
-            .AsNoTracking()
-            .ToListAsync(cancellationToken)
+            .LoadRecentDescendingAsync(_db, sessionId, take, cancellationToken)
             .ConfigureAwait(false);
 
         recent.Reverse();
@@ -752,9 +767,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         int takeLast,
         CancellationToken cancellationToken = default)
     {
-        bool exists = await _db.Sessions
-            .AnyAsync(c => c.Id == sessionId, cancellationToken)
-            .ConfigureAwait(false);
+        bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         if (!exists)
         {
@@ -770,9 +783,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             requestedTake: takeLast);
 
         List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescending(_db, sessionId, clampedTake)
-            .AsNoTracking()
-            .ToListAsync(cancellationToken)
+            .LoadRecentDescendingAsync(_db, sessionId, clampedTake, cancellationToken)
             .ConfigureAwait(false);
 
         recent.Reverse();
@@ -787,12 +798,17 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
-        return await _db.Entries
-            .AsNoTracking()
-            .Where(m => m.SessionId == sessionId && m.Id == entryId)
-            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt, m.IsPinned))
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
+        Entry? entry = await ReadEntryAsync(sessionId, entryId, cancellationToken).ConfigureAwait(false);
+
+        return entry is null
+            ? null
+            : new GrimoireEntryDto(
+                entry.Id,
+                entry.Role,
+                entry.Content,
+                entry.ModelUsed,
+                entry.CreatedAt,
+                entry.IsPinned);
     }
 
     public async Task<bool> DeleteEntryAsync(
@@ -810,9 +826,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         if (unlabeled.IsFailure)
         {
-
             throw new InvalidOperationException(unlabeled.Error.Message);
-
         }
 
         using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
@@ -827,9 +841,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         try
         {
-            Entry? entry = await _db.Entries
-                .AsNoTracking()
-                .FirstOrDefaultAsync(m => m.SessionId == sessionId && m.Id == entryId, cancellationToken)
+            Entry? entry = await ReadEntryAsync(sessionId, entryId, cancellationToken)
                 .ConfigureAwait(false);
 
             if (entry is null)
@@ -839,11 +851,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 return false;
             }
 
-            DateTime? watermark = await _db.Sessions
-                .AsNoTracking()
-                .Where(s => s.Id == sessionId)
-                .Select(s => s.LastSummarizedMessageAt)
-                .FirstOrDefaultAsync(cancellationToken)
+            DateTime? watermark = await ReadSessionWatermarkAsync(sessionId, cancellationToken)
                 .ConfigureAwait(false);
 
             bool isUnsummarized = watermark is null
@@ -854,9 +862,18 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 cancellationToken).ConfigureAwait(false);
 
             int deleted = await SqliteBusyRetry.ExecuteAsync(
-                () => _db.Entries
-                    .Where(m => m.SessionId == sessionId && m.Id == entryId)
-                    .ExecuteDeleteAsync(cancellationToken),
+                () => ExecuteNonQueryAsync(
+                    """
+                    DELETE FROM "Entries"
+                    WHERE "SessionId" = $sessionId
+                      AND "Id" = $entryId;
+                    """,
+                    command =>
+                    {
+                        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                        GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(entryId));
+                    },
+                    cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
             if (deleted > 0 && isUnsummarized)
@@ -885,11 +902,20 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         int updated = await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Entries
-                .Where(m => m.SessionId == sessionId && m.Id == entryId)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(m => m.IsPinned, pinned),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                UPDATE "Entries"
+                SET "IsPinned" = $pinned
+                WHERE "SessionId" = $sessionId
+                  AND "Id" = $entryId;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$pinned", pinned ? 1 : 0);
+                    GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                    GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(entryId));
+                },
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
         return updated > 0;
@@ -899,50 +925,62 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-        return await _db.Entries
-            .AsNoTracking()
-            .Where(m => m.SessionId == sessionId && m.IsPinned)
-            .CountAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT COUNT(*)
+            FROM "Entries"
+            WHERE "SessionId" = $sessionId
+              AND "IsPinned" = 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
     public async Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default)
     {
-        return await _db.MageSettings
-            .AsNoTracking()
-            .Where(s => s.Key == key)
-            .Select(s => s.Value)
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "Value"
+            FROM "MageSettings"
+            WHERE "Key" = $key
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$key", key);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
     }
 
     public async Task<LoreDto> ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default)
     {
         DateTime now = DateTime.UtcNow;
 
-        MageSetting? existing = await _db.MageSettings
-            .FirstOrDefaultAsync(s => s.Key == key, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (existing is null)
-        {
-            _db.MageSettings.Add(
-                new MageSetting
-                {
-                    Key = key,
-                    Value = value,
-                    UpdatedAt = now,
-                });
-        }
-        else
-        {
-            existing.Value = value;
-
-            existing.UpdatedAt = now;
-        }
-
         await SqliteBusyRetry.ExecuteAsync(
-            () => _db.SaveChangesAsync(cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                INSERT INTO "MageSettings" ("Key", "Value", "UpdatedAt")
+                VALUES ($key, $value, $updatedAt)
+                ON CONFLICT("Key") DO UPDATE SET
+                    "Value" = excluded."Value",
+                    "UpdatedAt" = excluded."UpdatedAt";
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$key", key);
+                    GrimoireEntitySql.AddParameter(command, "$value", value);
+                    GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(now));
+                },
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
         return new LoreDto(key, value, now);
@@ -951,9 +989,13 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     public async Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default)
     {
         return await SqliteBusyRetry.ExecuteAsync(
-            () => _db.MageSettings
-                .Where(s => s.Key == key)
-                .ExecuteDeleteAsync(cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                DELETE FROM "MageSettings"
+                WHERE "Key" = $key;
+                """,
+                command => GrimoireEntitySql.AddParameter(command, "$key", key),
+                cancellationToken),
             cancellationToken).ConfigureAwait(false) > 0;
     }
 
@@ -969,14 +1011,28 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         int skip = Math.Max(0, offset);
 
-        List<LoreDto> page = await _db.MageSettings
-            .AsNoTracking()
-            .OrderBy(m => m.Key)
-            .Skip(skip)
-            .Take(pageSize + 1)
-            .Select(m => new LoreDto(m.Key, m.Value, DateTime.SpecifyKind(m.UpdatedAt, DateTimeKind.Utc)))
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "Key", "Value", "UpdatedAt"
+            FROM "MageSettings"
+            ORDER BY "Key"
+            LIMIT $limit OFFSET $offset;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$limit", pageSize + 1);
+        GrimoireEntitySql.AddParameter(command, "$offset", skip);
+
+        List<LoreDto> page = [];
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                page.Add(ReadLore(reader));
+            }
+        }
 
         bool hasMore = page.Count > pageSize;
 
@@ -992,12 +1048,24 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
     public async Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default)
     {
-        return await _db.MageSettings
-            .AsNoTracking()
-            .Where(m => m.Key == key)
-            .Select(m => new LoreDto(m.Key, m.Value, DateTime.SpecifyKind(m.UpdatedAt, DateTimeKind.Utc)))
-            .FirstOrDefaultAsync(cancellationToken)
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "Key", "Value", "UpdatedAt"
+            FROM "MageSettings"
+            WHERE "Key" = $key
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$key", key);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadLore(reader)
+            : null;
     }
 
     public async Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default)
@@ -1028,22 +1096,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         try
         {
-            DbConnection connection = _db.Database.GetDbConnection();
-
-            // W3.4 Group D #8: EF Core closes its connection after each SaveChanges, so the
-            // raw DbCommand below cannot assume the connection is open. Open it explicitly
-            // (mirroring ResolveFtsSessionIdsAsync) before ExecuteReaderAsync; otherwise a
-            // search issued without a prior open query throws InvalidOperationException.
-            if (connection.State != ConnectionState.Open)
-            {
-
-                await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-            }
-
-            await using DbCommand cmd = connection.CreateCommand();
-
-            cmd.CommandText =
+            await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
                 """
                 SELECT c."Role", c."Content", c."CreatedAt"
                 FROM "Entries_fts"
@@ -1051,25 +1105,13 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 WHERE "Entries_fts" MATCH @query
                 ORDER BY rank
                 LIMIT @limit
-                """;
+                """,
+                cancellationToken).ConfigureAwait(false);
 
-            DbParameter pQuery = cmd.CreateParameter();
+            GrimoireEntitySql.AddParameter(command, "@query", matchQuery);
+            GrimoireEntitySql.AddParameter(command, "@limit", limit);
 
-            pQuery.ParameterName = "@query";
-
-            pQuery.Value = matchQuery;
-
-            cmd.Parameters.Add(pQuery);
-
-            DbParameter pLimit = cmd.CreateParameter();
-
-            pLimit.ParameterName = "@limit";
-
-            pLimit.Value = limit;
-
-            cmd.Parameters.Add(pLimit);
-
-            await using DbDataReader reader = await cmd
+            await using SqliteDataReader reader = await command
                 .ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -1103,9 +1145,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
                 string content = reader.GetString(1);
 
-                DateTimeOffset timestamp = DateTimeOffset.Parse(
-                    reader.GetString(2),
-                    CultureInfo.InvariantCulture);
+                DateTimeOffset timestamp = UtcInstantText.Parse(reader.GetString(2));
 
                 int room = budget - sb.Length;
 
@@ -1164,19 +1204,18 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         cancellationToken.ThrowIfCancellationRequested();
 
         // These scalar queries keep filtering and ordering on SQLite's sortable UTC TEXT
-        // columns. Interpolated values become parameters; no session-count cap is applied here
-        // because CampaignLoggerQueue's capacity limits pending work, not discovery.
-        List<Guid> unknownIds = await _db.Database
-            .SqlQuery<Guid>(
-                $"""
-                SELECT "Id" AS "Value"
-                FROM "Sessions"
-                WHERE "UnsummarizedEntryCount" = {-1}
-                ORDER BY "UpdatedAt", "Id"
-                LIMIT {MaxLegacyBackfillPerSweep}
-                """)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        // columns. No session-count cap is applied here because CampaignLoggerQueue's capacity
+        // limits pending work, not discovery.
+        List<Guid> unknownIds = await ReadSessionIdsAsync(
+            """
+            SELECT "Id"
+            FROM "Sessions"
+            WHERE "UnsummarizedEntryCount" = -1
+            ORDER BY "UpdatedAt", "Id"
+            LIMIT $limit;
+            """,
+            command => GrimoireEntitySql.AddParameter(command, "$limit", MaxLegacyBackfillPerSweep),
+            cancellationToken).ConfigureAwait(false);
 
         foreach (Guid sessionId in unknownIds)
         {
@@ -1191,11 +1230,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                     await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
                         await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-                    DateTime? watermark = await _db.Sessions
-                        .AsNoTracking()
-                        .Where(session => session.Id == sessionId)
-                        .Select(session => session.LastSummarizedMessageAt)
-                        .FirstOrDefaultAsync(cancellationToken)
+                    DateTime? watermark = await ReadSessionWatermarkAsync(sessionId, cancellationToken)
                         .ConfigureAwait(false);
 
                     DateTimeOffset cutoff = watermark is { } value
@@ -1212,14 +1247,18 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                         await afterLegacyBackfillCounted(sessionId, cancellationToken).ConfigureAwait(false);
                     }
 
-                    _ = await _db.Sessions
-                        .Where(session => session.Id == sessionId)
-                        .ExecuteUpdateAsync(
-                            setters => setters.SetProperty(
-                                session => session.UnsummarizedEntryCount,
-                                count),
-                            cancellationToken)
-                        .ConfigureAwait(false);
+                    _ = await ExecuteNonQueryAsync(
+                        """
+                        UPDATE "Sessions"
+                        SET "UnsummarizedEntryCount" = $count
+                        WHERE "Id" = $sessionId;
+                        """,
+                        command =>
+                        {
+                            GrimoireEntitySql.AddParameter(command, "$count", count);
+                            GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                        },
+                        cancellationToken).ConfigureAwait(false);
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 },
@@ -1239,22 +1278,25 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         int effectiveThreshold = Math.Max(0, threshold);
 
-        return await _db.Database
-            .SqlQuery<Guid>(
-                $"""
-                SELECT "Id" AS "Value"
-                FROM "Sessions"
-                WHERE "UnsummarizedEntryCount" = {-1}
-                   OR "UnsummarizedEntryCount" > {effectiveThreshold}
-                   OR
-                   (
-                       "UnsummarizedEntryCount" > {0}
-                       AND "UpdatedAt" < {idleCutoffOffset}
-                   )
-                ORDER BY "UpdatedAt", "Id"
-                """)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        return await ReadSessionIdsAsync(
+            """
+            SELECT "Id"
+            FROM "Sessions"
+            WHERE "UnsummarizedEntryCount" = -1
+               OR "UnsummarizedEntryCount" > $threshold
+               OR
+               (
+                   "UnsummarizedEntryCount" > 0
+                   AND "UpdatedAt" < $idleCutoff
+               )
+            ORDER BY "UpdatedAt", "Id";
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$threshold", effectiveThreshold);
+                GrimoireEntitySql.AddParameter(command, "$idleCutoff", GrimoireEntitySql.Format(idleCutoffOffset));
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
@@ -1277,25 +1319,24 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         int target = Math.Max(1, batchSize);
 
         int selectedCount = await EntryTemporalQueries
-            .CountAfterWatermarkThroughTimestampGroup(
+            .CountAfterWatermarkThroughTimestampGroupAsync(
                 _db,
                 sessionId,
                 watermarkOffset,
-                target)
-            .FirstAsync(cancellationToken)
+                target,
+                cancellationToken)
             .ConfigureAwait(false);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         List<Entry> entries = await EntryTemporalQueries
-            .LoadAfterWatermarkThroughTimestampGroup(
+            .LoadAfterWatermarkThroughTimestampGroupAsync(
                 _db,
                 sessionId,
                 watermarkOffset,
                 target,
-                selectedCount)
-            .AsNoTracking()
-            .ToListAsync(cancellationToken)
+                selectedCount,
+                cancellationToken)
             .ConfigureAwait(false);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -1311,8 +1352,60 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         return entries;
     }
 
+    public async Task<List<Entry>> GetSagaExtractionEntriesAsync(
+        Guid sessionId,
+        long afterSequence,
+        long throughSequence,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (throughSequence <= afterSequence)
+        {
+            return [];
+        }
+
+        int target = Math.Max(1, batchSize);
+
+        int selectedCount = await EntryTemporalQueries
+            .CountSagaExtractionPageAsync(
+                _db,
+                sessionId,
+                afterSequence,
+                throughSequence,
+                target,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        List<Entry> entries = await EntryTemporalQueries
+            .LoadSagaExtractionPageAsync(
+                _db,
+                sessionId,
+                afterSequence,
+                throughSequence,
+                target,
+                selectedCount,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (entries.Count != selectedCount)
+        {
+            throw new InvalidOperationException(
+                $"Saga extraction for session {sessionId} changed while its sequence-bounded "
+                + $"window was being read (expected {selectedCount} entries, materialized "
+                + $"{entries.Count}). The cursor was not advanced; retry after active writes finish.");
+        }
+
+        return entries;
+    }
+
     public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
-        _db.Sessions.AnyAsync(c => c.Id == sessionId, cancellationToken);
+        SessionExistsCoreAsync(sessionId, cancellationToken);
 
     public async Task IncrementSessionTokensAsync(
         Guid sessionId,
@@ -1325,11 +1418,18 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
 
         _ = await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(c => c.Id == sessionId)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                UPDATE "Sessions"
+                SET "TotalTokensUsed" = "TotalTokensUsed" + $totalTokens
+                WHERE "Id" = $sessionId;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$totalTokens", totalTokens);
+                    GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                },
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1349,13 +1449,11 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
 
         _ = await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(c => c.Id == sessionId)
-                .ExecuteUpdateAsync(
-                    s => s
-                        .SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + clampedTokens)
-                        .SetProperty(c => c.TotalCostUsd, c => c.TotalCostUsd + clampedCost),
-                    cancellationToken),
+            () => IncrementSessionTokensAndCostWithinImmediateTransactionAsync(
+                sessionId,
+                clampedTokens,
+                clampedCost,
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1369,47 +1467,121 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
             DateTimeOffset dayEnd = dayStart.AddDays(1);
 
-            DbConnection connection = _db.Database.GetDbConnection();
-
-            if (connection.State != ConnectionState.Open)
-            {
-                await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            await using DbCommand cmd = connection.CreateCommand();
-
-            cmd.CommandText = """
+            await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
+                """
                 SELECT "TotalCostUsd"
                 FROM "Sessions"
-                WHERE "CreatedAt" >= @dayStart AND "CreatedAt" < @dayEnd;
-                """;
+                WHERE "CreatedAt" >= $dayStart AND "CreatedAt" < $dayEnd;
+                """,
+                cancellationToken).ConfigureAwait(false);
 
-            DbParameter startParameter = cmd.CreateParameter();
-            startParameter.ParameterName = "@dayStart";
-            startParameter.Value = dayStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            cmd.Parameters.Add(startParameter);
-
-            DbParameter endParameter = cmd.CreateParameter();
-            endParameter.ParameterName = "@dayEnd";
-            endParameter.Value = dayEnd.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            cmd.Parameters.Add(endParameter);
+            GrimoireEntitySql.AddParameter(
+                command,
+                "$dayStart",
+                UtcInstantText.Format(dayStart));
+            GrimoireEntitySql.AddParameter(
+                command,
+                "$dayEnd",
+                UtcInstantText.Format(dayEnd));
 
             decimal total = 0m;
 
-            await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                object value = reader.GetValue(0);
-
-                if (value != DBNull.Value)
+                if (!reader.IsDBNull(0))
                 {
-                    total += Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+                    total = ExactUsdText.CheckedAdd(total, ExactUsdText.Read(reader, 0));
                 }
             }
 
             return total;
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> IncrementSessionTokensAndCostWithinImmediateTransactionAsync(
+        Guid sessionId,
+        long tokens,
+        decimal costUsd,
+        CancellationToken cancellationToken)
+    {
+        if (_db.Database.GetDbConnection() is not SqliteConnection connection)
+        {
+            throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
+        }
+
+        Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
+            .AcquireScopedAsync(
+                connection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acquired.IsFailure)
+        {
+            throw new InvalidOperationException(acquired.Error.Message);
+        }
+
+        await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
+
+        connection = lease.Connection;
+
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+        long currentTokens;
+
+        decimal currentCost;
+
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+
+            read.CommandText =
+                "SELECT \"TotalTokensUsed\", \"TotalCostUsd\" FROM \"Sessions\" WHERE \"Id\" = $sessionId;";
+
+            GrimoireEntitySql.AddParameter(read, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+            await using SqliteDataReader reader = await read
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return 0;
+            }
+
+            currentTokens = reader.GetInt64(0);
+
+            currentCost = ExactUsdText.Read(reader, 1);
+        }
+
+        long updatedTokens = checked(currentTokens + tokens);
+
+        decimal updatedCost = ExactUsdText.CheckedAdd(currentCost, costUsd);
+
+        await using SqliteCommand update = connection.CreateCommand();
+
+        update.Transaction = transaction;
+
+        update.CommandText =
+            "UPDATE \"Sessions\" SET \"TotalTokensUsed\" = $tokens, \"TotalCostUsd\" = $cost WHERE \"Id\" = $sessionId;";
+
+        GrimoireEntitySql.AddParameter(update, "$tokens", updatedTokens);
+
+        _ = ExactUsdText.AddParameter(update, "$cost", updatedCost);
+
+        GrimoireEntitySql.AddParameter(update, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+        int affected = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        return affected;
     }
 
     public async Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)
@@ -1428,14 +1600,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
                 ArcanumRuntimeDefaults.Grimoire.WorkspaceContextRetentionCount);
 
-            // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY; materialize
-            // the workspace-scoped rows and pick the newest `retain` client-side. The retention
-            // cap keeps this set small.
-            List<WorkspaceContext> candidates = await _db.WorkspaceContexts
-                .AsNoTracking()
-                .Where(w => w.WorkspacePath == context.WorkspacePath)
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
+            List<WorkspaceContext> candidates = await ReadWorkspaceContextsAsync(
+                context.WorkspacePath,
+                cancellationToken).ConfigureAwait(false);
 
             List<Guid> idsToKeep = candidates
                 .OrderByDescending(w => w.CreatedAt)
@@ -1446,9 +1613,10 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             if (idsToKeep.Count >= retain)
             {
                 _ = await SqliteBusyRetry.ExecuteAsync(
-                    () => _db.WorkspaceContexts
-                        .Where(w => w.WorkspacePath == context.WorkspacePath && !idsToKeep.Contains(w.Id))
-                        .ExecuteDeleteAsync(cancellationToken),
+                    () => DeleteWorkspaceContextsExceptAsync(
+                        context.WorkspacePath,
+                        idsToKeep,
+                        cancellationToken),
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -1466,15 +1634,9 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         string workspacePath,
         CancellationToken cancellationToken = default)
     {
-        // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY (see
-        // EntryTemporalQueries and PromptRepository.ListAsync for the same constraint).
-        // Materialize the workspace-scoped rows (bounded by WorkspaceContextRetentionCount)
-        // and pick the latest client-side.
-        List<WorkspaceContext> rows = await _db.WorkspaceContexts
-            .AsNoTracking()
-            .Where(w => w.WorkspacePath == workspacePath)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        List<WorkspaceContext> rows = await ReadWorkspaceContextsAsync(
+            workspacePath,
+            cancellationToken).ConfigureAwait(false);
 
         return rows
             .OrderByDescending(w => w.CreatedAt)
@@ -1486,18 +1648,28 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         DateTime utcNow = DateTime.UtcNow;
 
         _ = await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(c => c.Id == sessionId)
-                .ExecuteUpdateAsync(
-                    s => s
-                        .SetProperty(
-                            c => c.LastSummarizedMessageAt,
-                            c => _db.Entries
-                                .Where(e => e.SessionId == c.Id)
-                                .Select(e => (DateTime?)e.CreatedAt.UtcDateTime)
-                                .Max() ?? utcNow)
-                        .SetProperty(c => c.UnsummarizedEntryCount, 0),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                UPDATE "Sessions"
+                SET "LastSummarizedMessageAt" = COALESCE(
+                        (
+                            -- Core v9 makes every Entry instant fixed-width UTC text, so ordinal MAX
+                            -- is chronological and preserves all seven fractional digits.
+                            SELECT MAX("CreatedAt")
+                            FROM "Entries"
+                            WHERE "SessionId" = $sessionId
+                        ),
+                        $utcNow
+                    ),
+                    "UnsummarizedEntryCount" = 0
+                WHERE "Id" = $sessionId;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                    GrimoireEntitySql.AddParameter(command, "$utcNow", GrimoireEntitySql.Format(utcNow));
+                },
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1518,8 +1690,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
                     await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-                bool exists = await _db.Sessions
-                    .AnyAsync(session => session.Id == sessionId, cancellationToken)
+                bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (!exists)
@@ -1539,36 +1710,307 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                     await afterRollupRemainingCounted(sessionId, cancellationToken).ConfigureAwait(false);
                 }
 
-                _ = await _db.Sessions
-                    .Where(session => session.Id == sessionId)
-                    .ExecuteUpdateAsync(
-                        setters => setters
-                            .SetProperty(session => session.Summary, summary)
-                            .SetProperty(
-                                session => session.LastSummarizedMessageAt,
-                                lastSummarizedMessageAt)
-                            .SetProperty(
-                                session => session.UnsummarizedEntryCount,
-                                remaining),
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                _ = await ExecuteNonQueryAsync(
+                    """
+                    UPDATE "Sessions"
+                    SET "Summary" = $summary,
+                        "LastSummarizedMessageAt" = $watermark,
+                        "UnsummarizedEntryCount" = $remaining
+                    WHERE "Id" = $sessionId;
+                    """,
+                    command =>
+                    {
+                        GrimoireEntitySql.AddParameter(command, "$summary", summary);
+                        GrimoireEntitySql.AddParameter(
+                            command,
+                            "$watermark",
+                            GrimoireEntitySql.Format(lastSummarizedMessageAt));
+                        GrimoireEntitySql.AddParameter(command, "$remaining", remaining);
+                        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                    },
+                    cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<int> ExecuteNonQueryAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+
+        bind(command);
+
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> SessionExistsCoreAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM "Sessions"
+                WHERE "Id" = $sessionId
+            );
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture) != 0L;
+    }
+
+    private async Task<Guid> ReadEntrySessionIdAsync(
+        Guid entryId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "SessionId"
+            FROM "Entries"
+            WHERE "Id" = $entryId
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(entryId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull
+            ? Guid.Empty
+            : Guid.Parse(Convert.ToString(value, CultureInfo.InvariantCulture)!);
+    }
+
+    private async Task<long?> ReadSessionLatestEntrySequenceAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT MAX("Sequence")
+            FROM "Entries"
+            WHERE "SessionId" = $sessionId;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull
+            ? null
+            : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    private Task<Entry?> ReadEntryAsync(
+        Guid entryId,
+        CancellationToken cancellationToken) =>
+        ReadEntryAsync(sessionId: null, entryId, cancellationToken);
+
+    private async Task<Entry?> ReadEntryAsync(
+        Guid? sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken)
+    {
+        string commandText = sessionId is null
+            ? $"SELECT {GrimoireEntitySql.EntryColumns} FROM \"Entries\" WHERE \"Id\" = $entryId LIMIT 1;"
+            : $"SELECT {GrimoireEntitySql.EntryColumns} FROM \"Entries\" WHERE \"SessionId\" = $sessionId AND \"Id\" = $entryId LIMIT 1;";
+
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+
+        if (sessionId is { } boundSessionId)
+        {
+            GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(boundSessionId));
+        }
+
+        GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(entryId));
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadEntry(reader)
+            : null;
+    }
+
+    private async Task<Session?> ReadSessionAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            $"SELECT {GrimoireEntitySql.SessionColumns} FROM \"Sessions\" WHERE \"Id\" = $sessionId LIMIT 1;",
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadSession(reader)
+            : null;
+    }
+
+    private async Task<DateTime?> ReadSessionWatermarkAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "LastSummarizedMessageAt"
+            FROM "Sessions"
+            WHERE "Id" = $sessionId
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull
+            ? null
+            : UtcInstantText.ParseDateTime(Convert.ToString(value, CultureInfo.InvariantCulture)!);
+    }
+
+    private async Task<List<Guid>> ReadSessionIdsAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+
+        bind(command);
+
+        List<Guid> ids = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            ids.Add(GrimoireEntitySql.ReadGuid(reader, 0));
+        }
+
+        return ids;
+    }
+
+    private async Task<List<WorkspaceContext>> ReadWorkspaceContextsAsync(
+        string workspacePath,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT "Id", "CreatedAt", "RootPath", "SerializedSnapshot"
+            FROM "WorkspaceContexts"
+            WHERE "RootPath" = $workspacePath;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "$workspacePath", workspacePath);
+
+        List<WorkspaceContext> rows = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rows.Add(new WorkspaceContext
+            {
+                Id = GrimoireEntitySql.ReadGuid(reader, 0),
+                CreatedAt = GrimoireEntitySql.ReadDateTimeOffset(reader, 1),
+                WorkspacePath = reader.GetString(2),
+                SerializedSnapshot = reader.GetString(3),
+            });
+        }
+
+        return rows;
+    }
+
+    private async Task<int> DeleteWorkspaceContextsExceptAsync(
+        string workspacePath,
+        IReadOnlyList<Guid> idsToKeep,
+        CancellationToken cancellationToken)
+    {
+        if (idsToKeep.Count == 0)
+        {
+            return await ExecuteNonQueryAsync(
+                """
+                DELETE FROM "WorkspaceContexts"
+                WHERE "RootPath" = $workspacePath;
+                """,
+                command => GrimoireEntitySql.AddParameter(command, "$workspacePath", workspacePath),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        string[] placeholders = new string[idsToKeep.Count];
+
+        for (int index = 0; index < idsToKeep.Count; index++)
+        {
+            placeholders[index] = "$keep" + index.ToString(CultureInfo.InvariantCulture);
+        }
+
+        string commandText =
+            "DELETE FROM \"WorkspaceContexts\" WHERE \"RootPath\" = $workspacePath AND \"Id\" NOT IN ("
+            + string.Join(", ", placeholders)
+            + ");";
+
+        return await ExecuteNonQueryAsync(
+            commandText,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$workspacePath", workspacePath);
+
+                for (int index = 0; index < idsToKeep.Count; index++)
+                {
+                    GrimoireEntitySql.AddParameter(
+                        command,
+                        placeholders[index],
+                        GrimoireEntitySql.Format(idsToKeep[index]));
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static LoreDto ReadLore(SqliteDataReader reader) =>
+        new(
+            reader.GetString(0),
+            reader.GetString(1),
+            UtcInstantText.ParseDateTime(reader.GetString(2)));
+
     private async Task<int> CountEntriesAfterAsync(
         Guid sessionId,
         DateTimeOffset afterExclusive,
         CancellationToken cancellationToken)
     {
-
         return await EntryTemporalQueries
-            .CountAfter(_db, sessionId, afterExclusive)
-            .FirstAsync(cancellationToken)
+            .CountAfterAsync(_db, sessionId, afterExclusive, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private SessionSettings GetSessionSettings() =>
@@ -1580,5 +2022,4 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         const int maxLen = 200;
         return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
     }
-
 }

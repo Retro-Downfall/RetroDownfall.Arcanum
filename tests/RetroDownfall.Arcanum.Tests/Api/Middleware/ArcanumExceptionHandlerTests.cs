@@ -1,10 +1,16 @@
 using System.IO.Pipelines;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Middleware;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Middleware;
 
@@ -146,6 +152,203 @@ public sealed class ArcanumExceptionHandlerTests
 
     }
 
+    /// <summary>
+    /// A gate that closed under an in-flight request answers exactly as admission would have.
+    /// </summary>
+    /// <remarks>
+    /// Admission refuses what arrives after stage one begins. A request admitted a moment earlier is
+    /// drained, and while it drains it can still reach SQLite and be refused there — so without this
+    /// arm the one window the refusal exists for produces a 500 instead, and the request path is
+    /// written into an Error-level log on the way past.
+    /// </remarks>
+    [Fact]
+    public async Task TryHandleAsync_MaintenanceRefusal_ApiPath_IsTheDocumentedServiceUnavailable()
+    {
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/sessions";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new GrimoireMaintenanceUnavailableException(),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, httpContext.Response.StatusCode);
+
+        ApiResponse<string>? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(ErrorCodes.Grimoire.MaintenanceUnavailable, body.Error?.Code);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.DoesNotContain(
+            logger.Entries,
+            static entry => entry.Message.Contains("/api/sessions", StringComparison.Ordinal));
+
+        Assert.All(logger.Entries, static entry => Assert.Null(entry.Exception));
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_MaintenanceRefusal_V1Path_IsTheOpenAiServiceUnavailable()
+    {
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/v1/chat/completions";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new GrimoireMaintenanceUnavailableException(),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, httpContext.Response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            ReadBody(httpContext),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("service_unavailable", body.Error.Type);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_MaintenanceRefusal_WithResponseStarted_RewritesNothing()
+    {
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext(responseStarted: true);
+
+        httpContext.Request.Path = "/api/events/logs";
+
+        httpContext.Response.StatusCode = StatusCodes.Status200OK;
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new GrimoireMaintenanceUnavailableException(),
+            CancellationToken.None);
+
+        // Handled, even though nothing could be written. Reporting otherwise returns the exception to
+        // the framework's exception middleware, which logs it at Error with the request path.
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status200OK, httpContext.Response.StatusCode);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+    }
+
+    /// <summary>
+    /// Every other exception keeps its Error-level line and its 500.
+    /// </summary>
+    [Fact]
+    public async Task TryHandleAsync_UnexpectedException_StillLogsAtError()
+    {
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new InvalidOperationException("boom"),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, httpContext.Response.StatusCode);
+
+        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+    }
+
+    private static string ReadBody(HttpContext httpContext)
+    {
+
+        MemoryStream body = (MemoryStream)httpContext.Features
+            .GetRequiredFeature<IHttpResponseBodyFeature>()
+            .Stream;
+
+        return Encoding.UTF8.GetString(body.ToArray());
+
+    }
+
+    private sealed class RecordingLogger : ILogger<ArcanumExceptionHandler>
+    {
+
+        private readonly List<LogEntry> _entries = [];
+
+        internal IReadOnlyList<LogEntry> Entries
+        {
+
+            get
+            {
+
+                lock (_entries)
+                {
+
+                    return [.. _entries];
+
+                }
+
+            }
+
+        }
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+
+            lock (_entries)
+            {
+
+                _entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+
+            }
+
+        }
+
+    }
+
+    internal sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
+
     private static DefaultHttpContext CreateHttpContext(bool responseStarted = false)
     {
         ServiceCollection services = new();
@@ -236,6 +439,8 @@ public sealed class ArcanumExceptionHandlerTests
 
         private readonly IHttpResponseFeature _responseFeature;
 
+        private readonly PipeWriter _writer;
+
         public TestResponseBodyFeature(Stream stream, IHttpResponseFeature responseFeature)
         {
 
@@ -243,11 +448,15 @@ public sealed class ArcanumExceptionHandlerTests
 
             _responseFeature = responseFeature;
 
+            _writer = PipeWriter.Create(stream);
+
         }
 
         public Stream Stream => _stream;
 
-        public PipeWriter Writer { get; } = PipeWriter.Create(new MemoryStream());
+        // The same stream the feature reports, so a result that writes through BodyWriter — which
+        // every Results.Json does — lands where a test that reads the body can see it.
+        public PipeWriter Writer => _writer;
 
         public Task CompleteAsync() => Task.CompletedTask;
 

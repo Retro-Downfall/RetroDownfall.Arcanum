@@ -11,29 +11,24 @@ namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetScope>))]
 public enum InstallationResetScope
 {
-
     Workspace,
 
     Global,
 
     All,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetDataScope>))]
 public enum InstallationResetDataScope
 {
-
     Workspace,
 
     Global,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetPhase>))]
 public enum InstallationResetPhase
 {
-
     Prepared,
 
     DataResetComplete,
@@ -43,13 +38,11 @@ public enum InstallationResetPhase
     Verified,
 
     Completed,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetItemStatus>))]
 public enum InstallationResetItemStatus
 {
-
     Pending,
 
     Preserved,
@@ -61,13 +54,11 @@ public enum InstallationResetItemStatus
     Unavailable,
 
     Failed,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetTargetRole>))]
 public enum InstallationResetTargetRole
 {
-
     Database,
 
     FileSystem,
@@ -75,15 +66,12 @@ public enum InstallationResetTargetRole
     Credential,
 
     Daemon,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<InstallationResetDataHandoff>))]
 public enum InstallationResetDataHandoff
 {
-
     HostFactoryErasure,
-
 }
 
 public sealed record InstallationResetPlanRequest(
@@ -226,17 +214,14 @@ public sealed record InstallationResetHostHandoff(
 
 public interface IInstallationStartupProbe
 {
-
     Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
         CancellationToken cancellationToken = default);
 
     Result<bool> IsFreshInstallation();
-
 }
 
 public interface IInstallationResetService
 {
-
     Task<Result<InstallationResetResult>> ApplyFullAsync(
         FullInstallationResetRequest request,
         CancellationToken cancellationToken = default);
@@ -248,12 +233,10 @@ public interface IInstallationResetService
     Task<Result<InstallationResetResult>> ApplyAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default);
-
 }
 
 public interface IInstallationResetOnlineDataHandoff
 {
-
     Result<InstallationResetPlan> BindOnlineDataPlan(
         InstallationResetPlanRequest request,
         InstallationResetPlan localPlan,
@@ -266,12 +249,10 @@ public interface IInstallationResetOnlineDataHandoff
     Task<Result<InstallationResetHostHandoff?>> ReadAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default);
-
 }
 
 public interface IInstallationResetDataService
 {
-
     Task<Result<DataRetentionPlan>> PlanAsync(
         InstallationResetDataPlanRequest request,
         CancellationToken cancellationToken = default);
@@ -279,5 +260,4 @@ public interface IInstallationResetDataService
     Task<Result<DataRetentionApplyResult>> ApplyAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken = default);
-
 }

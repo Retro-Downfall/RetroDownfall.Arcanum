@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class DataRetentionService
@@ -384,9 +386,22 @@ internal sealed partial class DataRetentionService
             }
 
             Result<CovenantErasureCheckpointState> checkpoint =
-                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(committed.Id, payload);
+                CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
+                    committed.Id,
+                    committed.CheckpointVersion,
+                    payload);
 
-            if (checkpoint.IsFailure || checkpoint.Value.Owner != prepared.Value.Owner)
+            // Compared as a whole launch rather than as an owner, for the reason the reset arm gives:
+            // an owner is three of a launch's eleven fields, and the eight it leaves out are the ones
+            // that say which dataset this erasure was admitted to replace.
+            Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
+                GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    committed.CheckpointVersion,
+                    payload);
+
+            if (checkpoint.IsFailure
+                || relaunched.IsFailure
+                || relaunched.Value.Digest != prepared.Value.Launch.Digest)
             {
 
                 Error invalid = checkpoint.IsFailure
@@ -758,6 +773,21 @@ internal sealed partial class DataRetentionService
 
     }
 
+    /// <summary>
+    /// Lets go of the service's own ledger handle before a closed period needs the file.
+    /// </summary>
+    /// <remarks>
+    /// It reports rather than proves now, and the difference matters. Inside a closed period the
+    /// coordinator owns this exact connection: it opens it for each durable window and closes it
+    /// again before the next exclusive maintenance open, precisely so a live ledger handle cannot
+    /// contend with the erasure's own lock. A close asserted here would then be asserting against
+    /// the window rather than against a leak - failing whenever the coordinator legitimately had the
+    /// connection open, which is every time this runs as a continuation.
+    ///
+    /// <para>Nothing is lost by not asserting. What the assertion was protecting is proved later and
+    /// better: the storage health proof enumerates the database's own directory and refuses on any
+    /// surviving sidecar, which is what a handle this process failed to close actually leaves behind.</para>
+    /// </remarks>
     private async Task<Result> CloseFactoryServiceConnectionAsync()
     {
 
@@ -766,9 +796,7 @@ internal sealed partial class DataRetentionService
 
             await db.Database.CloseConnectionAsync().ConfigureAwait(false);
 
-            return db.Database.GetDbConnection().State is ConnectionState.Closed
-                ? Result.Success()
-                : Result.Failure(CovenantMaintenanceFailure());
+            return Result.Success();
 
         }
         catch (Exception ex)

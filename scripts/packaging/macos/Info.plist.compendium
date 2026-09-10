@@ -6,6 +6,8 @@
   <string>en</string>
   <key>CFBundleExecutable</key>
   <string>RetroDownfall.Compendium.Ux</string>
+  <key>CFBundleIconFile</key>
+  <string>Compendium.icns</string>
   <key>CFBundleIdentifier</key>
   <string>com.retrodownfall.compendium</string>
   <key>CFBundleInfoDictionaryVersion</key>

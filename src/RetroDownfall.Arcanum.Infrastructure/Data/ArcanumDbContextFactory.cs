@@ -1,9 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using RetroDownfall.Arcanum.Core.Security;
-using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -11,10 +11,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 [ExcludeFromCodeCoverage] // Reason: EF design-time factory, not runtime logic
 public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<ArcanumDbContext>
 {
+    private static readonly Lazy<IntPtr> DesignTimeNativeRuntime =
+        new(InitializeDesignTimeNativeRuntime, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    [RequiresAssemblyFiles(
+        "This EF Core factory is a design-time-only scratch-database path and must never be constructed by the published Native AOT runtime.")]
+    public ArcanumDbContextFactory()
+    {
+    }
+
     public ArcanumDbContext CreateDbContext(string[] args)
     {
-        SqliteNativeRuntime.Instance.Initialize();
-        // MSBuild compiled-model generation runs without user env; `dotnet ef` should set ARCANUM_GRIMOIRE_DEV_KEY explicitly.
+        _ = DesignTimeNativeRuntime.Value;
+
         string devKey = Environment.GetEnvironmentVariable("ARCANUM_GRIMOIRE_DEV_KEY")
             ?? "compile-time-placeholder-not-for-production";
         GrimoireDbPassphraseSource passphraseSource = new();
@@ -27,8 +36,38 @@ public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<Arcanu
         }.ToString();
         DbContextOptionsBuilder<ArcanumDbContext> optionsBuilder = new();
         optionsBuilder.UseSqlite(connectionString);
-        optionsBuilder.UseModel(ArcanumDbContextModel.Instance);
         return new ArcanumDbContext(optionsBuilder.Options, DesignTimeSecretStore.Instance, passphraseSource);
+    }
+
+    [UnconditionalSuppressMessage(
+        "SingleFile",
+        "IL3000",
+        Justification = "EF invokes this design-time-only factory from the ordinary target assembly, never from Arcanum's published process.")]
+    private static IntPtr InitializeDesignTimeNativeRuntime()
+    {
+        string assemblyDirectory = Path.GetDirectoryName(typeof(ArcanumDbContextFactory).Assembly.Location)
+            ?? throw new InvalidOperationException("The design-time Infrastructure assembly has no directory.");
+
+        string assetFileName = OperatingSystem.IsWindows()
+            ? "e_sqlcipher.dll"
+            : OperatingSystem.IsMacOS()
+                ? "libe_sqlcipher.dylib"
+                : "libe_sqlcipher.so";
+
+        IntPtr handle = NativeLibrary.Load(Path.Combine(assemblyDirectory, assetFileName));
+
+        try
+        {
+            SqliteNativeRuntime.Instance.Initialize();
+
+            return handle;
+        }
+        catch
+        {
+            NativeLibrary.Free(handle);
+
+            throw;
+        }
     }
 
     private sealed class DesignTimeSecretStore : ISecretStore

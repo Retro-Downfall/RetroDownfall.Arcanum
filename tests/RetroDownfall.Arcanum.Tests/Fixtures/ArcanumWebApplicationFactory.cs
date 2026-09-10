@@ -26,6 +26,9 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     public const string TestApiKey = GrimoireFixture.TestApiKey;
 
+    private const string InMemoryCredentialOptInVariable =
+        "ARCANUM_TEST_IN_MEMORY_CREDENTIALS";
+
     private readonly string _tempHome;
 
     private readonly GrimoireFixture? _grimoireFixture;
@@ -76,6 +79,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         _originalEnvironment["USERPROFILE"] = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
         _originalEnvironment["XDG_DATA_HOME"] = global::System.Environment.GetEnvironmentVariable("XDG_DATA_HOME");
         _originalEnvironment["ARCANUM_TEST_HOME"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+        _originalEnvironment[InMemoryCredentialOptInVariable] =
+            global::System.Environment.GetEnvironmentVariable(InMemoryCredentialOptInVariable);
         _originalEnvironment["ARCANUM_SKIP_KEY_BOOTSTRAP"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP");
         _originalEnvironment["ASPNETCORE_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
         _originalEnvironment["DOTNET_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
@@ -292,6 +297,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     {
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _tempHome);
+
+        global::System.Environment.SetEnvironmentVariable(InMemoryCredentialOptInVariable, "1");
 
         global::System.Environment.SetEnvironmentVariable("HOME", _tempHome);
 

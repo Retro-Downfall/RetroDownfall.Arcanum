@@ -3,19 +3,9 @@
 <plist version="1.0">
 <dict>
   <!--
-    These entitlements matter on the fallback shape: Cli.csproj enables PublishAot for osx-* RIDs
-    only when ld64.lld is present (its _AppleLldPath condition), and without that linker the
-    publish is a self-contained JIT CoreCLR build instead, whose hardened runtime must be told to
-    permit the RWX/MAP_JIT mappings the JIT creates. Without allow-jit the signed binary aborts
-    before Main with "Failed to create CoreCLR, HRESULT: 0x80070008". A Native AOT publish does
-    not JIT and needs none of the three below; they stay applied to it too because an unused
-    entitlement is permissive rather than breaking (see build-arcanum.sh's signing step).
+    Deliberately empty. The shipping CLI is Native AOT and needs neither JIT executable-memory
+    authority nor disabled library validation. Keeping an explicit empty plist makes that security
+    decision reviewable at the signing call site.
   -->
-  <key>com.apple.security.cs.allow-jit</key>
-  <true/>
-  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-  <true/>
-  <key>com.apple.security.cs.disable-library-validation</key>
-  <true/>
 </dict>
 </plist>

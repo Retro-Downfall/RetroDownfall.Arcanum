@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class CovenantUngatedRetirementEvolutionTests
 {
-
     private const string Timestamp = "2026-08-30T00:00:00.0000000+00:00";
 
     private const string HistoricalWardDigest =
@@ -64,20 +63,17 @@ public sealed class CovenantUngatedRetirementEvolutionTests
     [Fact]
     public void The_shipped_chain_pins_the_fingerprint_the_version_two_tree_published()
     {
-
         GrimoireSchemaVersionChain canonical = GrimoireSchemaVersionChains.Default
             .ForTier(GrimoireSchemaTransactionTier.CovenantCanonical);
 
         Assert.Equal(
             CovenantCanonicalSchemaVersionTwoFixture.Fingerprint,
             canonical.SourceDefinitionFingerprintFor(2));
-
     }
 
     [Fact]
     public async Task Evolving_version_two_preserves_historical_Covenant_rows_and_their_relationships()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -128,7 +124,7 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         GrimoireSchemaInstallResult evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CovenantCanonicalSchemaVersionThreeFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
@@ -305,13 +301,11 @@ public sealed class CovenantUngatedRetirementEvolutionTests
             await ScalarLongAsync(
                 connection,
                 $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{KernelNormalizedKey}';"));
-
     }
 
     [Fact]
     public async Task Evolved_version_three_enforces_the_complete_Ward_tuple_matrix()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -324,20 +318,18 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         GrimoireSchemaInstallResult evolved = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CovenantCanonicalSchemaVersionThreeFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.CovenantCanonical.Health);
 
         await AssertWardTupleMatrixAsync(connection);
-
     }
 
     [Fact]
     public async Task Evolved_and_fresh_version_three_databases_have_the_same_complete_canonical_catalog()
     {
-
         IReadOnlyDictionary<string, string> evolved = await CanonicalDefinitionsAsync(evolve: true);
 
         IReadOnlyDictionary<string, string> fresh = await CanonicalDefinitionsAsync(evolve: false);
@@ -346,9 +338,7 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         foreach ((string name, string definition) in fresh)
         {
-
             Assert.Equal(GrimoireSqlNormalizer.Normalize(definition), GrimoireSqlNormalizer.Normalize(evolved[name]));
-
         }
 
         Assert.Contains("covenant_heads_validate_insert", evolved.Keys);
@@ -356,30 +346,26 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         Assert.Contains("covenant_heads_validate_update", evolved.Keys);
 
         Assert.Contains("covenant_version_attachment_provenance", evolved.Keys);
-
     }
 
     private static async Task<IReadOnlyDictionary<string, string>> CanonicalDefinitionsAsync(bool evolve)
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
         if (evolve)
         {
-
             _ = await GrimoireSchemaTestInstaller.InstallAsync(
                 connection,
                 CovenantCanonicalSchemaVersionTwoFixture.ChainSet(),
                 1536,
                 CancellationToken.None);
-
         }
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(
             connection,
-            GrimoireSchemaVersionChains.Default,
+            CovenantCanonicalSchemaVersionThreeFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
@@ -394,18 +380,14 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             definitions[reader.GetString(0)] = reader.GetString(1);
-
         }
 
         return definitions;
-
     }
 
     private static async Task SeedVersionTwoRowsAsync(SqliteConnection connection)
     {
-
         await ExecuteAsync(connection, "UPDATE covenant_state SET NextSearchRowId = 10 WHERE StateKey = 1;");
 
         await ExecuteAsync(
@@ -456,7 +438,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
                 ScopeCode, CampaignId, NormalizedKey, CompiledByteCost, OriginCode, SearchRowId, UpdatedAtUtc)
             VALUES ('{KernelEntryId:D}', 1, '{KernelVersionId:D}', 1, 1, 2, '{KernelCampaignId:D}', '{KernelNormalizedKey}', 8, 1, 2, '{Timestamp}');
             """);
-
     }
 
     private static string HistoricalAgentApprovedVersion(string versionId, string entryId, int revision, string? predecessor) =>
@@ -493,7 +474,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
     private static async Task<(CovenantMutationIntent Intent, CovenantMutationReceipt Receipt)>
         PublishReceiptFreeRetirementThroughKernelAsync(SqliteConnection connection)
     {
-
         CovenantMutationIntent intent = CovenantMutationFixture.AgentRetire(
             CovenantOperationScope.ForCampaign(KernelCampaignId),
             KernelNormalizedKey,
@@ -533,7 +513,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         await transaction.CommitAsync(CancellationToken.None);
 
         return (intent, receipt);
-
     }
 
     private static void AssertPublishedRetirementBindings(
@@ -541,7 +520,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         CovenantMutationIntent intent,
         CovenantMutationReceipt receipt)
     {
-
         string versionId = receipt.ResultingVersionId!.Value.ToString("D");
 
         IReadOnlyList<string> actual = Assert.Single(
@@ -582,12 +560,10 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         ];
 
         Assert.Equal(expected, actual);
-
     }
 
     private static async Task AssertWardTupleMatrixAsync(SqliteConnection connection)
     {
-
         (long Origin, string WardDigest, string AuthorizationMode, bool Accepted)[] cases =
         [
             (3, "NULL", "NULL", true),
@@ -604,7 +580,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         for (int index = 0; index < cases.Length; index++)
         {
-
             (long origin, string wardDigest, string authorizationMode, bool accepted) = cases[index];
 
             string entryId = $"matrix-entry-{index}";
@@ -624,15 +599,11 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
             if (accepted)
             {
-
                 await ExecuteAsync(connection, sql);
-
             }
             else
             {
-
                 _ = await AssertSqliteExceptionAsync(connection, sql);
-
             }
 
             Assert.Equal(
@@ -640,9 +611,7 @@ public sealed class CovenantUngatedRetirementEvolutionTests
                 await ScalarLongAsync(
                     connection,
                     $"SELECT COUNT(*) FROM covenant_versions WHERE VersionId = '{versionId}';"));
-
         }
-
     }
 
     private static string VersionWithWardTuple(
@@ -652,7 +621,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         string wardDigest,
         string authorizationMode)
     {
-
         long laneCode = origin == 2 ? 2 : 1;
 
         string sourceTurnId = origin == 1 ? "NULL" : "'matrix-turn'";
@@ -675,7 +643,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
                 {sourceTurnId}, {sourceToolCallId}, {basePlanDigest}, NULL, {wardDigest}, {authorizationMode},
                 'mutation-{versionId}', randomblob(32), randomblob(32), randomblob(32), NULL, 0, randomblob(32), '{Timestamp}');
             """;
-
     }
 
     private static async Task<CovenantHeadSnapshot> ReadHeadAsync(
@@ -683,7 +650,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         string entryId,
         long laneCode)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -716,7 +682,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
             reader.GetInt64(9),
             reader.GetInt64(10),
             reader.GetString(11));
-
     }
 
     private static async Task<AttachmentProvenanceSnapshot> ReadAttachmentProvenanceAsync(
@@ -724,7 +689,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         string versionId,
         long ordinal)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -756,18 +720,15 @@ public sealed class CovenantUngatedRetirementEvolutionTests
             reader.IsDBNull(8) ? null : reader.GetInt64(8),
             reader.IsDBNull(9) ? null : reader.GetString(9),
             reader.IsDBNull(10) ? null : reader.GetString(10));
-
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static async Task<SqliteException> AssertSqliteExceptionAsync(SqliteConnection connection, string sql) =>
@@ -775,7 +736,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
     private static async Task<string?> ScalarStringAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -783,29 +743,24 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return value is null or DBNull ? null : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(CancellationToken.None), System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<Guid> ScalarGuidBlobAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         return new Guid((byte[])(await command.ExecuteScalarAsync(CancellationToken.None))!);
-
     }
 
     private static async Task<TableSnapshot> SnapshotTableAsync(
@@ -813,7 +768,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         string tableName,
         string orderBy)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = $"SELECT * FROM \"{tableName}\" ORDER BY {orderBy};";
@@ -828,22 +782,17 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             string[] values = new string[reader.FieldCount];
 
             for (int ordinal = 0; ordinal < reader.FieldCount; ordinal++)
             {
-
                 values[ordinal] = SnapshotValue(reader.GetValue(ordinal));
-
             }
 
             rows.Add(values);
-
         }
 
         return new TableSnapshot(tableName, columns, rows);
-
     }
 
     private static string SnapshotValue(object value) => value switch
@@ -858,7 +807,6 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
     private static void AssertCompleteTableSnapshot(TableSnapshot expected, TableSnapshot actual)
     {
-
         Assert.Equal(expected.TableName, actual.TableName);
 
         Assert.Equal(expected.Columns, actual.Columns);
@@ -867,16 +815,12 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         for (int row = 0; row < expected.Rows.Count; row++)
         {
-
             Assert.Equal(expected.Rows[row], actual.Rows[row]);
-
         }
-
     }
 
     private static async Task<long> CountRowsAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -887,18 +831,14 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             count++;
-
         }
 
         return count;
-
     }
 
     private static async Task<string[]> ReadNamesAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -909,13 +849,10 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             names.Add(reader.GetString(0));
-
         }
 
         return [.. names];
-
     }
 
     private sealed record CovenantHeadSnapshot(
@@ -949,5 +886,4 @@ public sealed class CovenantUngatedRetirementEvolutionTests
         string TableName,
         IReadOnlyList<string> Columns,
         IReadOnlyList<IReadOnlyList<string>> Rows);
-
 }

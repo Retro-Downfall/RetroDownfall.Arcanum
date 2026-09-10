@@ -43,6 +43,10 @@ using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
+using RetroDownfall.Arcanum.Infrastructure.Operations;
+
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
@@ -72,9 +76,11 @@ internal sealed partial class DataRetentionService(
     DataRetentionLeaseMaintainer? leaseMaintainer = null,
     CovenantRequestedOperationStarter? requestedOperationStarter = null,
     ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
-    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null) : IDataRetentionService
+    ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null,
+    LongRunningOperationOwnership? operationOwnership = null,
+    ILongRunningOperationSameOwnerLeaseResumption? sameOwnerLeaseResumption = null)
+    : IDataRetentionService, IDataRetentionHostedSweep
 {
-
     /// <summary>
     /// The terminal code every retention row left for durable recovery is stamped with.
     /// </summary>
@@ -139,10 +145,14 @@ internal sealed partial class DataRetentionService(
     private readonly ICovenantErasureEffectDigestCalculator _covenantErasureEffectDigests =
         covenantErasureEffectDigests ?? new CovenantErasureEffectDigestCalculator();
 
+    private readonly LongRunningOperationOwnership? _operationOwnership = operationOwnership;
+
+    private readonly ILongRunningOperationSameOwnerLeaseResumption? _sameOwnerLeaseResumption =
+        sameOwnerLeaseResumption;
+
     public async Task<DataRetentionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)
     {
-
         RetentionSettings retention = CurrentRetention;
 
         List<DataRetentionStatusItem> items = [];
@@ -451,23 +461,17 @@ internal sealed partial class DataRetentionService(
 
         if (covenantLease is not null)
         {
-
             await using (covenantLease.ConfigureAwait(false))
             {
-
                 covenant = await InventoryCovenantAsync(
                     covenantLease,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             if (covenant is not null)
             {
-
                 items.Add(CovenantStatusItem(covenant));
-
             }
-
         }
 
         DataRetentionStatusItem[] ordered =
@@ -495,7 +499,6 @@ internal sealed partial class DataRetentionService(
                 "Registered workspaces outside the Arcanum data root",
             ],
             covenant);
-
     }
 
     /// <summary>
@@ -516,32 +519,24 @@ internal sealed partial class DataRetentionService(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default)
     {
-
         Result<DataRetentionPlanAdmission> admission = await PlanAdmissionAsync(
             request,
             cancellationToken).ConfigureAwait(false);
 
         if (admission.IsFailure)
         {
-
             return await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         if (admission.Value.ReadLease is not null)
         {
-
             await using (admission.Value.ReadLease.ConfigureAwait(false))
             {
-
                 return admission.Value.Plan;
-
             }
-
         }
 
         return admission.Value.Plan;
-
     }
 
     public async Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
@@ -549,7 +544,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken = default,
         DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result<ICovenantSnapshotReadLease?> leaseResult = await AcquireCovenantPlanningAdmissionAsync(
@@ -559,36 +553,29 @@ internal sealed partial class DataRetentionService(
 
         if (leaseResult.IsFailure)
         {
-
             return Result<DataRetentionPlanAdmission>.Failure(leaseResult.Error);
-
         }
 
         ICovenantSnapshotReadLease? lease = leaseResult.Value;
 
         if (lease is null)
         {
-
             if (RequiresCovenantPlanningCapability(request, capability))
             {
-
                 return Result<DataRetentionPlanAdmission>.Failure(
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
                         "The required Covenant planning capability is unavailable."));
-
             }
 
             return Result<DataRetentionPlanAdmission>.Success(
                 new DataRetentionPlanAdmission(
                     await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false),
                     ReadLease: null));
-
         }
 
         try
         {
-
             DataRetentionPlan plan = await BuildPlanAsync(
                 request,
                 cancellationToken).ConfigureAwait(false);
@@ -601,17 +588,13 @@ internal sealed partial class DataRetentionService(
                 new DataRetentionPlanAdmission(
                     inventory is null ? plan : BindCovenantErasurePlanIdentity(plan, inventory),
                     lease));
-
         }
         catch
         {
-
             await lease.DisposeAsync().ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     private static bool RequiresCovenantPlanningCapability(
@@ -657,7 +640,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken) =>
         request switch
         {
-
             { Operation: DataRetentionOperation.ResetWorkspace, Workspace: { } workspace } =>
                 await AcquireCovenantScopedPlanningAdmissionAsync(
                     workspace.CampaignId,
@@ -669,7 +651,6 @@ internal sealed partial class DataRetentionService(
                 await AcquireCovenantInstallationPlanningAdmissionAsync(cancellationToken).ConfigureAwait(false),
 
             _ => Result<ICovenantSnapshotReadLease?>.Success(null),
-
         };
 
     private Task<DataRetentionPlan> BuildPlanAsync(
@@ -677,7 +658,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken) =>
         request.Operation switch
         {
-
             DataRetentionOperation.DeleteSession when request.TargetId is Guid sessionId =>
                 BuildDeleteSessionPlanAsync(request, sessionId, cancellationToken),
 
@@ -706,14 +686,12 @@ internal sealed partial class DataRetentionService(
                     request.TargetId?.ToString("D") ?? string.Empty,
                     ErrorCodes.Data.InvalidRequest,
                     "The requested data operation is missing its required target or memory scope."))),
-
         };
 
     public async Task<Result<DataRetentionApplyResult>> ApplyAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         if (request.Request is
@@ -722,40 +700,573 @@ internal sealed partial class DataRetentionService(
                 MemoryScope: MemoryResetScope.Covenant,
             })
         {
-
             return await ApplyCovenantResetAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         if (request.Request.Operation is DataRetentionOperation.FactoryReset)
         {
-
             return await ApplyFactoryResetRouteAsync(request, cancellationToken).ConfigureAwait(false);
-
         }
 
         return await ApplyOrdinaryAsync(request, cancellationToken).ConfigureAwait(false);
-
     }
+
+    Task<DataRetentionHostedSweepOutcome> IDataRetentionHostedSweep.ApplyOrResumeHostedPruneAsync(
+        DataRetentionHostedSweepContinuation? continuation,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken) =>
+        ApplyOrResumeHostedPruneAsync(continuation, workLease, cancellationToken);
+
+    internal async Task<DataRetentionHostedSweepOutcome> ApplyOrResumeHostedPruneAsync(
+        DataRetentionHostedSweepContinuation? continuation,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(workLease);
+
+        if (workLease.Kind != GrimoireWorkKind.DataRetentionSweep)
+        {
+            throw new ArgumentException(
+                "Automatic retention requires DataRetentionSweep work authority.",
+                nameof(workLease));
+        }
+
+        return continuation is null
+            ? await StartHostedPruneAsync(workLease, cancellationToken).ConfigureAwait(false)
+            : await ResumeHostedPruneAsync(continuation, workLease, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DataRetentionHostedSweepOutcome> StartHostedPruneAsync(
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
+        if (_operationOwnership is null)
+        {
+            return ConcludedHostedPrune(HostedPruneFailure(
+                "Automatic retention cannot establish process-local operation ownership."));
+        }
+
+        DataRetentionPlan plan;
+
+        try
+        {
+            plan = await PlanAsync(
+                new DataRetentionRequest(DataRetentionOperation.Prune),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(
+                ex,
+                "Automatic retention refused a managed filesystem inventory that could not be proven safe.");
+
+            return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.Conflict,
+                    "Managed data changed or could not be safely inspected; the automatic sweep will retry later.")));
+        }
+
+        string ownerId = "automatic-retention:" + Guid.NewGuid().ToString("N");
+
+        DateTimeOffset now = timeProvider.GetUtcNow();
+
+        LongRunningOperation? operation = await operations.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                $"Applying automatic data-retention plan {plan.PlanId}.",
+                now),
+            ownerId,
+            now,
+            now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+            cancellationToken).ConfigureAwait(false);
+
+        if (operation is null)
+        {
+            return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.Conflict,
+                    await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false))));
+        }
+
+        if (!_operationOwnership.TryClaim(operation.Id, out Guid ownershipToken))
+        {
+            Result<DataRetentionApplyResult> refused = await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError("Automatic retention could not claim its durable operation."),
+                CancellationToken.None).ConfigureAwait(false);
+
+            return ConcludedHostedPrune(refused);
+        }
+
+        DataRetentionHostedSweepContinuation retained = new(
+            operation.Id,
+            ownerId,
+            ownershipToken);
+
+        bool keepClaim = false;
+
+        try
+        {
+            DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
+                operation.Id,
+                ownerId,
+                plan,
+                startIndex: 0,
+                checkpointVersion: 0,
+                saveCheckpoints: true,
+                frozenCutoffs: null,
+                forcedPreservedCandidates: null,
+                retainedPendingJournal: null,
+                workLease,
+                cancellationToken).ConfigureAwait(false);
+
+            if (execution.DeferredForMaintenance)
+            {
+                keepClaim = true;
+
+                return new DataRetentionHostedSweepOutcome(
+                    DataRetentionHostedSweepDisposition.DeferredForMaintenance,
+                    retained,
+                    Result: null);
+            }
+
+            if (execution.Failure is { } failure)
+            {
+                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
+            }
+
+            return ConcludedHostedPrune(await CompleteHostedPruneAsync(
+                operation.Id,
+                ownerId,
+                execution.Applied
+                    ?? throw new InvalidOperationException("A completed retention pass returned no result."),
+                cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            await TrySurrenderHostedPruneAsync(operation.Id, ownerId).ConfigureAwait(false);
+
+            throw;
+        }
+        catch (DataRetentionCandidateFrontierException ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} could not release its candidate frontier cleanly.",
+                operation.Id);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                HostedPruneError(
+                    "The automatic retention candidate completed, but its maintenance frontier did not close cleanly."),
+                CancellationToken.None,
+                RetentionRecoveryTerminalCode).ConfigureAwait(false));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} failed outside a candidate frontier.",
+                operation.Id);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError("The automatic retention operation failed before a candidate effect began."),
+                CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (!keepClaim)
+            {
+                _ = _operationOwnership.Release(operation.Id, ownershipToken);
+            }
+        }
+    }
+
+    private async Task<DataRetentionHostedSweepOutcome> ResumeHostedPruneAsync(
+        DataRetentionHostedSweepContinuation continuation,
+        IGrimoireWorkLease workLease,
+        CancellationToken cancellationToken)
+    {
+        if (continuation.OperationId == Guid.Empty
+            || string.IsNullOrWhiteSpace(continuation.OwnerId)
+            || continuation.OwnershipToken == Guid.Empty
+            || _operationOwnership is null
+            || !_operationOwnership.IsClaimedBy(
+                continuation.OperationId,
+                continuation.OwnershipToken))
+        {
+            return ConcludedHostedPrune(HostedPruneFailure(
+                "Automatic retention refused a continuation without its exact process claim."));
+        }
+
+        bool keepClaim = false;
+
+        try
+        {
+            LongRunningOperation? operation = await operations.GetAsync(
+                continuation.OperationId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (!IsExactHostedPruneOwner(operation, continuation.OwnerId))
+            {
+                return ConcludedHostedPrune(HostedPruneFailure(
+                    "Automatic retention could not verify its durable owner."));
+            }
+
+            if (_sameOwnerLeaseResumption is null)
+            {
+                return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                    operation,
+                    continuation.OwnerId,
+                    LongRunningOperationState.ReconciliationRequired,
+                    HostedPruneError("Automatic retention cannot resume its exact durable lease."),
+                    CancellationToken.None,
+                    RetentionRecoveryTerminalCode).ConfigureAwait(false));
+            }
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
+            bool resumed = await _sameOwnerLeaseResumption.ResumeSameOwnerLeaseAsync(
+                continuation.OperationId,
+                continuation.OwnerId,
+                now,
+                now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+                cancellationToken).ConfigureAwait(false);
+
+            operation = await operations.GetAsync(
+                continuation.OperationId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (!resumed
+                || !IsExactHostedPruneOwner(operation, continuation.OwnerId))
+            {
+                return ConcludedHostedPrune(HostedPruneFailure(
+                    "Automatic retention could not verify its resumed durable lease."));
+            }
+
+            DataRetentionPruneRecoveryExecution recovery = await RecoverPruneCoreAsync(
+                operation!,
+                workLease,
+                pendingJournalKnownUnstarted: true,
+                cancellationToken).ConfigureAwait(false);
+
+            if (recovery.Execution?.DeferredForMaintenance == true)
+            {
+                keepClaim = true;
+
+                return new DataRetentionHostedSweepOutcome(
+                    DataRetentionHostedSweepDisposition.DeferredForMaintenance,
+                    continuation,
+                    Result: null);
+            }
+
+            if (recovery.Terminal is not null)
+            {
+                Error recoveryError = new(
+                    recovery.Terminal.ErrorCode ?? ErrorCodes.Data.ReconciliationFailed,
+                    "Automatic retention could not safely resume its durable checkpoint.");
+
+                return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                    operation,
+                    continuation.OwnerId,
+                    recovery.Terminal.State,
+                    recoveryError,
+                    CancellationToken.None).ConfigureAwait(false));
+            }
+
+            if (recovery.Execution?.Failure is { } failure)
+            {
+                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
+            }
+
+            return ConcludedHostedPrune(await CompleteHostedPruneAsync(
+                operation!.Id,
+                continuation.OwnerId,
+                recovery.Execution?.Applied
+                    ?? throw new InvalidOperationException("A resumed retention pass returned no result."),
+                cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            await TrySurrenderHostedPruneAsync(
+                continuation.OperationId,
+                continuation.OwnerId).ConfigureAwait(false);
+
+            throw;
+        }
+        catch (DataRetentionCandidateFrontierException ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} could not release its resumed candidate frontier cleanly.",
+                continuation.OperationId);
+
+            LongRunningOperation? operation = await operations.GetAsync(
+                continuation.OperationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                continuation.OwnerId,
+                LongRunningOperationState.ReconciliationRequired,
+                HostedPruneError(
+                    "The resumed retention candidate completed, but its maintenance frontier did not close cleanly."),
+                CancellationToken.None,
+                RetentionRecoveryTerminalCode).ConfigureAwait(false));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Automatic retention operation {OperationId} failed while resuming.",
+                continuation.OperationId);
+
+            LongRunningOperation? operation = await operations.GetAsync(
+                continuation.OperationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+                operation,
+                continuation.OwnerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError("The automatic retention operation failed while resuming."),
+                CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (!keepClaim)
+            {
+                _ = _operationOwnership.Release(
+                    continuation.OperationId,
+                    continuation.OwnershipToken);
+            }
+        }
+    }
+
+    private static bool IsExactHostedPruneOwner(
+        LongRunningOperation? operation,
+        string ownerId) =>
+        operation is not null
+        && string.Equals(
+            operation.Kind,
+            LongRunningOperationKinds.DataRetentionPrune,
+            StringComparison.Ordinal)
+        && string.Equals(operation.LeaseOwner, ownerId, StringComparison.Ordinal)
+        && operation.State is LongRunningOperationState.Running
+            or LongRunningOperationState.Waiting
+            or LongRunningOperationState.Cancelling;
+
+    private async Task<Result<DataRetentionApplyResult>> CompleteHostedPruneAsync(
+        Guid operationId,
+        string ownerId,
+        DataRetentionApplyResult applied,
+        CancellationToken cancellationToken)
+    {
+        LongRunningOperation? latest = await operations.GetAsync(
+            operationId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (latest is null
+            || !await operations.TryTransitionAsync(
+                operationId,
+                latest.Revision,
+                ownerId,
+                LongRunningOperationState.Completed,
+                timeProvider.GetUtcNow(),
+                cancellationToken: cancellationToken).ConfigureAwait(false))
+        {
+            return Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.OperationNotFinalized,
+                    "Data was pruned, but the durable operation could not be finalized; retry is safe."));
+        }
+
+        return Result<DataRetentionApplyResult>.Success(applied);
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> SettleHostedPruneAsync(
+        LongRunningOperation? operation,
+        string ownerId,
+        LongRunningOperationState state,
+        Error error,
+        CancellationToken cancellationToken,
+        string? durableErrorCode = null)
+    {
+        if (operation is null)
+        {
+            return Result<DataRetentionApplyResult>.Failure(error);
+        }
+
+        LongRunningOperation latest = await operations.GetAsync(
+            operation.Id,
+            cancellationToken).ConfigureAwait(false)
+            ?? operation;
+
+        bool settled = await operations.TryTransitionAsync(
+            operation.Id,
+            latest.Revision,
+            ownerId,
+            state,
+            timeProvider.GetUtcNow(),
+            durableErrorCode ?? error.Code,
+            cancellationToken).ConfigureAwait(false);
+
+        return Result<DataRetentionApplyResult>.Failure(
+            settled
+                ? error
+                : HostedPruneError("Automatic retention could not record its durable disposition."));
+    }
+
+    private async Task<Error> SettleHostedCandidateFailureAsync(
+        Guid operationId,
+        string ownerId,
+        Exception exception)
+    {
+        LongRunningOperationState state;
+
+        Error error;
+
+        string? durableErrorCode = null;
+
+        switch (exception)
+        {
+            case RetentionCovenantLabelException covenantLabel:
+                state = LongRunningOperationState.Failed;
+
+                error = covenantLabel.Error;
+
+                break;
+
+            case RetentionBlockedException blocked:
+                state = LongRunningOperationState.Failed;
+
+                error = new Error(ErrorCodes.Data.Blocked, blocked.Message);
+
+                break;
+
+            case RetentionConflictException conflict:
+                state = LongRunningOperationState.Failed;
+
+                error = new Error(ErrorCodes.Data.Conflict, conflict.Message);
+
+                break;
+
+            case RetentionQuarantineRecoveryRequiredException:
+                state = LongRunningOperationState.ReconciliationRequired;
+
+                error = new Error(
+                    ErrorCodes.Data.QuarantineRecoveryRequired,
+                    "The database mutation committed; quarantined bytes will be finalized by durable recovery.");
+
+                durableErrorCode = RetentionRecoveryTerminalCode;
+
+                break;
+
+            default:
+                logger.LogError(
+                    exception,
+                    "Automatic retention operation {OperationId} failed inside a candidate frontier.",
+                    operationId);
+
+                state = LongRunningOperationState.ReconciliationRequired;
+
+                error = HostedPruneError(
+                    "The automatic retention candidate may be partly applied and requires durable recovery.");
+
+                durableErrorCode = RetentionRecoveryTerminalCode;
+
+                break;
+        }
+
+        try
+        {
+            LongRunningOperation? operation = await operations.GetAsync(
+                operationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Result<DataRetentionApplyResult> settled = await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                state,
+                error,
+                CancellationToken.None,
+                durableErrorCode).ConfigureAwait(false);
+
+            return settled.Error;
+        }
+        catch (Exception settlementException)
+        {
+            logger.LogError(
+                settlementException,
+                "Automatic retention operation {OperationId} could not record its candidate failure while the effect frontier was held.",
+                operationId);
+
+            return HostedPruneError(
+                "The automatic retention candidate failed and its durable operation remains available for recovery.");
+        }
+    }
+
+    private async Task TrySurrenderHostedPruneAsync(Guid operationId, string ownerId)
+    {
+        try
+        {
+            LongRunningOperation? current = await operations.GetAsync(
+                operationId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (current is not null)
+            {
+                _ = await operations.TryTransitionAsync(
+                    current.Id,
+                    current.Revision,
+                    ownerId,
+                    LongRunningOperationState.ReconciliationRequired,
+                    timeProvider.GetUtcNow(),
+                    RetentionRecoveryTerminalCode,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Cancelled automatic retention operation {OperationId} could not surrender its lease.",
+                operationId);
+        }
+    }
+
+    private static DataRetentionHostedSweepOutcome ConcludedHostedPrune(
+        Result<DataRetentionApplyResult> result) =>
+        new(DataRetentionHostedSweepDisposition.Concluded, Continuation: null, result);
+
+    private static Result<DataRetentionApplyResult> HostedPruneFailure(string message) =>
+        Result<DataRetentionApplyResult>.Failure(HostedPruneError(message));
+
+    private static Error HostedPruneError(string message) =>
+        new(ErrorCodes.Data.ReconciliationFailed, message);
 
     private async Task<Result<DataRetentionApplyResult>> ApplyOrdinaryAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         DataRetentionPlan current;
 
         try
         {
-
             current = await PlanAsync(
                 request.Request,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             logger.LogWarning(
                 ex,
                 "Data-retention apply refused a managed filesystem inventory that could not be proven safe.");
@@ -764,7 +1275,6 @@ internal sealed partial class DataRetentionService(
                 new Error(
                     ErrorCodes.Data.Conflict,
                     "Managed data changed or could not be safely inspected; request a new dry-run before applying."));
-
         }
 
         if (!string.IsNullOrWhiteSpace(request.ExpectedPlanId)
@@ -773,46 +1283,38 @@ internal sealed partial class DataRetentionService(
                 current.PlanId,
                 StringComparison.Ordinal))
         {
-
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.PlanChanged,
                     "The deletion plan changed after preview; request a new dry-run before applying."));
-
         }
 
         if (request.Request.Operation is DataRetentionOperation.DeleteSession
                 or DataRetentionOperation.DeleteAttachment
             && current.Items.Length == 0)
         {
-
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.NotFound,
                     "The requested data source was not found."));
-
         }
 
         if (request.Request.Operation != DataRetentionOperation.Prune
             && current.Blockers.Length > 0)
         {
-
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.Blocked,
                     current.Blockers[0].Message));
-
         }
 
         if (request.Request.Operation != DataRetentionOperation.Prune
             && current.Conflicts.Length > 0)
         {
-
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.Conflict,
                     current.Conflicts[0].Message));
-
         }
 
         SessionPlanSnapshot? expectedSessionSnapshot =
@@ -835,14 +1337,12 @@ internal sealed partial class DataRetentionService(
 
         string operationKind = request.Request.Operation switch
         {
-
             DataRetentionOperation.Prune => LongRunningOperationKinds.DataRetentionPrune,
 
             DataRetentionOperation.FactoryReset =>
                 LongRunningOperationKinds.DataRetentionFactoryReset,
 
             _ => LongRunningOperationKinds.DataRetentionMutation,
-
         };
 
         LongRunningOperationRecoveryPolicy recoveryPolicy =
@@ -869,12 +1369,10 @@ internal sealed partial class DataRetentionService(
 
         if (started is null)
         {
-
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.Conflict,
                     await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false)));
-
         }
 
         LongRunningOperation operation = started;
@@ -883,14 +1381,12 @@ internal sealed partial class DataRetentionService(
 
         if (request.Request.Operation == DataRetentionOperation.FactoryReset)
         {
-
             DataRetentionConflict[] boundaryConflicts = await ReadGlobalConflictsAsync(
                 cancellationToken,
                 operation.Id).ConfigureAwait(false);
 
             if (boundaryConflicts.Length > 0)
             {
-
                 LongRunningOperation latest = await operations.GetAsync(
                     operation.Id,
                     cancellationToken).ConfigureAwait(false)
@@ -907,26 +1403,21 @@ internal sealed partial class DataRetentionService(
 
                 if (!terminalized)
                 {
-
                     return Result<DataRetentionApplyResult>.Failure(
                         new Error(
                             ErrorCodes.Data.ReconciliationFailed,
                             "A factory-reset conflict appeared, but its durable marker could not be finalized."));
-
                 }
 
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
                         ErrorCodes.Data.Conflict,
                         boundaryConflicts[0].Message));
-
             }
-
         }
 
         try
         {
-
             RetentionMutationJournal? mutationJournal =
                 operationKind == LongRunningOperationKinds.DataRetentionMutation
                     ? await PrepareMutationJournalAsync(
@@ -940,7 +1431,6 @@ internal sealed partial class DataRetentionService(
 
             DataRetentionApplyResult applied = request.Request.Operation switch
             {
-
                 DataRetentionOperation.DeleteSession =>
                     await DeleteSessionAsync(
                         operation.Id,
@@ -995,15 +1485,12 @@ internal sealed partial class DataRetentionService(
                         cancellationToken).ConfigureAwait(false),
 
                 _ => throw new InvalidOperationException("Unsupported data-retention operation."),
-
             };
 
             if (!applied.Reconciled)
             {
-
                 throw new IOException(
                     "Post-delete reconciliation found retained owned data for the retention mutation.");
-
             }
 
             LongRunningOperation latest = await operations.GetAsync(
@@ -1021,7 +1508,6 @@ internal sealed partial class DataRetentionService(
 
             if (!completed)
             {
-
                 // Its own code, not the catch-all. Nothing is wrong with the data and nothing is
                 // left on disk - only the bookkeeping is open - so this is the one retention ending
                 // a client may retry unconditionally, and it has to be able to tell.
@@ -1029,15 +1515,12 @@ internal sealed partial class DataRetentionService(
                     new Error(
                         ErrorCodes.Data.OperationNotFinalized,
                         "Data was pruned, but the durable operation could not be finalized; retry is safe."));
-
             }
 
             return Result<DataRetentionApplyResult>.Success(applied);
-
         }
         catch (RetentionCovenantLabelException ex)
         {
-
             // Nothing was mutated: every guard asks before its transaction opens. The operation is
             // terminalized under the guard's own code so a client can tell protected state that must
             // leave through the purge boundary from an ordinary retention hold, and the refusal
@@ -1063,11 +1546,9 @@ internal sealed partial class DataRetentionService(
                     : new Error(
                         ErrorCodes.Data.ReconciliationFailed,
                         "A labelled artifact refused the deletion, but its durable marker could not be finalized."));
-
         }
         catch (RetentionBlockedException ex)
         {
-
             LongRunningOperation latest = await operations.GetAsync(
                 operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
@@ -1088,11 +1569,9 @@ internal sealed partial class DataRetentionService(
                     : new Error(
                         ErrorCodes.Data.ReconciliationFailed,
                         "A retention blocker appeared, but its durable marker could not be finalized."));
-
         }
         catch (RetentionConflictException ex)
         {
-
             LongRunningOperation latest = await operations.GetAsync(
                 operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
@@ -1113,11 +1592,9 @@ internal sealed partial class DataRetentionService(
                     : new Error(
                         ErrorCodes.Data.ReconciliationFailed,
                         "A retention conflict appeared, but its durable marker could not be finalized."));
-
         }
         catch (OperationCanceledException)
         {
-
             // Deliberately non-terminal: a cancelled apply may be partly applied, so the durable row
             // has to stay recoverable. But it must surrender its lease — leaving a five-minute lease
             // on a row nobody is working keeps every retention command blocked for the whole window
@@ -1127,11 +1604,9 @@ internal sealed partial class DataRetentionService(
             await TrySurrenderLeaseForReconciliationAsync(operation, lease, ownerId).ConfigureAwait(false);
 
             throw;
-
         }
         catch (RetentionQuarantineRecoveryRequiredException ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Data-retention operation {OperationId} requires quarantine recovery.",
@@ -1160,11 +1635,9 @@ internal sealed partial class DataRetentionService(
                     terminalized
                         ? "The database mutation committed; quarantined bytes will be finalized by durable recovery."
                         : "The database mutation committed, but its quarantine recovery marker could not be finalized."));
-
         }
         catch (Exception ex)
         {
-
             logger.LogError(
                 ex,
                 "Data-retention operation {OperationId} failed while applying plan {PlanId}.",
@@ -1189,40 +1662,32 @@ internal sealed partial class DataRetentionService(
                 new Error(
                     ErrorCodes.Data.ReconciliationFailed,
                     "The retention operation failed; its durable history requires operator review."));
-
         }
-
     }
 
     private async Task<Result<DataRetentionApplyResult>> ApplyCovenantResetAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         if (_covenantResetCheckpointInitiator is null || _covenantErasureCoordinator is null)
         {
-
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Covenant.MaintenanceFailed,
                     "The Covenant erasure lifecycle is unavailable."));
-
         }
 
         Result<DataRetentionPlanAdmission> admitted;
 
         try
         {
-
             admitted = await PlanAdmissionAsync(
                 request.Request,
                 cancellationToken,
                 DataRetentionPlanAdmissionCapability.Installation).ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             logger.LogWarning(
                 ex,
                 "Covenant reset refused an inventory that could not be proven safe.");
@@ -1231,14 +1696,11 @@ internal sealed partial class DataRetentionService(
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The Covenant reset inventory could not be proven safely."));
-
         }
 
         if (admitted.IsFailure)
         {
-
             return Result<DataRetentionApplyResult>.Failure(admitted.Error);
-
         }
 
         ICovenantSnapshotReadLease? planningLease = admitted.Value.ReadLease;
@@ -1249,7 +1711,6 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
             DataRetentionPlan current = admitted.Value.Plan;
 
             if (planningLease is null
@@ -1259,39 +1720,31 @@ internal sealed partial class DataRetentionService(
                 || datasetGeneration == Guid.Empty
                 || current.Covenant is not { } inventory)
             {
-
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
                         ErrorCodes.Covenant.IntegrityFailure,
                         "The Covenant reset requires one current installation inventory."));
-
             }
 
             if (!string.IsNullOrWhiteSpace(request.ExpectedPlanId)
                 && !string.Equals(request.ExpectedPlanId, current.PlanId, StringComparison.Ordinal))
             {
-
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
                         ErrorCodes.Data.PlanChanged,
                         "The deletion plan changed after preview; request a new dry-run before applying."));
-
             }
 
             if (current.Blockers.Length > 0)
             {
-
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(ErrorCodes.Data.Blocked, current.Blockers[0].Message));
-
             }
 
             if (current.Conflicts.Length > 0)
             {
-
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(ErrorCodes.Data.Conflict, current.Conflicts[0].Message));
-
             }
 
             ownerId = "data-retention:" + Guid.NewGuid().ToString("N");
@@ -1311,12 +1764,10 @@ internal sealed partial class DataRetentionService(
 
             if (operation is null)
             {
-
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
                         ErrorCodes.Data.Conflict,
                         await DescribeRetentionConflictAsync(cancellationToken).ConfigureAwait(false)));
-
             }
 
             Result currentLease = await planningLease
@@ -1325,13 +1776,11 @@ internal sealed partial class DataRetentionService(
 
             if (currentLease.IsFailure)
             {
-
                 return await FailCovenantResetAsync(
                     operation,
                     ownerId,
                     currentLease.Error,
                     LongRunningOperationState.Failed).ConfigureAwait(false);
-
             }
 
             CovenantErasureEffectDigestInput effect = new(
@@ -1358,13 +1807,11 @@ internal sealed partial class DataRetentionService(
 
             if (prepared.IsFailure)
             {
-
                 return await FailCovenantResetAsync(
                     operation,
                     ownerId,
                     prepared.Error,
                     LongRunningOperationState.Failed).ConfigureAwait(false);
-
             }
 
             LongRunningOperation? committed = await operations
@@ -1373,7 +1820,6 @@ internal sealed partial class DataRetentionService(
 
             if (committed?.CheckpointPayload is not { Length: > 0 } payload)
             {
-
                 return await FailCovenantResetAsync(
                     operation,
                     ownerId,
@@ -1381,20 +1827,29 @@ internal sealed partial class DataRetentionService(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         "The committed Covenant reset checkpoint could not be reloaded."),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
-
             }
 
             Result<CovenantErasureCheckpointState> checkpoint =
                 CovenantErasureCheckpointState.FromMutationCheckpoint(
                     committed.Id,
+                    committed.CheckpointVersion,
                     payload,
                     out bool describesCovenantErasure);
 
+            // The reread row is compared as a whole launch rather than as the three fields an owner
+            // is made of. The owner is a projection of the launch, so a row that preserved the owner
+            // while its target generation or an epoch moved would pass an owner comparison and still
+            // be a different destructive plan from the one that was admitted.
+            Result<GrimoireOfflineTransitionLaunchBinding> relaunched =
+                GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    committed.CheckpointVersion,
+                    payload);
+
             if (!describesCovenantErasure
                 || checkpoint.IsFailure
-                || checkpoint.Value.Owner != prepared.Value.Owner)
+                || relaunched.IsFailure
+                || relaunched.Value.Digest != prepared.Value.Launch.Digest)
             {
-
                 Error invalid = checkpoint.IsFailure
                     ? checkpoint.Error
                     : new Error(
@@ -1406,7 +1861,6 @@ internal sealed partial class DataRetentionService(
                     ownerId,
                     invalid,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
-
             }
 
             Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
@@ -1416,68 +1870,52 @@ internal sealed partial class DataRetentionService(
 
             if (planningLeaseReleased.IsFailure)
             {
-
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
                     planningLeaseReleased.Error,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
-
             }
 
-            Result<CovenantErasureCompletion> erased = await _leaseMaintainer.RunAsync(
-                operation.Id,
-                ownerId,
-                async maintainedToken =>
-                {
-
-                    using CancellationTokenSource coordinatorCancellation =
-                        CancellationTokenSource.CreateLinkedTokenSource(
-                            cancellationToken,
-                            maintainedToken);
-
-                    return await _covenantErasureCoordinator
-                        .RunAsync(
-                            committed,
-                            checkpoint.Value,
-                            ownerId,
-                            coordinatorCancellation.Token)
-                        .ConfigureAwait(false);
-
-                },
-                CancellationToken.None).ConfigureAwait(false);
+            // No durable lease is renewed across the closed period. A renewal advances the row's
+            // revision, and the journal has bound itself to the exact revision the launch produced -
+            // so a heartbeat would invalidate the terminal compare-exchange the transition has to
+            // make before it can retire. What the lease was protecting against is instead held by the
+            // installation maintenance lock, the journal's own slot, and the process-local ownership
+            // the coordinator claims for the length of the run.
+            Result<CovenantErasureCompletion> erased = await _covenantErasureCoordinator
+                .RunAsync(
+                    committed,
+                    checkpoint.Value,
+                    ownerId,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (erased.IsFailure)
             {
-
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
                     erased.Error,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
-
             }
 
             if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen)
             {
-
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
                     CovenantResetFailure(erased.Value.BlockingErrorCode),
                     LongRunningOperationState.Failed).ConfigureAwait(false);
-
             }
 
             if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
             {
-
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
                     CovenantResetFailure(erased.Value.BlockingErrorCode),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
-
             }
 
             Result completed = await CompleteCovenantResetAsync(
@@ -1486,70 +1924,52 @@ internal sealed partial class DataRetentionService(
 
             if (completed.IsFailure)
             {
-
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
                     completed.Error,
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
-
             }
 
             return Result<DataRetentionApplyResult>.Success(EmptyApply(operation.Id, current));
-
         }
         catch (OperationCanceledException)
         {
-
             if (operation is not null && !string.IsNullOrWhiteSpace(ownerId))
             {
-
                 await TryParkCancelledCovenantResetAsync(operation, ownerId).ConfigureAwait(false);
-
             }
 
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogError(
                 ex,
                 "Direct Covenant reset failed unexpectedly after durable operation admission.");
 
             if (operation is null || string.IsNullOrWhiteSpace(ownerId))
             {
-
                 return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
-
             }
 
             return await FailUnexpectedCovenantResetAsync(operation, ownerId).ConfigureAwait(false);
-
         }
         finally
         {
-
             if (planningLease is not null)
             {
-
                 _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease).ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private async Task TryParkCancelledCovenantResetAsync(
         LongRunningOperation operation,
         string ownerId)
     {
-
         try
         {
-
             LongRunningOperation current = await operations
                 .GetAsync(operation.Id, CancellationToken.None)
                 .ConfigureAwait(false)
@@ -1563,18 +1983,14 @@ internal sealed partial class DataRetentionService(
                 timeProvider.GetUtcNow(),
                 ErrorCodes.Covenant.MaintenanceFailed,
                 CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Cancelled Covenant reset operation {OperationId} could not surrender its lease.",
                 operation.Id);
-
         }
-
     }
 
     private async Task<Result<DataRetentionApplyResult>> FailCovenantResetAsync(
@@ -1583,10 +1999,8 @@ internal sealed partial class DataRetentionService(
         Error error,
         LongRunningOperationState state)
     {
-
         try
         {
-
             LongRunningOperation latest = await operations
                 .GetAsync(operation.Id, CancellationToken.None)
                 .ConfigureAwait(false)
@@ -1601,36 +2015,53 @@ internal sealed partial class DataRetentionService(
                 error.Code,
                 CancellationToken.None).ConfigureAwait(false);
 
+            // A row that already carries the state this was going to write needs nothing written. The
+            // offline transition terminalizes its own row from the journal now, under the launch it
+            // bound itself to, and it does so before the journal retires - so by the time a
+            // disposition comes back here the answer can already be durable. Insisting on making the
+            // write ourselves would report a maintenance failure for a reset that ended exactly as
+            // intended, and would replace the specific reason with a generic one.
             return Result<DataRetentionApplyResult>.Failure(
-                transitioned
+                transitioned || await AlreadyRecordedAsync(operation.Id, state).ConfigureAwait(false)
                     ? error
                     : CovenantMaintenanceFailure());
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Covenant reset operation {OperationId} could not record its typed failure.",
                 operation.Id);
 
             return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
-
         }
+    }
 
+    /// <summary>
+    /// Whether the operation row already stands in the terminal state a failure was about to write.
+    /// </summary>
+    /// <remarks>
+    /// Read after the compare-exchange rather than before it, so the ordinary path costs nothing and
+    /// the question is only asked when the answer changes what is reported. A row that moved for some
+    /// other reason answers no, which keeps a genuine lost race a maintenance failure.
+    /// </remarks>
+    private async Task<bool> AlreadyRecordedAsync(Guid operationId, LongRunningOperationState state)
+    {
+        LongRunningOperation? current = await operations
+            .GetAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return current is not null && current.State == state;
     }
 
     private async Task<Result<DataRetentionApplyResult>> FailUnexpectedCovenantResetAsync(
         LongRunningOperation operation,
         string ownerId)
     {
-
         Error failure = CovenantMaintenanceFailure();
 
         try
         {
-
             LongRunningOperation current = await operations
                 .GetAsync(operation.Id, CancellationToken.None)
                 .ConfigureAwait(false)
@@ -1647,45 +2078,35 @@ internal sealed partial class DataRetentionService(
                 effectsMayExist
                     ? LongRunningOperationState.ReconciliationRequired
                     : LongRunningOperationState.Failed).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Covenant reset operation {OperationId} could not classify its durable effect boundary.",
                 operation.Id);
 
             return Result<DataRetentionApplyResult>.Failure(failure);
-
         }
-
     }
 
     private async Task<Result> TryDisposeCovenantPlanningLeaseAsync(
         ICovenantSnapshotReadLease planningLease)
     {
-
         try
         {
-
             await planningLease.DisposeAsync().ConfigureAwait(false);
 
             return Result.Success();
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "The direct Covenant reset planning lease could not be released cleanly.");
 
             return Result.Failure(CovenantMaintenanceFailure());
-
         }
-
     }
 
     private static Error CovenantMaintenanceFailure() =>
@@ -1701,24 +2122,19 @@ internal sealed partial class DataRetentionService(
         Guid operationId,
         string ownerId)
     {
-
         using CancellationTokenSource completion = new(TimeSpan.FromSeconds(5), timeProvider);
 
         try
         {
-
             for (int attempt = 0; attempt < CovenantCompletionMaximumAttempts; attempt++)
             {
-
                 LongRunningOperation? current = await operations
                     .GetAsync(operationId, completion.Token)
                     .ConfigureAwait(false);
 
                 if (current?.State is LongRunningOperationState.Completed)
                 {
-
                     return Result.Success();
-
                 }
 
                 if (current is null
@@ -1727,9 +2143,7 @@ internal sealed partial class DataRetentionService(
                         and not LongRunningOperationState.Waiting
                         and not LongRunningOperationState.Cancelling)
                 {
-
                     return Result.Failure(CovenantMaintenanceFailure());
-
                 }
 
                 bool completed = await operations.TryTransitionAsync(
@@ -1742,33 +2156,26 @@ internal sealed partial class DataRetentionService(
 
                 if (completed)
                 {
-
                     return Result.Success();
-
                 }
 
                 await Task.Delay(
                     CovenantCompletionRetryDelay,
                     timeProvider,
                     completion.Token).ConfigureAwait(false);
-
             }
 
             return Result.Failure(CovenantMaintenanceFailure());
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Covenant reset operation {OperationId} could not finalize after committed reopen.",
                 operationId);
 
             return Result.Failure(CovenantMaintenanceFailure());
-
         }
-
     }
 
     private static Error CovenantResetFailure(string? errorCode) =>
@@ -1802,10 +2209,8 @@ internal sealed partial class DataRetentionService(
         LongRunningOperationLeaseResult lease,
         string ownerId)
     {
-
         try
         {
-
             LongRunningOperation cancelled = await operations.GetAsync(
                 operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
@@ -1819,18 +2224,14 @@ internal sealed partial class DataRetentionService(
                 timeProvider.GetUtcNow(),
                 ErrorCodes.Data.ReconciliationFailed,
                 CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Data-retention operation {OperationId} was cancelled, but its lease could not be surrendered; durable recovery will reclaim it.",
                 operation.Id);
-
         }
-
     }
 
     private async Task<DataRetentionPlan> BuildDeleteSessionPlanAsync(
@@ -1838,14 +2239,12 @@ internal sealed partial class DataRetentionService(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         SessionPlanSnapshot? snapshot = await ReadSessionSnapshotAsync(
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
         if (snapshot is null)
         {
-
             return FinalizePlan(
                 request,
                 [],
@@ -1853,7 +2252,6 @@ internal sealed partial class DataRetentionService(
                 [],
                 [],
                 requiresConfirmation: true);
-
         }
 
         List<DataRetentionPlanItem> items =
@@ -1923,28 +2321,24 @@ internal sealed partial class DataRetentionService(
 
         foreach (Guid entryId in snapshot.PinnedEntryIds)
         {
-
             blockers.Add(
                 new DataRetentionBlocker(
                     RetentionDataClass.Entries,
                     entryId.ToString("D"),
                     "Data.PinnedEntry",
                     "A pinned session entry protects this session from deletion."));
-
         }
 
         RetentionSettings retention = CurrentRetention;
 
         if ((retention.ProtectedSessionIds ?? []).Contains(sessionId))
         {
-
             blockers.Add(
                 new DataRetentionBlocker(
                     RetentionDataClass.ArchivedSessions,
                     sessionId.ToString("D"),
                     "Data.SessionHold",
                     "The session is protected by an explicit operator retention hold."));
-
         }
 
         blockers.AddRange(
@@ -1963,7 +2357,6 @@ internal sealed partial class DataRetentionService(
             conflicts,
             [sessionId.ToString("D")],
             requiresConfirmation: true);
-
     }
 
     private async Task<DataRetentionPlan> BuildDeleteAttachmentPlanAsync(
@@ -1971,14 +2364,12 @@ internal sealed partial class DataRetentionService(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         AttachmentPlanSnapshot? attachment = await ReadAttachmentSnapshotAsync(
             attachmentId,
             cancellationToken).ConfigureAwait(false);
 
         if (attachment is null)
         {
-
             return FinalizePlan(
                 request,
                 [],
@@ -1986,12 +2377,10 @@ internal sealed partial class DataRetentionService(
                 [],
                 [],
                 requiresConfirmation: true);
-
         }
 
         if (!string.Equals(attachment.State, "Bound", StringComparison.OrdinalIgnoreCase))
         {
-
             return FinalizePlan(
                 request,
                 [],
@@ -2005,24 +2394,20 @@ internal sealed partial class DataRetentionService(
                 [],
                 [],
                 requiresConfirmation: true);
-
         }
 
         List<DataRetentionBlocker> blockers = [];
 
         if (attachment.SessionId is Guid sessionId)
         {
-
             if ((CurrentRetention.ProtectedSessionIds ?? []).Contains(sessionId))
             {
-
                 blockers.Add(
                     new DataRetentionBlocker(
                         RetentionDataClass.AttachmentVersions,
                         sessionId.ToString("D"),
                         "Data.SessionHold",
                         "The attachment's owning session is protected by an explicit operator retention hold."));
-
             }
 
             blockers.AddRange(
@@ -2030,7 +2415,6 @@ internal sealed partial class DataRetentionService(
                     sessionId,
                     attachmentId,
                     cancellationToken).ConfigureAwait(false));
-
         }
 
         List<DataRetentionPlanItem> items =
@@ -2066,7 +2450,6 @@ internal sealed partial class DataRetentionService(
             conflicts,
             [attachmentId.ToString("D")],
             requiresConfirmation: true);
-
     }
 
     private async Task AddSessionPruneCandidatesAsync(
@@ -2079,12 +2462,9 @@ internal sealed partial class DataRetentionService(
         List<string> candidates,
         CancellationToken cancellationToken)
     {
-
         if (remaining <= 0)
         {
-
             return;
-
         }
 
         foreach ((string status, RetentionRuleSettings rule) in new[]
@@ -2093,12 +2473,9 @@ internal sealed partial class DataRetentionService(
                      ("archived", retention.ArchivedSessions),
                  })
         {
-
             if (!rule.Enabled || remaining <= 0)
             {
-
                 continue;
-
             }
 
             DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
@@ -2112,7 +2489,6 @@ internal sealed partial class DataRetentionService(
 
             foreach (Guid sessionId in diagnosticSessionIds)
             {
-
                 DataRetentionPlan sessionPlan = await BuildDeleteSessionPlanAsync(
                     request with
                     {
@@ -2125,7 +2501,6 @@ internal sealed partial class DataRetentionService(
                 blockers.AddRange(sessionPlan.Blockers);
 
                 conflicts.AddRange(sessionPlan.Conflicts);
-
             }
 
             Guid[] sessionIds = await ReadEligibleSessionIdsBeforeAsync(
@@ -2137,7 +2512,6 @@ internal sealed partial class DataRetentionService(
 
             foreach (Guid sessionId in sessionIds)
             {
-
                 DataRetentionPlan sessionPlan = await BuildDeleteSessionPlanAsync(
                     request with
                     {
@@ -2150,38 +2524,29 @@ internal sealed partial class DataRetentionService(
                 if (sessionPlan.Blockers.Length == 0
                     && sessionPlan.Conflicts.Length == 0)
                 {
-
                     candidates.Add("session:" + sessionId.ToString("D"));
 
                     items.AddRange(sessionPlan.Items);
 
                     remaining--;
-
                 }
-
             }
-
         }
-
     }
 
     private async Task<DataRetentionPlan> BuildResetMemoryPlanAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken)
     {
-
         if (request.MemoryScope is MemoryResetScope.Covenant)
         {
-
             return await BuildCovenantResetMemoryPlanAsync(
                 request,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (request.TargetId is { } targeted && !CampaignTargetedResetIsSupported(request.MemoryScope!.Value))
         {
-
             return EmptyPlan(
                 request,
                 new DataRetentionBlocker(
@@ -2191,7 +2556,6 @@ internal sealed partial class DataRetentionService(
                     "Only Saga and Lexicon memories record an owning Campaign, so only those two can be "
                     + "reset for one Campaign. Reset this store without a Campaign, or choose one that "
                     + "carries an owner."));
-
         }
 
         RetentionDataClass dataClass = MemoryResetDataClass(request.MemoryScope!.Value);
@@ -2202,13 +2566,11 @@ internal sealed partial class DataRetentionService(
                      request.MemoryScope!.Value,
                      request.TargetId))
         {
-
             rows += await CountTableAsync(
                 selection.Table,
                 selection.Predicate,
                 cancellationToken,
                 selection.Parameters).ConfigureAwait(false);
-
         }
 
         return FinalizePlan(
@@ -2222,7 +2584,6 @@ internal sealed partial class DataRetentionService(
                 cancellationToken).ConfigureAwait(false),
             rows == 0 ? [] : [MemoryResetCandidateId(request.MemoryScope!.Value, request.TargetId)],
             requiresConfirmation: true);
-
     }
 
     /// <summary>
@@ -2244,7 +2605,6 @@ internal sealed partial class DataRetentionService(
     private static RetentionDataClass MemoryResetDataClass(MemoryResetScope scope) =>
         scope switch
         {
-
             MemoryResetScope.Entry => RetentionDataClass.SessionEntryEmbeddings,
 
             MemoryResetScope.Attachments => RetentionDataClass.AttachmentEmbeddings,
@@ -2256,7 +2616,6 @@ internal sealed partial class DataRetentionService(
             MemoryResetScope.Lexicon => RetentionDataClass.LexiconEntries,
 
             _ => throw new InvalidOperationException("Unsupported memory reset scope."),
-
         };
 
     /// <summary>
@@ -2285,12 +2644,9 @@ internal sealed partial class DataRetentionService(
         MemoryResetScope scope,
         Guid? campaignId)
     {
-
         if (campaignId is not { } campaign)
         {
-
             return UntargetedMemoryResetTables(scope);
-
         }
 
         // The two sets bind one Campaign under two spellings, because the columns they select against do
@@ -2312,7 +2668,6 @@ internal sealed partial class DataRetentionService(
 
         return scope switch
         {
-
             MemoryResetScope.Saga =>
             [
                 .. AnnalsResetSelections(
@@ -2384,9 +2739,7 @@ internal sealed partial class DataRetentionService(
 
             _ => throw new InvalidOperationException(
                 "Only Saga and Lexicon memories record an owning Campaign."),
-
         };
-
     }
 
     /// <summary>
@@ -2402,7 +2755,6 @@ internal sealed partial class DataRetentionService(
     private static MemoryResetSelection[] UntargetedMemoryResetTables(MemoryResetScope scope) =>
         scope switch
         {
-
             MemoryResetScope.Entry =>
                 [Whole("entry_embeddings_vec"), Whole("entry_embeddings")],
 
@@ -2451,7 +2803,6 @@ internal sealed partial class DataRetentionService(
                 ],
 
             _ => throw new InvalidOperationException("Unsupported memory reset scope."),
-
         };
 
     /// <summary>A table this reset clears entirely.</summary>
@@ -2482,17 +2833,14 @@ internal sealed partial class DataRetentionService(
         DataRetentionRequest request,
         CancellationToken cancellationToken)
     {
-
         long rows = 0;
 
         foreach (string table in CovenantInventoryRowTables)
         {
-
             rows += await CountTableAsync(
                 table,
                 null,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         return FinalizePlan(
@@ -2504,7 +2852,6 @@ internal sealed partial class DataRetentionService(
             [],
             [],
             requiresConfirmation: true);
-
     }
 
     private async Task<DataRetentionPlan> BuildFactoryResetPlanAsync(
@@ -2524,7 +2871,6 @@ internal sealed partial class DataRetentionService(
         RetentionMutationJournal? mutationJournal,
         CancellationToken cancellationToken)
     {
-
         using IDisposable? sessionGate = attachmentStore is null
             ? null
             : await attachmentStore.AcquireSessionGateAsync(
@@ -2537,9 +2883,7 @@ internal sealed partial class DataRetentionService(
 
         if (snapshot is null)
         {
-
             return EmptyApply(operationId, plan);
-
         }
 
         await RefuseLabeledSessionEntriesAsync(
@@ -2571,7 +2915,6 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
             SessionPlanSnapshot? transactionSnapshot =
                 await ReadSessionSnapshotInTransactionAsync(
                     connection,
@@ -2581,10 +2924,8 @@ internal sealed partial class DataRetentionService(
 
             if (transactionSnapshot is null)
             {
-
                 throw new RetentionConflictException(
                     "Session data changed after preview; request a new dry-run before retrying.");
-
             }
 
             snapshot = transactionSnapshot;
@@ -2598,19 +2939,15 @@ internal sealed partial class DataRetentionService(
                     cutoff,
                     cancellationToken).ConfigureAwait(false))
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return EmptyApply(operationId, plan);
-
             }
 
             if (!SessionSnapshotMatchesPlan(snapshot, expectedSnapshot, plan))
             {
-
                 throw new RetentionConflictException(
                     "Session data changed after preview; request a new dry-run before retrying.");
-
             }
 
             await RevalidateSessionDeletionBoundaryAsync(
@@ -2628,13 +2965,11 @@ internal sealed partial class DataRetentionService(
 
             foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
             {
-
                 derivedDeleted += await DeleteAttachmentRowsAsync(
                     connection,
                     transaction,
                     attachment,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             derivedDeleted += await ExecuteAsync(
@@ -2689,7 +3024,6 @@ internal sealed partial class DataRetentionService(
 
             foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
             {
-
                 if (TryQuarantineOwnedFile(
                         _attachmentsRoot,
                         attachment.RelativePath,
@@ -2698,45 +3032,33 @@ internal sealed partial class DataRetentionService(
                         out IdentityOwnedFileSystemQuarantine quarantine,
                         out long deletedBytes))
                 {
-
                     quarantinedFiles.Add(quarantine);
 
                     filesDeleted++;
 
                     bytesDeleted += deletedBytes;
-
                 }
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             committed = true;
-
         }
         catch
         {
-
             if (!committed)
             {
-
                 try
                 {
-
                     await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
                 }
                 finally
                 {
-
                     RestoreQuarantinedFactoryFiles(quarantinedFiles);
-
                 }
-
             }
 
             throw;
-
         }
 
         FinalizeOperationQuarantines(quarantinedFiles);
@@ -2811,13 +3133,11 @@ internal sealed partial class DataRetentionService(
 
         foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
         {
-
             reconciled &= await CountTableAsync(
                 "session_attachment_index_state",
                 "lower(replace(AttachmentId, '-', '')) = @id",
                 cancellationToken,
                 ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false) == 0;
-
         }
 
         string[] snapshotChunkIds =
@@ -2845,7 +3165,6 @@ internal sealed partial class DataRetentionService(
             reconciled,
             plan.Blockers,
             plan.Conflicts);
-
     }
 
     /// <summary>
@@ -2864,7 +3183,6 @@ internal sealed partial class DataRetentionService(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         using CovenantSqliteAuthorizationScope retention =
             CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)connection,
@@ -2876,7 +3194,6 @@ internal sealed partial class DataRetentionService(
             "DELETE FROM Sessions WHERE lower(replace(Id, '-', '')) = @id",
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
     }
 
     private async Task<DataRetentionApplyResult> DeleteAttachmentAsync(
@@ -2888,16 +3205,13 @@ internal sealed partial class DataRetentionService(
         RetentionMutationJournal? mutationJournal,
         CancellationToken cancellationToken)
     {
-
         AttachmentPlanSnapshot? snapshot = await ReadAttachmentSnapshotAsync(
             attachmentId,
             cancellationToken).ConfigureAwait(false);
 
         if (snapshot is null)
         {
-
             return EmptyApply(operationId, plan);
-
         }
 
         using IDisposable? sessionGate = attachmentStore is null
@@ -2913,9 +3227,7 @@ internal sealed partial class DataRetentionService(
 
         if (snapshot is null)
         {
-
             return EmptyApply(operationId, plan);
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -2939,7 +3251,6 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
             AttachmentPlanSnapshot? transactionSnapshot =
                 await ReadAttachmentSnapshotInTransactionAsync(
                     connection,
@@ -2949,10 +3260,8 @@ internal sealed partial class DataRetentionService(
 
             if (transactionSnapshot is null)
             {
-
                 throw new RetentionConflictException(
                     "Attachment data changed after preview; request a new dry-run before retrying.");
-
             }
 
             snapshot = transactionSnapshot;
@@ -2965,19 +3274,15 @@ internal sealed partial class DataRetentionService(
                     cutoff,
                     cancellationToken).ConfigureAwait(false))
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return EmptyApply(operationId, plan);
-
             }
 
             if (!AttachmentSnapshotMatchesPlan(snapshot, expectedSnapshot, plan))
             {
-
                 throw new RetentionConflictException(
                     "Attachment data changed after preview; request a new dry-run before retrying.");
-
             }
 
             await RevalidateAttachmentDeletionBoundaryAsync(
@@ -3010,39 +3315,28 @@ internal sealed partial class DataRetentionService(
 
             if (fileDeleted)
             {
-
                 quarantinedFiles.Add(quarantine);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             committed = true;
-
         }
         catch
         {
-
             if (!committed)
             {
-
                 try
                 {
-
                     await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
                 }
                 finally
                 {
-
                     RestoreQuarantinedFactoryFiles(quarantinedFiles);
-
                 }
-
             }
 
             throw;
-
         }
 
         FinalizeOperationQuarantines(quarantinedFiles);
@@ -3089,7 +3383,6 @@ internal sealed partial class DataRetentionService(
             reconciled,
             plan.Blockers,
             plan.Conflicts);
-
     }
 
     /// <summary>
@@ -3108,7 +3401,6 @@ internal sealed partial class DataRetentionService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         await RefuseLabeledUntargetedResetAsync(
             scope,
             campaignId,
@@ -3118,14 +3410,10 @@ internal sealed partial class DataRetentionService(
 
         foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
         {
-
             if (await TableExistsAsync(selection.Table, cancellationToken).ConfigureAwait(false))
             {
-
                 selections.Add(selection);
-
             }
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -3139,7 +3427,6 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
             DataRetentionConflict[] conflicts =
                 await ReadMemoryResetConflictsInTransactionAsync(
                     connection,
@@ -3149,16 +3436,13 @@ internal sealed partial class DataRetentionService(
 
             if (conflicts.Length > 0)
             {
-
                 throw new RetentionConflictException(conflicts[0].Message);
-
             }
 
             long currentRows = 0;
 
             foreach (MemoryResetSelection selection in selections)
             {
-
                 currentRows += await CountInTransactionAsync(
                     connection,
                     transaction,
@@ -3166,7 +3450,6 @@ internal sealed partial class DataRetentionService(
                     selection.Predicate,
                     cancellationToken,
                     selection.Parameters).ConfigureAwait(false);
-
             }
 
             if (currentRows != plan.DerivedRecords
@@ -3175,15 +3458,12 @@ internal sealed partial class DataRetentionService(
                 || plan.EstimatedBytes != 0
                 || !plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)]))
             {
-
                 throw new RetentionConflictException(
                     "Memory data changed after preview; request a new dry-run before retrying.");
-
             }
 
             foreach (MemoryResetSelection selection in selections)
             {
-
                 // annal_versions goes through the leaf-first delete for the reason stated there: a bare
                 // statement over it empties the table and reports fewer rows than it removed, and this
                 // sum is the number the operator is shown.
@@ -3202,32 +3482,26 @@ internal sealed partial class DataRetentionService(
                             : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
                         cancellationToken,
                         selection.Parameters).ConfigureAwait(false);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
-
         }
 
         bool reconciled = true;
 
         foreach (MemoryResetSelection selection in selections)
         {
-
             reconciled &= await CountTableAsync(
                 selection.Table,
                 selection.Predicate,
                 cancellationToken,
                 selection.Parameters).ConfigureAwait(false) == 0;
-
         }
 
         return new DataRetentionApplyResult(
@@ -3240,14 +3514,12 @@ internal sealed partial class DataRetentionService(
             reconciled,
             plan.Blockers,
             plan.Conflicts);
-
     }
 
     private async Task<SessionPlanSnapshot?> ReadSessionSnapshotAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -3259,9 +3531,7 @@ internal sealed partial class DataRetentionService(
 
         if (status is null)
         {
-
             return null;
-
         }
 
         List<Guid> entryIds = [];
@@ -3272,7 +3542,6 @@ internal sealed partial class DataRetentionService(
 
         await using (DbCommand entries = connection.CreateCommand())
         {
-
             entries.CommandText =
                 "SELECT Id, IsPinned, rowid FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id";
 
@@ -3283,7 +3552,6 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 Guid entryId = Guid.Parse(reader.GetString(0));
 
                 entryIds.Add(entryId);
@@ -3292,20 +3560,15 @@ internal sealed partial class DataRetentionService(
 
                 if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
                 {
-
                     pinnedEntryIds.Add(entryId);
-
                 }
-
             }
-
         }
 
         List<AttachmentPlanSnapshot> attachments = [];
 
         await using (DbCommand attachmentCommand = connection.CreateCommand())
         {
-
             attachmentCommand.CommandText =
                 """
                 SELECT Id, SessionId, RelativePath, ByteLength, State
@@ -3320,7 +3583,6 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 attachments.Add(
                     new AttachmentPlanSnapshot(
                         Guid.Parse(reader.GetString(0)),
@@ -3334,18 +3596,14 @@ internal sealed partial class DataRetentionService(
                         0,
                         0,
                         0));
-
             }
-
         }
 
         for (int index = 0; index < attachments.Count; index++)
         {
-
             attachments[index] = await PopulateAttachmentDerivedCountsAsync(
                 attachments[index],
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         long entryEmbeddings = await CountJoinedEntryEmbeddingsAsync(
@@ -3392,14 +3650,12 @@ internal sealed partial class DataRetentionService(
             attachments.Sum(static attachment => attachment.EmbeddingCount),
             attachments.Sum(static attachment => attachment.VectorEmbeddingCount),
             attachments.Sum(static attachment => attachment.IndexStateCount));
-
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -3420,9 +3676,7 @@ internal sealed partial class DataRetentionService(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         AttachmentPlanSnapshot snapshot = new(
@@ -3441,14 +3695,12 @@ internal sealed partial class DataRetentionService(
         return await PopulateAttachmentDerivedCountsAsync(
             snapshot,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<AttachmentPlanSnapshot> PopulateAttachmentDerivedCountsAsync(
         AttachmentPlanSnapshot snapshot,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -3456,7 +3708,6 @@ internal sealed partial class DataRetentionService(
 
         await using (DbCommand command = connection.CreateCommand())
         {
-
             command.CommandText =
                 "SELECT ChunkId FROM session_attachment_chunks WHERE lower(replace(AttachmentId, '-', '')) = @id ORDER BY ChunkId";
 
@@ -3467,11 +3718,8 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 chunkIds.Add(reader.GetString(0));
-
             }
-
         }
 
         long embeddings = await CountAttachmentEmbeddingsAsync(
@@ -3502,7 +3750,6 @@ internal sealed partial class DataRetentionService(
             VectorEmbeddingCount = vectorEmbeddings,
             IndexStateCount = state,
         };
-
     }
 
     private async Task<SessionPlanSnapshot?> ReadSessionSnapshotInTransactionAsync(
@@ -3511,7 +3758,6 @@ internal sealed partial class DataRetentionService(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         string? status = await ScalarStringInTransactionAsync(
             connection,
             transaction,
@@ -3521,9 +3767,7 @@ internal sealed partial class DataRetentionService(
 
         if (status is null)
         {
-
             return null;
-
         }
 
         List<Guid> entryIds = [];
@@ -3534,7 +3778,6 @@ internal sealed partial class DataRetentionService(
 
         await using (DbCommand entries = connection.CreateCommand())
         {
-
             entries.Transaction = transaction;
 
             entries.CommandText =
@@ -3547,7 +3790,6 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 Guid entryId = Guid.Parse(reader.GetString(0));
 
                 entryIds.Add(entryId);
@@ -3556,20 +3798,15 @@ internal sealed partial class DataRetentionService(
 
                 if (Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture) != 0)
                 {
-
                     pinnedEntryIds.Add(entryId);
-
                 }
-
             }
-
         }
 
         List<Guid> attachmentIds = [];
 
         await using (DbCommand attachments = connection.CreateCommand())
         {
-
             attachments.Transaction = transaction;
 
             attachments.CommandText =
@@ -3582,18 +3819,14 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 attachmentIds.Add(Guid.Parse(reader.GetString(0)));
-
             }
-
         }
 
         List<AttachmentPlanSnapshot> attachmentSnapshots = [];
 
         foreach (Guid attachmentId in attachmentIds)
         {
-
             AttachmentPlanSnapshot? attachment =
                 await ReadAttachmentSnapshotInTransactionAsync(
                     connection,
@@ -3603,13 +3836,10 @@ internal sealed partial class DataRetentionService(
 
             if (attachment is null)
             {
-
                 return null;
-
             }
 
             attachmentSnapshots.Add(attachment);
-
         }
 
         long entryEmbeddings = await CountInTransactionAsync(
@@ -3669,7 +3899,6 @@ internal sealed partial class DataRetentionService(
             attachmentSnapshots.Sum(static attachment => attachment.EmbeddingCount),
             attachmentSnapshots.Sum(static attachment => attachment.VectorEmbeddingCount),
             attachmentSnapshots.Sum(static attachment => attachment.IndexStateCount));
-
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotInTransactionAsync(
@@ -3678,7 +3907,6 @@ internal sealed partial class DataRetentionService(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -3704,12 +3932,9 @@ internal sealed partial class DataRetentionService(
         await using (DbDataReader reader = await command
                          .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 return null;
-
             }
 
             id = Guid.Parse(reader.GetString(0));
@@ -3719,14 +3944,12 @@ internal sealed partial class DataRetentionService(
             relativePath = reader.GetString(2);
 
             state = reader.GetString(4);
-
         }
 
         List<string> chunkIds = [];
 
         await using (DbCommand chunks = connection.CreateCommand())
         {
-
             chunks.Transaction = transaction;
 
             chunks.CommandText =
@@ -3739,11 +3962,8 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 chunkIds.Add(reader.GetString(0));
-
             }
-
         }
 
         long embeddings = await CountInTransactionAsync(
@@ -3786,7 +4006,6 @@ internal sealed partial class DataRetentionService(
             embeddings,
             vectorEmbeddings,
             indexState);
-
     }
 
     private async Task RevalidateSessionDeletionBoundaryAsync(
@@ -3796,13 +4015,10 @@ internal sealed partial class DataRetentionService(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         if ((CurrentRetention.ProtectedSessionIds ?? []).Contains(sessionId))
         {
-
             throw new RetentionBlockedException(
                 "The session became protected by an explicit operator retention hold.");
-
         }
 
         string? pinnedEntry = await ScalarStringInTransactionAsync(
@@ -3820,10 +4036,8 @@ internal sealed partial class DataRetentionService(
 
         if (pinnedEntry is not null)
         {
-
             throw new RetentionBlockedException(
                 "A pinned session entry appeared before deletion could begin.");
-
         }
 
         string? contextPin = await ScalarStringInTransactionAsync(
@@ -3840,10 +4054,8 @@ internal sealed partial class DataRetentionService(
 
         if (contextPin is not null)
         {
-
             throw new RetentionBlockedException(
                 "Pinned context appeared before session deletion could begin.");
-
         }
 
         DataRetentionConflict[] conflicts = await ReadSessionConflictsInTransactionAsync(
@@ -3855,11 +4067,8 @@ internal sealed partial class DataRetentionService(
 
         if (conflicts.Length > 0)
         {
-
             throw new RetentionConflictException(conflicts[0].Message);
-
         }
-
     }
 
     private async Task<bool> SessionCandidateOldEnoughInTransactionAsync(
@@ -3870,23 +4079,18 @@ internal sealed partial class DataRetentionService(
         DateTimeOffset cutoff,
         CancellationToken cancellationToken)
     {
-
         RetentionRuleSettings? rule = status.ToLowerInvariant() switch
         {
-
             "active" => CurrentRetention.ActiveSessions,
 
             "archived" => CurrentRetention.ArchivedSessions,
 
             _ => null,
-
         };
 
         if (rule is null || !rule.Enabled)
         {
-
             return false;
-
         }
 
         return await CountInTransactionAsync(
@@ -3897,7 +4101,6 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N")),
             ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false) > 0;
-
     }
 
     private async Task<bool> AttachmentCandidateOldEnoughInTransactionAsync(
@@ -3907,14 +4110,11 @@ internal sealed partial class DataRetentionService(
         DateTimeOffset cutoff,
         CancellationToken cancellationToken)
     {
-
         RetentionRuleSettings rule = CurrentRetention.Attachments;
 
         if (!rule.Enabled)
         {
-
             return false;
-
         }
 
         return await CountInTransactionAsync(
@@ -3925,7 +4125,6 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", attachmentId.ToString("N")),
             ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false) > 0;
-
     }
 
     private static bool SessionSnapshotMatchesPlan(
@@ -3933,7 +4132,6 @@ internal sealed partial class DataRetentionService(
         SessionPlanSnapshot? expectedSnapshot,
         DataRetentionPlan plan)
     {
-
         long rows = 1
             + snapshot.EntryIds.LongLength
             + snapshot.Attachments.LongLength;
@@ -3957,16 +4155,12 @@ internal sealed partial class DataRetentionService(
             || bytes != plan.EstimatedBytes
             || derived != plan.DerivedRecords)
         {
-
             return false;
-
         }
 
         if (expectedSnapshot is null)
         {
-
             return true;
-
         }
 
         return string.Equals(
@@ -3979,7 +4173,6 @@ internal sealed partial class DataRetentionService(
             && AttachmentSnapshotCollectionsMatch(
                 snapshot.Attachments,
                 expectedSnapshot.Attachments);
-
     }
 
     private static bool AttachmentSnapshotMatchesPlan(
@@ -3987,7 +4180,6 @@ internal sealed partial class DataRetentionService(
         AttachmentPlanSnapshot? expectedSnapshot,
         DataRetentionPlan plan)
     {
-
         long derived = snapshot.ChunkCount
             + snapshot.EmbeddingCount
             + snapshot.VectorEmbeddingCount
@@ -3998,21 +4190,17 @@ internal sealed partial class DataRetentionService(
             || plan.EstimatedBytes != snapshot.ByteLength
             || plan.DerivedRecords != derived)
         {
-
             return false;
-
         }
 
         return expectedSnapshot is null
             || AttachmentSnapshotsMatch(snapshot, expectedSnapshot);
-
     }
 
     private static bool AttachmentSnapshotCollectionsMatch(
         IEnumerable<AttachmentPlanSnapshot> actual,
         IEnumerable<AttachmentPlanSnapshot> expected)
     {
-
         AttachmentPlanSnapshot[] actualItems =
             [.. actual.OrderBy(static item => item.Id)];
 
@@ -4024,7 +4212,6 @@ internal sealed partial class DataRetentionService(
                 static pair => AttachmentSnapshotsMatch(
                     pair.First,
                     pair.Second));
-
     }
 
     private static bool AttachmentSnapshotsMatch(
@@ -4049,7 +4236,6 @@ internal sealed partial class DataRetentionService(
         AttachmentPlanSnapshot attachment,
         CancellationToken cancellationToken)
     {
-
         string? state = await ScalarStringInTransactionAsync(
             connection,
             transaction,
@@ -4064,33 +4250,25 @@ internal sealed partial class DataRetentionService(
 
         if (state is null)
         {
-
             throw new RetentionConflictException(
                 "The attachment changed after preview; request a new dry-run before retrying.");
-
         }
 
         if (!string.Equals(state, "Bound", StringComparison.OrdinalIgnoreCase))
         {
-
             throw new RetentionBlockedException(
                 "The attachment became in-flight before deletion could begin.");
-
         }
 
         if (attachment.SessionId is not Guid sessionId)
         {
-
             return;
-
         }
 
         if ((CurrentRetention.ProtectedSessionIds ?? []).Contains(sessionId))
         {
-
             throw new RetentionBlockedException(
                 "The attachment's owning session became protected by an explicit operator retention hold.");
-
         }
 
         string? pin = await ScalarStringInTransactionAsync(
@@ -4116,10 +4294,8 @@ internal sealed partial class DataRetentionService(
 
         if (pin is not null)
         {
-
             throw new RetentionBlockedException(
                 "A pinned attachment/context appeared before deletion could begin.");
-
         }
 
         DataRetentionConflict[] conflicts = await ReadSessionConflictsInTransactionAsync(
@@ -4131,11 +4307,8 @@ internal sealed partial class DataRetentionService(
 
         if (conflicts.Length > 0)
         {
-
             throw new RetentionConflictException(conflicts[0].Message);
-
         }
-
     }
 
     private async Task<DataRetentionConflict[]> ReadSessionConflictsInTransactionAsync(
@@ -4145,7 +4318,6 @@ internal sealed partial class DataRetentionService(
         Guid excludedOperationId,
         CancellationToken cancellationToken)
     {
-
         List<DataRetentionConflict> conflicts = [];
 
         conflicts.AddRange(
@@ -4203,7 +4375,6 @@ internal sealed partial class DataRetentionService(
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
             .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
-
     }
 
     private async Task<DataRetentionConflict[]> ReadMemoryResetConflictsInTransactionAsync(
@@ -4212,7 +4383,6 @@ internal sealed partial class DataRetentionService(
         MemoryResetScope scope,
         CancellationToken cancellationToken)
     {
-
         List<DataRetentionConflict> conflicts =
         [
             .. await ReadConflictsInTransactionAsync(
@@ -4227,18 +4397,15 @@ internal sealed partial class DataRetentionService(
 
         string? operationKind = scope switch
         {
-
             MemoryResetScope.Attachments => LongRunningOperationKinds.AttachmentPromotion,
 
             MemoryResetScope.Workspace => LongRunningOperationKinds.WorkspaceIndex,
 
             _ => null,
-
         };
 
         if (operationKind is not null)
         {
-
             conflicts.AddRange(
                 await ReadConflictsInTransactionAsync(
                     connection,
@@ -4253,12 +4420,10 @@ internal sealed partial class DataRetentionService(
                     "An active derived-data operation protects this memory scope.",
                     cancellationToken,
                     ("@kind", operationKind)).ConfigureAwait(false));
-
         }
 
         return [.. conflicts
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))];
-
     }
 
     private static async Task<DataRetentionConflict[]> ReadConflictsInTransactionAsync(
@@ -4270,7 +4435,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         List<DataRetentionConflict> conflicts = [];
 
         await using DbCommand command = connection.CreateCommand();
@@ -4281,9 +4445,7 @@ internal sealed partial class DataRetentionService(
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         await using DbDataReader reader = await command
@@ -4291,17 +4453,14 @@ internal sealed partial class DataRetentionService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             conflicts.Add(
                 new DataRetentionConflict(
                     code,
                     Guid.Parse(reader.GetString(0)).ToString("D"),
                     message));
-
         }
 
         return [.. conflicts];
-
     }
 
     private static async Task<string?> ScalarStringInTransactionAsync(
@@ -4311,7 +4470,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -4320,9 +4478,7 @@ internal sealed partial class DataRetentionService(
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         object? result = await command.ExecuteScalarAsync(
@@ -4331,7 +4487,6 @@ internal sealed partial class DataRetentionService(
         return result is null || result == DBNull.Value
             ? null
             : Convert.ToString(result, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<long> CountInTransactionAsync(
@@ -4342,7 +4497,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using DbCommand tableCommand = connection.CreateCommand();
 
         tableCommand.Transaction = transaction;
@@ -4357,9 +4511,7 @@ internal sealed partial class DataRetentionService(
 
         if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
         {
-
             return 0;
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -4372,48 +4524,38 @@ internal sealed partial class DataRetentionService(
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         object? result = await command.ExecuteScalarAsync(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<DbTransaction> BeginMutationTransactionAsync(
         DbConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (connection is SqliteConnection sqliteConnection)
         {
-
             return sqliteConnection.BeginTransaction(deferred: false);
-
         }
 
         return await connection.BeginTransactionAsync(
             IsolationLevel.Serializable,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<DataRetentionBlocker[]> ReadContextPinBlockersAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 "SessionContextPins",
                 cancellationToken).ConfigureAwait(false))
         {
-
             return [];
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -4437,18 +4579,15 @@ internal sealed partial class DataRetentionService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             blockers.Add(
                 new DataRetentionBlocker(
                     RetentionDataClass.Entries,
                     reader.GetString(0),
                     "Data.ContextPin",
                     $"Pinned context '{reader.GetString(1)}' protects this session from deletion."));
-
         }
 
         return [.. blockers];
-
     }
 
     private async Task<DataRetentionBlocker[]> ReadAttachmentPinBlockersAsync(
@@ -4456,14 +4595,11 @@ internal sealed partial class DataRetentionService(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 "SessionContextPins",
                 cancellationToken).ConfigureAwait(false))
         {
-
             return [];
-
         }
 
         long count = await CountTableAsync(
@@ -4493,14 +4629,12 @@ internal sealed partial class DataRetentionService(
                     "Data.PinnedAttachment",
                     "A pinned attachment/context protects this attachment from deletion."),
             ];
-
     }
 
     private async Task<DataRetentionConflict[]> ReadSessionConflictsAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         List<DataRetentionConflict> conflicts = [];
 
         DbConnection connection = await OpenConnectionAsync(
@@ -4510,7 +4644,6 @@ internal sealed partial class DataRetentionService(
                 "LongRunningOperations",
                 cancellationToken).ConfigureAwait(false))
         {
-
             await using DbCommand command = connection.CreateCommand();
 
             command.CommandText =
@@ -4528,22 +4661,18 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 conflicts.Add(
                     new DataRetentionConflict(
                         "Data.ActiveOperation",
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An active durable operation protects this session."));
-
             }
-
         }
 
         if (await TableExistsAsync(
                 "InferenceRuns",
                 cancellationToken).ConfigureAwait(false))
         {
-
             await using DbCommand command = connection.CreateCommand();
 
             command.CommandText =
@@ -4563,22 +4692,18 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 conflicts.Add(
                     new DataRetentionConflict(
                         "Data.InferenceRunActive",
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An active inference run protects this session."));
-
             }
-
         }
 
         if (await TableExistsAsync(
                 "BudgetReservations",
                 cancellationToken).ConfigureAwait(false))
         {
-
             await using DbCommand command = connection.CreateCommand();
 
             command.CommandText =
@@ -4600,29 +4725,24 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 conflicts.Add(
                     new DataRetentionConflict(
                         "Data.BudgetReservationOutstanding",
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An outstanding budget reservation protects the accounting chain."));
-
             }
-
         }
 
         return [.. conflicts
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
             .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
-
     }
 
     private async Task<DataRetentionConflict[]> ReadGlobalConflictsAsync(
         CancellationToken cancellationToken,
         Guid? excludedOperationId = null)
     {
-
         List<DataRetentionConflict> conflicts = [];
 
         DbConnection connection = await OpenConnectionAsync(
@@ -4632,7 +4752,6 @@ internal sealed partial class DataRetentionService(
                 "LongRunningOperations",
                 cancellationToken).ConfigureAwait(false))
         {
-
             await using DbCommand command = connection.CreateCommand();
 
             string operationExclusion = excludedOperationId is null
@@ -4649,12 +4768,10 @@ internal sealed partial class DataRetentionService(
 
             if (excludedOperationId is Guid excludedId)
             {
-
                 Add(
                     command,
                     "@excludedOperationId",
                     excludedId.ToString("N"));
-
             }
 
             await using DbDataReader reader = await command
@@ -4662,22 +4779,18 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 conflicts.Add(
                     new DataRetentionConflict(
                         "Data.ActiveOperation",
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An active durable operation conflicts with this global reset."));
-
             }
-
         }
 
         if (await TableExistsAsync(
                 "BudgetReservations",
                 cancellationToken).ConfigureAwait(false))
         {
-
             await using DbCommand command = connection.CreateCommand();
 
             command.CommandText =
@@ -4690,15 +4803,12 @@ internal sealed partial class DataRetentionService(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 conflicts.Add(
                     new DataRetentionConflict(
                         "Data.BudgetReservationOutstanding",
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An outstanding budget reservation conflicts with this global reset."));
-
             }
-
         }
 
         conflicts.AddRange(
@@ -4721,18 +4831,14 @@ internal sealed partial class DataRetentionService(
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
             .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
-
     }
 
     private async Task<DataRetentionConflict[]> ReadActiveDaemonExecutionConflictsAsync(
         CancellationToken cancellationToken)
     {
-
         if (daemonExecutions is null)
         {
-
             return [];
-
         }
 
         DaemonExecutionSummary[] history = await daemonExecutions.GetHistoryAsync(
@@ -4749,7 +4855,6 @@ internal sealed partial class DataRetentionService(
                     execution.Id,
                     "An active daemon execution conflicts with this global reset.")),
         ];
-
     }
 
     private async Task<long> DeleteEntryIndexesAsync(
@@ -4758,14 +4863,11 @@ internal sealed partial class DataRetentionService(
         Guid[] entryIds,
         CancellationToken cancellationToken)
     {
-
         long deleted = 0;
 
         if (entryIds.Length == 0)
         {
-
             return deleted;
-
         }
 
         // Batched, and the sqlite_master probe is hoisted: this runs inside the open mutation
@@ -4781,17 +4883,14 @@ internal sealed partial class DataRetentionService(
             "lower(replace(EntryId, '-', ''))",
             normalizedEntryIds))
         {
-
             if (vectorTableExists)
             {
-
                 deleted += await ExecuteAsync(
                     connection,
                     transaction,
                     $"DELETE FROM entry_embeddings_vec WHERE {batch.Predicate}",
                     cancellationToken,
                     batch.Parameters).ConfigureAwait(false);
-
             }
 
             deleted += await ExecuteAsync(
@@ -4800,11 +4899,9 @@ internal sealed partial class DataRetentionService(
                 $"DELETE FROM entry_embeddings WHERE {batch.Predicate}",
                 cancellationToken,
                 batch.Parameters).ConfigureAwait(false);
-
         }
 
         return deleted;
-
     }
 
     private async Task<long> DeleteAttachmentRowsAsync(
@@ -4813,14 +4910,12 @@ internal sealed partial class DataRetentionService(
         AttachmentPlanSnapshot attachment,
         CancellationToken cancellationToken)
     {
-
         long deleted = 0;
 
         if (await TableExistsAsync(
                 "session_attachment_embeddings_vec",
                 cancellationToken).ConfigureAwait(false))
         {
-
             deleted += await ExecuteAsync(
                 connection,
                 transaction,
@@ -4833,7 +4928,6 @@ internal sealed partial class DataRetentionService(
                 """,
                 cancellationToken,
                 ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false);
-
         }
 
         deleted += await ExecuteAsync(
@@ -4864,7 +4958,6 @@ internal sealed partial class DataRetentionService(
             ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false);
 
         return deleted;
-
     }
 
     private Task<UploadedFileSnapshot[]> ReadEligibleUploadedFilesBeforeAsync(
@@ -4898,7 +4991,6 @@ internal sealed partial class DataRetentionService(
         bool requireBlockingReference,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -4934,18 +5026,16 @@ internal sealed partial class DataRetentionService(
             LIMIT @limit
             """;
 
-        Add(command, "@cutoff", cutoff.ToString("o", CultureInfo.InvariantCulture));
+        Add(command, "@cutoff", UtcInstantText.Format(cutoff));
 
         Add(command, "@limit", limit);
 
         for (int index = 0; index < selectedBatchIds.Length; index++)
         {
-
             Add(
                 command,
                 "@selectedBatch" + index.ToString(CultureInfo.InvariantCulture),
                 selectedBatchIds[index].ToString("N"));
-
         }
 
         await using DbDataReader reader = await command
@@ -4953,23 +5043,19 @@ internal sealed partial class DataRetentionService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             files.Add(
                 new UploadedFileSnapshot(
                     Guid.Parse(reader.GetString(0)),
                     reader.GetInt64(1)));
-
         }
 
         return [.. files];
-
     }
 
     private async Task<UploadedFileSnapshot?> ReadUploadedFileAsync(
         Guid fileId,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -4988,7 +5074,6 @@ internal sealed partial class DataRetentionService(
                 Guid.Parse(reader.GetString(0)),
                 reader.GetInt64(1))
             : null;
-
     }
 
     private async Task<BatchReferenceSnapshot[]> ReadBlockingBatchReferencesAsync(
@@ -4997,7 +5082,6 @@ internal sealed partial class DataRetentionService(
         int limit,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5042,12 +5126,10 @@ internal sealed partial class DataRetentionService(
 
         for (int index = 0; index < selectedBatchIds.Length; index++)
         {
-
             Add(
                 command,
                 "@selectedReference" + index.ToString(CultureInfo.InvariantCulture),
                 selectedBatchIds[index].ToString("N"));
-
         }
 
         await using DbDataReader reader = await command
@@ -5055,16 +5137,13 @@ internal sealed partial class DataRetentionService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             references.Add(
                 new BatchReferenceSnapshot(
                     Guid.Parse(reader.GetString(0)),
                     reader.GetString(1)));
-
         }
 
         return [.. references];
-
     }
 
     private async Task<Guid[]> ReadSessionIdsBeforeAsync(
@@ -5073,7 +5152,6 @@ internal sealed partial class DataRetentionService(
         int limit,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5093,7 +5171,7 @@ internal sealed partial class DataRetentionService(
 
         Add(command, "@status", status);
 
-        Add(command, "@cutoff", cutoff.ToString("o", CultureInfo.InvariantCulture));
+        Add(command, "@cutoff", UtcInstantText.Format(cutoff));
 
         Add(command, "@limit", limit);
 
@@ -5102,13 +5180,10 @@ internal sealed partial class DataRetentionService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             ids.Add(Guid.Parse(reader.GetString(0)));
-
         }
 
         return [.. ids];
-
     }
 
     private async Task<Guid[]> ReadEligibleSessionIdsBeforeAsync(
@@ -5118,7 +5193,6 @@ internal sealed partial class DataRetentionService(
         Guid[] protectedSessionIds,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5169,7 +5243,7 @@ internal sealed partial class DataRetentionService(
 
         Add(command, "@status", status);
 
-        Add(command, "@cutoff", cutoff.ToString("o", CultureInfo.InvariantCulture));
+        Add(command, "@cutoff", UtcInstantText.Format(cutoff));
 
         Add(command, "@running", (int)InferenceRunStatus.Running);
 
@@ -5179,12 +5253,10 @@ internal sealed partial class DataRetentionService(
 
         for (int index = 0; index < protectedSessionIds.Length; index++)
         {
-
             Add(
                 command,
                 "@protected" + index.ToString(CultureInfo.InvariantCulture),
                 protectedSessionIds[index].ToString("N"));
-
         }
 
         await using DbDataReader reader = await command
@@ -5192,13 +5264,10 @@ internal sealed partial class DataRetentionService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             ids.Add(Guid.Parse(reader.GetString(0)));
-
         }
 
         return [.. ids];
-
     }
 
     private DataRetentionPlan FinalizePlan(
@@ -5211,7 +5280,6 @@ internal sealed partial class DataRetentionService(
         string? planAuthority = null,
         DateTimeOffset? generatedAt = null)
     {
-
         DataRetentionPlanItem[] orderedItems =
             [.. items
                 .GroupBy(static item => item.DataClass)
@@ -5263,7 +5331,6 @@ internal sealed partial class DataRetentionService(
             orderedItems.Sum(static item => item.DerivedRecords),
             orderedCandidates,
             requiresConfirmation);
-
     }
 
     private DataRetentionPlan EmptyPlan(
@@ -5285,7 +5352,6 @@ internal sealed partial class DataRetentionService(
         string[] candidates,
         string? planAuthority)
     {
-
         StringBuilder canonical = new();
 
         canonical.Append((int)request.Operation)
@@ -5298,7 +5364,6 @@ internal sealed partial class DataRetentionService(
 
         foreach (DataRetentionPlanItem item in items)
         {
-
             canonical.Append("|i:")
                 .Append((int)item.DataClass)
                 .Append(':')
@@ -5309,50 +5374,40 @@ internal sealed partial class DataRetentionService(
                 .Append(item.EstimatedBytes)
                 .Append(':')
                 .Append(item.DerivedRecords);
-
         }
 
         foreach (DataRetentionBlocker blocker in blockers)
         {
-
             canonical.Append("|b:")
                 .Append((int)blocker.DataClass)
                 .Append(':')
                 .Append(blocker.ResourceId)
                 .Append(':')
                 .Append(blocker.ReasonCode);
-
         }
 
         foreach (DataRetentionConflict conflict in conflicts)
         {
-
             canonical.Append("|c:")
                 .Append(conflict.Code)
                 .Append(':')
                 .Append(conflict.ResourceId);
-
         }
 
         foreach (string candidate in candidates)
         {
-
             canonical.Append("|r:").Append(candidate);
-
         }
 
         if (!string.IsNullOrEmpty(planAuthority))
         {
-
             canonical.Append("|a:").Append(planAuthority);
-
         }
 
         byte[] hash = SHA256.HashData(
             Encoding.UTF8.GetBytes(canonical.ToString()));
 
         return Convert.ToHexString(hash);
-
     }
 
     private async Task AddDatabaseStatusAsync(
@@ -5364,7 +5419,6 @@ internal sealed partial class DataRetentionService(
         RetentionSettings retention,
         CancellationToken cancellationToken)
     {
-
         long rows = await CountTableAsync(
             table,
             predicate,
@@ -5379,7 +5433,6 @@ internal sealed partial class DataRetentionService(
             table,
             provenance,
             retention);
-
     }
 
     private async Task AddCompositeDatabaseStatusAsync(
@@ -5390,17 +5443,14 @@ internal sealed partial class DataRetentionService(
         RetentionSettings retention,
         CancellationToken cancellationToken)
     {
-
         long rows = 0;
 
         foreach (string table in tables)
         {
-
             rows += await CountTableAsync(
                 table,
                 null,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         AddStatus(
@@ -5412,7 +5462,6 @@ internal sealed partial class DataRetentionService(
             string.Join(" + ", tables),
             provenance,
             retention);
-
     }
 
     private static void AddStatus(
@@ -5425,7 +5474,6 @@ internal sealed partial class DataRetentionService(
         string provenance,
         RetentionSettings retention)
     {
-
         RetentionRuleSettings? rule = DataRetentionSettingsCatalog.ResolveRule(
             retention,
             dataClass);
@@ -5439,12 +5487,10 @@ internal sealed partial class DataRetentionService(
             or RetentionDataClass.BudgetReservations
             or RetentionDataClass.CostAdjustments)
         {
-
             days = Math.Max(
                 days ?? 0,
                 ArcanumSettingClamps.RetentionAccountingMinimumDays(
                     retention.AccountingMinimumDays));
-
         }
 
         items.Add(
@@ -5457,14 +5503,12 @@ internal sealed partial class DataRetentionService(
                 days,
                 store,
                 provenance));
-
     }
 
     private void AddLogStatuses(
         List<DataRetentionStatusItem> items,
         RetentionSettings retention)
     {
-
         (long auditFiles, long auditBytes) = CountFiles(
             _logsRoot,
             "audit-????????.jsonl");
@@ -5492,7 +5536,6 @@ internal sealed partial class DataRetentionService(
             "dated guardrail JSONL",
             "Append-only guardrail audit logs; record bodies are not loaded for status.",
             retention);
-
     }
 
     private async Task<long> CountTableAsync(
@@ -5501,14 +5544,11 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         if (!await TableExistsAsync(
                 table,
                 cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -5522,16 +5562,13 @@ internal sealed partial class DataRetentionService(
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         object? result = await command.ExecuteScalarAsync(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -5544,7 +5581,6 @@ internal sealed partial class DataRetentionService(
     /// </remarks>
     private async Task<string> DescribeRetentionConflictAsync(CancellationToken cancellationToken)
     {
-
         const string bare = "Another data-retention operation is already active.";
 
         string[] retentionKinds =
@@ -5558,47 +5594,36 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
             foreach (string kind in retentionKinds)
             {
-
                 IReadOnlyList<LongRunningOperation> active = await operations.ListAsync(
                     new LongRunningOperationQuery(Kind: kind),
                     cancellationToken).ConfigureAwait(false);
 
                 foreach (LongRunningOperation blocker in active)
                 {
-
                     if (blocker.State is not (LongRunningOperationState.Pending
                         or LongRunningOperationState.Running
                         or LongRunningOperationState.Waiting
                         or LongRunningOperationState.Cancelling
                         or LongRunningOperationState.ReconciliationRequired))
                     {
-
                         continue;
-
                     }
 
                     return "Another data-retention operation is already active: "
                         + $"{blocker.Kind} {blocker.Id:D} is {blocker.State}.";
-
                 }
-
             }
-
         }
         catch (Exception ex) when (ex is SqliteException or InvalidOperationException)
         {
-
             logger.LogDebug(
                 ex,
                 "Could not read the data-retention operation blocking this request.");
-
         }
 
         return bare;
-
     }
 
     /// <summary>
@@ -5616,22 +5641,18 @@ internal sealed partial class DataRetentionService(
         IReadOnlyList<string> ids,
         CancellationToken cancellationToken)
     {
-
         long total = 0;
 
         foreach (IdSetBatch batch in BuildIdSetBatches(keyExpression, ids))
         {
-
             total += await CountTableAsync(
                 table,
                 batch.Predicate,
                 cancellationToken,
                 batch.Parameters).ConfigureAwait(false);
-
         }
 
         return total;
-
     }
 
     /// <summary>
@@ -5642,12 +5663,10 @@ internal sealed partial class DataRetentionService(
         string keyExpression,
         IReadOnlyList<string> ids)
     {
-
         const int batchSize = 500;
 
         for (int start = 0; start < ids.Count; start += batchSize)
         {
-
             int length = Math.Min(batchSize, ids.Count - start);
 
             (string Name, object Value)[] parameters = new (string Name, object Value)[length];
@@ -5656,28 +5675,22 @@ internal sealed partial class DataRetentionService(
 
             for (int index = 0; index < length; index++)
             {
-
                 string name = "@id" + index.ToString(CultureInfo.InvariantCulture);
 
                 parameters[index] = (name, ids[start + index]);
 
                 if (index > 0)
                 {
-
                     _ = placeholders.Append(", ");
-
                 }
 
                 _ = placeholders.Append(name);
-
             }
 
             yield return new IdSetBatch(
                 $"{keyExpression} IN ({placeholders})",
                 parameters);
-
         }
-
     }
 
     private async Task<long> SumColumnAsync(
@@ -5685,14 +5698,11 @@ internal sealed partial class DataRetentionService(
         string column,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 table,
                 cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -5707,21 +5717,17 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<long> CountJoinedEntryEmbeddingsAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 "entry_embeddings",
                 cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -5744,21 +5750,17 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<long> CountJoinedEntryVectorEmbeddingsAsync(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 "entry_embeddings_vec",
                 cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -5781,21 +5783,17 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<long> CountAttachmentEmbeddingsAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 "session_attachment_embeddings",
                 cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -5818,21 +5816,17 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<long> CountAttachmentVectorEmbeddingsAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(
                 "session_attachment_embeddings_vec",
                 cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -5855,14 +5849,12 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<bool> TableExistsAsync(
         string table,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -5882,7 +5874,6 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return result is not null && result != DBNull.Value;
-
     }
 
     /// <summary>
@@ -5940,14 +5931,12 @@ internal sealed partial class DataRetentionService(
         long[] entryRowIds,
         CancellationToken cancellationToken)
     {
-
         const int batchSize = 256;
 
         long standing = 0;
 
         for (int offset = 0; offset < entryRowIds.Length; offset += batchSize)
         {
-
             long[] batch = entryRowIds[offset..Math.Min(offset + batchSize, entryRowIds.Length)];
 
             (string Name, object Value)[] parameters =
@@ -5958,11 +5947,9 @@ internal sealed partial class DataRetentionService(
                 "rowid IN (" + string.Join(", ", parameters.Select(static parameter => parameter.Name)) + ")",
                 cancellationToken,
                 parameters).ConfigureAwait(false);
-
         }
 
         return standing;
-
     }
 
     /// <summary>
@@ -5985,30 +5972,23 @@ internal sealed partial class DataRetentionService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         if (campaignId is not null)
         {
-
             return;
-
         }
 
         SensitiveArtifactKind? kind = scope switch
         {
-
             MemoryResetScope.Saga => SensitiveArtifactKind.Saga,
 
             MemoryResetScope.Lexicon => SensitiveArtifactKind.Lexicon,
 
             _ => null,
-
         };
 
         if (kind is not { } protectedKind)
         {
-
             return;
-
         }
 
         Result unlabeled = await EnsureKindUnlabeledAsync(
@@ -6017,11 +5997,8 @@ internal sealed partial class DataRetentionService(
 
         if (unlabeled.IsFailure)
         {
-
             throw new RetentionCovenantLabelException(unlabeled.Error);
-
         }
-
     }
 
     /// <summary>
@@ -6037,10 +6014,8 @@ internal sealed partial class DataRetentionService(
         SessionPlanSnapshot snapshot,
         CancellationToken cancellationToken)
     {
-
         foreach (Guid entryId in snapshot.EntryIds)
         {
-
             Result unlabeled = await EnsureArtifactUnlabeledAsync(
                 SensitiveArtifactKind.AssistantEntry,
                 entryId,
@@ -6048,30 +6023,22 @@ internal sealed partial class DataRetentionService(
 
             if (unlabeled.IsFailure)
             {
-
                 throw new RetentionCovenantLabelException(unlabeled.Error);
-
             }
-
         }
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return connection;
-
     }
 
     private static async Task<string?> ScalarStringAsync(
@@ -6080,23 +6047,19 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         object? result = await command.ExecuteScalarAsync(
             cancellationToken).ConfigureAwait(false);
 
         return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -6133,7 +6096,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         const string LeafOnly =
             "VersionId NOT IN ("
             + "SELECT PredecessorVersionId FROM annal_versions WHERE PredecessorVersionId IS NOT NULL)";
@@ -6148,7 +6110,6 @@ internal sealed partial class DataRetentionService(
 
         do
         {
-
             removed = await ExecuteAsync(
                 connection,
                 transaction,
@@ -6157,13 +6118,11 @@ internal sealed partial class DataRetentionService(
                 parameters).ConfigureAwait(false);
 
             total += removed;
-
         }
 
         while (removed > 0);
 
         return total;
-
     }
 
     private static async Task<int> ExecuteAsync(
@@ -6173,7 +6132,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -6182,14 +6140,11 @@ internal sealed partial class DataRetentionService(
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         return await command.ExecuteNonQueryAsync(
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<int> ExecuteStandaloneAsync(
@@ -6197,7 +6152,6 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
@@ -6207,14 +6161,11 @@ internal sealed partial class DataRetentionService(
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         return await command.ExecuteNonQueryAsync(
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private static void Add(
@@ -6222,7 +6173,6 @@ internal sealed partial class DataRetentionService(
         string name,
         object value)
     {
-
         DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -6230,7 +6180,6 @@ internal sealed partial class DataRetentionService(
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
 
     /// <summary>
@@ -6254,7 +6203,6 @@ internal sealed partial class DataRetentionService(
         string root,
         string relativePath)
     {
-
         string fullRoot = Path.GetFullPath(root);
 
         string candidate = Path.GetFullPath(
@@ -6267,7 +6215,6 @@ internal sealed partial class DataRetentionService(
             && File.Exists(candidate)
             ? (true, new FileInfo(candidate).Length)
             : (false, 0);
-
     }
 
     private async Task<RetentionMutationJournal> PrepareMutationJournalAsync(
@@ -6278,7 +6225,6 @@ internal sealed partial class DataRetentionService(
         AttachmentPlanSnapshot? attachmentSnapshot,
         CancellationToken cancellationToken)
     {
-
         string subtype;
 
         string target;
@@ -6287,7 +6233,6 @@ internal sealed partial class DataRetentionService(
 
         switch (request.Operation)
         {
-
             case DataRetentionOperation.DeleteSession:
                 subtype = "delete-session";
 
@@ -6335,7 +6280,6 @@ internal sealed partial class DataRetentionService(
             default:
                 throw new InvalidDataException(
                     "The durable mutation journal received an unsupported request subtype.");
-
         }
 
         List<RetentionMutationJournalEntry> entries = [];
@@ -6344,7 +6288,6 @@ internal sealed partial class DataRetentionService(
                      .Where(static item => item.FileExists)
                      .OrderBy(static item => item.RelativePath, StringComparer.Ordinal))
         {
-
             string fullRoot = _attachmentsRoot;
 
             string path = Path.GetFullPath(
@@ -6359,10 +6302,8 @@ internal sealed partial class DataRetentionService(
                     FileSystemObjectKind.RegularFile,
                     out IdentityOwnedFileSystemArtifact artifact))
             {
-
                 throw new RetentionConflictException(
                     "A selected attachment changed before its durable deletion journal was written.");
-
             }
 
             entries.Add(
@@ -6370,7 +6311,6 @@ internal sealed partial class DataRetentionService(
                     "attachments",
                     attachment.RelativePath,
                     artifact.Metadata));
-
         }
 
         RetentionMutationJournal journal = new(
@@ -6393,20 +6333,16 @@ internal sealed partial class DataRetentionService(
 
         if (!saved)
         {
-
             throw new InvalidOperationException(
                 "The retention mutation journal could not be saved atomically.");
-
         }
 
         return journal;
-
     }
 
     private static byte[] SerializeMutationJournal(
         RetentionMutationJournal journal)
     {
-
         StringBuilder body = new();
 
         body.Append("ARCAMUT2\n")
@@ -6419,7 +6355,6 @@ internal sealed partial class DataRetentionService(
 
         foreach (RetentionMutationJournalEntry entry in journal.Entries)
         {
-
             body.Append("E:")
                 .Append(entry.RootRole)
                 .Append(':')
@@ -6438,7 +6373,6 @@ internal sealed partial class DataRetentionService(
                 .Append(((int)entry.Metadata.Kind).ToString(
                     CultureInfo.InvariantCulture))
                 .Append('\n');
-
         }
 
         byte[] canonical = Encoding.UTF8.GetBytes(body.ToString());
@@ -6446,12 +6380,10 @@ internal sealed partial class DataRetentionService(
         body.Append("H:").Append(Convert.ToHexString(SHA256.HashData(canonical))).Append('\n');
 
         return Encoding.UTF8.GetBytes(body.ToString());
-
     }
 
     private static RetentionMutationJournal ParseMutationJournal(byte[] payload)
     {
-
         string[] lines = Encoding.UTF8
             .GetString(payload)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -6474,26 +6406,20 @@ internal sealed partial class DataRetentionService(
             || !lines[^1].StartsWith("H:", StringComparison.Ordinal)
             || lines[^1].Length != 66)
         {
-
             throw new InvalidDataException("The retention mutation journal header is invalid.");
-
         }
 
         byte[] expectedDigest;
 
         try
         {
-
             expectedDigest = Convert.FromHexString(lines[^1][2..]);
-
         }
         catch (FormatException ex)
         {
-
             throw new InvalidDataException(
                 "The retention mutation journal digest is invalid.",
                 ex);
-
         }
 
         byte[] actualDigest = SHA256.HashData(
@@ -6502,36 +6428,28 @@ internal sealed partial class DataRetentionService(
 
         if (!CryptographicOperations.FixedTimeEquals(expectedDigest, actualDigest))
         {
-
             throw new InvalidDataException("The retention mutation journal digest does not match.");
-
         }
 
         string target;
 
         try
         {
-
             target = Encoding.UTF8.GetString(Convert.FromBase64String(lines[2]));
-
         }
         catch (FormatException ex)
         {
-
             throw new InvalidDataException(
                 "The retention mutation journal target is invalid.",
                 ex);
-
         }
 
         List<RetentionMutationJournalEntry> entries = [];
 
         try
         {
-
             for (int index = 0; index < entryCount; index++)
             {
-
                 string[] parts = lines[index + 4].Split(':');
 
                 if (parts.Length != 7
@@ -6543,10 +6461,8 @@ internal sealed partial class DataRetentionService(
                     || !int.TryParse(parts[6], out int kindValue)
                     || kindValue != (int)FileSystemObjectKind.RegularFile)
                 {
-
                     throw new InvalidDataException(
                         "The retention mutation journal entry is invalid.");
-
                 }
 
                 string relativePath = Encoding.UTF8.GetString(
@@ -6555,10 +6471,8 @@ internal sealed partial class DataRetentionService(
                 if (string.IsNullOrWhiteSpace(relativePath)
                     || Path.IsPathFullyQualified(relativePath))
                 {
-
                     throw new InvalidDataException(
                         "The retention mutation journal path is invalid.");
-
                 }
 
                 entries.Add(
@@ -6569,37 +6483,29 @@ internal sealed partial class DataRetentionService(
                             new FileHandleIdentity(volumeId, fileId),
                             hardLinkCount,
                             (FileSystemObjectKind)kindValue)));
-
             }
-
         }
         catch (Exception ex) when (ex is FormatException or ArgumentException)
         {
-
             throw new InvalidDataException(
                 "The retention mutation journal entry list is invalid.",
                 ex);
-
         }
 
         if (entries.DistinctBy(static entry =>
                 (entry.RootRole, entry.RelativePath)).Count() != entries.Count)
         {
-
             throw new InvalidDataException(
                 "The retention mutation journal contains duplicate paths.");
-
         }
 
         return new RetentionMutationJournal(lines[1], target, [.. entries]);
-
     }
 
     internal static bool MatchesWorkspaceResetMutation(
         LongRunningOperation operation,
         DataRetentionWorkspaceBinding binding)
     {
-
         if (!string.Equals(
                 operation.Kind,
                 LongRunningOperationKinds.DataRetentionMutation,
@@ -6614,24 +6520,18 @@ internal sealed partial class DataRetentionService(
                 StringComparison.Ordinal)
             || !TryGetCanonicalWorkspaceRoot(binding, out string workspaceRoot))
         {
-
             return false;
-
         }
 
         RetentionMutationJournal journal;
 
         try
         {
-
             journal = ParseMutationJournal(operation.CheckpointPayload);
-
         }
         catch (InvalidDataException)
         {
-
             return false;
-
         }
 
         return string.Equals(
@@ -6643,7 +6543,6 @@ internal sealed partial class DataRetentionService(
                 journal.Target,
                 binding.CampaignId.ToString("N") + ":" + workspaceRoot,
                 StringComparison.Ordinal);
-
     }
 
     private bool TryQuarantineOwnedFile(
@@ -6654,7 +6553,6 @@ internal sealed partial class DataRetentionService(
         out IdentityOwnedFileSystemQuarantine quarantine,
         out long quarantinedBytes)
     {
-
         quarantine = default;
 
         quarantinedBytes = 0;
@@ -6669,20 +6567,16 @@ internal sealed partial class DataRetentionService(
                 candidate,
                 out _))
         {
-
             logger.LogWarning(
                 "Retention refused a file path outside its selected root: {RelativePath}",
                 relativePath);
 
             return false;
-
         }
 
         if (!File.Exists(candidate))
         {
-
             return false;
-
         }
 
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -6690,22 +6584,17 @@ internal sealed partial class DataRetentionService(
                 FileSystemObjectKind.RegularFile,
                 out IdentityOwnedFileSystemArtifact artifact))
         {
-
             if (!File.Exists(candidate))
             {
-
                 return false;
-
             }
 
             throw new IOException(
                 "Retention refused a file whose no-follow identity could not be captured.");
-
         }
 
         if (mutationJournal is not null)
         {
-
             string rootRole = ManagedRootRole(root);
 
             RetentionMutationJournalEntry? expected = mutationJournal.Entries
@@ -6718,12 +6607,9 @@ internal sealed partial class DataRetentionService(
 
             if (expected is null || expected.Metadata != artifact.Metadata)
             {
-
                 throw new IOException(
                     "Retention refused a file that did not match its durable mutation journal.");
-
             }
-
         }
 
         quarantinedBytes = new FileInfo(candidate).Length;
@@ -6734,46 +6620,35 @@ internal sealed partial class DataRetentionService(
                 out quarantine)
             || quarantine == default)
         {
-
             quarantinedBytes = 0;
 
             throw new IOException(
                 "Retention refused a file whose identity changed before quarantine.");
-
         }
 
         return true;
-
     }
 
     private string ManagedRootRole(string root)
     {
-
         string fullRoot = Path.GetFullPath(root);
 
         if (string.Equals(fullRoot, _attachmentsRoot, StringComparison.Ordinal))
         {
-
             return "attachments";
-
         }
 
         if (string.Equals(fullRoot, _filesRoot, StringComparison.Ordinal))
         {
-
             return "files";
-
         }
 
         if (string.Equals(fullRoot, _logsRoot, StringComparison.Ordinal))
         {
-
             return "logs";
-
         }
 
         throw new InvalidDataException("The retention journal referenced an unknown managed root.");
-
     }
 
     private static string OperationQuarantineDirectoryPrefix(Guid operationId) =>
@@ -6782,36 +6657,27 @@ internal sealed partial class DataRetentionService(
     private static void FinalizeOperationQuarantines(
         IEnumerable<IdentityOwnedFileSystemQuarantine> quarantinedFiles)
     {
-
         foreach (IdentityOwnedFileSystemQuarantine quarantine in quarantinedFiles)
         {
-
             if (!IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(quarantine))
             {
-
                 throw new RetentionQuarantineRecoveryRequiredException(
                     "Retention committed its database mutation but could not finalize quarantined bytes.");
-
             }
-
         }
-
     }
 
     internal async Task<LongRunningOperationRecoveryResult> RecoverMutationAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         if (!string.Equals(
                 operation.Kind,
                 LongRunningOperationKinds.DataRetentionMutation,
                 StringComparison.Ordinal))
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
 
         // The single-flight insert creates this row at checkpoint version 0, and
@@ -6824,10 +6690,8 @@ internal sealed partial class DataRetentionService(
             && operation.CheckpointPayload is null
             && operation.CheckpointReference is null)
         {
-
             return LongRunningOperationRecoveryResult.Abandoned(
                 LongRunningOperationRecoveryOutcomes.RetentionMutationNeverStarted);
-
         }
 
         if (operation.CheckpointPayload is null
@@ -6836,48 +6700,37 @@ internal sealed partial class DataRetentionService(
                 "retention-mutation:" + operation.Id.ToString("N"),
                 StringComparison.Ordinal))
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
 
-        // A version-3 row is the only one that can carry a Covenant arm, and it is decoded by its own
-        // source-generated codec rather than by the version-2 text journal. Version 2 is untouched:
-        // an ordinary retention mutation still writes and resumes exactly the payload it always did,
-        // so a checkpoint written before this build reconciles without a second dataset replacement
-        // (§10.20.3).
-        if (operation.CheckpointVersion == DataRetentionMutationCheckpointV3.CurrentVersion)
+        // A version-4 row is an offline-transition launch, decoded by its own source-generated codec
+        // rather than by the version-2 text journal. Version 2 is untouched: an ordinary retention
+        // mutation still writes and resumes exactly the payload it always did, so an ordinary
+        // checkpoint reconciles without a second dataset replacement (§10.20.3).
+        if (operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
         {
-
             return await RecoverCovenantResetMutationAsync(
                 operation,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (operation.CheckpointVersion != 2)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
 
         RetentionMutationJournal journal;
 
         try
         {
-
             journal = ParseMutationJournal(operation.CheckpointPayload);
-
         }
         catch (InvalidDataException)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
 
         bool targetExists = await MutationTargetExistsAsync(
@@ -6889,24 +6742,19 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
             quarantines = DiscoverMutationQuarantines(
                 operation.Id,
                 journal,
                 targetExists);
-
         }
         catch (InvalidDataException)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
 
         foreach (RetentionMutationJournalEntry entry in journal.Entries)
         {
-
             string root = RootForRole(entry.RootRole);
 
             string originalPath = Path.GetFullPath(
@@ -6917,27 +6765,21 @@ internal sealed partial class DataRetentionService(
                     originalPath,
                     out _))
             {
-
                 return LongRunningOperationRecoveryResult.RequiresAttention(
                     ErrorCodes.Data.ReconciliationFailed);
-
             }
 
             if (quarantines.TryGetValue(entry, out IdentityOwnedFileSystemQuarantine quarantine))
             {
-
                 bool recovered = targetExists
                     ? IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(quarantine)
                     : IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(quarantine);
 
                 if (!recovered)
                 {
-
                     return LongRunningOperationRecoveryResult.RequiresAttention(
                         ErrorCodes.Data.ReconciliationFailed);
-
                 }
-
             }
 
             bool originalExists = IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -6947,31 +6789,23 @@ internal sealed partial class DataRetentionService(
 
             if (targetExists)
             {
-
                 if (!originalExists || original.Metadata != entry.Metadata)
                 {
-
                     return LongRunningOperationRecoveryResult.RequiresAttention(
                         ErrorCodes.Data.ReconciliationFailed);
-
                 }
-
             }
             else if (originalExists && original.Metadata == entry.Metadata)
             {
-
                 return LongRunningOperationRecoveryResult.RequiresAttention(
                     ErrorCodes.Data.ReconciliationFailed);
-
             }
-
         }
 
         return targetExists
             ? LongRunningOperationRecoveryResult.Failed(
                 ErrorCodes.Data.ReconciliationFailed)
             : LongRunningOperationRecoveryResult.Completed();
-
     }
 
     /// <summary>
@@ -6993,42 +6827,36 @@ internal sealed partial class DataRetentionService(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         // The same projection the erasure coordinator resumes from, so the handler and the coordinator
         // cannot drift about what a durable checkpoint means. It rebuilds the owner from the
         // checkpoint alone — never from a live plan, a request body, or the request-identity row.
         Result<CovenantErasureCheckpointState> state =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload!,
                 out bool describesCovenantErasure);
 
         if (!describesCovenantErasure)
         {
-
             // A version-3 row with no arm describes a mutation that closed nothing. There is no
             // exclusive scope to adopt and no storage effect this build can attribute to it, so it
             // reconciles as the ordinary mutation it is rather than parking behind closed admission.
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
 
         if (state.IsFailure)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.ManualRecoveryRequired);
-
         }
 
         if (string.IsNullOrWhiteSpace(operation.LeaseOwner)
             || _covenantErasureCoordinator is null)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.MaintenanceFailed);
-
         }
 
         logger.LogWarning(
@@ -7041,21 +6869,19 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-
-            recovered = await _leaseMaintainer.RunAsync(
-                operation.Id,
+            // No lease is renewed across the closed period, on recovery for the same reason as on a
+            // fresh apply: a renewal advances the row's revision, and the journal binds itself to the
+            // exact revision the launch produced. What the renewal was guarding - a second recovery
+            // starting beside this one - is guarded by the process-local claim the coordinator takes
+            // and by the journal's one active slot per profile.
+            recovered = await _covenantErasureCoordinator.RunAsync(
+                operation,
+                state.Value,
                 operation.LeaseOwner,
-                maintainedToken => _covenantErasureCoordinator.RunAsync(
-                    operation,
-                    state.Value,
-                    operation.LeaseOwner,
-                    maintainedToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (DataRetentionLeaseLostException ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Covenant reset recovery lost ownership of durable operation {OperationId}.",
@@ -7063,30 +6889,24 @@ internal sealed partial class DataRetentionService(
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.MaintenanceFailed);
-
         }
 
         return MapCovenantErasureRecovery(recovered);
-
     }
 
     private static LongRunningOperationRecoveryResult MapCovenantErasureRecovery(
         Result<CovenantErasureCompletion> recovered)
     {
-
         if (recovered.IsFailure)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ClosedCovenantError(recovered.Error.Code));
-
         }
 
         string blocking = ClosedCovenantError(recovered.Value.BlockingErrorCode);
 
         return recovered.Value.Disposition switch
         {
-
             CovenantExclusiveLeaseDisposition.CommitAndReopen =>
                 LongRunningOperationRecoveryResult.Completed(),
 
@@ -7094,9 +6914,7 @@ internal sealed partial class DataRetentionService(
                 LongRunningOperationRecoveryResult.Failed(blocking),
 
             _ => LongRunningOperationRecoveryResult.RequiresAttention(blocking),
-
         };
-
     }
 
     private static string ClosedCovenantError(string? errorCode) =>
@@ -7110,7 +6928,6 @@ internal sealed partial class DataRetentionService(
             RetentionMutationJournal journal,
             bool targetExists)
     {
-
         Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine> found = [];
 
         string prefix = OperationQuarantineDirectoryPrefix(operationId);
@@ -7120,7 +6937,6 @@ internal sealed partial class DataRetentionService(
         var parentScopes = journal.Entries
             .Select(entry =>
             {
-
                 string root = RootForRole(entry.RootRole);
 
                 string originalPath = Path.GetFullPath(
@@ -7131,35 +6947,27 @@ internal sealed partial class DataRetentionService(
                         originalPath,
                         out _))
                 {
-
                     throw new InvalidDataException(
                         "A retention mutation journal path escaped its managed root.");
-
                 }
 
                 return new
                 {
-
                     Root = root,
 
                     Parent = Path.GetDirectoryName(originalPath)
                         ?? throw new InvalidDataException(
                             "A retention mutation journal path has no parent."),
-
                 };
-
             })
             .DistinctBy(static scope => (scope.Root, scope.Parent))
             .ToArray();
 
         foreach (var scope in parentScopes)
         {
-
             if (!Directory.Exists(scope.Parent))
             {
-
                 continue;
-
             }
 
             string[] directories =
@@ -7173,34 +6981,27 @@ internal sealed partial class DataRetentionService(
 
             if (directories.Length > maximumDirectories)
             {
-
                 throw new InvalidDataException(
                     "The retention mutation has an unbounded quarantine set.");
-
             }
 
             foreach (string directory in directories)
             {
-
                 string name = Path.GetFileName(directory);
 
                 string suffix = name[prefix.Length..];
 
                 if (suffix.Length != 32 || !suffix.All(Uri.IsHexDigit))
                 {
-
                     throw new InvalidDataException(
                         "A retention mutation quarantine name is malformed.");
-
                 }
 
                 if (!SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict(
                         directory))
                 {
-
                     throw new InvalidDataException(
                         "A retention mutation quarantine is not strictly owner-only.");
-
                 }
 
                 if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -7208,21 +7009,17 @@ internal sealed partial class DataRetentionService(
                         FileSystemObjectKind.Directory,
                         out IdentityOwnedFileSystemArtifact directoryArtifact))
                 {
-
                     throw new InvalidDataException(
                         "A retention mutation quarantine directory changed identity.");
-
                 }
 
                 string[] entries = Directory.GetFileSystemEntries(directory);
 
                 if (entries.Length == 0)
                 {
-
                     bool originalStillOwned = targetExists
                         && journal.Entries.Any(entry =>
                         {
-
                             string entryRoot = RootForRole(entry.RootRole);
 
                             string original = Path.GetFullPath(
@@ -7237,20 +7034,16 @@ internal sealed partial class DataRetentionService(
                                     FileSystemObjectKind.RegularFile,
                                     out IdentityOwnedFileSystemArtifact artifact)
                                 && artifact.Metadata == entry.Metadata;
-
                         });
 
                     if (!originalStillOwned
                         || !IdentityOwnedFileSystemCleanup.TryDelete(directoryArtifact))
                     {
-
                         throw new InvalidDataException(
                             "An empty retention mutation quarantine could not be reconciled safely.");
-
                     }
 
                     continue;
-
                 }
 
                 if (entries.Length != 1
@@ -7259,10 +7052,8 @@ internal sealed partial class DataRetentionService(
                         FileSystemObjectKind.RegularFile,
                         out IdentityOwnedFileSystemArtifact quarantinedArtifact))
                 {
-
                     throw new InvalidDataException(
                         "A retention mutation quarantine has an unexpected shape.");
-
                 }
 
                 string originalPath = Path.Combine(
@@ -7284,10 +7075,8 @@ internal sealed partial class DataRetentionService(
 
                 if (manifestEntry is null || found.ContainsKey(manifestEntry))
                 {
-
                     throw new InvalidDataException(
                         "A retention mutation quarantine is not named by its durable journal.");
-
                 }
 
                 found.Add(
@@ -7298,13 +7087,10 @@ internal sealed partial class DataRetentionService(
                             manifestEntry.Metadata),
                         quarantinedArtifact,
                         directoryArtifact));
-
             }
-
         }
 
         return found;
-
     }
 
     /// <summary>
@@ -7350,7 +7136,6 @@ internal sealed partial class DataRetentionService(
     internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
         scope switch
         {
-
             MemoryResetScope.Entry =>
                 ["entry_embeddings_vec", "entry_embeddings"],
 
@@ -7388,7 +7173,6 @@ internal sealed partial class DataRetentionService(
                 ],
 
             _ => [],
-
         };
 
     /// <summary>
@@ -7440,7 +7224,6 @@ internal sealed partial class DataRetentionService(
         out MemoryResetScope scope,
         out Guid? campaignId)
     {
-
         scope = default;
 
         campaignId = null;
@@ -7454,61 +7237,49 @@ internal sealed partial class DataRetentionService(
                 out int scopeValue)
             || !Enum.IsDefined((MemoryResetScope)scopeValue))
         {
-
             return false;
-
         }
 
         scope = (MemoryResetScope)scopeValue;
 
         if (separator < 0)
         {
-
             return true;
-
         }
 
         if (!CampaignTargetedResetIsSupported(scope)
             || !Guid.TryParseExact(target[(separator + 1)..], "N", out Guid campaign))
         {
-
             return false;
-
         }
 
         campaignId = campaign;
 
         return true;
-
     }
 
     private async Task<bool> MutationTargetExistsAsync(
         RetentionMutationJournal journal,
         CancellationToken cancellationToken)
     {
-
         if (journal.Subtype == "delete-session"
             && Guid.TryParse(journal.Target, out Guid sessionId))
         {
-
             return await CountTableAsync(
                 "Sessions",
                 "lower(replace(Id, '-', '')) = @id",
                 cancellationToken,
                 ("@id", sessionId.ToString("N"))).ConfigureAwait(false) > 0;
-
         }
 
         if (journal.Subtype == "delete-attachment"
             && Guid.TryParse(journal.Target, out Guid attachmentId))
         {
-
             return await CountTableAsync(
                 "SessionAttachments",
                 "lower(replace(Id, '-', '')) = @id",
                 cancellationToken,
                 ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) > 0;
-
         }
 
         if (journal.Subtype == "reset-memory"
@@ -7517,27 +7288,21 @@ internal sealed partial class DataRetentionService(
                 out MemoryResetScope resetScope,
                 out Guid? resetCampaignId))
         {
-
             foreach (MemoryResetSelection selection in MemoryResetResidueSelections(
                          resetScope,
                          resetCampaignId))
             {
-
                 if (await CountTableAsync(
                         selection.Table,
                         selection.Predicate,
                         cancellationToken,
                         selection.Parameters).ConfigureAwait(false) > 0)
                 {
-
                     return true;
-
                 }
-
             }
 
             return false;
-
         }
 
         if (journal.Subtype == "reset-workspace"
@@ -7548,7 +7313,6 @@ internal sealed partial class DataRetentionService(
                 "N",
                 out _))
         {
-
             string workspaceRoot = journal.Target[33..];
 
             DbConnection connection = await OpenConnectionAsync(
@@ -7561,16 +7325,13 @@ internal sealed partial class DataRetentionService(
                 cancellationToken).ConfigureAwait(false);
 
             return snapshot.TotalOwnedRows > 0;
-
         }
 
         throw new InvalidDataException("The retention mutation journal target is invalid.");
-
     }
 
     private string RootForRole(string rootRole) => rootRole switch
     {
-
         "attachments" => _attachmentsRoot,
 
         "files" => _filesRoot,
@@ -7579,12 +7340,10 @@ internal sealed partial class DataRetentionService(
 
         _ => throw new InvalidDataException(
             "The retention mutation journal root role is invalid."),
-
     };
 
     private void TryDeleteEmptySessionDirectory(Guid sessionId)
     {
-
         string directory = Path.GetFullPath(
             Path.Combine(_attachmentsRoot, sessionId.ToString("N")));
 
@@ -7594,23 +7353,17 @@ internal sealed partial class DataRetentionService(
                 out _)
             || !Directory.Exists(directory))
         {
-
             return;
-
         }
 
         if (!Directory.EnumerateFileSystemEntries(directory).Any())
         {
-
             Directory.Delete(directory);
-
         }
-
     }
 
     private static bool IsUnderRoot(string root, string candidate)
     {
-
         string normalizedRoot = Path.TrimEndingDirectorySeparator(
             Path.GetFullPath(root));
 
@@ -7621,7 +7374,6 @@ internal sealed partial class DataRetentionService(
             OperatingSystem.IsWindows()
                 ? StringComparison.OrdinalIgnoreCase
                 : StringComparison.Ordinal);
-
     }
 
     private static long CountExistingFiles(string root) =>
@@ -7629,12 +7381,9 @@ internal sealed partial class DataRetentionService(
 
     private static (long Files, long Bytes) MeasureOwnedTree(string root)
     {
-
         if (!Directory.Exists(root))
         {
-
             return (0, 0);
-
         }
 
         FileInfo[] files =
@@ -7647,19 +7396,15 @@ internal sealed partial class DataRetentionService(
         return (
             files.LongLength,
             files.Sum(static file => file.Length));
-
     }
 
     private static (long Files, long Bytes) CountFiles(
         string root,
         string pattern)
     {
-
         if (!Directory.Exists(root))
         {
-
             return (0, 0);
-
         }
 
         FileInfo[] files =
@@ -7669,13 +7414,11 @@ internal sealed partial class DataRetentionService(
         return (
             files.LongLength,
             files.Sum(static file => file.Length));
-
     }
 
     private static EnumerationOptions OwnedTreeEnumeration { get; } =
         new()
         {
-
             RecurseSubdirectories = true,
 
             AttributesToSkip = FileAttributes.ReparsePoint,
@@ -7683,7 +7426,6 @@ internal sealed partial class DataRetentionService(
             IgnoreInaccessible = true,
 
             ReturnSpecialDirectories = false,
-
         };
 
     private static DataRetentionApplyResult EmptyApply(
@@ -7770,14 +7512,11 @@ internal sealed partial class DataRetentionService(
     private sealed class RetentionCovenantLabelException(Error error)
         : Exception(error.Message)
     {
-
         public Error Error { get; } = error;
-
     }
 
     private sealed class RetentionQuarantineRecoveryRequiredException(
         string message,
         Exception? innerException = null)
         : Exception(message, innerException);
-
 }

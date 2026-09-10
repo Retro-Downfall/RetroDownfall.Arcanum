@@ -32,18 +32,18 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
 
 public sealed class InstallationFactoryResetCommandTests
 {
-
     [Fact]
 
     public void Full_apply_reads_the_attestation_before_startup_and_preserves_the_signed_operation()
     {
-
         Guid operationId = Guid.Parse("61616161-6161-4161-8161-616161616161");
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All) with
@@ -106,14 +106,12 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.DoesNotContain(attestation.NonceBase64Url, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(attestation.SignatureBase64Url, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Full_resume_rejects_a_different_active_operation_before_the_boundary()
     {
-
         Guid signedOperationId = Guid.Parse("64646464-6464-4464-8464-646464646464");
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
@@ -150,13 +148,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.DoesNotContain("must-not-be-disclosed", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("must-not-be-disclosed", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Authenticated_full_claim_without_an_attestation_never_enters_ordinary_resume()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
 
         FakeInstallationResetService service = new(
@@ -205,13 +201,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.DoesNotContain("66666666", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("66666666", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Online_validator_accepts_the_authenticated_Covenant_plan_with_a_different_id()
     {
-
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -232,7 +226,6 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(onlinePlan.PlanId, result.Value.Plan?.PlanId);
 
         Assert.Equal(onlinePlan.CandidateIds, result.Value.Plan?.CandidateIds);
-
     }
 
     [Theory]
@@ -245,7 +238,6 @@ public sealed class InstallationFactoryResetCommandTests
         bool unreachable,
         string expectedCode)
     {
-
         ArcanumApiClient client = unreachable
             ? CreateApiClient(
                 _ => throw new HttpRequestException("Host unavailable."),
@@ -264,13 +256,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(expectedCode, result.Error.Code);
-
     }
 
     [Fact]
     public void Fresh_global_dry_run_uses_stopped_host_planning_without_online_seams()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionCovenantInventory disclosure = CreateOnlinePlan().Covenant!;
@@ -302,13 +292,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(0, validator.CallCount);
 
         Assert.Empty(handoff.BindCalls);
-
     }
 
     [Fact]
     public void Global_dry_run_outputs_only_the_stopped_host_local_plan()
     {
-
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -365,13 +353,11 @@ public sealed class InstallationFactoryResetCommandTests
                 .GetProperty("acceptedBinding")
                 .GetProperty("dataPlanIds")[0]
                 .GetString());
-
     }
 
     [Fact]
     public void Global_apply_passes_the_complete_stopped_host_wrapper_to_the_fresh_boundary()
     {
-
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -423,13 +409,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Empty(handoff.BindCalls);
 
         Assert.Empty(boundary.Requests);
-
     }
 
     [Fact]
     public void Stopped_host_planning_failure_stops_before_disclosure_confirmation_or_publication()
     {
-
         InstallationResetPlan localPlan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -484,7 +468,6 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Empty(boundary.FreshCalls);
 
         Assert.Empty(boundary.Requests);
-
     }
 
     [Theory]
@@ -499,7 +482,6 @@ public sealed class InstallationFactoryResetCommandTests
         string scopeOption,
         InstallationResetScope expectedScope)
     {
-
         InstallationResetPlan plan = CreatePlan(expectedScope);
 
         FakeInstallationResetService service = new(
@@ -526,13 +508,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(
             expectedScope.ToString(),
             document.RootElement.GetProperty("scope").GetString());
-
     }
 
     [Fact]
     public void Dry_run_does_not_validate_the_local_plan_through_the_authenticated_host()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetOnlinePlanValidator validator = new();
@@ -546,13 +526,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Empty(validator.Plans);
-
     }
 
     [Fact]
     public void Stopped_host_plan_mismatch_stops_before_confirmation_or_apply()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetService service = CreateSuccessfulService(plan);
@@ -578,13 +556,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Empty(service.ApplyRequests);
 
         Assert.Empty(validator.Plans);
-
     }
 
     [Fact]
     public void Human_dry_run_lists_the_exact_targets_backups_credentials_and_exclusions()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global) with
         {
             Targets =
@@ -637,14 +613,12 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Contains("/work/source", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Source files are never deleted.", result.Output, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Headless_apply_with_both_acknowledgements_plans_once_and_binds_the_plan_id()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
 
         InstallationResetResult applied = CreateResult(
@@ -686,13 +660,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(
             InstallationResetPhase.Completed.ToString(),
             document.RootElement.GetProperty("phase").GetString());
-
     }
 
     [Fact]
     public void Automated_global_apply_discloses_the_matching_local_inventory_without_breaking_json()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -747,13 +719,11 @@ public sealed class InstallationFactoryResetCommandTests
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
         Assert.Equal(plan.PlanId, document.RootElement.GetProperty("planId").GetString());
-
     }
 
     [Fact]
     public void Automated_all_apply_discloses_the_matching_global_local_inventory()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -806,13 +776,11 @@ public sealed class InstallationFactoryResetCommandTests
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
         Assert.Equal(plan.PlanId, document.RootElement.GetProperty("planId").GetString());
-
     }
 
     [Fact]
     public void Global_apply_decline_follows_disclosure_without_starting_apply()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -871,13 +839,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.True(guide > count);
 
         Assert.True(prompt > guide);
-
     }
 
     [Fact]
     public void Interactive_all_apply_decline_follows_disclosure_without_starting_apply()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.All);
 
         DataRetentionPlan onlinePlan = CreateOnlinePlan() with
@@ -936,13 +902,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.True(guide > count);
 
         Assert.True(prompt > guide);
-
     }
 
     [Fact]
     public void Global_apply_without_a_local_Covenant_inventory_stops_before_confirmation_or_apply()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetService service = CreateSuccessfulService(plan);
@@ -980,13 +944,11 @@ public sealed class InstallationFactoryResetCommandTests
             CovenantExternalRetentionDisclosure.DestructiveOperationText,
             result.Error,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Global_dry_run_without_a_local_Covenant_aggregate_fails_before_output()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetOnlineDataHandoff handoff = new();
@@ -1017,13 +979,11 @@ public sealed class InstallationFactoryResetCommandTests
             ErrorCodes.Data.InventoryUnavailable,
             error.RootElement.GetProperty("error").GetString(),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Workspace_dry_run_keeps_the_offline_plan_without_online_validation_or_binding()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Workspace);
 
         ThrowingOnlinePlanValidator validator = new();
@@ -1051,13 +1011,11 @@ public sealed class InstallationFactoryResetCommandTests
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
         Assert.Equal(plan.PlanId, document.RootElement.GetProperty("planId").GetString());
-
     }
 
     [Fact]
     public void Apply_runs_through_the_offline_shutdown_and_lock_boundary()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetService service = CreateSuccessfulService(plan);
@@ -1079,14 +1037,12 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.Equal(plan, Assert.Single(boundary.FreshCalls).ConfirmedPlan.Plan);
-
     }
 
     [Fact]
 
     public void Interactive_apply_accepts_only_the_exact_reset_token()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetService service = CreateSuccessfulService(plan);
@@ -1106,7 +1062,6 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Contains(plan.PlanId, result.Output, StringComparison.Ordinal);
 
         Assert.Contains("RESET", result.Error, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -1123,7 +1078,6 @@ public sealed class InstallationFactoryResetCommandTests
 
     public void Interactive_apply_rejects_every_non_exact_reset_token(string input)
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         FakeInstallationResetService service = CreateSuccessfulService(plan);
@@ -1139,7 +1093,6 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Single(service.PlanRequests);
 
         Assert.Empty(service.ApplyRequests);
-
     }
 
     [Theory]
@@ -1152,7 +1105,6 @@ public sealed class InstallationFactoryResetCommandTests
 
     public void Invalid_acknowledgement_shapes_fail_before_planning(string commandLine)
     {
-
         FakeInstallationResetService service = CreateSuccessfulService(
             CreatePlan(InstallationResetScope.All));
 
@@ -1165,14 +1117,12 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Empty(service.PlanRequests);
 
         Assert.Empty(service.ApplyRequests);
-
     }
 
     [Fact]
 
     public void Headless_apply_without_acknowledgements_never_applies()
     {
-
         FakeInstallationResetService service = CreateSuccessfulService(
             CreatePlan(InstallationResetScope.Workspace));
 
@@ -1189,14 +1139,12 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("--force", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Resumable_apply_result_is_emitted_and_returns_generic_error()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         InstallationResetResult partial = CreateResult(
@@ -1231,13 +1179,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(
             ErrorCodes.Data.RecoveryRequired,
             document.RootElement.GetProperty("errorCode").GetString());
-
     }
 
     [Fact]
     public void Active_reset_resumes_with_the_durable_plan_id_without_replanning_or_prompting()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         InstallationResetResult completed = CreateResult(
@@ -1270,14 +1216,12 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(plan.PlanId, request.ExpectedPlanId);
 
         Assert.DoesNotContain("Type RESET", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Connection_plan_failure_emits_one_cli_error_document_and_returns_network_error()
     {
-
         FakeInstallationResetService service = new(
             Result<InstallationResetPlan>.Failure(
                 new Error(
@@ -1304,14 +1248,12 @@ public sealed class InstallationFactoryResetCommandTests
             ErrorCodes.Connection.Unreachable,
             document.RootElement.GetProperty("error").GetString(),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Cancellation_uses_the_standard_cancelled_exit_and_one_error_document()
     {
-
         FakeInstallationResetService service = new(
             Result<InstallationResetPlan>.Success(
                 CreatePlan(InstallationResetScope.Global)),
@@ -1328,13 +1270,11 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(
             (int)CliExitCode.Cancelled,
             document.RootElement.GetProperty("exitCode").GetInt32());
-
     }
 
     [Fact]
     public void Resumable_cancellation_result_uses_exit_130_and_the_typed_result_payload()
     {
-
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         InstallationResetResult cancelled = CreateResult(
@@ -1370,7 +1310,6 @@ public sealed class InstallationFactoryResetCommandTests
         Assert.Equal(
             ErrorCodes.Data.RecoveryRequired,
             output.RootElement.GetProperty("errorCode").GetString());
-
     }
 
     [Theory]
@@ -1382,9 +1321,7 @@ public sealed class InstallationFactoryResetCommandTests
     public void Installation_reset_output_types_are_registered_for_cli_source_generation(
         Type type)
     {
-
         Assert.NotNull(CliJsonContext.Default.GetTypeInfo(type));
-
     }
 
     private static CliTestResult RunCommand(
@@ -1401,7 +1338,6 @@ public sealed class InstallationFactoryResetCommandTests
         IFullInstallationResetAttestationFileReader? attestationReader = null,
         IInstallationResetStoppedHostPlanner? stoppedHostPlanner = null)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -1439,11 +1375,9 @@ public sealed class InstallationFactoryResetCommandTests
 
         if (confirmationPrompt is not null)
         {
-
             services.RemoveAll<IInstallationResetConfirmationPrompt>();
 
             services.AddSingleton(confirmationPrompt);
-
         }
 
         services.RemoveAll<IInstallationStartupProbe>();
@@ -1453,12 +1387,10 @@ public sealed class InstallationFactoryResetCommandTests
 
         if (attestationReader is not null)
         {
-
             services.RemoveAll<IFullInstallationResetAttestationFileReader>();
 
             services.AddSingleton<IFullInstallationResetAttestationFileReader>(
                 attestationReader);
-
         }
 
         services.RemoveAll<ICliEnvironment>();
@@ -1475,13 +1407,11 @@ public sealed class InstallationFactoryResetCommandTests
             .RunAsync(services, args, input)
             .GetAwaiter()
             .GetResult();
-
     }
 
     private sealed class FakeInstallationResetOnlinePlanValidator
         : IInstallationResetOnlinePlanValidator
     {
-
         public List<InstallationResetPlan> Plans { get; } = [];
 
         public Result<InstallationResetOnlinePlanValidation> Result { get; set; } =
@@ -1492,40 +1422,32 @@ public sealed class InstallationFactoryResetCommandTests
             InstallationResetPlan plan,
             CancellationToken cancellationToken)
         {
-
             Plans.Add(plan);
 
             return Task.FromResult(Result);
-
         }
-
     }
 
     private sealed class ThrowingOnlinePlanValidator
         : IInstallationResetOnlinePlanValidator
     {
-
         public int CallCount { get; private set; }
 
         public Task<Result<InstallationResetOnlinePlanValidation>> ValidateAsync(
             InstallationResetPlan plan,
             CancellationToken cancellationToken)
         {
-
             CallCount++;
 
             throw new InvalidOperationException(
                 "Workspace reset must not query the authenticated host.");
-
         }
-
     }
 
     private sealed class RecordingStoppedHostPlanner(
         Result<StoppedHostInstallationResetPlan> result)
         : IInstallationResetStoppedHostPlanner
     {
-
         public List<InstallationResetPlanRequest> Requests { get; } = [];
 
         public Task<Result<StoppedHostInstallationResetPlan>>
@@ -1534,26 +1456,21 @@ public sealed class InstallationFactoryResetCommandTests
                 IStoppedHostGrimoireAuthorityIssuer issuer,
                 CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return Task.FromResult(result);
-
         }
-
     }
 
     private sealed class DelegatingStoppedHostPlanner(
         IInstallationResetService service) : IInstallationResetStoppedHostPlanner
     {
-
         public async Task<Result<StoppedHostInstallationResetPlan>>
             PlanUnderStoppedHostLockAsync(
                 InstallationResetPlanRequest request,
                 IStoppedHostGrimoireAuthorityIssuer issuer,
                 CancellationToken cancellationToken)
         {
-
             Result<InstallationResetPlan> planned = await service
                 .PlanAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -1565,15 +1482,12 @@ public sealed class InstallationFactoryResetCommandTests
                         request.Scope is InstallationResetScope.Workspace
                             ? null
                             : CreateOnlinePlan().Covenant));
-
         }
-
     }
 
     private sealed class ImmediateStoppedHostInitialization(
         IServiceProvider provider) : IGrimoireCliStoppedHostInitialization
     {
-
         public Task<T> RunAsync<T>(
             Func<IServiceProvider,
                 IStoppedHostGrimoireAuthorityIssuer,
@@ -1581,12 +1495,10 @@ public sealed class InstallationFactoryResetCommandTests
                 Task<T>> operation,
             CancellationToken cancellationToken) =>
             operation(provider, ThrowingStoppedHostIssuer.Instance, cancellationToken);
-
     }
 
     private sealed class ThrowingStoppedHostIssuer : IStoppedHostGrimoireAuthorityIssuer
     {
-
         public static ThrowingStoppedHostIssuer Instance { get; } = new();
 
         public Result<IStoppedHostGrimoireConnectionAuthority>
@@ -1610,7 +1522,6 @@ public sealed class InstallationFactoryResetCommandTests
         private static Result<IStoppedHostGrimoireConnectionAuthority> Throw() =>
             throw new InvalidOperationException(
                 "The planner fake must not mint a database capability.");
-
     }
 
     private sealed record OnlineBindCall(
@@ -1621,7 +1532,6 @@ public sealed class InstallationFactoryResetCommandTests
     private sealed class FakeInstallationResetOnlineDataHandoff
         : IInstallationResetOnlineDataHandoff
     {
-
         public List<OnlineBindCall> BindCalls { get; } = [];
 
         public Result<InstallationResetPlan>? BindResult { get; set; }
@@ -1631,12 +1541,10 @@ public sealed class InstallationFactoryResetCommandTests
             InstallationResetPlan localPlan,
             DataRetentionPlan onlinePlan)
         {
-
             BindCalls.Add(new OnlineBindCall(request, localPlan, onlinePlan));
 
             return BindResult
                 ?? Result<InstallationResetPlan>.Success(localPlan);
-
         }
 
         public Result<InstallationResetHostHandoff> CreateHostHandoff(
@@ -1650,25 +1558,20 @@ public sealed class InstallationFactoryResetCommandTests
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException(
                 "The command must resume through the apply boundary.");
-
     }
 
     private sealed class RecordingConfirmationPrompt : IInstallationResetConfirmationPrompt
     {
-
         public int CallCount { get; private set; }
 
         public Task<bool> PromptAsync(
             InstallationResetPlan plan,
             CancellationToken cancellationToken)
         {
-
             CallCount++;
 
             return Task.FromResult(true);
-
         }
-
     }
 
     private sealed record FreshApplyCall(
@@ -1678,7 +1581,6 @@ public sealed class InstallationFactoryResetCommandTests
     private sealed class RecordingApplyBoundary(
         IInstallationResetService service) : IInstallationResetApplyBoundary
     {
-
         public List<InstallationResetApplyRequest> Requests { get; } = [];
 
         public List<FreshApplyCall> FreshCalls { get; } = [];
@@ -1689,22 +1591,18 @@ public sealed class InstallationFactoryResetCommandTests
             FullInstallationResetRequest request,
             CancellationToken cancellationToken)
         {
-
             FullRequests.Add(request);
 
             return service.ApplyAsync(request.Apply, cancellationToken);
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyAsync(
             InstallationResetApplyRequest request,
             CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return service.ApplyAsync(request, cancellationToken);
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyAsync(
@@ -1713,11 +1611,9 @@ public sealed class InstallationFactoryResetCommandTests
             bool onlineCompletionDurable,
             CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return service.ApplyAsync(request, cancellationToken);
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyFreshAsync(
@@ -1725,7 +1621,6 @@ public sealed class InstallationFactoryResetCommandTests
             StoppedHostInstallationResetPlan confirmedPlan,
             CancellationToken cancellationToken)
         {
-
             FreshCalls.Add(new FreshApplyCall(request, confirmedPlan));
 
             return service.ApplyAsync(
@@ -1733,9 +1628,7 @@ public sealed class InstallationFactoryResetCommandTests
                     request,
                     confirmedPlan.Plan.PlanId),
                 cancellationToken);
-
         }
-
     }
 
     private static string[] Split(string commandLine) =>
@@ -1748,12 +1641,11 @@ public sealed class InstallationFactoryResetCommandTests
         string? apiKey) =>
         new(
             new SingleHttpClientFactory(new DelegateHttpMessageHandler(responder)),
-            new FakeSecretStore(apiKey));
+            ArcanumApiCredentialLeaseTestFactory.Create(apiKey));
 
     private static HttpResponseMessage CreateDataPlanResponse(
         DataRetentionPlan plan)
     {
-
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
             new ApiResponse<DataRetentionPlan>(plan, true, null),
             ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
@@ -1767,36 +1659,30 @@ public sealed class InstallationFactoryResetCommandTests
             new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
         return response;
-
     }
 
     private sealed class SingleHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
                 Timeout = Timeout.InfiniteTimeSpan,
             };
-
     }
 
     private sealed class DelegateHttpMessageHandler(
         Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             Task.FromResult(responder(request));
-
     }
 
     private sealed class FakeSecretStore(string? apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult(apiKey);
 
@@ -1814,7 +1700,6 @@ public sealed class InstallationFactoryResetCommandTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private static FakeInstallationResetService CreateSuccessfulService(
@@ -1902,7 +1787,6 @@ public sealed class InstallationFactoryResetCommandTests
         Result<InstallationResetResult>? applyResult = null,
         Exception? planException = null) : IInstallationResetService
     {
-
         public List<InstallationResetPlanRequest> PlanRequests { get; } = [];
 
         public List<InstallationResetApplyRequest> ApplyRequests { get; } = [];
@@ -1911,33 +1795,27 @@ public sealed class InstallationFactoryResetCommandTests
             InstallationResetPlanRequest request,
             CancellationToken cancellationToken = default)
         {
-
             PlanRequests.Add(request);
 
             if (planException is not null)
             {
-
                 return Task.FromException<Result<InstallationResetPlan>>(
                     planException);
-
             }
 
             return Task.FromResult(planResult);
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyAsync(
             InstallationResetApplyRequest request,
             CancellationToken cancellationToken = default)
         {
-
             ApplyRequests.Add(request);
 
             return Task.FromResult(
                 applyResult
                 ?? Result<InstallationResetResult>.Failure(
                     new Error("Test.ApplyMissing", "No apply result was configured.")));
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyFullAsync(
@@ -1946,56 +1824,47 @@ public sealed class InstallationFactoryResetCommandTests
             Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The test service does not own the full-reset lock boundary.")));
-
     }
 
     private sealed class FakeCliEnvironment(bool interactive) : ICliEnvironment
     {
-
         public bool IsInteractive => interactive;
 
         public bool ColorEnabled => false;
 
         public bool ShouldShowManaBar => false;
-
     }
 
     private sealed class FakeStartupProbe(
         ActiveInstallationReset? activeReset) : IInstallationStartupProbe
     {
-
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result<ActiveInstallationReset?>.Success(activeReset));
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(false);
-
     }
 
     private sealed class RecordingStartupProbe(
         ActiveInstallationReset? activeReset,
         List<string>? events = null) : IInstallationStartupProbe
     {
-
         public int ReadCount { get; private set; }
 
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken = default)
         {
-
             ReadCount++;
 
             events?.Add("startup");
 
             return Task.FromResult(
                 Result<ActiveInstallationReset?>.Success(activeReset));
-
         }
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(false);
-
     }
 
     private sealed class RecordingAttestationReader(
@@ -2003,14 +1872,12 @@ public sealed class InstallationFactoryResetCommandTests
         List<string>? events = null)
         : IFullInstallationResetAttestationFileReader
     {
-
         public int ReadCount { get; private set; }
 
         public Task<Result<FullInstallationResetExternalRemediationAttestation>> ReadAsync(
             string path,
             CancellationToken cancellationToken)
         {
-
             ReadCount++;
 
             events?.Add("attestation");
@@ -2018,9 +1885,7 @@ public sealed class InstallationFactoryResetCommandTests
             return Task.FromResult(
                 Result<FullInstallationResetExternalRemediationAttestation>.Success(
                     attestation));
-
         }
-
     }
 
     private static FullInstallationResetExternalRemediationAttestation CreateAttestation(
@@ -2043,5 +1908,4 @@ public sealed class InstallationFactoryResetCommandTests
 
     private static CovenantDigest Digest(byte value) =>
         new(Enumerable.Repeat(value, 32).ToArray());
-
 }

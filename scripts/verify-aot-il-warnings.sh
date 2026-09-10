@@ -21,7 +21,8 @@ ALLOWED=(
 usage() {
   cat <<'EOF'
 Verify Native AOT publish IL warnings for RetroDownfall.Arcanum.Cli and publish/run
-the runtime-regex smoke executable.
+the runtime-regex smoke executable. Use verify-shipping-publish.sh for the packaged
+first-session provider-contract gate; real-model inference qualification is local-only.
 
 Usage:
   verify-aot-il-warnings.sh [RID|all] [options]
@@ -134,19 +135,19 @@ explain_publish_failure() {
   local rid="$1"
   local log="$2"
 
-  if rg -q "Cross-OS native compilation is not supported" "$log"; then
+  if rg --no-config -q "Cross-OS native compilation is not supported" "$log"; then
     echo "  Publish failed: Cross-OS native compilation is not supported." >&2
     echo "  Build $rid on a $(rid_os_family "$rid") host or in CI (e.g. GitHub Actions)." >&2
     return
   fi
 
-  if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+  if rg --no-config -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
     echo "  Publish failed: symbol stripping tool (llvm-objcopy or objcopy) not found in PATH." >&2
     echo "  Install llvm/binutils (e.g. apt install llvm) or publish with -p:StripSymbols=false." >&2
     return
   fi
 
-  if rg -q "invalid linker name.*-fuse-ld=bfd|fuse-ld=bfd" "$log"; then
+  if rg --no-config -q "invalid linker name.*-fuse-ld=bfd|fuse-ld=bfd" "$log"; then
     echo "  Publish failed: Linux linker (-fuse-ld=bfd) is unavailable on this host." >&2
     echo "  Build $rid on Linux (native or CI) — macOS hosts cannot complete the Linux AOT link step." >&2
     return
@@ -156,13 +157,50 @@ explain_publish_failure() {
   tail -n 8 "$log" | sed 's/^/    /' >&2
 }
 
+remove_paths_with_retries() {
+  local description="$1"
+  shift
+
+  local attempt
+  local path
+  local remaining
+
+  for attempt in 1 2 3; do
+    remaining=0
+
+    if rm -rf -- "$@"; then
+      for path in "$@"; do
+        if [[ -e "$path" || -L "$path" ]]; then
+          remaining=1
+          break
+        fi
+      done
+
+      if [[ "$remaining" -eq 0 ]]; then
+        return 0
+      fi
+    fi
+
+    if [[ "$attempt" -lt 3 ]]; then
+      sleep 0.1
+    fi
+  done
+
+  echo "  AOT IL gate failed: could not remove $description after three attempts" >&2
+  return 1
+}
+
 publish_cli_rid() {
   local rid="$1"
   local log="$2"
+  local artifacts
+  artifacts="$(mktemp -d)"
   local -a publish_args=(
     publish "$PROJECT"
     -c Release
     -r "$rid"
+    --artifacts-path "$artifacts"
+    -p:ArcanumAotDiagnosticAudit=true
   )
 
   echo "  Publishing $rid via Native AOT — this performs native compilation and can take several minutes..." >&2
@@ -170,19 +208,33 @@ publish_cli_rid() {
   # Stream publish output to the screen while capturing it for IL-warning analysis.
   # pipefail (set at top) makes the pipeline surface dotnet's exit status, not tee's.
   if dotnet "${publish_args[@]}" 2>&1 | tee "$log"; then
+    if ! remove_paths_with_retries "CLI publish artifacts" "$artifacts"; then
+      return 1
+    fi
+
     return 0
   fi
 
-  if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+  if rg --no-config -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
     echo "  Symbol stripper missing; retrying $rid with StripSymbols=false..." >&2
 
-    if dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee "$log"; then
+    if dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee -a "$log"; then
       echo "  Publish succeeded after disabling symbol stripping." >&2
+
+      if ! remove_paths_with_retries "CLI publish artifacts" "$artifacts"; then
+        return 1
+      fi
+
       return 0
     fi
   fi
 
   explain_publish_failure "$rid" "$log"
+
+  if ! remove_paths_with_retries "CLI publish artifacts" "$artifacts"; then
+    return 1
+  fi
+
   return 1
 }
 
@@ -191,26 +243,41 @@ publish_regex_smoke_rid() {
   local log="$2"
   local output
   output="$(mktemp -d)"
+  local artifacts
+  artifacts="$(mktemp -d)"
   local -a publish_args=(
     publish "$REGEX_SMOKE_PROJECT"
     -c Release
     -r "$rid"
     -o "$output"
+    --artifacts-path "$artifacts"
   )
 
   echo "  Publishing runtime-regex Native-AOT smoke for $rid..." >&2
 
   if ! dotnet "${publish_args[@]}" 2>&1 | tee -a "$log"; then
-    if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+    if rg --no-config -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
       echo "  Symbol stripper missing; retrying regex smoke with StripSymbols=false..." >&2
 
       if ! dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee -a "$log"; then
-        rm -rf "$output"
+        if ! remove_paths_with_retries \
+          "regex-smoke publish output and artifacts" \
+          "$output" \
+          "$artifacts"; then
+          :
+        fi
+
         explain_publish_failure "$rid" "$log"
         return 1
       fi
     else
-      rm -rf "$output"
+      if ! remove_paths_with_retries \
+        "regex-smoke publish output and artifacts" \
+        "$output" \
+        "$artifacts"; then
+        :
+      fi
+
       explain_publish_failure "$rid" "$log"
       return 1
     fi
@@ -226,7 +293,13 @@ publish_regex_smoke_rid() {
     echo "  Running runtime-regex Native-AOT smoke for $rid..." >&2
 
     if ! "$executable" 2>&1 | tee -a "$log"; then
-      rm -rf "$output"
+      if ! remove_paths_with_retries \
+        "regex-smoke publish output and artifacts" \
+        "$output" \
+        "$artifacts"; then
+        :
+      fi
+
       echo "  Runtime-regex Native-AOT smoke failed for $rid." >&2
       return 1
     fi
@@ -234,14 +307,18 @@ publish_regex_smoke_rid() {
     echo "  Regex smoke published but not run because $rid is not the host RID." >&2
   fi
 
-  rm -rf "$output"
+  if ! remove_paths_with_retries \
+    "regex-smoke publish output and artifacts" \
+    "$output" \
+    "$artifacts"; then
+    return 1
+  fi
+
   return 0
 }
 
-# Cli.csproj turns PublishAot off for osx RIDs (the linker cannot handle the closure), so the
-# macOS CLI publish runs no ILC and no trimmer closure analysis at all. Ask MSBuild for the
-# resolved value rather than duplicating that condition here. Anything that cannot be evaluated
-# counts as enabled, so the ILC evidence check downstream stays fail-closed.
+# Ask MSBuild for the resolved value rather than duplicating project conditions here. Anything that
+# cannot be evaluated counts as enabled, so the ILC-evidence check downstream stays fail-closed.
 cli_publish_aot_enabled() {
   local rid="$1"
   local value
@@ -279,14 +356,22 @@ publish_rid() {
   local status=0
 
   publish_cli_rid "$rid" "$cli_log" || status=1
-  cat "$cli_log" >>"$log"
+
+  if ! cat "$cli_log" >>"$log"; then
+    echo "  AOT IL gate failed: could not append CLI publish output to the combined warning log for RID $rid" >&2
+    return 1
+  fi
 
   if [[ "$status" -ne 0 ]]; then
     return 1
   fi
 
   publish_regex_smoke_rid "$rid" "$smoke_log" || status=1
-  cat "$smoke_log" >>"$log"
+
+  if ! cat "$smoke_log" >>"$log"; then
+    echo "  AOT IL gate failed: could not append regex-smoke output to the combined warning log for RID $rid" >&2
+    return 1
+  fi
 
   return "$status"
 }
@@ -300,15 +385,16 @@ rg_capture() {
   shift
 
   local out
-  local status
+  local rg_exit
 
-  set +e
-  out="$(rg "$pattern" "$@")"
-  status=$?
-  set -e
+  if out="$(rg --no-config "$pattern" "$@")"; then
+    rg_exit=0
+  else
+    rg_exit=$?
+  fi
 
-  if [[ "$status" -gt 1 ]]; then
-    echo "  ripgrep failed (exit $status) while scanning: $*" >&2
+  if [[ "$rg_exit" -gt 1 ]]; then
+    echo "  ripgrep failed (exit $rg_exit) while scanning: $*" >&2
     return 1
   fi
 
@@ -383,6 +469,21 @@ il_warning_is_allowed() {
   return 1
 }
 
+# A sourceless ILC diagnostic can name both the first-party member that triggered analysis and an
+# allow-listed dependency it calls. The member wins. Strip MSBuild's trailing project annotation
+# first: that path identifies the publish leg, not the warning-owning symbol.
+il_warning_message_names_first_party() {
+  local line="$1"
+  local message
+  message="$(il_warning_message "$line")"
+
+  if [[ "$message" =~ ^(.*)[[:space:]]\[[^][]*\.csproj\][[:space:]]*$ ]]; then
+    message="${BASH_REMATCH[1]}"
+  fi
+
+  [[ "$message" == *"RetroDownfall.Arcanum"* ]]
+}
+
 # Analyzer diagnostics carry a real source path, and that path alone decides ownership. ILC
 # closure diagnostics have no source location ("ILC :" or a project file), so MSBuild's trailing
 # "[…csproj]" is the only ownership signal they carry.
@@ -428,6 +529,12 @@ count_il_violations() {
           echo "$line" >&2
           violations=$((violations + 1))
         fi
+        continue
+      fi
+
+      if il_warning_message_names_first_party "$line"; then
+        echo "$line" >&2
+        violations=$((violations + 1))
         continue
       fi
 
@@ -489,7 +596,10 @@ run_single_rid() {
   local logs=("$log" "$cli_log" "$smoke_log")
 
   if ! publish_rid "$rid" "$log" "$cli_log" "$smoke_log"; then
-    rm -f "${logs[@]}"
+    if ! remove_paths_with_retries "temporary publish logs for RID $rid" "${logs[@]}"; then
+      :
+    fi
+
     echo
     return 1
   fi
@@ -497,21 +607,31 @@ run_single_rid() {
   local cli_aot
   cli_aot="$(cli_publish_aot_enabled "$rid")"
 
-  if [[ "$cli_aot" == true ]]; then
-    if ! assert_log_has_ilc_output "$cli_log" "$rid"; then
-      rm -f "${logs[@]}"
-      echo "AOT IL gate failed: cannot verify the CLI closure on RID $rid" >&2
-      echo
-      return 1
+  if [[ "$cli_aot" != true ]]; then
+    if ! remove_paths_with_retries "temporary publish logs for RID $rid" "${logs[@]}"; then
+      :
     fi
-  else
-    echo "  NOTE: PublishAot is off for the CLI on $rid, so this publish ran the Roslyn trim/AOT"
-    echo "        analyzers but no ILC closure analysis. Warnings only the whole-program view can"
-    echo "        raise (IL2104/IL3053, package IL) are checked on a RID that AOT-compiles."
+
+    echo "AOT IL gate failed: PublishAot resolved off for shipping RID $rid" >&2
+    echo
+    return 1
+  fi
+
+  if ! assert_log_has_ilc_output "$cli_log" "$rid"; then
+    if ! remove_paths_with_retries "temporary publish logs for RID $rid" "${logs[@]}"; then
+      :
+    fi
+
+    echo "AOT IL gate failed: cannot verify the CLI closure on RID $rid" >&2
+    echo
+    return 1
   fi
 
   if ! assert_log_has_ilc_output "$smoke_log" "$rid"; then
-    rm -f "${logs[@]}"
+    if ! remove_paths_with_retries "temporary publish logs for RID $rid" "${logs[@]}"; then
+      :
+    fi
+
     echo "AOT IL gate failed: cannot verify the regex smoke publish on RID $rid" >&2
     echo
     return 1
@@ -520,13 +640,19 @@ run_single_rid() {
   local violations
 
   if ! violations="$(count_il_violations "$log")"; then
-    rm -f "${logs[@]}"
+    if ! remove_paths_with_retries "temporary publish logs for RID $rid" "${logs[@]}"; then
+      :
+    fi
+
     echo "AOT IL gate failed: cannot scan the publish log for RID $rid" >&2
     echo
     return 1
   fi
 
-  rm -f "${logs[@]}"
+  if ! remove_paths_with_retries "temporary publish logs for RID $rid" "${logs[@]}"; then
+    echo
+    return 1
+  fi
 
   if [[ "$violations" -gt 0 ]]; then
     echo "AOT IL gate failed: $violations unapproved first-party IL warning(s) on RID $rid" >&2
@@ -534,11 +660,7 @@ run_single_rid() {
     return 1
   fi
 
-  if [[ "$cli_aot" == true ]]; then
-    echo "AOT IL gate passed for RID $rid"
-  else
-    echo "AOT IL gate passed for RID $rid (CLI: analyzer diagnostics only — no ILC closure analysis)"
-  fi
+  echo "AOT IL gate passed for RID $rid"
 
   echo
   return 0

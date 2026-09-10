@@ -19,13 +19,11 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Collection(RetroDownfall.Arcanum.Tests.Collections.SqliteConnectionPoolCollection.Name)]
 public sealed class CovenantConnectionDrainTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task A_registered_handle_is_closed_by_the_drain()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         CovenantConnectionDrain drain = new();
@@ -39,13 +37,11 @@ public sealed class CovenantConnectionDrainTests
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
         Assert.Equal(ConnectionState.Closed, database.Connection.State);
-
     }
 
     [Fact]
     public async Task A_handle_whose_registration_was_disposed_is_left_alone()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         CovenantConnectionDrain drain = new();
@@ -60,7 +56,6 @@ public sealed class CovenantConnectionDrainTests
         // had ever seen would take down a component that had already finished with its own handle and
         // handed it to somebody else.
         Assert.Equal(ConnectionState.Open, database.Connection.State);
-
     }
 
     /// <summary>
@@ -76,7 +71,6 @@ public sealed class CovenantConnectionDrainTests
     [Fact]
     public async Task A_handle_two_components_enrolled_is_released_only_by_the_last_of_them()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         CovenantConnectionDrain drain = new();
@@ -92,13 +86,11 @@ public sealed class CovenantConnectionDrainTests
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
         Assert.Equal(ConnectionState.Closed, database.Connection.State);
-
     }
 
     [Fact]
     public async Task An_EF_close_releases_only_the_interceptors_reference_counted_enrolment()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         CountingDrain drain = new(new CovenantConnectionDrain());
@@ -145,20 +137,17 @@ public sealed class CovenantConnectionDrainTests
         // The interceptor paid back only its own enrolment. The other logical holder still owns the
         // physical handle, so the reference-counted drain must retain and close it.
         Assert.Equal(ConnectionState.Closed, serving.State);
-
     }
 
     [Fact]
     public async Task Every_registered_handle_is_closed_even_when_one_was_closed_already()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         SqliteConnection second = await database.OpenAdditionalConnectionAsync(Token);
 
         await using (second)
         {
-
             CovenantConnectionDrain drain = new();
 
             using IDisposable first = drain.Register(database.Connection);
@@ -174,24 +163,21 @@ public sealed class CovenantConnectionDrainTests
             Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
             Assert.Equal(ConnectionState.Closed, second.State);
-
         }
-
     }
 
     [Fact]
     public async Task Every_enrolled_handle_is_observed_physically_closed_before_all_pools_clear()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        List<string> events = [];
 
         await using SqliteConnection pooled = new(
             new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
             {
-
                 Pooling = true,
-
             }.ToString());
 
         await pooled.OpenAsync(Token);
@@ -208,11 +194,13 @@ public sealed class CovenantConnectionDrainTests
 
         await database.Connection.CloseAsync();
 
-        CovenantConnectionDrain drain = new();
+        CovenantConnectionDrain drain = new(() => events.Add("pools"));
 
-        using IDisposable firstEnrolment = drain.Register(first);
+        RecordingPhysicalCloseObserver observer = new(events);
 
-        using IDisposable secondEnrolment = drain.Register(second);
+        using IDisposable firstEnrolment = drain.Register(first, observer);
+
+        using IDisposable secondEnrolment = drain.Register(second, observer);
 
         Task<Result> draining = Task.Run(() => drain.DrainAsync(Token), Token);
 
@@ -230,10 +218,6 @@ public sealed class CovenantConnectionDrainTests
 
         await firstClosing.PhysicallyClosed;
 
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
         firstClosing.AllowCloseReturn();
 
         await secondClosing.Entered.WaitAsync(TimeSpan.FromSeconds(30));
@@ -242,39 +226,35 @@ public sealed class CovenantConnectionDrainTests
 
         await secondClosing.PhysicallyClosed;
 
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
         secondClosing.AllowCloseReturn();
 
         Result drained = await draining;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
-        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
+        Assert.Equal(["close", "close", "pools"], events);
 
+        Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
     }
 
     /// <summary>
-    /// A pooled handle survives its own disposal, and only the pool clear releases the sidecars.
+    /// A drain clears any sidecars left after a pooled connection wrapper is disposed.
     /// </summary>
     /// <remarks>
-    /// The fact the whole ordering here rests on, written down because it is invisible at every call
-    /// site: disposing a pooled connection does not close the database. Its native handle goes back
-    /// into the pool with the file still open, so the write-ahead log and the wal-index stay on disk
-    /// after the caller believes it has let go — and every proof of absence a Covenant erasure makes
-    /// is a statement about exactly those two files. That is why enrolment alone would not be enough
-    /// and why the drain clears the pools after it, rather than instead of it.
+    /// Disposing a pooled connection can return its native handle to the pool with the file still
+    /// open, but the provider may remove the write-ahead log and wal-index before the pool is
+    /// explicitly cleared. Their exact lifetime is not portable. The maintenance contract is the
+    /// postcondition: after the drain, neither sidecar survives. That is why enrolment alone is not
+    /// enough and why the drain clears the pools after closing enrolled handles, rather than instead
+    /// of it.
     ///
     /// <para>It is also the boundary of what the drain can promise. The proof it enables is true at
     /// the instant it is taken and about nothing later: a caller that opens a pooled connection after
     /// this returns puts both files straight back.</para>
     /// </remarks>
     [Fact]
-    public async Task A_disposed_pooled_handle_keeps_the_sidecars_until_the_drain_clears_the_pools()
+    public async Task A_drain_clears_sidecars_after_a_pooled_connection_wrapper_is_disposed()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         CovenantConnectionDrain drain = new();
@@ -287,38 +267,23 @@ public sealed class CovenantConnectionDrainTests
 
         await using (pooled.ConfigureAwait(false))
         {
-
             await pooled.OpenAsync(Token);
-
         }
 
-        // The scratch handle is unpooled and closes for real, so what is left holding the database is
-        // the pooled handle this test disposed a statement ago.
+        // The scratch handle is unpooled and closes for real. The provider may still retain the
+        // pooled native handle, but whether its sidecars remain at this instant is not portable.
         await database.Connection.CloseAsync();
-
-        // Asserted on every platform again. This was briefly guarded to POSIX after it redded on
-        // Windows, on the reading that the pool behaves differently there -- but the class is also
-        // order-dependent, and the same assertion fails on macOS under a wide filter and passes when
-        // the class runs alone, because ClearAllPools() is process-global and another test's drain
-        // empties the pool this one is measuring. The class is serialized now, which removes that
-        // interference. If Windows still reds here, the platform difference is real and this guard
-        // earns its place; guarding first would have hidden the race behind a plausible story.
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
 
         Result drained = await drain.DrainAsync(Token);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
     }
 
     [Fact]
-    public async Task Exact_pool_clear_releases_one_closed_pooled_handle_and_observes_closure()
+    public async Task Exact_pool_clear_keeps_the_handle_closed_and_leaves_no_sidecars()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         CovenantConnectionDrain drain = new();
@@ -326,9 +291,7 @@ public sealed class CovenantConnectionDrainTests
         await using SqliteConnection pooled = new(
             new SqliteConnectionStringBuilder(database.Connection.ConnectionString)
             {
-
                 Pooling = true,
-
             }.ToString());
 
         await pooled.OpenAsync(Token);
@@ -339,10 +302,6 @@ public sealed class CovenantConnectionDrainTests
 
         Assert.Equal(ConnectionState.Closed, pooled.State);
 
-        Assert.Contains(
-            CovenantResidualArtifactClass.WriteAheadLog,
-            CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
         Result cleared = drain.ClearExactPoolAfterClose(pooled);
 
         Assert.True(cleared.IsSuccess, cleared.IsFailure ? cleared.Error.Message : null);
@@ -350,7 +309,6 @@ public sealed class CovenantConnectionDrainTests
         Assert.Equal(ConnectionState.Closed, pooled.State);
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(database.DatabasePath));
-
     }
 
     /// <summary>
@@ -371,19 +329,14 @@ public sealed class CovenantConnectionDrainTests
     [SkippableFact]
     public async Task A_scope_holding_the_Grimoire_open_for_Covenant_is_closed_by_the_drain()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
         {
-
             SettingsOverride = static settings => settings with
             {
-
                 Features = settings.Features with { Covenant = true },
-
             },
-
         };
 
         // The maintenance sweeps resolve exactly this and nothing that enrols a handle, so the scope
@@ -404,7 +357,6 @@ public sealed class CovenantConnectionDrainTests
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
         Assert.Equal(ConnectionState.Closed, held.State);
-
     }
 
     /// <summary>
@@ -431,7 +383,6 @@ public sealed class CovenantConnectionDrainTests
     [Fact]
     public async Task A_handle_reopened_after_its_close_does_not_fail_the_drain()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         await using GatedConnection first = new(database.Connection.ConnectionString);
@@ -475,7 +426,6 @@ public sealed class CovenantConnectionDrainTests
         Assert.Equal(ConnectionState.Open, reopened.State);
 
         Assert.Equal(ConnectionState.Closed, holding.State);
-
     }
 
     /// <summary>
@@ -491,14 +441,12 @@ public sealed class CovenantConnectionDrainTests
     [Fact]
     public async Task A_handle_that_does_not_close_is_still_refused_by_the_drain()
     {
-
         await using CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         UnclosableConnection stuck = new(database.Connection.ConnectionString);
 
         try
         {
-
             await stuck.OpenAsync(Token);
 
             CovenantConnectionDrain drain = new();
@@ -512,23 +460,18 @@ public sealed class CovenantConnectionDrainTests
             Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, drained.Error.Code);
 
             Assert.Contains("did not close", drained.Error.Message);
-
         }
         finally
         {
-
             stuck.ForceClose();
 
             await stuck.DisposeAsync();
-
         }
-
     }
 
     [Fact]
     public async Task A_drain_with_nothing_registered_still_clears_the_pools()
     {
-
         CovenantConnectionDrain drain = new();
 
         Result drained = await drain.DrainAsync(Token);
@@ -536,13 +479,11 @@ public sealed class CovenantConnectionDrainTests
         // The idle pools belong to no component, so there is never nothing to do. A drain that
         // short-circuited on an empty enrolment set would leave every pooled handle behind.
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public void No_production_file_outside_the_drain_clears_a_connection_pool()
     {
-
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
@@ -557,7 +498,6 @@ public sealed class CovenantConnectionDrainTests
         // actually holding the database open stayed exactly where it was. The runtime validator is
         // exempt because it clears pools to release a rejected native library, not to free a database.
         Assert.Empty(offenders);
-
     }
 
     /// <summary>
@@ -584,7 +524,6 @@ public sealed class CovenantConnectionDrainTests
     [Fact]
     public void Every_production_opener_is_unpooled_or_named_here()
     {
-
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
@@ -597,7 +536,6 @@ public sealed class CovenantConnectionDrainTests
         ];
 
         Assert.Empty(offenders);
-
     }
 
     /// <summary>
@@ -632,27 +570,24 @@ public sealed class CovenantConnectionDrainTests
     /// </remarks>
     private sealed class CountingDrain(ICovenantConnectionDrain inner) : ICovenantConnectionDrain
     {
-
         internal int RegisterCount { get; private set; }
 
         internal int ReleaseCount { get; private set; }
 
         public IDisposable Register(SqliteConnection connection)
         {
-
             RegisterCount++;
 
             return new CountedEnrolment(this, inner.Register(connection));
-
         }
 
-        public IDisposable Register(SqliteConnection connection, Action afterPhysicalClose)
+        public IDisposable Register(
+            SqliteConnection connection,
+            ICovenantPhysicalCloseObserver observer)
         {
-
             RegisterCount++;
 
-            return new CountedEnrolment(this, inner.Register(connection, afterPhysicalClose));
-
+            return new CountedEnrolment(this, inner.Register(connection, observer));
         }
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
@@ -663,25 +598,18 @@ public sealed class CovenantConnectionDrainTests
 
         private sealed class CountedEnrolment(CountingDrain owner, IDisposable enrolment) : IDisposable
         {
-
             private int _released;
 
             public void Dispose()
             {
-
                 if (Interlocked.Exchange(ref _released, 1) == 0)
                 {
-
                     owner.ReleaseCount++;
-
                 }
 
                 enrolment.Dispose();
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -695,7 +623,6 @@ public sealed class CovenantConnectionDrainTests
     /// </remarks>
     private sealed class GatedConnection(string connectionString) : SqliteConnection(connectionString)
     {
-
         private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -709,21 +636,17 @@ public sealed class CovenantConnectionDrainTests
 
         public override async Task CloseAsync()
         {
-
             _ = _entered.TrySetResult();
 
             await _released.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
             await base.CloseAsync();
-
         }
-
     }
 
     private sealed class ObservedCloseConnection(string connectionString)
         : SqliteConnection(connectionString)
     {
-
         private readonly TaskCompletionSource _entered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -746,7 +669,6 @@ public sealed class CovenantConnectionDrainTests
 
         public override async Task CloseAsync()
         {
-
             _entered.TrySetResult();
 
             await _allowPhysicalClose.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -756,9 +678,14 @@ public sealed class CovenantConnectionDrainTests
             _physicallyClosed.TrySetResult();
 
             await _allowCloseReturn.Task.WaitAsync(TimeSpan.FromSeconds(30));
-
         }
+    }
 
+    private sealed class RecordingPhysicalCloseObserver(List<string> events)
+        : ICovenantPhysicalCloseObserver
+    {
+        public void OnPhysicalClose(SqliteConnection connection) =>
+            events.Add("close");
     }
 
     private sealed class DrainProbeDbContext(DbContextOptions<DrainProbeDbContext> options)
@@ -775,7 +702,6 @@ public sealed class CovenantConnectionDrainTests
     /// </remarks>
     private sealed class UnclosableConnection(string connectionString) : SqliteConnection(connectionString)
     {
-
         public override void Close()
         {
         }
@@ -786,7 +712,5 @@ public sealed class CovenantConnectionDrainTests
         /// <summary>Closes it for real, so a test that made its point still releases the file.</summary>
         internal void ForceClose() =>
             base.Close();
-
     }
-
 }

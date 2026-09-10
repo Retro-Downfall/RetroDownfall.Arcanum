@@ -3,7 +3,6 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Models;
-using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -11,7 +10,6 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 
 public enum HealthProbeState
 {
-
     NotAttempted,
 
     Healthy,
@@ -36,7 +34,6 @@ public enum HealthProbeState
     /// the handshake. The port is occupied, so auto-serve must never spawn a second host against it.
     /// </summary>
     UnexpectedResponder,
-
 }
 
 public sealed record HealthProbeResult(
@@ -61,27 +58,43 @@ public sealed record HealthProbeResult(
 /// </summary>
 internal static class ArcanumHealthProbe
 {
-
-    internal static async Task<HealthProbeResult> ProbeAsync(
+    internal static async Task<HealthProbeResult> ProbeAuthenticatedAsync(
         HttpClient client,
         Uri url,
-        string? apiKey,
+        ArcanumApiCredentialLease credentialLease,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(client);
-
         ArgumentNullException.ThrowIfNull(url);
+        ArgumentNullException.ThrowIfNull(credentialLease);
 
-        using HttpRequestMessage request = new(HttpMethod.Get, url);
-
-        if (apiKey is not null)
+        if (timeout <= TimeSpan.Zero)
         {
-            _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout),
+                "The health-probe timeout must be positive.");
         }
 
-        using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ApiCredentialLeaseResult credential = await credentialLease
+            .ResolveAsync(timeout, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (credential is not { IsVerified: true, ProcessCapability: not null })
+        {
+            Error error = ArcanumApiCredentialFailureMapper.ToError(credential);
+
+            return new HealthProbeResult(
+                credential.ProbeState,
+                null,
+                TimeSpan.Zero,
+                error.Message);
+        }
+
+        // Start the health-response deadline only after the presence exchange and any local secure
+        // storage prompt. A user answering the OS password dialog is not a slow network response.
+        using CancellationTokenSource cts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         cts.CancelAfter(timeout);
 
@@ -89,9 +102,32 @@ internal static class ArcanumHealthProbe
 
         try
         {
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+            using ArcanumAuthenticatedHttpResponse sent =
+                await ArcanumAuthenticatedHttpSender.SendAsync(
+                    client,
+                    credentialLease,
+                    () => new HttpRequestMessage(HttpMethod.Get, url),
+                    HttpCompletionOption.ResponseHeadersRead,
+                    canReplayAfterUnauthorized: true,
+                    timeout,
+                    cts.Token)
                 .ConfigureAwait(false);
+
+            if (!sent.IsAuthenticated)
+            {
+                sw.Stop();
+
+                Error error = ArcanumApiCredentialFailureMapper.ToError(
+                    sent.Credentials);
+
+                return new HealthProbeResult(
+                    sent.Credentials.ProbeState,
+                    null,
+                    sw.Elapsed,
+                    error.Message);
+            }
+
+            HttpResponseMessage response = sent.Response!;
 
             sw.Stop();
 
@@ -150,7 +186,6 @@ internal static class ArcanumHealthProbe
 
             return new HealthProbeResult(HealthProbeState.Timeout, null, sw.Elapsed, ex.Message);
         }
-
     }
 
     /// <summary>
@@ -184,9 +219,8 @@ internal static class ArcanumHealthProbe
         }
     }
 
-    private static HealthProbeState ClassifyHttpRequestException(HttpRequestException ex)
+    internal static HealthProbeState ClassifyHttpRequestException(HttpRequestException ex)
     {
-
         if (IsTlsFailure(ex) || ex.HttpRequestError == HttpRequestError.SecureConnectionError)
         {
             return HealthProbeState.TlsFailure;
@@ -243,12 +277,10 @@ internal static class ArcanumHealthProbe
         // Conservative default: an unclassifiable transport failure with nothing to suggest a peer
         // answered stays a no-listener verdict, so auto-serve can still recover a host that died.
         return HealthProbeState.NetworkUnreachable;
-
     }
 
     private static bool IsTlsFailure(Exception ex)
     {
-
         for (Exception? current = ex; current is not null; current = current.InnerException)
         {
             if (current is AuthenticationException)
@@ -275,12 +307,10 @@ internal static class ArcanumHealthProbe
         }
 
         return false;
-
     }
 
     private static SocketError? FindSocketError(Exception ex)
     {
-
         for (Exception? current = ex; current is not null; current = current.InnerException)
         {
             if (current is SocketException socket)
@@ -290,7 +320,5 @@ internal static class ArcanumHealthProbe
         }
 
         return null;
-
     }
-
 }

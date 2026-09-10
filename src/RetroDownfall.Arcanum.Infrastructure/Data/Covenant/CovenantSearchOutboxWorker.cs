@@ -29,7 +29,6 @@ public sealed record CovenantOutboxSyncOutcome(
 /// </remarks>
 internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitializer initializer)
 {
-
     internal const int DefaultBatchRows = 512;
 
     internal CovenantSearchOutboxWorker()
@@ -52,25 +51,20 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         CancellationToken cancellationToken,
         int maxRows)
     {
-
         ArgumentNullException.ThrowIfNull(acceleratorLease);
 
         ArgumentNullException.ThrowIfNull(transaction);
 
         if (maxRows < 1)
         {
-
             throw new ArgumentOutOfRangeException(nameof(maxRows));
-
         }
 
         Result revalidated = await acceleratorLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return revalidated.Error;
-
         }
 
         using CovenantSqliteAuthorizationScope authorization = initializer.Authorize(
@@ -81,20 +75,16 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (acceleratorLease.Snapshot.DatasetGeneration is { } expected && expected != state.DatasetGeneration)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed before this synchronization batch could apply.");
-
         }
 
         if (acceleratorLease.Snapshot.AcceleratorEpoch is { } epoch && epoch != state.AcceleratorEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant accelerator epoch changed before this synchronization batch could apply.");
-
         }
 
         long? applied = state.AppliedDatasetGeneration == state.DatasetGeneration
@@ -103,20 +93,16 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (applied is null)
         {
-
             // A projection with no published tuple is adoptable only while it is empty: an empty
             // projection is trivially correct for sequence zero, so the worker can start from there
             // instead of demanding a rebuild of nothing. Anything already projected under a tuple
             // this dataset never published cannot be reconciled by a delta.
             if (await ProjectionRowCountAsync(transaction, cancellationToken).ConfigureAwait(false) > 0)
             {
-
                 return new CovenantOutboxSyncOutcome(0, 0, 0, 0, RebuildRequired: true);
-
             }
 
             applied = 0;
-
         }
 
         ImmutableArray<OutboxRow> pending = await ReadPendingAsync(transaction, applied.Value, maxRows + 1, cancellationToken)
@@ -124,19 +110,15 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (pending.IsEmpty)
         {
-
             // Nothing to apply, but the tuple may still need adopting so eligibility can be reached
             // on an installation that has simply never mutated.
             if (state.AppliedDatasetGeneration != state.DatasetGeneration)
             {
-
                 await PublishAppliedAsync(transaction, state.DatasetGeneration, applied.Value, cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             return new CovenantOutboxSyncOutcome(applied.Value, 0, 0, 0, RebuildRequired: false);
-
         }
 
         // Whole sequences only. A range that stopped mid-sequence would publish an applied tuple for
@@ -145,9 +127,7 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (target <= applied.Value)
         {
-
             return new CovenantOutboxSyncOutcome(applied.Value, 0, 0, 0, RebuildRequired: pending.Length > maxRows);
-
         }
 
         ImmutableArray<OutboxRow> range = [.. pending.Where(row => row.SearchSequence <= target)];
@@ -158,9 +138,7 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         foreach (OutboxRow row in range)
         {
-
             coalesced[row.SearchRowId] = row;
-
         }
 
         long written = 0;
@@ -169,15 +147,12 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         foreach (OutboxRow row in coalesced.Values.OrderBy(static row => row.SearchRowId))
         {
-
             if (row.DesiredVersionId is null)
             {
-
                 removed = checked(removed + await DeleteProjectionAsync(transaction, row.SearchRowId, cancellationToken)
                     .ConfigureAwait(false));
 
                 continue;
-
             }
 
             Result<bool> projected = await WriteProjectionAsync(
@@ -190,22 +165,17 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
             if (projected.IsFailure)
             {
-
                 return projected.Error;
-
             }
 
             if (!projected.Value)
             {
-
                 // The desired version is gone and no later absent delta covers it inside this range,
                 // so nothing here can reconcile the projection. Advance nothing.
                 return new CovenantOutboxSyncOutcome(applied.Value, 0, 0, 0, RebuildRequired: true);
-
             }
 
             written = checked(written + 1);
-
         }
 
         long consumed = await ConsumeAsync(transaction, target, cancellationToken).ConfigureAwait(false);
@@ -214,7 +184,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
             .ConfigureAwait(false);
 
         return new CovenantOutboxSyncOutcome(target, consumed, written, removed, RebuildRequired: false);
-
     }
 
     /// <summary>
@@ -222,7 +191,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
     /// </summary>
     private static long ChooseContiguousTarget(ImmutableArray<OutboxRow> pending, long applied, int maxRows)
     {
-
         long target = applied;
 
         long counted = 0;
@@ -230,31 +198,25 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         foreach (IGrouping<long, OutboxRow> group in pending.GroupBy(static row => row.SearchSequence)
             .OrderBy(static group => group.Key))
         {
-
             long size = group.Count();
 
             if (checked(counted + size) > maxRows)
             {
-
                 break;
-
             }
 
             counted += size;
 
             target = group.Key;
-
         }
 
         return target;
-
     }
 
     private static async ValueTask<long> ProjectionRowCountAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "SELECT COUNT(*) FROM covenant_search_documents;";
@@ -262,14 +224,12 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static async ValueTask<AcceleratorState> ReadStateAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -290,7 +250,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
             reader.IsDBNull(2) ? null : new Guid((byte[])reader.GetValue(2)),
             reader.IsDBNull(3) ? null : reader.GetInt64(3),
             checked((ulong)reader.GetInt64(4)));
-
     }
 
     private static async ValueTask<ImmutableArray<OutboxRow>> ReadPendingAsync(
@@ -299,7 +258,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         int limit,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -321,7 +279,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(
                 new OutboxRow(
                     reader.GetInt64(0),
@@ -330,11 +287,9 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
                     reader.GetString(3),
                     reader.GetInt32(4),
                     reader.IsDBNull(5) ? null : reader.GetString(5)));
-
         }
 
         return [.. rows];
-
     }
 
     /// <summary>
@@ -348,7 +303,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long searchSequence,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         // A current tombstone indexes its key and lifecycle only. Retaining content on a retired head
@@ -389,17 +343,12 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         try
         {
-
             return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-
         }
         catch (SqliteException exception)
         {
-
             return new Error(ErrorCodes.Covenant.IntegrityFailure, exception.Message);
-
         }
-
     }
 
     private static async ValueTask<int> DeleteProjectionAsync(
@@ -407,7 +356,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long searchRowId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "DELETE FROM covenant_search_documents WHERE SearchRowId = $row;";
@@ -415,7 +363,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         _ = command.Parameters.AddWithValue("$row", searchRowId);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask<long> ConsumeAsync(
@@ -423,7 +370,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long target,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = "DELETE FROM covenant_search_outbox WHERE SearchSequence <= $target;";
@@ -431,7 +377,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         _ = command.Parameters.AddWithValue("$target", target);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async ValueTask PublishAppliedAsync(
@@ -440,7 +385,6 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long target,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         // The applied tuple moves as one unit, including the Campaign-deletion watermark: a partial
@@ -461,10 +405,9 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         _ = command.Parameters.AddWithValue(
             "$updated",
-            DateTimeOffset.UtcNow.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(DateTimeOffset.UtcNow));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private readonly record struct AcceleratorState(
@@ -481,5 +424,4 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         string EntryId,
         int LaneCode,
         string? DesiredVersionId);
-
 }

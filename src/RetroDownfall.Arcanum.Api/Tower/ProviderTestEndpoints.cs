@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
@@ -19,7 +20,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// <remarks>Non-billable (ADR 0002 / <c>NonBillableSurfaces.ProviderTest</c>): connectivity probe only.</remarks>
 internal static class ProviderTestEndpoints
 {
-
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
@@ -33,7 +33,11 @@ internal static class ProviderTestEndpoints
     {
         apiGroup.MapPost(
             "/providers/test",
-            async (ProviderTestRequest? body, HttpContext ctx, ILoggerFactory loggerFactory) =>
+            async (
+                ProviderTestRequest? body,
+                IDnsResolver dnsResolver,
+                HttpContext ctx,
+                ILoggerFactory loggerFactory) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -56,7 +60,7 @@ internal static class ProviderTestEndpoints
                 }
 
                 Result urlValidation = await OutboundUrlGuard
-                    .ValidateProviderEndpointAsync(body.Endpoint, ctx.RequestAborted)
+                    .ValidateProviderEndpointAsync(body.Endpoint, dnsResolver, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (urlValidation.IsFailure)
@@ -80,6 +84,7 @@ internal static class ProviderTestEndpoints
 
                 ProviderTestResult result = await ProbeProviderAsync(
                     body,
+                    dnsResolver,
                     loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.Tower.ProviderTest"),
                     ctx.RequestAborted).ConfigureAwait(false);
 
@@ -93,6 +98,7 @@ internal static class ProviderTestEndpoints
 
     private static async Task<ProviderTestResult> ProbeProviderAsync(
         ProviderTestRequest request,
+        IDnsResolver dnsResolver,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -100,7 +106,9 @@ internal static class ProviderTestEndpoints
 
         string probeUrl = $"{baseUrl}/models";
 
-        using HttpClient client = new(OutboundUrlGuard.CreateProviderEgressHandler(), disposeHandler: true)
+        using HttpClient client = new(
+            OutboundUrlGuard.CreateProviderEgressHandler(dnsResolver),
+            disposeHandler: true)
         {
             Timeout = ProbeTimeout,
         };
@@ -250,5 +258,4 @@ internal static class ProviderTestEndpoints
             return [];
         }
     }
-
 }

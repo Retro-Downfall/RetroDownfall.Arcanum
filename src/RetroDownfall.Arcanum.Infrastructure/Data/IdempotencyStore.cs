@@ -15,13 +15,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
 {
-
     public async Task<IdempotencyRecord?> TryGetAsync(
         string keyHash,
         DateTimeOffset notOlderThan,
         CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -39,7 +37,7 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
 
                 AddParameter(cmd, "@keyHash", keyHash);
 
-                AddParameter(cmd, "@notOlderThan", notOlderThan.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@notOlderThan", UtcInstantText.Format(notOlderThan));
 
                 await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -51,7 +49,6 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
                 return ReadRecord(reader);
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task SaveAsync(
@@ -62,7 +59,6 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
         DateTimeOffset createdAt,
         CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -89,17 +85,15 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
 
                 AddParameter(cmd, "@responseBody", responseBody);
 
-                AddParameter(cmd, "@createdAt", createdAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@createdAt", UtcInstantText.Format(createdAt));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
-
     }
 
     public async Task<int> DeleteExpiredAsync(DateTimeOffset olderThan, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -113,17 +107,15 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
                     WHERE "CreatedAt" < @olderThan
                     """;
 
-                AddParameter(cmd, "@olderThan", olderThan.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@olderThan", UtcInstantText.Format(olderThan));
 
                 return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -132,12 +124,10 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -145,12 +135,10 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static IdempotencyRecord ReadRecord(DbDataReader reader)
     {
-
         string keyHash = reader.GetString(0);
 
         int statusCode = reader.GetInt32(1);
@@ -159,10 +147,8 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
 
         string responseBody = reader.GetString(3);
 
-        DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture);
+        DateTimeOffset createdAt = UtcInstantText.Parse(reader.GetString(4));
 
         return new IdempotencyRecord(keyHash, statusCode, contentType, responseBody, createdAt);
-
     }
-
 }

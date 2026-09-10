@@ -25,35 +25,43 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFactory)
     : ICovenantCampaignScopeProbe
 {
-
     private const int CampaignOwnerKindCode = 1;
 
     public async ValueTask<Result<CovenantCampaignScopeState>> ResolveAsync(
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         if (campaignId == Guid.Empty)
         {
-
             return new Error(ErrorCodes.Covenant.InvalidScope, "A Campaign scope requires a nonempty Campaign identity.");
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-        bool live = await db.Campaigns
-            .AsNoTracking()
-            .AnyAsync(campaign => campaign.Id == campaignId, cancellationToken)
-            .ConfigureAwait(false);
+        await using SqliteCommand liveCommand = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            """
+            SELECT 1
+            FROM "Campaigns"
+            WHERE "Id" = $campaignId
+            LIMIT 1;
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(
+            liveCommand,
+            "$campaignId",
+            GrimoireEntitySql.Format(campaignId));
+
+        object? liveValue = await liveCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        bool live = liveValue is not null and not DBNull;
 
         if (live)
         {
-
             return CovenantCampaignScopeState.Live;
-
         }
 
         IGrimoireOrdinaryConnectionFactory connections =
@@ -68,7 +76,6 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
         return deleted
             ? CovenantCampaignScopeState.Deleted
             : CovenantCampaignScopeState.Unknown;
-
     }
 
     private static async Task<bool> HasDeletionEventAsync(
@@ -77,12 +84,9 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
         {
-
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");
-
         }
 
         Result<IGrimoireOrdinaryConnectionLease> acquired = await connections
@@ -94,9 +98,7 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
 
         if (acquired.IsFailure)
         {
-
             throw new GrimoireMaintenanceUnavailableException();
-
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -132,12 +134,10 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
             .ConfigureAwait(false);
 
         return deleted;
-
     }
 
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
     {
-
         System.Data.Common.DbParameter parameter = command.CreateParameter();
 
         parameter.ParameterName = name;
@@ -145,7 +145,5 @@ internal sealed class CovenantCampaignScopeProbe(IServiceScopeFactory scopeFacto
         parameter.Value = value;
 
         _ = command.Parameters.Add(parameter);
-
     }
-
 }

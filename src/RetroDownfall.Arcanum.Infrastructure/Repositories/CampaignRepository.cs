@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed class CampaignRepository : ICampaignRepository
 {
-
     private const int DefaultListLimit = 100;
 
     private const int ImmediateTransactionTimeoutSeconds = 1;
@@ -49,10 +48,10 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public async Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        return await _db.Campaigns
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
-            .ConfigureAwait(false);
+        return await ReadSingleAsync(
+            $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" WHERE \"Id\" = $id LIMIT 1;",
+            command => GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id)),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default)
@@ -68,10 +67,10 @@ public sealed class CampaignRepository : ICampaignRepository
             return null;
         }
 
-        return await _db.Campaigns
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.Path == normalized, cancellationToken)
-            .ConfigureAwait(false);
+        return await ReadSingleAsync(
+            $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" WHERE \"Path\" = $path LIMIT 1;",
+            command => GrimoireEntitySql.AddParameter(command, "$path", normalized),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
@@ -83,10 +82,10 @@ public sealed class CampaignRepository : ICampaignRepository
 
         string nameLower = name.Trim().ToLowerInvariant();
 
-        return await _db.Campaigns
-            .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.NameLower == nameLower, cancellationToken)
-            .ConfigureAwait(false);
+        return await ReadSingleAsync(
+            $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" WHERE \"NameLower\" = $name LIMIT 1;",
+            command => GrimoireEntitySql.AddParameter(command, "$name", nameLower),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<ListPageResult<Campaign>> ListAsync(
@@ -99,19 +98,42 @@ public sealed class CampaignRepository : ICampaignRepository
 
         int skip = Math.Max(0, offset);
 
-        IQueryable<Campaign> query = _db.Campaigns.AsNoTracking();
+        List<Campaign> page;
 
         if (typeFilter is { } type)
         {
-            query = query.Where(c => c.Type == type);
+            page = await ReadManyAsync(
+                $"""
+                SELECT {GrimoireEntitySql.CampaignColumns}
+                FROM "Campaigns"
+                WHERE "Type" = $type
+                ORDER BY "Name"
+                LIMIT $take OFFSET $skip;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$type", (int)type);
+                    GrimoireEntitySql.AddParameter(command, "$take", pageSize + 1);
+                    GrimoireEntitySql.AddParameter(command, "$skip", skip);
+                },
+                cancellationToken).ConfigureAwait(false);
         }
-
-        List<Campaign> page = await query
-            .OrderBy(c => c.Name)
-            .Skip(skip)
-            .Take(pageSize + 1)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        else
+        {
+            page = await ReadManyAsync(
+                $"""
+                SELECT {GrimoireEntitySql.CampaignColumns}
+                FROM "Campaigns"
+                ORDER BY "Name"
+                LIMIT $take OFFSET $skip;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$take", pageSize + 1);
+                    GrimoireEntitySql.AddParameter(command, "$skip", skip);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
 
         bool hasMore = page.Count > pageSize;
 
@@ -264,6 +286,8 @@ public sealed class CampaignRepository : ICampaignRepository
                     _db.Entry(campaign).State = EntityState.Detached;
                 }
 
+                await efTransaction.DisposeAsync().ConfigureAwait(false);
+
                 return await MapDuplicateCampaignAsync(campaign, cancellationToken).ConfigureAwait(false);
             }
 
@@ -298,17 +322,19 @@ public sealed class CampaignRepository : ICampaignRepository
 
         try
         {
-            _ = await _db.Sessions
-                .Where(s => s.CampaignId == id)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(x => x.CampaignId, (Guid?)null),
-                    cancellationToken)
-                .ConfigureAwait(false);
+            await using SqliteCommand unbind = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
+                "UPDATE \"Sessions\" SET \"CampaignId\" = NULL WHERE \"CampaignId\" = $id;",
+                cancellationToken).ConfigureAwait(false);
+            GrimoireEntitySql.AddParameter(unbind, "$id", GrimoireEntitySql.Format(id));
+            _ = await unbind.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-            int deleted = await _db.Campaigns
-                .Where(c => c.Id == id)
-                .ExecuteDeleteAsync(cancellationToken)
-                .ConfigureAwait(false);
+            await using SqliteCommand delete = await GrimoireSqlCommandFactory.CreateAsync(
+                _db,
+                "DELETE FROM \"Campaigns\" WHERE \"Id\" = $id;",
+                cancellationToken).ConfigureAwait(false);
+            GrimoireEntitySql.AddParameter(delete, "$id", GrimoireEntitySql.Format(id));
+            int deleted = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -322,8 +348,16 @@ public sealed class CampaignRepository : ICampaignRepository
         }
     }
 
-    public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
-        _db.Campaigns.CountAsync(cancellationToken);
+    public async Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            "SELECT COUNT(*) FROM \"Campaigns\";",
+            cancellationToken).ConfigureAwait(false);
+        object? count = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt32(count, System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     /// <summary>
     /// True when <paramref name="exception"/> (or anything it wraps) is a SQLite uniqueness
@@ -353,10 +387,10 @@ public sealed class CampaignRepository : ICampaignRepository
     {
         string nameLower = campaign.Name.Trim().ToLowerInvariant();
 
-        bool nameTaken = await _db.Campaigns
-            .AsNoTracking()
-            .AnyAsync(c => c.NameLower == nameLower, cancellationToken)
-            .ConfigureAwait(false);
+        bool nameTaken = await ExistsAsync(
+            "SELECT 1 FROM \"Campaigns\" WHERE \"NameLower\" = $value LIMIT 1;",
+            nameLower,
+            cancellationToken).ConfigureAwait(false);
 
         if (nameTaken)
         {
@@ -364,10 +398,10 @@ public sealed class CampaignRepository : ICampaignRepository
                 new Error("Campaign.DuplicateName", "A campaign with this name already exists."));
         }
 
-        bool pathTaken = await _db.Campaigns
-            .AsNoTracking()
-            .AnyAsync(c => c.Path == campaign.Path, cancellationToken)
-            .ConfigureAwait(false);
+        bool pathTaken = await ExistsAsync(
+            "SELECT 1 FROM \"Campaigns\" WHERE \"Path\" = $value LIMIT 1;",
+            campaign.Path,
+            cancellationToken).ConfigureAwait(false);
 
         if (pathTaken)
         {
@@ -377,6 +411,62 @@ public sealed class CampaignRepository : ICampaignRepository
 
         return Result<Campaign>.Failure(
             new Error("Campaign.DuplicateName", "A campaign with this name or path already exists."));
+    }
+
+    private async Task<bool> ExistsAsync(
+        string commandText,
+        object value,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$value", value);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
+    private async Task<Campaign?> ReadSingleAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadCampaign(reader)
+            : null;
+    }
+
+    private async Task<List<Campaign>> ReadManyAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        List<Campaign> campaigns = [];
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            campaigns.Add(GrimoireEntitySql.ReadCampaign(reader));
+        }
+
+        return campaigns;
     }
 
     private static async Task<bool> TryRollbackAsync(IDbContextTransaction transaction)
@@ -418,7 +508,7 @@ public sealed class CampaignRepository : ICampaignRepository
 
         using SqliteCommand command = connection.CreateCommand();
 
-        command.CommandText = $"PRAGMA busy_timeout={milliseconds};";
+        command.CommandText = SqlitePragmaStatementFactory.BusyTimeout(milliseconds);
 
         _ = command.ExecuteNonQuery();
     }
@@ -458,5 +548,4 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public static string SerializeSanctumConfig(SanctumConfig config) =>
         JsonSerializer.Serialize(config, ArcanumCoreJsonContext.Default.SanctumConfig);
-
 }

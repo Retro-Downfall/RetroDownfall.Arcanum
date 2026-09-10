@@ -2,19 +2,16 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 public static class ArcanumPaths
 {
-
     private const string TestHomeEnvironmentVariable = "ARCANUM_TEST_HOME";
 
     public static string GrimoireDirectory
     {
         get
         {
-
             string profile = TestingHome
                 ?? global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.UserProfile);
 
             return Path.Combine(profile, ".config", "arcanum");
-
         }
     }
 
@@ -45,7 +42,6 @@ public static class ArcanumPaths
     {
         get
         {
-
             string? testingHome = TestingHome;
 
             return testingHome is null
@@ -53,7 +49,6 @@ public static class ArcanumPaths
                     global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.ApplicationData),
                     "arcanum")
                 : Path.Combine(testingHome, ".config", "arcanum");
-
         }
     }
 
@@ -61,6 +56,13 @@ public static class ArcanumPaths
     /// Data Protection-encrypted API key store: <c>security.dat</c> under <see cref="SecretStoreDirectory"/>.
     /// </summary>
     public static string ApiKeyStoreFile => Path.Combine(SecretStoreDirectory, "security.dat");
+
+    /// <summary>
+    /// Non-secret lifecycle marker published only after the host has completed its first secure-
+    /// storage bootstrap. Its presence suppresses future explanatory password-prompt notices.
+    /// </summary>
+    public static string SecureStorageBootstrapMarkerFile =>
+        Path.Combine(SecretStoreDirectory, "secure-storage-bootstrap-v1");
 
     /// <summary>
     /// Data Protection-encrypted Grimoire database key store: <c>grimoire-key.dat</c> under
@@ -133,7 +135,6 @@ public static class ArcanumPaths
     {
         get
         {
-
             string? dotnetEnvironment =
                 global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 
@@ -146,9 +147,7 @@ public static class ArcanumPaths
 
             if (!isTesting)
             {
-
                 return null;
-
             }
 
             string? configuredHome =
@@ -157,8 +156,6 @@ public static class ArcanumPaths
             return string.IsNullOrWhiteSpace(configuredHome)
                 ? null
                 : Path.GetFullPath(configuredHome);
-
         }
     }
-
 }

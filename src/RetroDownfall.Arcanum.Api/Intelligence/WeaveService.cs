@@ -139,18 +139,37 @@ public sealed class WeaveService(
             turnRunWriter = accountingScope.ServiceProvider.GetService<ITurnRunWriter>();
             budgetReservations = accountingScope.ServiceProvider.GetService<IBudgetReservationService>();
             decimal reservedUsd = BudgetReservationService.EstimateWorstCaseEmbeddingUsd(pricing, totalApproxTokens);
-            Result<TurnAccountingHandle> begin = await TurnAccountingHandle.BeginAsync(
-                    turnRunWriter,
-                    budgetReservations,
-                    pricingSettings,
-                    model,
-                    sessionId: null,
-                    surface: "embedding",
-                    purpose: "embedding",
-                    requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
-                    cancellationToken,
-                    reservedUsdOverride: reservedUsd)
-                .ConfigureAwait(false);
+            Result<TurnAccountingHandle> begin;
+
+            // Opening the run row is a durable Grimoire write, and it happens before this method's
+            // own try. Only the failed-Result arm below used to give the scope back, so a store
+            // fault — a closed maintenance admission gate among them — escaped with the scope still
+            // live. The rethrow keeps the caller's behaviour exactly as it was.
+            try
+            {
+
+                begin = await TurnAccountingHandle.BeginAsync(
+                        turnRunWriter,
+                        budgetReservations,
+                        pricingSettings,
+                        model,
+                        sessionId: null,
+                        surface: "embedding",
+                        purpose: "embedding",
+                        requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
+                        cancellationToken,
+                        reservedUsdOverride: reservedUsd)
+                    .ConfigureAwait(false);
+
+            }
+            catch
+            {
+
+                accountingScope.Dispose();
+
+                throw;
+
+            }
 
             if (begin.IsFailure)
             {

@@ -2,11 +2,13 @@ using System.Net;
 
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Cli.Diagnostics;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -17,32 +19,38 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 public sealed class HostHealthDiagnosticsTests
 {
-
     [Fact]
-    public async Task Inspection_peeks_the_key_and_fails_closed_when_the_store_is_corrupt()
+    public async Task Inspection_uses_only_the_verified_process_capability()
     {
-
         RecordingHandler handler = new();
+
+        using ArcanumApiCredentialLease lease =
+            ArcanumApiCredentialLeaseTestFactory.Create("health-test-key");
 
         HostHealthComponentsCheck check = new(
             Options.Create(new ArcanumSettings()),
             new StubHttpClientFactory(handler),
-            new PeekOnlyCorruptSecretStore());
+            lease);
 
         DoctorFinding finding = await check.InspectAsync(CancellationToken.None);
 
         Assert.Equal(DoctorOutcome.Unhealthy, finding.Outcome);
 
-        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.NotEmpty(handler.Requests);
 
-        Assert.False(request.Headers.Contains("X-Arcanum-Key"));
-
+        Assert.All(
+            handler.Requests,
+            request =>
+            {
+                Assert.False(request.Headers.Contains(ArcanumApiHeaders.ApiKey));
+                Assert.True(request.Headers.Contains(
+                    ArcanumApiHeaders.ProcessCapability));
+            });
     }
 
     [Fact]
     public void An_unexpected_responder_is_not_reported_as_a_host_that_never_answered()
     {
-
         DoctorFinding finding = HostHealthComponentsCheck.Describe(
             new HealthProbeResult(
                 HealthProbeState.UnexpectedResponder,
@@ -57,7 +65,6 @@ public sealed class HostHealthDiagnosticsTests
         Assert.DoesNotContain(
             DoctorRemedyCommands.Serve,
             (finding.Remedies ?? []).Select(static remedy => remedy.Command));
-
     }
 
     [Theory]
@@ -66,7 +73,6 @@ public sealed class HostHealthDiagnosticsTests
     [InlineData(HealthProbeState.DnsFailure)]
     public void A_host_that_never_answered_still_recommends_starting_it(HealthProbeState state)
     {
-
         DoctorFinding finding = HostHealthComponentsCheck.Describe(
             new HealthProbeResult(state, null, TimeSpan.Zero, "no listener"));
 
@@ -75,43 +81,33 @@ public sealed class HostHealthDiagnosticsTests
         Assert.Contains(
             DoctorRemedyCommands.Serve,
             (finding.Remedies ?? []).Select(static remedy => remedy.Command));
-
     }
 
     private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
-
             };
-
     }
 
     private sealed class RecordingHandler : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
-
         }
-
     }
 
     private sealed class PeekOnlyCorruptSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             throw new InvalidOperationException("Host health must use Peek.");
 
@@ -129,7 +125,5 @@ public sealed class HostHealthDiagnosticsTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
-
 }

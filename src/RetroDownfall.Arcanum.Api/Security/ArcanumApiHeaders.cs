@@ -4,6 +4,24 @@ public static class ArcanumApiHeaders
 {
     public const string ApiKey = "X-Arcanum-Key";
 
+    /// <summary>Fresh 256-bit nonce for the anonymous local-host presence proof.</summary>
+    public const string PresenceNonce = "X-Arcanum-Presence-Nonce";
+
+    /// <summary>Version of the local-host presence proof protocol.</summary>
+    public const string PresenceVersion = "X-Arcanum-Presence-Version";
+
+    /// <summary>Canonical loopback authority bound into the local-host presence proof.</summary>
+    public const string PresenceAuthority = "X-Arcanum-Presence-Authority";
+
+    /// <summary>Nonce-bound HMAC proving the responder knows this installation's API-key digest.</summary>
+    public const string PresenceProof = "X-Arcanum-Presence-Proof";
+
+    /// <summary>Nonce-bound encrypted capability issued by the responding Arcanum process.</summary>
+    public const string PresenceCapability = "X-Arcanum-Presence-Capability";
+
+    /// <summary>Short-lived bearer capability accepted only by the issuing Arcanum process.</summary>
+    public const string ProcessCapability = "X-Arcanum-Process-Capability";
+
     /// <summary>Client-supplied replay-protection key — see <see cref="IdempotencyEndpointFilters"/>.</summary>
     public const string IdempotencyKey = "Idempotency-Key";
 

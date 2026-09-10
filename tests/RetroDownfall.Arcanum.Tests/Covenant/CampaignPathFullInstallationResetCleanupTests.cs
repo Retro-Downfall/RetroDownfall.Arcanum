@@ -1160,7 +1160,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         internal void AdvancePublishedPhase(HostToolsMarkerPairResetPhase phase) =>
             _store.Current = _store.Current with
             {
-                Payload = InstallationResetActivePayloadV2.FromRecord(
+                Payload = InstallationResetActivePayloadV3.FromRecord(
                     _store.Current.Payload.ToRecord() with
                     {
                         HostToolsMarkerPairReset = CheckpointOf(_store.Current) with
@@ -1584,7 +1584,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 location,
                 envelope,
                 envelopeDigest,
-                InstallationResetActivePayloadV2.FromRecord(record),
+                InstallationResetActivePayloadV3.FromRecord(record),
                 new InstallationResetActiveAnchorV1(
                     1,
                     InstallationResetActiveAnchorState.Active,

@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
@@ -14,12 +16,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 /// How far the removal of one profile's three restore-journal credentials has got.
 /// </summary>
 /// <remarks>
-/// The order is the whole content of this enum, and it is the reverse of the order the credentials
-/// authorize each other in. The anchor is what makes a journal believable, so it goes first: once it
-/// is gone, no surviving journal can authenticate and no partially removed state can be mistaken for a
-/// restore in progress. The key goes next, then the installation identity, and only
-/// <c>VerifiedAbsent</c> — a fresh read proving all three gone — permits anything downstream to report
-/// the installation deleted.
+/// The order is the whole content of this enum, and within each slot it is the reverse of the order
+/// the credentials authorize each other in. The anchor is what makes a journal believable, so it goes
+/// first: once it is gone, no surviving journal can authenticate and no partially removed state can be
+/// mistaken for work in progress. The restore trio goes first as a whole and the offline-transition
+/// pair second, and only <c>TransitionCredentialsVerifiedAbsent</c> — a fresh read proving all five
+/// gone — permits anything downstream to report the installation deleted.
+
+/// <para>Codes 1 to 4 keep the exact values and meanings they have always had, because this enum is
+/// serialized as a number inside an in-flight active record. A record resumed at 4 therefore reads as
+/// "the restore trio is gone and the transition pair is still owed", which is what such a record
+/// actually means.</para>
 ///
 /// <para>Every phase is idempotent. A crash between a removal and the record of it leaves the account
 /// already absent, and the next pass reads that absence and advances rather than refusing.</para>
@@ -33,7 +40,13 @@ internal enum InstallationResetRestoreCredentialCleanupPhase : byte
 
     InstallationIdentityRemoved = 3,
 
-    VerifiedAbsent = 4,
+    RestoreCredentialsVerifiedAbsent = 4,
+
+    TransitionAnchorRemoved = 5,
+
+    TransitionKeyRemoved = 6,
+
+    TransitionCredentialsVerifiedAbsent = 7,
 
 }
 
@@ -165,6 +178,59 @@ internal sealed class InstallationResetRestoreCredentialCleanup(IOsCredentialSto
     }
 
     /// <summary>
+    /// The offline-transition slot's two accounts, in the one legal removal order.
+    /// </summary>
+    /// <remarks>
+    /// Anchor then key, the same reverse-of-authorization order the restore trio uses. The pair goes
+    /// after the trio rather than before it: the transition journal seeds its installation identity
+    /// from the restore journal's identity account, which the trio's last step removes — but these are
+    /// compare-removals against digests projected while every account was present, and a
+    /// compare-removal needs no identity. A pass resumed after the trio therefore still finishes from
+    /// the persisted projection, which is what decides the order.
+    ///
+    /// <para>The steps name accounts but do not remove them. The one production file permitted to
+    /// delete either account is the transition anchor store's own terminal partial, and keeping the
+    /// ordering here while the deletion stays there is what lets the closed inventory name exactly one
+    /// deleter.</para>
+    /// </remarks>
+    internal static Result<ImmutableArray<InstallationResetRestoreCredentialStep>>
+        OrderedTransitionSteps(
+            GrimoireOfflineTransitionFullResetTerminalProjectionV1 terminal,
+            string anchorAccount,
+            string keyAccount)
+    {
+
+        ArgumentNullException.ThrowIfNull(terminal);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(anchorAccount);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyAccount);
+
+        if (terminal.Version != 1 || !Enum.IsDefined(terminal.Arm))
+        {
+
+            return Result<ImmutableArray<InstallationResetRestoreCredentialStep>>.Failure(
+                BlockedError());
+
+        }
+
+        ImmutableArray<InstallationResetRestoreCredentialStep> steps =
+        [
+            new InstallationResetRestoreCredentialStep(
+                InstallationResetRestoreCredentialCleanupPhase.TransitionAnchorRemoved,
+                anchorAccount,
+                terminal.AnchorAccountValueDigest),
+            new InstallationResetRestoreCredentialStep(
+                InstallationResetRestoreCredentialCleanupPhase.TransitionKeyRemoved,
+                keyAccount,
+                terminal.JournalKeyAccountValueDigest),
+        ];
+
+        return Result<ImmutableArray<InstallationResetRestoreCredentialStep>>.Success(steps);
+
+    }
+
+    /// <summary>
     /// Rereads all three and reports whether every one is gone.
     /// </summary>
     /// <remarks>
@@ -250,7 +316,7 @@ internal sealed class InstallationResetRestoreCredentialCleanup(IOsCredentialSto
         return verified.IsFailure
             ? Result<InstallationResetRestoreCredentialCleanupPhase>.Failure(verified.Error)
             : Result<InstallationResetRestoreCredentialCleanupPhase>.Success(
-                InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent);
+                InstallationResetRestoreCredentialCleanupPhase.RestoreCredentialsVerifiedAbsent);
 
     }
 

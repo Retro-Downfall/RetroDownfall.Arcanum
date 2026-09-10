@@ -6,6 +6,8 @@ using System.Security.Cryptography;
 
 using System.Text;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -18,9 +20,25 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+internal interface IInstallationResetDeferredServices
+{
+    IHostToolsMarkerPairResetCoordinator ResolveMarkerPairResetCoordinator();
+
+    IFullInstallationResetTerminalContinuation ResolveTerminalContinuation();
+}
+
+internal sealed class InstallationResetDeferredServices(IServiceProvider services)
+    : IInstallationResetDeferredServices
+{
+    public IHostToolsMarkerPairResetCoordinator ResolveMarkerPairResetCoordinator() =>
+        services.GetRequiredService<IHostToolsMarkerPairResetCoordinator>();
+
+    public IFullInstallationResetTerminalContinuation ResolveTerminalContinuation() =>
+        services.GetRequiredService<IFullInstallationResetTerminalContinuation>();
+}
+
 internal interface IInstallationResetLockedService
 {
-
     Task<Result<InstallationResetResult>> ApplyFullUnderMaintenanceLockAsync(
         FullInstallationResetRequest request,
         ArcanumMaintenanceLock heldInstallationLock,
@@ -36,38 +54,45 @@ internal interface IInstallationResetLockedService
         StoppedHostInstallationResetPlan confirmedPlan,
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default);
-
 }
 
 internal interface IInstallationResetActiveWriter
 {
-
     Task<Result> WriteAsync(
         InstallationResetActiveRecord record,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Rereads the durable record and adopts it, so a collaborator's publication is not overwritten.
+    /// </summary>
+    /// <remarks>
+    /// The nested database transition publishes its completion receipt into this same record, under
+    /// this same lock, through its own store handle. A writer that carried on from the record it last
+    /// wrote would both conflict on the advanced envelope revision and try to publish a receipt state
+    /// earlier than the one already durable — which the store refuses, correctly, as unsaying a fact.
+    /// Rereading is how the outer workflow adopts what its nested transition published rather than
+    /// racing it.
+    /// </remarks>
+    Task<Result<InstallationResetActiveRecord?>> RereadAsync(
         CancellationToken cancellationToken);
 
     Task<Result> RetireAsync(
         Guid operationId,
         CancellationToken cancellationToken);
-
 }
 
 internal interface IInstallationResetCredentialService
 {
-
     InstallationResetCredentialSummary[] Probe();
 
     InstallationResetCredentialResult[] DeleteAndVerify(string[] accounts);
-
 }
 
 internal interface IInstallationResetWorkspaceResolver
 {
-
     Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
         string invocationDirectory,
         CancellationToken cancellationToken);
-
 }
 
 internal sealed record InstallationResetWorkspaceResolution(
@@ -83,7 +108,6 @@ internal sealed record InstallationResetOfflineCleanupResult(
 
 internal interface IInstallationResetOfflineCleanup
 {
-
     Task<Result<InstallationResetFileSystemInventory>> PlanAsync(
         string[] selectedRoots,
         string[] excludedRoots,
@@ -92,96 +116,75 @@ internal interface IInstallationResetOfflineCleanup
     Task<Result<InstallationResetOfflineCleanupResult>> ExecuteAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken);
-
 }
 
 internal interface IInstallationResetStateRoots
 {
-
     string[] Resolve(
         InstallationResetScope scope,
         DataRetentionWorkspaceBinding? workspace);
-
 }
 
 internal interface IInstallationResetPreDataMutation
 {
-
     Task<Result> ExecuteAsync(CancellationToken cancellationToken);
-
 }
 
 internal sealed class InstallationResetControlPaths
 {
-
     public InstallationResetControlPaths(string guardedRoot)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
 
         LockPath = Backup.ArcanumMaintenanceLock.LockPathFor(guardedRoot);
 
         ActivePath = new InstallationResetActiveStore(guardedRoot).ActivePath;
-
     }
 
     public string LockPath { get; }
 
     public string ActivePath { get; }
-
 }
 
 internal sealed class NoopInstallationResetPreDataMutation : IInstallationResetPreDataMutation
 {
-
     public static NoopInstallationResetPreDataMutation Instance { get; } = new();
 
     public Task<Result> ExecuteAsync(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(Result.Success());
-
     }
-
 }
 
 internal sealed class InstallationResetStateRoots : IInstallationResetStateRoots
 {
-
     public static InstallationResetStateRoots Default { get; } = new();
 
     public string[] Resolve(
         InstallationResetScope scope,
         DataRetentionWorkspaceBinding? workspace)
     {
-
         List<string> roots = [];
 
         if (scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
-
             roots.Add(Path.GetFullPath(Core.Storage.ArcanumPaths.GrimoireDirectory));
 
             roots.Add(Path.GetFullPath(Core.Storage.ArcanumPaths.SecretStoreDirectory));
-
         }
 
         if (scope is InstallationResetScope.Workspace or InstallationResetScope.All)
         {
-
             if (workspace is null)
             {
-
                 return [];
-
             }
 
             roots.Add(Path.GetFullPath(Path.Combine(
                 workspace.WorkspaceRoot,
                 ".arcanum")));
-
         }
 
         return [
@@ -190,14 +193,12 @@ internal sealed class InstallationResetStateRoots : IInstallationResetStateRoots
                 .Distinct(PathComparer)
                 .Order(PathComparer),
         ];
-
     }
 
     private static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
-
 }
 
 internal sealed class InstallationResetService(
@@ -213,8 +214,7 @@ internal sealed class InstallationResetService(
     IInstallationResetDatabaseIdentityReader? identityReader = null,
     IInstallationResetHostProcessToolsPairReader? pairReader = null,
     IFullInstallationResetRemediationAttestationVerifier? remediationVerifier = null,
-    Func<IHostToolsMarkerPairResetCoordinator>? markerPairReset = null,
-    Func<IFullInstallationResetTerminalContinuation>? terminalContinuation = null,
+    IInstallationResetDeferredServices? deferredServices = null,
     IInstallationResetStoppedHostDataService? stoppedHostDataService = null,
     IInstallationResetStoppedHostProcessToolsPairReader? stoppedHostPairReader = null,
     string? canonicalDatabasePath = null)
@@ -223,7 +223,6 @@ internal sealed class InstallationResetService(
       IInstallationResetLockedService,
       IInstallationResetStoppedHostPlanner
 {
-
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     private readonly IInstallationResetStateRoots _stateRoots =
@@ -267,7 +266,6 @@ internal sealed class InstallationResetService(
             IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(issuer);
@@ -275,11 +273,9 @@ internal sealed class InstallationResetService(
         if (_stoppedHostDataService is null
             || _stoppedHostPairReader is null)
         {
-
             return Result<StoppedHostInstallationResetPlan>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The stopped-host installation-reset planning path is unavailable."));
-
         }
 
         Result<Guid> installation = await _stoppedHostDataService
@@ -289,14 +285,12 @@ internal sealed class InstallationResetService(
 
         if (installation.IsFailure || installation.Value == Guid.Empty)
         {
-
             return Result<StoppedHostInstallationResetPlan>.Failure(
                 installation.IsFailure
                     ? installation.Error
                     : new Error(
                         ErrorCodes.Data.ControlPathUnavailable,
                         "The installation identity is unavailable."));
-
         }
 
         Result<InstallationResetPlan> planned = await PlanCoreAsync(
@@ -306,9 +300,7 @@ internal sealed class InstallationResetService(
 
         if (planned.IsFailure)
         {
-
             return Result<StoppedHostInstallationResetPlan>.Failure(planned.Error);
-
         }
 
         DataRetentionPlan? dataPlan = _localDataPlans.GetValueOrDefault(
@@ -319,11 +311,9 @@ internal sealed class InstallationResetService(
         if ((request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
             && disclosure is null)
         {
-
             return Result<StoppedHostInstallationResetPlan>.Failure(new Error(
                 ErrorCodes.Data.InventoryUnavailable,
                 "The local Covenant inventory is unavailable."));
-
         }
 
         return Result<StoppedHostInstallationResetPlan>.Success(
@@ -332,7 +322,6 @@ internal sealed class InstallationResetService(
                 request.Scope is InstallationResetScope.Workspace
                     ? null
                     : disclosure));
-
     }
 
     private async Task<Result<InstallationResetPlan>> PlanCoreAsync(
@@ -340,7 +329,6 @@ internal sealed class InstallationResetService(
         IStoppedHostGrimoireAuthorityIssuer? issuer,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         DataRetentionWorkspaceBinding? workspace = null;
@@ -349,15 +337,12 @@ internal sealed class InstallationResetService(
 
         if (request.Scope is InstallationResetScope.Workspace or InstallationResetScope.All)
         {
-
             if (issuer is null && workspaceResolver is null
                 || issuer is not null && _stoppedHostDataService is null)
             {
-
                 return Result<InstallationResetPlan>.Failure(new Error(
                     ErrorCodes.Data.InventoryUnavailable,
                     "The registered Campaign inventory is unavailable."));
-
             }
 
             Result<InstallationResetWorkspaceResolution> resolved = issuer is null
@@ -372,15 +357,12 @@ internal sealed class InstallationResetService(
 
             if (resolved.IsFailure)
             {
-
                 return Result<InstallationResetPlan>.Failure(resolved.Error);
-
             }
 
             workspace = resolved.Value.Workspace;
 
             workspaceExclusions = resolved.Value.ExcludedRoots;
-
         }
 
         InstallationResetDataPlanRequest dataRequest = request.Scope switch
@@ -412,9 +394,7 @@ internal sealed class InstallationResetService(
             && (request.Scope is InstallationResetScope.Workspace
                 || dataPlan.Error.Code != ErrorCodes.Data.InventoryUnavailable))
         {
-
             return Result<InstallationResetPlan>.Failure(dataPlan.Error);
-
         }
 
         InstallationResetCredentialSummary[] credentials =
@@ -426,7 +406,6 @@ internal sealed class InstallationResetService(
 
         if (request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
-
             Result<HostProcessToolsMarkerPairJoinResult> pair = issuer is null
                 ? await _pairReader
                     .ReadAsync(cancellationToken).ConfigureAwait(false)
@@ -437,7 +416,6 @@ internal sealed class InstallationResetService(
 
             externalRemediationRequired = pair.IsFailure
                 || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean;
-
         }
 
         string[] accounts =
@@ -453,11 +431,9 @@ internal sealed class InstallationResetService(
                     PathsOverlap(root, controlPaths.LockPath)
                     || PathsOverlap(root, controlPaths.ActivePath))))
         {
-
             return Result<InstallationResetPlan>.Failure(new Error(
                 ErrorCodes.Data.WorkspaceOverlap,
                 "The selected workspace overlaps the installation reset control paths."));
-
         }
 
         string[] excludedRoots = workspaceExclusions;
@@ -470,9 +446,7 @@ internal sealed class InstallationResetService(
 
         if (fileInventoryResult.IsFailure)
         {
-
             return Result<InstallationResetPlan>.Failure(fileInventoryResult.Error);
-
         }
 
         InstallationResetFileSystemInventory fileInventory = fileInventoryResult.Value;
@@ -583,13 +557,10 @@ internal sealed class InstallationResetService(
 
         if (canonical is not null)
         {
-
             _localDataPlans[plan.PlanId] = canonical;
-
         }
 
         return Result<InstallationResetPlan>.Success(plan);
-
     }
 
     public Result<InstallationResetPlan> BindOnlineDataPlan(
@@ -597,7 +568,6 @@ internal sealed class InstallationResetService(
         InstallationResetPlan localPlan,
         DataRetentionPlan onlinePlan)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(localPlan);
@@ -611,9 +581,7 @@ internal sealed class InstallationResetService(
             || !_localDataPlans.TryGetValue(localPlan.PlanId, out DataRetentionPlan? localData)
             || !SameOrdinaryDataPlan(localData, onlinePlan))
         {
-
             return PlanChanged<InstallationResetPlan>();
-
         }
 
         InstallationResetAcceptedBinding provisional = localPlan.AcceptedBinding with
@@ -656,14 +624,12 @@ internal sealed class InstallationResetService(
         _onlineDataPlans[rebound.PlanId] = onlinePlan;
 
         return Result<InstallationResetPlan>.Success(rebound);
-
     }
 
     public Result<InstallationResetHostHandoff> CreateHostHandoff(
         InstallationResetApplyRequest request,
         InstallationResetPlan confirmedPlan)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(confirmedPlan);
@@ -690,14 +656,12 @@ internal sealed class InstallationResetService(
                 confirmedPlan.Workspace,
                 confirmedPlan.AcceptedBinding)
             : PlanChanged<InstallationResetHostHandoff>();
-
     }
 
     public async Task<Result<InstallationResetHostHandoff?>> ReadAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result<InstallationResetActiveRecoveryState> recovered = await activeStore
@@ -706,9 +670,7 @@ internal sealed class InstallationResetService(
 
         if (recovered.IsFailure)
         {
-
             return Result<InstallationResetHostHandoff?>.Failure(recovered.Error);
-
         }
 
         InstallationResetActiveRecord? active = recovered.Value.Outcome switch
@@ -723,9 +685,7 @@ internal sealed class InstallationResetService(
 
         if (active is null)
         {
-
             return Result<InstallationResetHostHandoff?>.Success(null);
-
         }
 
         Result validation = await ValidateResumeAsync(
@@ -735,12 +695,10 @@ internal sealed class InstallationResetService(
 
         if (validation.IsFailure || !IsPreparedOnlineDataHandoff(active))
         {
-
             return validation.IsFailure
                 ? Result<InstallationResetHostHandoff?>.Failure(validation.Error)
                 : Result<InstallationResetHostHandoff?>.Failure(
                     ResumeMismatch().Error);
-
         }
 
         return Result<InstallationResetHostHandoff?>.Success(
@@ -750,28 +708,23 @@ internal sealed class InstallationResetService(
                 active.Scope,
                 active.Workspace,
                 active.AcceptedBinding));
-
     }
 
     public Task<Result<InstallationResetResult>> ApplyFullAsync(
         FullInstallationResetRequest request,
         CancellationToken cancellationToken = default)
     {
-
         Result validation = ValidateFullRequest(request);
 
         if (validation.IsFailure)
         {
-
             return Task.FromResult(Result<InstallationResetResult>.Failure(
                 validation.Error));
-
         }
 
         return Task.FromResult(Result<InstallationResetResult>.Failure(new Error(
             ErrorCodes.Data.ControlPathUnavailable,
             "Full installation reset requires the exact held maintenance lock.")));
-
     }
 
     public Task<Result<InstallationResetResult>> ApplyAsync(
@@ -786,14 +739,11 @@ internal sealed class InstallationResetService(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         Result requestValidation = ValidateFullRequest(request);
 
         if (requestValidation.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(requestValidation.Error);
-
         }
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -812,11 +762,9 @@ internal sealed class InstallationResetService(
             || _stoppedHostDataService is null
             || _stoppedHostPairReader is null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The authenticated full-reset control path is unavailable."));
-
         }
 
         Result<HostProcessToolsMarkerPairJoinResult> pair =
@@ -828,9 +776,7 @@ internal sealed class InstallationResetService(
             || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.TaintedMatched
             || pair.Value.MatchedPair is null)
         {
-
             return ExternalRemediationRequired<InstallationResetResult>();
-
         }
 
         Result<Guid> installation = await _stoppedHostDataService
@@ -840,9 +786,7 @@ internal sealed class InstallationResetService(
 
         if (installation.IsFailure || installation.Value == Guid.Empty)
         {
-
             return ExternalRemediationInvalid<InstallationResetResult>();
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await activeStore
@@ -851,9 +795,7 @@ internal sealed class InstallationResetService(
 
         if (recovered.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(recovered.Error);
-
         }
 
         InstallationResetActivePublication? publication = recovered.Value.Publication;
@@ -868,14 +810,11 @@ internal sealed class InstallationResetService(
             || recovered.Value.Outcome is InstallationResetActiveRecoveryOutcome.AuthenticatedV2
                 && existing is null)
         {
-
             return ExternalRemediationInvalid<InstallationResetResult>();
-
         }
 
         if (existing is not null)
         {
-
             Result<HostProcessToolsMatchedPair> retryPair =
                 await ReadCurrentTaintedMatchedPairAsync(
                     issuer,
@@ -884,9 +823,7 @@ internal sealed class InstallationResetService(
 
             if (retryPair.IsFailure)
             {
-
                 return Result<InstallationResetResult>.Failure(retryPair.Error);
-
             }
 
             if (!SameFullRequest(existing, request)
@@ -902,9 +839,7 @@ internal sealed class InstallationResetService(
                     acceptedClaim.NonceDigest,
                     acceptedClaim.IssuerDigest))
             {
-
                 return ExternalRemediationInvalid<InstallationResetResult>();
-
             }
 
             await RunMarkerPairResetAsync(
@@ -918,7 +853,6 @@ internal sealed class InstallationResetService(
                 heldInstallationLock,
                 existing,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         Result<InstallationResetPlan> planned = await ReplanFullAsync(
@@ -927,30 +861,24 @@ internal sealed class InstallationResetService(
 
         if (planned.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(planned.Error);
-
         }
 
         InstallationResetPlan plan = planned.Value;
 
         if (!plan.CredentialInventoryAvailable)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.CredentialInventoryUnavailable,
                 "The accepted credential inventory is unavailable."));
-
         }
 
         if (plan.Blockers.Any(static blocker =>
                 blocker.Code != ErrorCodes.Data.ExternalRemediationRequired))
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.Blocked,
                 "The accepted full installation reset has an unresolved blocker."));
-
         }
 
         Result<HostProcessToolsMatchedPair> admissionPair =
@@ -961,9 +889,7 @@ internal sealed class InstallationResetService(
 
         if (admissionPair.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(admissionPair.Error);
-
         }
 
         Result<FullInstallationResetRemediationAuthorization> verified =
@@ -976,9 +902,7 @@ internal sealed class InstallationResetService(
             || verified.Value.OperationId != request.OperationId
             || verified.Value.InstallationId != installation.Value)
         {
-
             return ExternalRemediationInvalid<InstallationResetResult>();
-
         }
 
         FullInstallationResetRemediationClaimV1 claim = Claim(verified.Value);
@@ -1011,9 +935,7 @@ internal sealed class InstallationResetService(
 
         if (published.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(published.Error);
-
         }
 
         await RunMarkerPairResetAsync(
@@ -1027,7 +949,6 @@ internal sealed class InstallationResetService(
             heldInstallationLock,
             active,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1049,12 +970,9 @@ internal sealed class InstallationResetService(
         InstallationResetActiveRecord admitted,
         CancellationToken cancellationToken)
     {
-
-        if (terminalContinuation is null)
+        if (deferredServices is null)
         {
-
             return FullAdmissionAccepted(admitted);
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await activeStore
@@ -1070,9 +988,7 @@ internal sealed class InstallationResetService(
                 Phase: FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified,
             })
         {
-
             return FullAdmissionAccepted(admitted);
-
         }
 
         InstallationResetActiveRecord active = publication.Payload.ToRecord();
@@ -1087,7 +1003,8 @@ internal sealed class InstallationResetService(
             claim.InstallationId,
             publication);
 
-        IFullInstallationResetTerminalContinuation terminal = terminalContinuation();
+        IFullInstallationResetTerminalContinuation terminal =
+            deferredServices.ResolveTerminalContinuation();
 
         return await ContinueApplyAsync(
             writer,
@@ -1096,7 +1013,6 @@ internal sealed class InstallationResetService(
             cancellationToken,
             async token =>
             {
-
                 Result<FullInstallationResetTerminalOutcome> completed =
                     await terminal.CompleteAsync(
                         heldInstallationLock,
@@ -1105,9 +1021,7 @@ internal sealed class InstallationResetService(
 
                 if (completed.IsFailure)
                 {
-
                     return Result<InstallationResetActiveRecord>.Failure(completed.Error);
-
                 }
 
                 // Whatever it published is now the current record, and the next thing this writer does
@@ -1116,9 +1030,7 @@ internal sealed class InstallationResetService(
 
                 return Result<InstallationResetActiveRecord>.Success(
                     completed.Value.Publication.Payload.ToRecord());
-
             }).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1150,12 +1062,9 @@ internal sealed class InstallationResetService(
         FullInstallationResetExternalRemediationAttestation attestation,
         CancellationToken cancellationToken)
     {
-
-        if (markerPairReset is null || publication is null)
+        if (deferredServices is null || publication is null)
         {
-
             return;
-
         }
 
         // Resolved here rather than taken as a constructor dependency. Planning, reporting, and the
@@ -1163,7 +1072,8 @@ internal sealed class InstallationResetService(
         // or unopenable, and the coordinator's graph reaches the Covenant tier and the encrypted
         // database behind it — so binding it at construction would make every one of those paths
         // require a database they were specifically built not to need.
-        IHostToolsMarkerPairResetCoordinator coordinator = markerPairReset();
+        IHostToolsMarkerPairResetCoordinator coordinator =
+            deferredServices.ResolveMarkerPairResetCoordinator();
 
         // A record already carrying a pair checkpoint is resumed rather than begun. Beginning would
         // refuse it anyway — the coordinator admits a begin only for a record that has no checkpoint
@@ -1179,7 +1089,6 @@ internal sealed class InstallationResetService(
                 heldInstallationLock,
                 publication,
                 cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<Result<InstallationResetResult>>
@@ -1189,7 +1098,6 @@ internal sealed class InstallationResetService(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(confirmedPlan);
@@ -1200,11 +1108,9 @@ internal sealed class InstallationResetService(
 
         if (_stoppedHostDataService is null || _stoppedHostPairReader is null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The stopped-host installation-reset data path is unavailable."));
-
         }
 
         if (confirmedPlan.Plan.Scope != request.Scope
@@ -1213,9 +1119,7 @@ internal sealed class InstallationResetService(
             || (request.Scope is InstallationResetScope.Global or InstallationResetScope.All
                 && confirmedPlan.CovenantDisclosure is null))
         {
-
             return PlanChanged<InstallationResetResult>();
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await activeStore
@@ -1224,9 +1128,7 @@ internal sealed class InstallationResetService(
 
         if (recovered.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(recovered.Error);
-
         }
 
         if (recovered.Value.Outcome
@@ -1234,11 +1136,9 @@ internal sealed class InstallationResetService(
             || recovered.Value.Publication is not null
             || recovered.Value.LegacyRecord is not null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ResetInProgress,
                 "An existing installation reset must resume through its authenticated recovery path."));
-
         }
 
         StoppedHostGrimoireAuthorityIssuer issuer =
@@ -1246,7 +1146,6 @@ internal sealed class InstallationResetService(
 
         if (request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
-
             Result<HostProcessToolsMarkerPairJoinResult> pair =
                 await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
                     issuer,
@@ -1255,11 +1154,8 @@ internal sealed class InstallationResetService(
             if (pair.IsFailure
                 || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
             {
-
                 return ExternalRemediationRequired<InstallationResetResult>();
-
             }
-
         }
 
         Result<Guid> installation = await _stoppedHostDataService
@@ -1269,14 +1165,12 @@ internal sealed class InstallationResetService(
 
         if (installation.IsFailure || installation.Value == Guid.Empty)
         {
-
             return Result<InstallationResetResult>.Failure(
                 installation.IsFailure
                     ? installation.Error
                     : new Error(
                         ErrorCodes.Data.ControlPathUnavailable,
                         "The installation identity is unavailable."));
-
         }
 
         Result<StoppedHostInstallationResetPlan> replanned =
@@ -1287,9 +1181,7 @@ internal sealed class InstallationResetService(
 
         if (replanned.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(replanned.Error);
-
         }
 
         if (!string.Equals(
@@ -1300,29 +1192,23 @@ internal sealed class InstallationResetService(
                 confirmedPlan.CovenantDisclosure,
                 replanned.Value.CovenantDisclosure))
         {
-
             return PlanChanged<InstallationResetResult>();
-
         }
 
         InstallationResetPlan plan = replanned.Value.Plan;
 
         if (!plan.CredentialInventoryAvailable)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.CredentialInventoryUnavailable,
                 "The accepted credential inventory is unavailable."));
-
         }
 
         if (plan.Blockers.Length > 0)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.Blocked,
                 plan.Blockers[0].Message));
-
         }
 
         AuthenticatedActiveWriter writer = new(
@@ -1352,27 +1238,22 @@ internal sealed class InstallationResetService(
 
         if (published.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(published.Error);
-
         }
 
         InstallationResetApplyProgress progress = new(active);
 
         try
         {
-
             return await ContinueApplyAsync(
                 writer,
                 progress,
                 plan,
                 cancellationToken,
                 stoppedHostIssuer: issuer).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             InstallationResetActiveRecord current = progress.Active;
 
             InstallationResetActiveRecord cancelled = current with
@@ -1393,9 +1274,7 @@ internal sealed class InstallationResetService(
                     new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "Installation reset was cancelled after its active record was published."));
-
         }
-
     }
 
     public async Task<Result<InstallationResetResult>> ApplyUnderMaintenanceLockAsync(
@@ -1403,7 +1282,6 @@ internal sealed class InstallationResetService(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -1417,11 +1295,9 @@ internal sealed class InstallationResetService(
 
         if (_stoppedHostDataService is null || _stoppedHostPairReader is null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The stopped-host installation-reset data path is unavailable."));
-
         }
 
         Result<HostProcessToolsMarkerPairJoinResult> pair =
@@ -1432,9 +1308,7 @@ internal sealed class InstallationResetService(
         if (pair.IsFailure
             || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
         {
-
             return ExternalRemediationRequired<InstallationResetResult>();
-
         }
 
         IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
@@ -1443,11 +1317,9 @@ internal sealed class InstallationResetService(
 
         if (effectiveIdentityReader is null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The authenticated installation-reset store is unavailable."));
-
         }
 
         Result<Guid> installation = await _stoppedHostDataService
@@ -1457,9 +1329,7 @@ internal sealed class InstallationResetService(
 
         if (installation.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(installation.Error);
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await activeStore
@@ -1468,9 +1338,7 @@ internal sealed class InstallationResetService(
 
         if (recovered.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(recovered.Error);
-
         }
 
         InstallationResetActivePublication? publication = recovered.Value.Publication;
@@ -1481,7 +1349,6 @@ internal sealed class InstallationResetService(
             && recovered.Value.LegacyRecord is { } legacy
             && recovered.Value.LegacyFileIdentity is { } legacyIdentity)
         {
-
             Result<InstallationResetActivePublication> migrated = await activeStore
                 .MigrateLegacyV1Async(
                     heldInstallationLock,
@@ -1493,22 +1360,17 @@ internal sealed class InstallationResetService(
 
             if (migrated.IsFailure)
             {
-
                 return Result<InstallationResetResult>.Failure(migrated.Error);
-
             }
 
             publication = migrated.Value;
 
             recoveredRecord = publication.Payload.ToRecord();
-
         }
 
         if (recoveredRecord?.FullInstallationResetRemediationClaim is not null)
         {
-
             return ExternalRemediationRequired<InstallationResetResult>();
-
         }
 
         AuthenticatedActiveWriter writer = new(
@@ -1524,7 +1386,6 @@ internal sealed class InstallationResetService(
 
         if (recoveredRecord is { } existing)
         {
-
             Result validation = await ValidateResumeAsync(
                 existing,
                 request,
@@ -1532,57 +1393,45 @@ internal sealed class InstallationResetService(
 
             if (validation.IsFailure)
             {
-
                 return Result<InstallationResetResult>.Failure(validation.Error);
-
             }
 
             active = existing;
 
             plan = ReproduceAcceptedPlan(existing);
-
         }
         else
         {
-
             Result<InstallationResetPlan> replanned = await PlanAsync(
                 request.Request,
                 cancellationToken).ConfigureAwait(false);
 
             if (replanned.IsFailure)
             {
-
                 return Result<InstallationResetResult>.Failure(replanned.Error);
-
             }
 
             plan = replanned.Value;
 
             if (!string.Equals(request.ExpectedPlanId, plan.PlanId, StringComparison.Ordinal))
             {
-
                 return Result<InstallationResetResult>.Failure(new Error(
                     ErrorCodes.Data.PlanChanged,
                     "The installation reset plan changed after confirmation."));
-
             }
 
             if (!plan.CredentialInventoryAvailable)
             {
-
                 return Result<InstallationResetResult>.Failure(new Error(
                     ErrorCodes.Data.CredentialInventoryUnavailable,
                     "The accepted credential inventory is unavailable."));
-
             }
 
             if (plan.Blockers.Length > 0)
             {
-
                 return Result<InstallationResetResult>.Failure(new Error(
                     ErrorCodes.Data.Blocked,
                     plan.Blockers[0].Message));
-
             }
 
             active = new InstallationResetActiveRecord(
@@ -1605,29 +1454,23 @@ internal sealed class InstallationResetService(
 
             if (published.IsFailure)
             {
-
                 return Result<InstallationResetResult>.Failure(published.Error);
-
             }
-
         }
 
         InstallationResetApplyProgress progress = new(active);
 
         try
         {
-
             return await ContinueApplyAsync(
                 writer,
                 progress,
                 plan,
                 cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             InstallationResetActiveRecord current = progress.Active;
 
             InstallationResetActiveRecord cancelled = current with
@@ -1648,16 +1491,13 @@ internal sealed class InstallationResetService(
                     new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "Installation reset was cancelled after its active record was published."));
-
         }
-
     }
 
     private StoppedHostGrimoireAuthorityIssuer
         CreateInstallationResetStoppedHostIssuer(
             ArcanumMaintenanceLock heldInstallationLock)
     {
-
         heldInstallationLock.AssertHeldFor(activeStore.GuardedRoot);
 
         StoppedHostGrimoireAuthorityIssuer issuer = new(
@@ -1666,7 +1506,6 @@ internal sealed class InstallationResetService(
             _canonicalDatabasePath);
 
         return issuer;
-
     }
 
     /// <param name="terminalGate">
@@ -1685,41 +1524,33 @@ internal sealed class InstallationResetService(
         Func<CancellationToken, Task<Result<InstallationResetActiveRecord>>>? terminalGate = null,
         IStoppedHostGrimoireAuthorityIssuer? stoppedHostIssuer = null)
     {
-
         InstallationResetActiveRecord active = progress.Active;
 
         if (active.Phase is InstallationResetPhase.Completed)
         {
-
             return await ReturnCompletedAsync(
                 writer,
                 active,
                 plan,
                 cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (active.Phase is InstallationResetPhase.Prepared)
         {
-
             InstallationResetOnlineDataCompletion? onlineCompletion = null;
 
             if (active.DataHandoff is not null
                 || active.OnlineDataCompletion is not null)
             {
-
                 if (!TryGetOnlineDataCompletion(active, out onlineCompletion))
                 {
-
                     return Resumable(
                         active,
                         new Error(
                             ErrorCodes.Data.RecoveryRequired,
                             "The authenticated host data reset requires recovery."));
-
                 }
-
             }
 
             Result preData = active.Scope is InstallationResetScope.Workspace
@@ -1729,7 +1560,6 @@ internal sealed class InstallationResetService(
 
             if (preData.IsFailure)
             {
-
                 active = active with { LastErrorCode = preData.Error.Code };
 
                 Result preDataCheckpoint = await writer.WriteAsync(
@@ -1739,13 +1569,32 @@ internal sealed class InstallationResetService(
                 return preDataCheckpoint.IsFailure
                     ? Resumable(active, preDataCheckpoint.Error)
                     : Resumable(active, preData.Error);
-
             }
 
             if (active.AcceptedBinding.DataPlanIds.Length > 0)
             {
-
                 active = active with { PointOfNoReturn = true };
+
+                // The claim goes in the same publication as the point of no return, because it is the
+                // same fact from the other side: from here a nested database transition is about to
+                // exist, and a crash between this write and the launch has to read as "one was
+                // started" rather than as "none ever was". The workspace arm claims nothing — it does
+                // not run an offline transition, and a claim for a transition that never exists would
+                // block the ending forever.
+                if (onlineCompletion is null
+                    && active.Scope is not InstallationResetScope.Workspace
+                    && active.NestedTransitionReceipt is null)
+                {
+                    active = active with
+                    {
+                        NestedTransitionReceipt = new InstallationResetNestedTransitionReceiptV1(
+                            Version: 1,
+                            NestedOperationId: Guid.NewGuid(),
+                            InstallationResetNestedTransitionPhase.Claimed,
+                            NestedEffectDigest: null,
+                            TerminalWinnerDigest: null),
+                    };
+                }
 
                 progress.Active = active;
 
@@ -1755,14 +1604,11 @@ internal sealed class InstallationResetService(
 
                 if (pointOfNoReturnCheckpoint.IsFailure)
                 {
-
                     return Resumable(active, pointOfNoReturnCheckpoint.Error);
-
                 }
 
                 if (onlineCompletion is not null)
                 {
-
                     active = active with
                     {
                         Phase = InstallationResetPhase.DataResetComplete,
@@ -1772,11 +1618,9 @@ internal sealed class InstallationResetService(
                         EstimatedBytesDeleted = onlineCompletion.EstimatedBytesDeleted,
                         LastErrorCode = null,
                     };
-
                 }
                 else
                 {
-
                     string dataPlanId = active.AcceptedBinding.DataPlanIds[0];
 
                     DataRetentionRequest dataRequest = active.Scope is InstallationResetScope.Workspace
@@ -1785,9 +1629,13 @@ internal sealed class InstallationResetService(
                             Workspace: active.Workspace)
                         : new DataRetentionRequest(DataRetentionOperation.FactoryReset);
 
+                    // The nested apply runs under the identity the claim already published, so a
+                    // resumed reset replays the one nested operation rather than starting a second
+                    // one the outer record has never heard of.
                     DataRetentionApplyRequest dataApplyRequest = new(
                         dataRequest,
-                        dataPlanId);
+                        dataPlanId,
+                        active.NestedTransitionReceipt?.NestedOperationId);
 
                     Result<DataRetentionApplyResult> applied =
                         stoppedHostIssuer is null
@@ -1800,13 +1648,37 @@ internal sealed class InstallationResetService(
                                     stoppedHostIssuer,
                                     cancellationToken).ConfigureAwait(false);
 
+                    // Adopted whether the apply succeeded or not: a nested transition that reached its
+                    // terminal compare-exchange and then failed afterwards has still published its
+                    // receipt, and every write from here has to build on that rather than on the
+                    // claim this arm last wrote.
+                    Result<InstallationResetActiveRecord?> reread = await writer
+                        .RereadAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (reread.IsFailure)
+                    {
+                        return Resumable(active, reread.Error);
+                    }
+
+                    if (reread.Value?.NestedTransitionReceipt is { } publishedReceipt)
+                    {
+                        active = active with { NestedTransitionReceipt = publishedReceipt };
+                    }
+
                     if (applied.IsFailure)
                     {
-
+                        // A claim that has not reported keeps the record alive whatever the apply
+                        // returned. The nested transition may still hold a journal bound to this exact
+                        // record, and retiring it would delete the one piece of evidence that journal
+                        // needs to be resumed or retired - leaving a parked transition nothing can ever
+                        // finish, and a slot no future transition can open.
                         if (applied.Error.Code is ErrorCodes.Data.RecoveryRequired
-                                or ErrorCodes.Data.ReconciliationFailed)
+                                or ErrorCodes.Data.ReconciliationFailed
+                            || active.NestedTransitionReceipt is
+                            {
+                                Phase: InstallationResetNestedTransitionPhase.Claimed,
+                            })
                         {
-
                             active = active with
                             {
                                 PointOfNoReturn = true,
@@ -1824,7 +1696,6 @@ internal sealed class InstallationResetService(
                                 new Error(
                                     ErrorCodes.Data.RecoveryRequired,
                                     "The canonical data reset outcome requires recovery."));
-
                         }
 
                         Result retired = await writer.RetireAsync(
@@ -1834,7 +1705,6 @@ internal sealed class InstallationResetService(
                         return retired.IsSuccess
                             ? Result<InstallationResetResult>.Failure(applied.Error)
                             : Resumable(active, retired.Error);
-
                     }
 
                     DataRetentionApplyResult dataResult = applied.Value;
@@ -1848,15 +1718,12 @@ internal sealed class InstallationResetService(
                         EstimatedBytesDeleted = dataResult.EstimatedBytesDeleted,
                         LastErrorCode = null,
                     };
-
                 }
 
                 progress.Active = active;
-
             }
             else
             {
-
                 active = active with
                 {
                     Phase = InstallationResetPhase.DataResetComplete,
@@ -1864,7 +1731,6 @@ internal sealed class InstallationResetService(
                 };
 
                 progress.Active = active;
-
             }
 
             Result dataCheckpoint = await writer.WriteAsync(
@@ -1873,22 +1739,17 @@ internal sealed class InstallationResetService(
 
             if (dataCheckpoint.IsFailure)
             {
-
                 return Resumable(active, dataCheckpoint.Error);
-
             }
-
         }
 
         if (active.Phase is InstallationResetPhase.DataResetComplete)
         {
-
             Result<InstallationResetOfflineCleanupResult> cleaned = await offlineCleanup
                 .ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
 
             if (cleaned.IsFailure)
             {
-
                 active = active with { LastErrorCode = cleaned.Error.Code };
 
                 Result failureCheckpoint = await writer.WriteAsync(
@@ -1898,7 +1759,6 @@ internal sealed class InstallationResetService(
                 return failureCheckpoint.IsFailure
                     ? Resumable(active, failureCheckpoint.Error)
                     : Resumable(active, cleaned.Error);
-
             }
 
             InstallationResetOfflineCleanupResult cleanup = cleaned.Value;
@@ -1920,7 +1780,6 @@ internal sealed class InstallationResetService(
 
             if (!cleanup.Verification.Succeeded)
             {
-
                 active = active with
                 {
                     LastErrorCode = ErrorCodes.Data.ReconciliationFailed,
@@ -1932,9 +1791,7 @@ internal sealed class InstallationResetService(
 
                 if (verificationCheckpoint.IsFailure)
                 {
-
                     return Resumable(active, verificationCheckpoint.Error);
-
                 }
 
                 return Result<InstallationResetResult>.Success(BuildResult(
@@ -1942,7 +1799,6 @@ internal sealed class InstallationResetService(
                     cleanup.PreservedBackups,
                     cleanup.Verification,
                     resumeRequired: true));
-
             }
 
             active = active with
@@ -1959,16 +1815,12 @@ internal sealed class InstallationResetService(
 
             if (cleanupCheckpoint.IsFailure)
             {
-
                 return Resumable(active, cleanupCheckpoint.Error);
-
             }
-
         }
 
         if (active.Phase is InstallationResetPhase.OfflineCleanupComplete)
         {
-
             InstallationResetCredentialResult[] deletedCredentials =
                 credentialService.DeleteAndVerify(
                     active.AcceptedBinding.CredentialAccounts);
@@ -1997,7 +1849,6 @@ internal sealed class InstallationResetService(
 
             if (!credentialVerification.Succeeded)
             {
-
                 Result credentialCheckpoint = await writer.WriteAsync(
                     active,
                     cancellationToken).ConfigureAwait(false);
@@ -2009,7 +1860,6 @@ internal sealed class InstallationResetService(
                         active.AcceptedBinding.PreservedBackups,
                         credentialVerification,
                         resumeRequired: true));
-
             }
 
             // The attested arm's last authorized effect, and it goes exactly here. The Grimoire is
@@ -2019,13 +1869,11 @@ internal sealed class InstallationResetService(
             // may still be reported as needing recovery.
             if (terminalGate is not null)
             {
-
                 Result<InstallationResetActiveRecord> terminal =
                     await terminalGate(cancellationToken).ConfigureAwait(false);
 
                 if (terminal.IsFailure)
                 {
-
                     active = active with { LastErrorCode = terminal.Error.Code };
 
                     progress.Active = active;
@@ -2037,7 +1885,6 @@ internal sealed class InstallationResetService(
                     return terminalCheckpoint.IsFailure
                         ? Resumable(active, terminalCheckpoint.Error)
                         : Resumable(active, terminal.Error);
-
                 }
 
                 // Continue from what it published, not from what this method remembered. The step
@@ -2056,7 +1903,6 @@ internal sealed class InstallationResetService(
                 };
 
                 progress.Active = active;
-
             }
 
             active = active with { Phase = InstallationResetPhase.Verified };
@@ -2069,16 +1915,12 @@ internal sealed class InstallationResetService(
 
             if (verifiedCheckpoint.IsFailure)
             {
-
                 return Resumable(active, verifiedCheckpoint.Error);
-
             }
-
         }
 
         if (active.Phase is InstallationResetPhase.Verified)
         {
-
             active = active with
             {
                 Phase = InstallationResetPhase.Completed,
@@ -2093,11 +1935,8 @@ internal sealed class InstallationResetService(
 
             if (completedCheckpoint.IsFailure)
             {
-
                 return Resumable(active, completedCheckpoint.Error);
-
             }
-
         }
 
         return await ReturnCompletedAsync(
@@ -2106,23 +1945,19 @@ internal sealed class InstallationResetService(
             plan,
             cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<Result<InstallationResetPlan>> ReplanFullAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         Result<InstallationResetPlan> local = await PlanAsync(
             request.Request,
             cancellationToken).ConfigureAwait(false);
 
         if (local.IsFailure)
         {
-
             return local;
-
         }
 
         if (string.Equals(
@@ -2130,18 +1965,14 @@ internal sealed class InstallationResetService(
             local.Value.PlanId,
             StringComparison.Ordinal))
         {
-
             return local;
-
         }
 
         if (!_onlineDataPlans.TryGetValue(
                 request.ExpectedPlanId,
                 out DataRetentionPlan? online))
         {
-
             return PlanChanged<InstallationResetPlan>();
-
         }
 
         Result<InstallationResetPlan> rebound = BindOnlineDataPlan(
@@ -2156,21 +1987,17 @@ internal sealed class InstallationResetService(
                 StringComparison.Ordinal)
             ? rebound
             : PlanChanged<InstallationResetPlan>();
-
     }
 
     private static Result ValidateFullRequest(
         FullInstallationResetRequest? request)
     {
-
         if (request is null
             || request.ExternalRemediation is null
             || request.OperationId == Guid.Empty
             || request.OperationId != request.ExternalRemediation.OperationId)
         {
-
             return ExternalRemediationInvalid();
-
         }
 
         if (request.Apply is null
@@ -2178,13 +2005,10 @@ internal sealed class InstallationResetService(
             || request.Apply.Request.Scope is not InstallationResetScope.All
             || string.IsNullOrWhiteSpace(request.Apply.ExpectedPlanId))
         {
-
             return ExternalRemediationInvalid();
-
         }
 
         return Result.Success();
-
     }
 
     private static FullInstallationResetRemediationClaimV1 Claim(
@@ -2236,56 +2060,43 @@ internal sealed class InstallationResetService(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         if (active.Scope != request.Request.Scope
             || !string.Equals(
                 active.PlanId,
                 request.ExpectedPlanId,
                 StringComparison.Ordinal))
         {
-
             return ResumeMismatch();
-
         }
 
         if (active.Scope is InstallationResetScope.Global)
         {
-
             return active.Workspace is null
                 ? Result.Success()
                 : ResumeMismatch();
-
         }
 
         if (active.Scope is InstallationResetScope.All)
         {
-
             if (active.Workspace is null
                 || !InvocationBelongsToAcceptedWorkspace(
                     request.Request.InvocationDirectory,
                     active.Workspace,
                     active.AcceptedBinding.ExcludedRoots))
             {
-
                 return ResumeMismatch();
-
             }
 
             if (active.PointOfNoReturn
                 || IsPreparedOnlineDataHandoff(active))
             {
-
                 return Result.Success();
-
             }
-
         }
 
         if (active.Workspace is null || workspaceResolver is null)
         {
-
             return ResumeMismatch();
-
         }
 
         Result<InstallationResetWorkspaceResolution> resolved = await workspaceResolver
@@ -2294,13 +2105,10 @@ internal sealed class InstallationResetService(
 
         if (resolved.IsFailure || !SameWorkspace(active.Workspace, resolved.Value.Workspace))
         {
-
             return ResumeMismatch();
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<Result<InstallationResetResult>> ReturnCompletedAsync(
@@ -2309,15 +2117,12 @@ internal sealed class InstallationResetService(
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
     {
-
         Result<InstallationResetOfflineCleanupResult> finalCleanup = await offlineCleanup
             .ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
 
         if (finalCleanup.IsFailure)
         {
-
             return Resumable(active, finalCleanup.Error);
-
         }
 
         InstallationResetOfflineCleanupResult cleanup = finalCleanup.Value;
@@ -2332,7 +2137,6 @@ internal sealed class InstallationResetService(
 
         if (!cleanup.Verification.Succeeded)
         {
-
             active = active with
             {
                 LastErrorCode = ErrorCodes.Data.ReconciliationFailed,
@@ -2349,7 +2153,6 @@ internal sealed class InstallationResetService(
                     cleanup.PreservedBackups,
                     cleanup.Verification,
                     resumeRequired: true));
-
         }
 
         InstallationResetCredentialResult[] credentialResults =
@@ -2371,13 +2174,11 @@ internal sealed class InstallationResetService(
 
         if (!verification.Succeeded)
         {
-
             return Result<InstallationResetResult>.Success(BuildResult(
                 active,
                 active.AcceptedBinding.PreservedBackups,
                 verification,
                 resumeRequired: true));
-
         }
 
         InstallationResetResult final = BuildResult(
@@ -2393,7 +2194,6 @@ internal sealed class InstallationResetService(
         return retired.IsSuccess
             ? Result<InstallationResetResult>.Success(final)
             : Resumable(active, retired.Error);
-
     }
 
     private static Result<InstallationResetResult> Resumable(
@@ -2437,29 +2237,22 @@ internal sealed class InstallationResetService(
         InstallationResetCredentialResult[] updates,
         string[]? acceptedAccounts)
     {
-
         Dictionary<string, InstallationResetCredentialResult> merged =
             new(StringComparer.Ordinal);
 
         foreach (InstallationResetCredentialResult result in existing)
         {
-
             merged[result.Account] = result;
-
         }
 
         if (acceptedAccounts is null)
         {
-
             foreach (InstallationResetCredentialResult result in updates)
             {
-
                 merged[result.Account] = result;
-
             }
 
             return [.. merged.Values.OrderBy(static item => item.Account, StringComparer.Ordinal)];
-
         }
 
         Dictionary<string, InstallationResetCredentialResult> admittedUpdates = updates
@@ -2474,24 +2267,20 @@ internal sealed class InstallationResetService(
                      .Distinct(StringComparer.Ordinal)
                      .Order(StringComparer.Ordinal))
         {
-
             merged[account] = admittedUpdates.TryGetValue(account, out var result)
                 ? result
                 : new InstallationResetCredentialResult(
                     account,
                     InstallationResetItemStatus.Failed,
                     ErrorCodes.Data.ReconciliationFailed);
-
         }
 
         return [.. merged.Values.OrderBy(static item => item.Account, StringComparer.Ordinal)];
-
     }
 
     private static InstallationResetVerification VerifyCredentials(
         InstallationResetCredentialResult[] credentials)
     {
-
         InstallationResetIssueSummary[] issues =
         [
             .. credentials
@@ -2503,21 +2292,17 @@ internal sealed class InstallationResetService(
         ];
 
         return new InstallationResetVerification(issues.Length == 0, issues);
-
     }
 
     private static InstallationResetVerification VerifyCompleted(
         InstallationResetActiveRecord active)
     {
-
         InstallationResetVerification credentialVerification = VerifyCredentials(
             active.CredentialResults);
 
         if (active.LastErrorCode is null)
         {
-
             return credentialVerification;
-
         }
 
         InstallationResetIssueSummary lastError = new(
@@ -2527,7 +2312,6 @@ internal sealed class InstallationResetService(
         return new InstallationResetVerification(
             false,
             [.. credentialVerification.RemainingIssues, lastError]);
-
     }
 
     private static bool CredentialIsRemoved(
@@ -2539,17 +2323,13 @@ internal sealed class InstallationResetService(
         DataRetentionWorkspaceBinding expected,
         DataRetentionWorkspaceBinding current)
     {
-
         if (expected.CampaignId != current.CampaignId)
         {
-
             return false;
-
         }
 
         try
         {
-
             string expectedRoot = Path.TrimEndingDirectorySeparator(
                 Path.GetFullPath(expected.WorkspaceRoot));
 
@@ -2561,18 +2341,14 @@ internal sealed class InstallationResetService(
                 : StringComparison.Ordinal;
 
             return string.Equals(expectedRoot, currentRoot, comparison);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
                 or NotSupportedException
                 or PathTooLongException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool InvocationBelongsToAcceptedWorkspace(
@@ -2580,10 +2356,8 @@ internal sealed class InstallationResetService(
         DataRetentionWorkspaceBinding workspace,
         string[] excludedRoots)
     {
-
         try
         {
-
             string root = Path.TrimEndingDirectorySeparator(
                 Path.GetFullPath(workspace.WorkspaceRoot));
 
@@ -2601,14 +2375,11 @@ internal sealed class InstallationResetService(
 
             if (!belongsToWorkspace)
             {
-
                 return false;
-
             }
 
             return !excludedRoots.Any(excludedRoot =>
             {
-
                 string excluded = Path.TrimEndingDirectorySeparator(
                     Path.GetFullPath(excludedRoot));
 
@@ -2616,20 +2387,15 @@ internal sealed class InstallationResetService(
                     || invocation.StartsWith(
                         excluded + Path.DirectorySeparatorChar,
                         comparison);
-
             });
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
                 or NotSupportedException
                 or PathTooLongException)
         {
-
             return false;
-
         }
-
     }
 
     private static Result ResumeMismatch() =>
@@ -2642,12 +2408,9 @@ internal sealed class InstallationResetService(
             IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken)
     {
-
         if (_stoppedHostPairReader is null)
         {
-
             return ExternalRemediationRequired<HostProcessToolsMatchedPair>();
-
         }
 
         Result<HostProcessToolsMarkerPairJoinResult> pair =
@@ -2661,7 +2424,6 @@ internal sealed class InstallationResetService(
             && pair.Value.MatchedPair is { } matched
                 ? Result<HostProcessToolsMatchedPair>.Success(matched)
                 : ExternalRemediationRequired<HostProcessToolsMatchedPair>();
-
     }
 
     private static Result ExternalRemediationInvalid() =>
@@ -2691,7 +2453,6 @@ internal sealed class InstallationResetService(
         InstallationResetActiveRecord active,
         out InstallationResetOnlineDataCompletion? completion)
     {
-
         completion = active.OnlineDataCompletion;
 
         return active.Scope is InstallationResetScope.Global or InstallationResetScope.All
@@ -2710,7 +2471,6 @@ internal sealed class InstallationResetService(
             && completion.FilesDeleted >= 0
             && completion.EstimatedBytesDeleted >= 0
             && completion.DerivedRecordsDeleted >= 0;
-
     }
 
     private static bool IsPreparedOnlineDataHandoff(
@@ -2793,7 +2553,6 @@ internal sealed class InstallationResetService(
         InstallationResetPlanRequest request,
         InstallationResetAcceptedBinding binding)
     {
-
         using IncrementalHash hash = BeginCanonicalHash(
             "Arcanum.InstallationReset.AcceptedBinding.v2");
 
@@ -2807,7 +2566,6 @@ internal sealed class InstallationResetService(
 
         foreach (InstallationResetPreservedBackup backup in binding.PreservedBackups)
         {
-
             AppendString(hash, backup.CanonicalPath);
 
             AppendString(hash, backup.Identity.Value);
@@ -2815,7 +2573,6 @@ internal sealed class InstallationResetService(
             AppendInt64(hash, backup.Identity.Length);
 
             AppendUInt64(hash, backup.Identity.HardLinkCount);
-
         }
 
         AppendStrings(hash, binding.CredentialAccounts);
@@ -2823,7 +2580,6 @@ internal sealed class InstallationResetService(
         AppendStrings(hash, binding.DataPlanIds);
 
         return CompleteCanonicalHash(hash);
-
     }
 
     private static string ComputePlanId(
@@ -2833,7 +2589,6 @@ internal sealed class InstallationResetService(
         InstallationResetCredentialSummary[] credentials,
         InstallationResetTargetDescriptor[] fileTargets)
     {
-
         using IncrementalHash hash = BeginCanonicalHash(
             "Arcanum.InstallationReset.Plan.v2");
 
@@ -2845,7 +2600,6 @@ internal sealed class InstallationResetService(
 
         if (data is not null)
         {
-
             AppendString(hash, data.PlanId);
 
             AppendInt64(hash, data.Rows);
@@ -2857,20 +2611,17 @@ internal sealed class InstallationResetService(
             AppendInt64(hash, data.DerivedRecords);
 
             AppendByte(hash, data.RequiresConfirmation ? (byte)1 : (byte)0);
-
         }
 
         AppendUInt32(hash, checked((uint)credentials.Length));
 
         foreach (InstallationResetCredentialSummary credential in credentials)
         {
-
             AppendString(hash, credential.Account);
 
             AppendByte(hash, checked((byte)credential.Status));
 
             AppendNullableString(hash, credential.ErrorCode);
-
         }
 
         InstallationResetTargetDescriptor[] orderedTargets =
@@ -2884,7 +2635,6 @@ internal sealed class InstallationResetService(
 
         foreach (InstallationResetTargetDescriptor target in orderedTargets)
         {
-
             AppendString(hash, target.Category);
 
             AppendByte(hash, checked((byte)target.Role));
@@ -2899,13 +2649,11 @@ internal sealed class InstallationResetService(
 
             if (target.Identity is { } identity)
             {
-
                 AppendString(hash, identity.Value);
 
                 AppendInt64(hash, identity.Length);
 
                 AppendUInt64(hash, identity.HardLinkCount);
-
             }
 
             AppendNullableInt64(hash, target.Rows);
@@ -2913,16 +2661,13 @@ internal sealed class InstallationResetService(
             AppendInt64(hash, target.Files);
 
             AppendInt64(hash, target.EstimatedBytes);
-
         }
 
         return CompleteCanonicalHash(hash);
-
     }
 
     private static IncrementalHash BeginCanonicalHash(string domain)
     {
-
         IncrementalHash hash = IncrementalHash.CreateHash(
             HashAlgorithmName.SHA256);
 
@@ -2930,90 +2675,66 @@ internal sealed class InstallationResetService(
 
         try
         {
-
             hash.AppendData(domainBytes);
 
             AppendByte(hash, 0);
 
             return hash;
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(domainBytes);
-
         }
-
     }
 
     private static void AppendStrings(IncrementalHash hash, string[] values)
     {
-
         AppendUInt32(hash, checked((uint)values.Length));
 
         foreach (string value in values)
         {
-
             AppendString(hash, value);
-
         }
-
     }
 
     private static void AppendNullableString(IncrementalHash hash, string? value)
     {
-
         AppendByte(hash, value is null ? (byte)0 : (byte)1);
 
         if (value is not null)
         {
-
             AppendString(hash, value);
-
         }
-
     }
 
     private static void AppendString(IncrementalHash hash, string value)
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes(value);
 
         try
         {
-
             AppendUInt32(hash, checked((uint)bytes.Length));
 
             hash.AppendData(bytes);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(bytes);
-
         }
-
     }
 
     private static void AppendNullableInt64(IncrementalHash hash, long? value)
     {
-
         AppendByte(hash, value.HasValue ? (byte)1 : (byte)0);
 
         if (value.HasValue)
         {
-
             AppendInt64(hash, value.Value);
-
         }
-
     }
 
     private static void AppendByte(IncrementalHash hash, byte value)
     {
-
         Span<byte> bytes = stackalloc byte[1];
 
         bytes[0] = value;
@@ -3021,12 +2742,10 @@ internal sealed class InstallationResetService(
         hash.AppendData(bytes);
 
         CryptographicOperations.ZeroMemory(bytes);
-
     }
 
     private static void AppendUInt32(IncrementalHash hash, uint value)
     {
-
         Span<byte> bytes = stackalloc byte[sizeof(uint)];
 
         BinaryPrimitives.WriteUInt32BigEndian(bytes, value);
@@ -3034,12 +2753,10 @@ internal sealed class InstallationResetService(
         hash.AppendData(bytes);
 
         CryptographicOperations.ZeroMemory(bytes);
-
     }
 
     private static void AppendInt64(IncrementalHash hash, long value)
     {
-
         Span<byte> bytes = stackalloc byte[sizeof(long)];
 
         BinaryPrimitives.WriteInt64BigEndian(bytes, value);
@@ -3047,12 +2764,10 @@ internal sealed class InstallationResetService(
         hash.AppendData(bytes);
 
         CryptographicOperations.ZeroMemory(bytes);
-
     }
 
     private static void AppendUInt64(IncrementalHash hash, ulong value)
     {
-
         Span<byte> bytes = stackalloc byte[sizeof(ulong)];
 
         BinaryPrimitives.WriteUInt64BigEndian(bytes, value);
@@ -3060,27 +2775,20 @@ internal sealed class InstallationResetService(
         hash.AppendData(bytes);
 
         CryptographicOperations.ZeroMemory(bytes);
-
     }
 
     private static string CompleteCanonicalHash(IncrementalHash hash)
     {
-
         byte[] digest = hash.GetHashAndReset();
 
         try
         {
-
             return Convert.ToHexStringLower(digest);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(digest);
-
         }
-
     }
 
     private static StringComparer PathComparer { get; } =
@@ -3096,14 +2804,12 @@ internal sealed class InstallationResetService(
         InstallationResetActivePublication? publication)
         : IInstallationResetActiveWriter
     {
-
         private InstallationResetActivePublication? _publication = publication;
 
         public async Task<Result> WriteAsync(
             InstallationResetActiveRecord record,
             CancellationToken cancellationToken)
         {
-
             heldInstallationLock.AssertHeldFor(guardedRoot);
 
             Result<InstallationResetActivePublication> written = _publication is null
@@ -3120,15 +2826,41 @@ internal sealed class InstallationResetService(
 
             if (written.IsSuccess)
             {
-
                 _publication = written.Value;
-
             }
 
             return written.IsSuccess
                 ? Result.Success()
                 : Result.Failure(written.Error);
+        }
 
+        public async Task<Result<InstallationResetActiveRecord?>> RereadAsync(
+            CancellationToken cancellationToken)
+        {
+            heldInstallationLock.AssertHeldFor(guardedRoot);
+
+            if (_publication is null)
+            {
+                return Result<InstallationResetActiveRecord?>.Success(null);
+            }
+
+            Result<InstallationResetActiveRecoveryState> recovered = await store
+                .RecoverAsync(heldInstallationLock, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (recovered.IsFailure)
+            {
+                return Result<InstallationResetActiveRecord?>.Failure(recovered.Error);
+            }
+
+            if (recovered.Value.Publication is not { } published)
+            {
+                return Result<InstallationResetActiveRecord?>.Success(null);
+            }
+
+            _publication = published;
+
+            return Result<InstallationResetActiveRecord?>.Success(published.Payload.ToRecord());
         }
 
         /// <summary>The publication this writer last made durable, or the one it started from.</summary>
@@ -3147,18 +2879,15 @@ internal sealed class InstallationResetService(
         /// </remarks>
         internal void Adopt(InstallationResetActivePublication published)
         {
-
             ArgumentNullException.ThrowIfNull(published);
 
             _publication = published;
-
         }
 
         public async Task<Result> RetireAsync(
             Guid operationId,
             CancellationToken cancellationToken)
         {
-
             heldInstallationLock.AssertHeldFor(guardedRoot);
 
             Result retired = await store.RetireAsync(
@@ -3168,31 +2897,23 @@ internal sealed class InstallationResetService(
 
             if (retired.IsSuccess)
             {
-
                 _publication = null;
-
             }
 
             return retired;
-
         }
-
     }
 
     private sealed class InstallationResetApplyProgress(
         InstallationResetActiveRecord active)
     {
-
         public InstallationResetActiveRecord Active { get; set; } = active;
-
     }
 
     private static bool PathsOverlap(string left, string right)
     {
-
         try
         {
-
             string normalizedLeft = Path.TrimEndingDirectorySeparator(
                 Path.GetFullPath(left));
 
@@ -3205,18 +2926,14 @@ internal sealed class InstallationResetService(
 
             return IsWithinOrEqual(normalizedLeft, normalizedRight, comparison)
                 || IsWithinOrEqual(normalizedRight, normalizedLeft, comparison);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
                 or NotSupportedException
                 or PathTooLongException)
         {
-
             return true;
-
         }
-
     }
 
     private static bool IsWithinOrEqual(
@@ -3227,5 +2944,4 @@ internal sealed class InstallationResetService(
         || candidate.StartsWith(
             root + Path.DirectorySeparatorChar,
             comparison);
-
 }

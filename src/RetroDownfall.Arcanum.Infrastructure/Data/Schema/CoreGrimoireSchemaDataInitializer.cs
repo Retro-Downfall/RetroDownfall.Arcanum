@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataInitializer
 {
-
     /// <summary><c>CovenantHostToolsState.Clean</c>, the only state a fresh installation may claim.</summary>
     private const long CleanHostToolsStateCode = 1;
 
@@ -54,7 +53,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -78,7 +76,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         await SeedCovenantCleanupCursorAsync(connection, transaction, installedAtUtc, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -98,7 +95,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -110,7 +106,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             """;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -127,7 +122,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -143,7 +137,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             """;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -169,18 +162,15 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         string installedAtUtc,
         CancellationToken cancellationToken)
     {
-
         AuthorityStateRow? existing = await ReadAuthorityStateAsync(connection, transaction, cancellationToken)
             .ConfigureAwait(false);
 
         if (existing is null)
         {
-
             await InsertAuthorityStateAsync(connection, transaction, context, installedAtUtc, cancellationToken)
                 .ConfigureAwait(false);
 
             return;
-
         }
 
         RequireWellFormed(existing);
@@ -189,9 +179,7 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             existing.CurrentMasterKeyFingerprint,
             context.MasterKeyFingerprint))
         {
-
             return;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -222,10 +210,9 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             "$recoveryEnvelopeEpoch",
             Advance(existing.RecoveryEnvelopeEpoch, long.MaxValue, "recovery envelope epoch"));
 
-        _ = command.Parameters.AddWithValue("$updatedAtUtc", installedAtUtc);
+        _ = UtcInstantSql.AddStoredParameter(command, "$updatedAtUtc", installedAtUtc);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task InsertAuthorityStateAsync(
@@ -235,7 +222,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         string installedAtUtc,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -281,10 +267,9 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         _ = command.Parameters.AddWithValue("$hostToolsStateCode", CleanHostToolsStateCode);
 
-        _ = command.Parameters.AddWithValue("$updatedAtUtc", installedAtUtc);
+        _ = UtcInstantSql.AddStoredParameter(command, "$updatedAtUtc", installedAtUtc);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<AuthorityStateRow?> ReadAuthorityStateAsync(
@@ -292,7 +277,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -316,25 +300,19 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         if (reader.GetValue(3) is not byte[] fingerprint)
         {
-
             throw MalformedAuthorityState();
-
         }
 
         if (!HostProcessToolsTaintVersionStorage.TryDecode(
             reader.GetValue(6),
             out ulong? taintTimeMasterVersion))
         {
-
             throw MalformedAuthorityState();
-
         }
 
         return new AuthorityStateRow(
@@ -347,7 +325,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             taintTimeMasterVersion,
             reader.IsDBNull(7),
             reader.IsDBNull(8) ? null : reader.GetString(8));
-
     }
 
     /// <summary>
@@ -370,15 +347,12 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         string installedAtUtc,
         CancellationToken cancellationToken)
     {
-
         List<UnboundSession> unbound = await ReadUnboundSessionsAsync(connection, transaction, cancellationToken)
             .ConfigureAwait(false);
 
         if (unbound.Count == 0)
         {
-
             return;
-
         }
 
         using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance.Authorize(
@@ -400,13 +374,10 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         SqliteParameter campaignId = command.Parameters.Add("$campaignId", SqliteType.Text);
 
-        SqliteParameter boundAtUtc = command.Parameters.Add("$boundAtUtc", SqliteType.Text);
-
-        boundAtUtc.Value = installedAtUtc;
+        _ = UtcInstantSql.AddStoredParameter(command, "$boundAtUtc", installedAtUtc);
 
         foreach (UnboundSession session in unbound)
         {
-
             string? boundCampaignId = NormalizeCampaignId(session.CampaignId);
 
             sessionId.Value = session.SessionId;
@@ -418,9 +389,7 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             campaignId.Value = (object?)boundCampaignId ?? DBNull.Value;
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     private static async Task<List<UnboundSession>> ReadUnboundSessionsAsync(
@@ -428,7 +397,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -450,15 +418,12 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             unbound.Add(new UnboundSession(
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1)));
-
         }
 
         return unbound;
-
     }
 
     /// <summary>
@@ -476,7 +441,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         string installedAtUtc,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -494,10 +458,9 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         _ = command.Parameters.AddWithValue("$capabilityFamilyCode", (long)GrimoireSchemaFamily.Covenant);
 
-        _ = command.Parameters.AddWithValue("$updatedAtUtc", installedAtUtc);
+        _ = UtcInstantSql.AddStoredParameter(command, "$updatedAtUtc", installedAtUtc);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -507,7 +470,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
     /// </summary>
     private static void RequireUsableContext(GrimoireSchemaInitializationContext context)
     {
-
         if (string.IsNullOrWhiteSpace(context.InstallationIdentity)
             || context.InstallationIdentity.Length > 128
             || context.AuthorityEpoch <= 0
@@ -515,13 +477,10 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             || context.MasterKeyFingerprint is not { Length: 32 }
             || context.RecoveryEnvelopeEpoch <= 0)
         {
-
             throw new InvalidOperationException(
                 "The installation context supplied to Core schema initialization does not describe a "
                 + "usable authority identity, so no authority row is written.");
-
         }
-
     }
 
     /// <summary>
@@ -534,7 +493,6 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
     /// </remarks>
     private static void RequireWellFormed(AuthorityStateRow row)
     {
-
         bool wellFormed = row.InstallationIdentity.Length is > 0 and <= 128
             && row.AuthorityEpoch > 0
             && row.CurrentMasterKeyVersion is > 0 and <= MaximumMasterKeyVersion
@@ -545,11 +503,8 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
 
         if (!wellFormed)
         {
-
             throw MalformedAuthorityState();
-
         }
-
     }
 
     /// <summary>
@@ -567,18 +522,14 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
     /// </summary>
     private static long Advance(long current, long ceiling, string counter)
     {
-
         if (current >= ceiling)
         {
-
             throw new InvalidOperationException(
                 $"The installation authority {counter} is at its maximum and cannot advance, so this "
                 + "master key change cannot be recorded.");
-
         }
 
         return current + 1;
-
     }
 
     /// <summary>
@@ -593,18 +544,14 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
     /// </remarks>
     private static string? NormalizeCampaignId(string? campaignId)
     {
-
         if (string.IsNullOrWhiteSpace(campaignId))
         {
-
             return null;
-
         }
 
         return Guid.TryParse(campaignId, out Guid parsed)
             ? parsed.ToString("D").ToUpperInvariant()
             : campaignId;
-
     }
 
     private static InvalidOperationException MalformedAuthorityState() =>
@@ -623,5 +570,4 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         string? TransitionId);
 
     private sealed record UnboundSession(string SessionId, string? CampaignId);
-
 }

@@ -43,7 +43,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     private const string ModelName = "wizard-fallback-test-model";
@@ -55,7 +54,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     [Fact]
     public async Task ExecutePromptAsync_retries_on_connectivity_failure()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -88,7 +86,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.False(tracker.IsHealthy(providerA.Name));
 
         Assert.True(tracker.IsHealthy(providerB.Name));
-
     }
 
     [Fact]
@@ -122,13 +119,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal(
             providers.Select(static provider => provider.Name),
             factory.CandidateCallOrder);
-
     }
 
     [Fact]
     public async Task ExecutePromptAsync_does_not_retry_on_model_error()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -161,7 +156,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal([providerA.Name], factory.CandidateCallOrder);
 
         Assert.True(tracker.IsHealthy(providerA.Name));
-
     }
 
     [Fact]
@@ -246,7 +240,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     [Fact]
     public async Task ExecutePromptAsync_resolves_a_deferred_turn_when_no_later_candidate_runs()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         providerA.Models = [ReasoningModelEntry()];
@@ -275,9 +268,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         PingRequest request = BaseRequest() with
         {
-
             Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
-
         };
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
@@ -296,7 +287,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         // Nobody else can resolve the handle candidate A deferred, so the run itself must.
         _ = Assert.Single(grimoire.DiscardedAssistantEntryIds);
-
     }
 
     /// <summary>
@@ -307,7 +297,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     [Fact]
     public async Task StreamPromptAsync_resolves_a_deferred_turn_when_no_later_candidate_runs()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         providerA.Models = [ReasoningModelEntry()];
@@ -336,9 +325,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         PingRequest request = BaseRequest() with
         {
-
             Reasoning = new ReasoningRequestOptions(Effort: ReasoningEffortLevel.High),
-
         };
 
         List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
@@ -352,13 +339,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         _ = Assert.Single(grimoire.BeginCalls);
 
         _ = Assert.Single(grimoire.DiscardedAssistantEntryIds);
-
     }
 
     [Fact]
     public async Task ExecutePromptAsync_LeaseBuildFailure_NonConnectivity_DoesNotMarkProviderUnhealthy_OrRetry()
     {
-
         // A lease-construction failure that is not a connectivity error (e.g. a local
         // misconfiguration or a transient concurrency-slot overload) must not mark the provider
         // unhealthy or trigger fallback to the next candidate — mirrors
@@ -392,7 +377,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal([providerA.Name], factory.CandidateCallOrder);
 
         Assert.True(tracker.IsHealthy(providerA.Name));
-
     }
 
     [Fact]
@@ -427,7 +411,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal(
             providers.Select(static provider => provider.Name),
             factory.CandidateCallOrder);
-
     }
 
     /// <summary>
@@ -478,7 +461,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     [Fact]
     public async Task Marks_provider_unhealthy_on_failure()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -500,13 +482,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         await wizard.ExecutePromptAsync(BaseRequest(), InvocationContexts.AttendedSession(), CancellationToken.None);
 
         Assert.False(tracker.IsHealthy(providerA.Name));
-
     }
 
     [Fact]
     public async Task Marks_provider_healthy_on_success()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -537,13 +517,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.True(statusB.IsHealthy);
 
         Assert.Equal(0, statusB.ConsecutiveFailures);
-
     }
 
     [Fact]
     public async Task Health_tracker_absent_uses_single_resolution_without_fallback()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         RecordingChatClientFactory factory = new();
@@ -565,13 +543,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Empty(factory.CandidateCallOrder);
 
         Assert.Empty(tracker.GetAllStatuses());
-
     }
 
     [Fact]
     public async Task ExecutePromptAsync_without_health_tracker_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
     {
-
         ProviderSettings provider = MakeProvider("provider-a");
 
         // Standard dialect: effort is supported, but a numeric budget is not — the request must be
@@ -613,13 +589,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal(1, factory.SingleCallCount);
         Assert.Equal(0, chat.BufferedCallCount);
         Assert.Equal(1, chat.DisposeCount);
-
     }
 
     [Fact]
     public async Task StreamPromptAsync_without_health_tracker_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
     {
-
         ProviderSettings provider = MakeProvider("provider-a");
 
         // No declared reasoning block: an explicit effort request is unsupported and must be
@@ -656,13 +630,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal(1, factory.SingleCallCount);
         Assert.Equal(0, chat.StreamingCallCount);
         Assert.Equal(1, chat.DisposeCount);
-
     }
 
     [Fact]
     public async Task ExecutePromptAsync_rejects_unsupported_reasoning_before_fallback_provider_io()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         providerA.Models =
@@ -701,13 +673,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Contains(providerB.Name, result.Error.Message, StringComparison.Ordinal);
         Assert.Contains(ModelName, result.Error.Message, StringComparison.Ordinal);
         Assert.Equal([providerA.Name], factory.CandidateCallOrder);
-
     }
 
     [Fact]
     public async Task StreamPromptAsync_rejects_unsupported_reasoning_before_fallback_provider_io()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         providerA.Models =
@@ -748,13 +718,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Contains(providerB.Name, error.Message, StringComparison.Ordinal);
         Assert.Contains(ModelName, error.Message, StringComparison.Ordinal);
         Assert.Equal([providerA.Name], factory.CandidateCallOrder);
-
     }
 
     [Fact]
     public async Task ExecutePromptAsync_uses_healthy_compatible_candidate_when_first_configured_provider_is_unhealthy_and_incompatible()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -791,13 +759,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
         Assert.Equal("answer from compatible B", result.Value.Text);
         Assert.Equal([providerB.Name], factory.CandidateCallOrder);
-
     }
 
     [Fact]
     public async Task StreamPromptAsync_uses_healthy_compatible_candidate_when_first_configured_provider_is_unhealthy_and_incompatible()
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -834,7 +800,48 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
         Assert.Equal([providerB.Name], factory.CandidateCallOrder);
+    }
 
+    [Fact]
+    public async Task ContextPreview_uses_healthy_tool_capable_candidate_when_first_configured_provider_is_unhealthy()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        providerA.Models = [new ModelEntry(ModelName, SupportsTools: false)];
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+        providerB.Models = [new ModelEntry(ModelName, SupportsTools: true)];
+
+        ScriptingChatClient chatA = new();
+        ScriptingChatClient chatB = new();
+
+        RecordingChatClientFactory factory = new()
+        {
+            SingleResolver = () => MakeLease(chatA, providerA),
+        };
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+        tracker.MarkFailed(providerA.Name);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+            new ContextPreviewRequest(
+                Prompt: "inspect healthy fallback tools",
+                Model: ModelName,
+                NoRetrieval: true),
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+        Assert.Contains(
+            preview.Value.Tools,
+            static tool => tool.Name == ArcanumLocalTimeTool.ToolName && tool.Included);
+        Assert.Equal(providerB.Name, preview.Value.Provider);
+        Assert.Equal(0, factory.SingleCallCount);
+        Assert.Equal([providerB.Name], factory.CandidateCallOrder);
+        Assert.Equal(0, chatA.DisposeCount);
+        Assert.Equal(1, chatB.DisposeCount);
     }
 
     [Theory]
@@ -843,7 +850,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     public async Task StreamPromptAsync_does_not_fallback_after_visible_or_protected_reasoning_commit(
         bool protectedOnly)
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
         providerA.Models = [ReasoningModelEntry()];
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -961,7 +967,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     public async Task ExecutePromptAsync_does_not_fallback_after_buffered_reasoning_commit(
         bool protectedOnly)
     {
-
         ProviderSettings providerA = MakeProvider("provider-a");
         providerA.Models = [ReasoningModelEntry()];
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -1043,7 +1048,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IGrimoireRepository grimoire,
         ArcanumSettings settings)
     {
-
         InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
 
         IContextCompressionService compression = new ContextCompressionService(
@@ -1057,7 +1061,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
             compression);
-
     }
 
     /// <summary>
@@ -1155,16 +1158,13 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IGrimoireTurnCommitter? turnCommitter,
         params ProviderSettings[] providers)
     {
-
         ArcanumSettings settings = new()
         {
-
             DefaultModel = ModelName,
 
             Providers = providers,
 
             Features = new FeatureSettings { Lexicon = false, ReasoningSummaries = true },
-
         };
 
         FakeWard ward = new();
@@ -1212,6 +1212,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new SagaExtractionService(
                 new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
                 new TestOptionsMonitor<ArcanumSettings>(settings),
+                new GrimoireConnectionAdmissionGate(TimeProvider.System),
                 NullLogger<SagaExtractionService>.Instance),
             new SemanticSpellRouter(
                 new SpellWeaveCache(new NoopWeaveService(), new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
@@ -1240,7 +1241,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IGrimoireRepository grimoire,
         IBudgetAlertRepository budgetAlerts)
     {
-
         ServiceCollection services = new();
 
         services.AddScoped(_ => grimoire);
@@ -1248,7 +1248,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         services.AddScoped(_ => budgetAlerts);
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-
     }
 
     /// <summary>
@@ -1337,7 +1336,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     private sealed class NoopWeaveService : IWeaveService
     {
-
         public bool IsAvailable => false;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -1348,12 +1346,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
-
     }
 
     private sealed class NoopDivinationService : IDivinationService
     {
-
         public Task<Result<DivinationResult[]>> SearchAsync(
             string tableName,
             string primaryKeyColumn,
@@ -1388,11 +1384,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             float similarityThreshold,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
-
     }
 
     private sealed class NoopWorkspaceIndexingService : IWorkspaceIndexingService
     {
+        public string ResolveIndexedWorkspacePath(string workspacePath) => Path.GetFullPath(workspacePath);
 
         public void RegisterWorkspace(string workspacePath)
         {
@@ -1402,14 +1398,13 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         {
         }
 
-        public Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
-
+        public Result<WorkspaceIndexQueueDisposition> QueueIndexNow(string workspacePath) =>
+            Result<WorkspaceIndexQueueDisposition>.Success(WorkspaceIndexQueueDisposition.Accepted);
     }
 
     /// <summary>RAG Phase 4 — Saga stays disabled in this test file, so <see cref="ISagaMemoryStore"/> is never touched.</summary>
     private sealed class NoopSagaMemoryStore : ISagaMemoryStore
     {
-
         public Task<SagaMemoryWriteOutcome> InsertAsync(
             string id,
             string content,
@@ -1475,12 +1470,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
-
     }
 
     private sealed class NoopSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
@@ -1490,22 +1483,18 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<string?> GetGrimoireEncryptionSecretAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
-
     }
 
     private sealed class NoopPassphraseSource : IGrimoireDbPassphraseSource
     {
-
         public string Passphrase => throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
 
         public void SetPassphrase(string passphrase) =>
             throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
-
     }
 
     private sealed class RecordingChatClientFactory : IChatClientFactory
     {
-
         public List<string> CandidateCallOrder { get; } = [];
 
         public Dictionary<string, Func<ChatClientLease>> CandidateResolvers { get; } = new(StringComparer.Ordinal);
@@ -1520,7 +1509,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
         {
-
             SingleCallCount++;
 
             if (SingleCallException is not null)
@@ -1534,12 +1522,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             }
 
             throw new InvalidOperationException("No AI model could be resolved.");
-
         }
 
         public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
         {
-
             CandidateCallOrder.Add(provider.Name);
 
             if (CandidateExceptions.TryGetValue(provider.Name, out Exception? ex))
@@ -1553,14 +1539,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             }
 
             throw new InvalidOperationException($"No resolver configured for provider '{provider.Name}'.");
-
         }
-
     }
 
     private sealed class ScriptingChatClient : IChatClient
     {
-
         private readonly Queue<Func<CancellationToken, Task<ChatResponse>>> _buffered = new();
 
         private readonly Queue<Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>> _streaming = new();
@@ -1615,7 +1598,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             }
 
             return _buffered.Dequeue()(cancellationToken);
-
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -1631,7 +1613,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             }
 
             return _streaming.Dequeue()(cancellationToken);
-
         }
 
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamTokens(
@@ -1688,12 +1669,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             yield break;
 #pragma warning restore CS0162
         }
-
     }
 
     private sealed class FakeGrimoireRepository : IGrimoireRepository, ISessionTurnBeginStore
     {
-
         public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Session?>(null);
 
@@ -1714,11 +1693,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             string model,
             CancellationToken cancellationToken = default)
         {
-
             BeginCalls.Add((sessionId, prompt));
 
             return Task.FromResult((sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
-
         }
 
         public ValueTask<Result<Guid>> CreateBoundSessionAsync(
@@ -1734,7 +1711,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             string model,
             CancellationToken cancellationToken)
         {
-
             (Guid sessionId, Guid assistantEntryId) = await BeginAssistantReplyAsync(
                 existingSessionId,
                 prompt,
@@ -1747,7 +1723,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                     Guid.NewGuid(),
                     assistantEntryId,
                     new SessionTurnInputPreflight(sessionId, campaign.Binding, 0, 0)));
-
         }
 
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default) =>
@@ -1755,11 +1730,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
         {
-
             DiscardedAssistantEntryIds.Add(assistantEntryId);
 
             return Task.CompletedTask;
-
         }
 
         public Task AppendToolInteractionAsync(
@@ -1842,12 +1815,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             Task.FromResult<WorkspaceContext?>(null);
-
     }
 
     private sealed class FakeWard : IWard
     {
-
         public Task<WardResolution> WardAsync(
             string wardId,
             string toolName,
@@ -1868,12 +1839,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new(allowed, reason, DateTimeOffset.UtcNow, origin);
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
-
     }
 
     private sealed class FakeMcpConnectionManager : IMcpConnectionManager
     {
-
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -1910,12 +1879,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
     }
 
     private sealed class FakeCampaignRepository : ICampaignRepository
     {
-
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 
@@ -1943,12 +1910,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
-
     }
 
     private sealed class ConfigurableSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -1983,7 +1948,5 @@ public Task RecordResourceLimitBreachAsync(
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
-
 }

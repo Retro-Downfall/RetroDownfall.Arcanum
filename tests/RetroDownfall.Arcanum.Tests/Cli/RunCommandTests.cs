@@ -69,12 +69,53 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class RunCommandTests
 {
+    [Theory]
+    [InlineData(ServeLaunchStatus.Failed, CliExitCode.NetworkError)]
+    [InlineData(ServeLaunchStatus.AuthFailed, CliExitCode.ConfigurationError)]
+    public async Task Launch_failure_stops_before_context_or_inference(
+        ServeLaunchStatus status,
+        CliExitCode expectedExitCode)
+    {
+        FakeContextResolver context = new(
+            CliInferenceContextResult.Success(
+                EffectiveContext(null, null, null, null),
+                []));
+
+        FakeRunExecutionDispatcher execution = new();
+        RecordingConsole console = new();
+
+        FixedServeLauncher serve = new(
+            new ServeLaunchResult(
+                status,
+                status == ServeLaunchStatus.AuthFailed
+                    ? HealthProbeState.Unauthorized
+                    : HealthProbeState.ConnectionRefused,
+                TimeSpan.Zero,
+                null,
+                "launcher stopped safely"));
+
+        RunCommand command = CreateCommand(
+            SuccessInput("answer this", null),
+            SuccessStage([]),
+            execution: execution,
+            resolver: context,
+            serve: serve,
+            console: console);
+
+        int exitCode = await command.RunAsync(
+            Request(prompt: ["answer", "this"]),
+            CancellationToken.None);
+
+        Assert.Equal((int)expectedExitCode, exitCode);
+        Assert.Equal(0, context.CallCount);
+        Assert.Null(execution.Request);
+        Assert.Contains("launcher stopped safely", console.Diagnostics);
+    }
 
     [Fact]
 
     public async Task Run_command_exposes_unified_input_routing_and_context_options()
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -102,7 +143,6 @@ public sealed class RunCommandTests
         Assert.Contains("--session", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("--model", result.Output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -114,7 +154,6 @@ public sealed class RunCommandTests
 
     public void Run_binds_escaped_prompt_tokens_through_the_prompt_argument()
     {
-
         using ServiceProvider provider = CliServices();
 
         RootCommand root = CliCommandTree.Build(provider, out _);
@@ -130,7 +169,6 @@ public sealed class RunCommandTests
             .Single(argument => argument.Name == "prompt");
 
         Assert.Equal(["--model", "foo"], parsed.GetValue(prompt) ?? []);
-
     }
 
     /// <summary>
@@ -142,7 +180,6 @@ public sealed class RunCommandTests
 
     public void Run_request_token_arrays_are_all_bound_from_the_run_command_surface()
     {
-
         using ServiceProvider provider = CliServices();
 
         Command run = FindRun(CliCommandTree.Build(provider, out _));
@@ -151,16 +188,12 @@ public sealed class RunCommandTests
 
         foreach (Argument argument in run.Arguments)
         {
-
             bindable.Add(argument.Name);
-
         }
 
         foreach (Option option in run.Options)
         {
-
             bindable.Add(option.Name.TrimStart('-'));
-
         }
 
         string[] unbound =
@@ -173,14 +206,12 @@ public sealed class RunCommandTests
         ];
 
         Assert.Empty(unbound);
-
     }
 
     [Fact]
 
     public async Task RunAsync_preserves_positional_and_piped_input_with_active_context()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         Guid sessionId = Guid.NewGuid();
@@ -259,14 +290,12 @@ public sealed class RunCommandTests
             value => value.Contains("active context warning", StringComparison.Ordinal));
 
         Assert.Equal(1, serve.CallCount);
-
     }
 
     [Fact]
 
     public async Task RunAsync_uses_the_current_directory_when_no_workspace_is_selected()
     {
-
         FakeRunExecutionDispatcher execution = new();
 
         RunCommand command = CreateCommand(
@@ -290,7 +319,6 @@ public sealed class RunCommandTests
         Assert.Equal(
             CliContextSource.CurrentDirectory,
             forwarded.Context.Workspace.Source);
-
     }
 
     [Theory]
@@ -309,7 +337,6 @@ public sealed class RunCommandTests
         bool dryRun,
         int expectedRoute)
     {
-
         FakeRunExecutionDispatcher execution = new();
 
         RunCommand command = CreateCommand(
@@ -341,14 +368,12 @@ public sealed class RunCommandTests
         Assert.Equal(dryRun, forwarded.Options.DryRun);
 
         Assert.Equal(spell, forwarded.Options.Spell);
-
     }
 
     [Fact]
 
     public async Task RunAsync_uses_a_neutral_instruction_for_attachment_only_input()
     {
-
         FakeRunExecutionDispatcher execution = new();
 
         RunCommand command = CreateCommand(
@@ -367,14 +392,12 @@ public sealed class RunCommandTests
             execution.Request);
 
         Assert.Equal("Analyze the attached context.", forwarded.Prompt);
-
     }
 
     [Fact]
 
     public async Task RunAsync_rejects_incompatible_route_options_before_startup()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("prompt", null));
 
@@ -406,14 +429,12 @@ public sealed class RunCommandTests
         Assert.Equal(0, serve.CallCount);
 
         Assert.NotEmpty(console.Diagnostics);
-
     }
 
     [Fact]
 
     public async Task RunAsync_reports_active_reset_before_reading_input_or_initializing()
     {
-
         FakeRunInputReader input = new(SuccessInput("prompt", null));
 
         NoopGrimoireInitialization grimoire = new();
@@ -443,14 +464,12 @@ public sealed class RunCommandTests
         Assert.Equal(0, grimoire.CallCount);
 
         Assert.Equal(0, setup.CallCount);
-
     }
 
     [Fact]
 
     public async Task RunAsync_hands_a_fresh_interactive_installation_to_setup_only()
     {
-
         FakeRunInputReader input = new(SuccessInput("prompt", null));
 
         NoopGrimoireInitialization grimoire = new();
@@ -481,7 +500,6 @@ public sealed class RunCommandTests
         Assert.Equal(0, grimoire.CallCount);
 
         Assert.Null(execution.Request);
-
     }
 
     [Theory]
@@ -497,7 +515,6 @@ public sealed class RunCommandTests
     public async Task RunAsync_gives_setup_guidance_for_fresh_noninteractive_modes(
         string mode)
     {
-
         FakeRunInputReader input = new(SuccessInput("prompt", null));
 
         NoopGrimoireInitialization grimoire = new();
@@ -542,7 +559,6 @@ public sealed class RunCommandTests
         Assert.Contains(
             console.Diagnostics,
             static line => line.Contains("arcanum setup", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -554,7 +570,6 @@ public sealed class RunCommandTests
 
     public async Task RunAsync_rejects_a_malformed_attachment_reference_before_startup()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("prompt", null));
 
@@ -584,14 +599,12 @@ public sealed class RunCommandTests
         Assert.Contains(
             console.Diagnostics,
             static diagnostic => diagnostic.Contains("not-a-guid", StringComparison.Ordinal));
-
     }
 
     [Fact]
 
     public async Task RunAsync_new_session_permissively_ignores_an_explicit_continuation_session()
     {
-
         FakeContextResolver resolver = new(
             CliInferenceContextResult.Success(
                 EffectiveContext(null, null, null, null),
@@ -615,7 +628,6 @@ public sealed class RunCommandTests
         Assert.True(resolver.Request.NewSession);
 
         Assert.Null(resolver.Request.Session);
-
     }
 
     /// <summary>
@@ -627,7 +639,6 @@ public sealed class RunCommandTests
 
     public async Task RunAsync_new_session_wins_over_continue_when_there_is_nothing_to_continue()
     {
-
         string contextFilePath = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-tests-cli-context-{Guid.NewGuid():N}.json");
@@ -637,7 +648,6 @@ public sealed class RunCommandTests
 
         try
         {
-
             FakeContextResolver resolver = new(
                 CliInferenceContextResult.Success(
                     EffectiveContext(null, null, null, null),
@@ -662,15 +672,11 @@ public sealed class RunCommandTests
             Assert.True(resolver.Request.NewSession);
 
             Assert.Null(resolver.Request.Session);
-
         }
         finally
         {
-
             File.Delete(contextFilePath);
-
         }
-
     }
 
     /// <summary>
@@ -681,7 +687,6 @@ public sealed class RunCommandTests
 
     public async Task RunAsync_new_session_with_continue_does_not_announce_a_continuation()
     {
-
         RecordingConsole console = new();
 
         RunCommand command = CreateCommand(
@@ -701,14 +706,12 @@ public sealed class RunCommandTests
         Assert.DoesNotContain(
             console.Verbose,
             static line => line.Contains("Continuing session", StringComparison.Ordinal));
-
     }
 
     [Fact]
 
     public async Task RunAsync_writes_a_typed_json_error_for_invalid_input()
     {
-
         RecordingConsole console = new();
 
         RunCommand command = CreateCommand(
@@ -743,14 +746,12 @@ public sealed class RunCommandTests
         Assert.Equal(exitCode, error.ExitCode);
 
         Assert.Contains("too large", error.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Run_parser_collects_repeated_with_values_around_the_positional_prompt()
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -818,14 +819,12 @@ public sealed class RunCommandTests
         Assert.Equal("do this", input.PositionalInstruction);
 
         Assert.NotNull(execution.Request);
-
     }
 
     [Fact]
 
     public async Task Run_parser_preserves_arguments_after_the_option_terminator()
     {
-
         FakeRunInputReader input = new(
             SuccessInput(
                 "explain --configuration Release",
@@ -854,7 +853,6 @@ public sealed class RunCommandTests
             input.PositionalInstruction);
 
         Assert.NotNull(execution.Request);
-
     }
 
     /// <summary>
@@ -874,7 +872,6 @@ public sealed class RunCommandTests
 
     public async Task Run_executes_on_a_machine_that_has_never_completed_setup()
     {
-
         string pristineHome = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-pristine-home-{Guid.NewGuid():N}");
@@ -892,7 +889,6 @@ public sealed class RunCommandTests
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
             global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
@@ -918,11 +914,9 @@ public sealed class RunCommandTests
             Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
             Assert.NotNull(execution.Request);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(
                 "ARCANUM_TEST_HOME",
                 originalTestHome);
@@ -937,19 +931,13 @@ public sealed class RunCommandTests
 
             try
             {
-
                 Directory.Delete(pristineHome, recursive: true);
-
             }
             catch (IOException)
             {
-
                 // Best-effort cleanup of a temporary profile root.
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -963,7 +951,6 @@ public sealed class RunCommandTests
 
     public async Task Run_parser_refuses_a_mistyped_option_rather_than_prompting_with_it()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("Rewrite every file under src", null));
 
@@ -988,7 +975,6 @@ public sealed class RunCommandTests
         Assert.Contains("--dry-run", result.Error, StringComparison.Ordinal);
 
         Assert.Null(execution.Request);
-
     }
 
     /// <summary>
@@ -999,7 +985,6 @@ public sealed class RunCommandTests
 
     public async Task Run_parser_refuses_an_unknown_option_beside_a_valid_one()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("hi", null));
 
@@ -1023,7 +1008,6 @@ public sealed class RunCommandTests
         Assert.Contains("--bogusflag", result.Error, StringComparison.Ordinal);
 
         Assert.Null(execution.Request);
-
     }
 
     /// <summary>
@@ -1034,7 +1018,6 @@ public sealed class RunCommandTests
 
     public async Task Run_parser_writes_typed_json_when_it_refuses_a_mistyped_option()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("hi", null));
 
@@ -1061,7 +1044,6 @@ public sealed class RunCommandTests
         Assert.Contains("--dryrun", error.Error, StringComparison.Ordinal);
 
         Assert.Null(execution.Request);
-
     }
 
     /// <summary>
@@ -1072,7 +1054,6 @@ public sealed class RunCommandTests
 
     public async Task Run_parser_accepts_dash_led_prompt_text_after_the_option_terminator()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("--dryrun is the typo", null));
 
@@ -1098,7 +1079,6 @@ public sealed class RunCommandTests
         Assert.Equal("--dryrun is the typo", input.PositionalInstruction);
 
         Assert.NotNull(execution.Request);
-
     }
 
     /// <summary>
@@ -1109,7 +1089,6 @@ public sealed class RunCommandTests
 
     public async Task Run_parser_accepts_a_prompt_that_opens_with_a_negative_number()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("-40 degrees in Fahrenheit?", null));
 
@@ -1132,14 +1111,12 @@ public sealed class RunCommandTests
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.NotNull(execution.Request);
-
     }
 
     [Fact]
 
     public async Task Run_parser_stop_option_does_not_consume_the_positional_prompt()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("explain this", null));
 
@@ -1167,14 +1144,12 @@ public sealed class RunCommandTests
             execution.Request);
 
         Assert.Equal(["END"], request.Options.Stop);
-
     }
 
     [Fact]
 
     public async Task Run_parser_writes_typed_json_for_invalid_inference_flags()
     {
-
         FakeRunInputReader input = new(
             SuccessInput("explain this", null));
 
@@ -1201,14 +1176,12 @@ public sealed class RunCommandTests
         Assert.Contains("--temperature", error.Error, StringComparison.Ordinal);
 
         Assert.Contains("--temperature", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public async Task RunExecutionDispatcher_treats_cancelled_spell_selection_as_a_clean_exit()
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -1237,7 +1210,6 @@ public sealed class RunCommandTests
             CancellationToken.None);
 
         Assert.Equal((int)CliExitCode.Success, exitCode);
-
     }
 
     [Theory]
@@ -1249,7 +1221,6 @@ public sealed class RunCommandTests
     public async Task Run_production_agent_and_spell_routes_send_the_complete_turn_to_ping_stream(
         string? spell)
     {
-
         Guid campaignId = Guid.NewGuid();
 
         Guid sessionId = Guid.NewGuid();
@@ -1312,6 +1283,10 @@ public sealed class RunCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         services.RemoveAll<IApiKeyDigestCache>();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
@@ -1341,11 +1316,9 @@ public sealed class RunCommandTests
 
         if (spell is not null)
         {
-
             arguments.Add("--spell");
 
             arguments.Add(spell);
-
         }
 
         CliTestResult result = await CliTestHarness.RunAsync(
@@ -1386,14 +1359,12 @@ public sealed class RunCommandTests
                 ? null
                 : "Review Changes",
             ping.OverrideSpellName);
-
     }
 
     [Fact]
 
     public async Task RunExecutionDispatcher_research_route_forwards_context_and_inference_without_dropped_input()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         ResearchCaptureHandler handler = new();
@@ -1413,7 +1384,6 @@ public sealed class RunCommandTests
 
         RunCommandRequest options = Request(research: true) with
         {
-
             Temperature = "0.4",
 
             TopP = "0.8",
@@ -1425,7 +1395,6 @@ public sealed class RunCommandTests
             CostBudget = 0.75m,
 
             Unattended = true,
-
         };
 
         int exitCode = await dispatcher.ExecuteAsync(
@@ -1478,14 +1447,12 @@ public sealed class RunCommandTests
         Assert.Equal(
             "image/png",
             Assert.Single(request.ScryingFoci!).MimeType);
-
     }
 
     [Fact]
 
     public async Task RunExecutionDispatcher_research_dry_run_calls_only_read_only_context_preview()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         PreviewCaptureHandler handler = new();
@@ -1529,13 +1496,11 @@ public sealed class RunCommandTests
             dryRun: true,
             newSession: true) with
         {
-
             ShowContent = true,
 
             TokenBudget = 1_750,
 
             Temperature = "0.3",
-
         };
 
         int exitCode = await dispatcher.ExecuteAsync(
@@ -1587,7 +1552,6 @@ public sealed class RunCommandTests
         Assert.Equal("preview context", Assert.Single(request.AttachedFiles!).Content);
 
         Assert.Equal("image/png", Assert.Single(request.ScryingFoci!).MimeType);
-
     }
 
     [Theory]
@@ -1600,7 +1564,6 @@ public sealed class RunCommandTests
         int sourceTarget,
         int tokenBudget)
     {
-
         PreviewCaptureHandler handler = new();
 
         RecordingConsole console = new();
@@ -1634,11 +1597,9 @@ public sealed class RunCommandTests
             research: true,
             dryRun: true) with
         {
-
             SourceTarget = sourceTarget,
 
             TokenBudget = tokenBudget,
-
         };
 
         int exitCode = await dispatcher.ExecuteAsync(
@@ -1660,14 +1621,12 @@ public sealed class RunCommandTests
             static diagnostic => diagnostic.Contains(
                 "positive source target",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
 
     public async Task RunExecutionDispatcher_research_dry_run_rejects_negative_cost_before_preview()
     {
-
         PreviewCaptureHandler handler = new();
 
         ServiceCollection services = new();
@@ -1695,9 +1654,7 @@ public sealed class RunCommandTests
             research: true,
             dryRun: true) with
         {
-
             CostBudget = -0.01m,
-
         };
 
         int exitCode = await dispatcher.ExecuteAsync(
@@ -1713,14 +1670,12 @@ public sealed class RunCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
 
         Assert.Empty(handler.RequestPaths);
-
     }
 
     private static void ReplaceApiTransport(
         ServiceCollection services,
         HttpMessageHandler handler)
     {
-
         services.RemoveAll<IHttpClientFactory>();
 
         services.AddSingleton<IHttpClientFactory>(
@@ -1730,10 +1685,13 @@ public sealed class RunCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore());
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         services.RemoveAll<IApiKeyDigestCache>();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
-
     }
 
     private static ServiceCollection ConfigureRunParserServices(
@@ -1742,7 +1700,6 @@ public sealed class RunCommandTests
         FakeRunExecutionDispatcher? execution = null,
         FakeContextResolver? resolver = null)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -1782,7 +1739,6 @@ public sealed class RunCommandTests
             new NoopServeLauncher());
 
         return services;
-
     }
 
     private static RunCommand CreateCommand(
@@ -1791,7 +1747,7 @@ public sealed class RunCommandTests
         FakeRunInputReader? input = null,
         FakeRunExecutionDispatcher? execution = null,
         FakeContextResolver? resolver = null,
-        NoopServeLauncher? serve = null,
+        IArcanumServeLauncher? serve = null,
         RecordingConsole? console = null,
         Guid? lastSessionId = null,
         string? contextFilePath = null,
@@ -1829,7 +1785,6 @@ public sealed class RunCommandTests
         Guid? sessionId,
         string? filePath = null) : ICliContextStore
     {
-
         private CliContextDocument _document =
             CliContextDocument.Empty with { SessionId = sessionId };
 
@@ -1839,12 +1794,10 @@ public sealed class RunCommandTests
         public CliContextDocument Load() => _document;
 
         public void Save(CliContextDocument document) => _document = document;
-
     }
 
     private static ServiceProvider CliServices()
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -1852,7 +1805,6 @@ public sealed class RunCommandTests
             new ConfigurationManager());
 
         return services.BuildServiceProvider();
-
     }
 
     private static Command FindRun(RootCommand root) =>
@@ -1867,9 +1819,7 @@ public sealed class RunCommandTests
             tokens,
             new ParserConfiguration
             {
-
                 ResponseFileTokenReplacer = null,
-
             });
 
     private static RunCommandRequest Request(
@@ -1961,7 +1911,6 @@ public sealed class RunCommandTests
     private sealed class FakeRunInputReader(
         RunInputReadResult result) : IRunInputReader
     {
-
         public RunInputReadResult Result { get; } = result;
 
         public string? PositionalInstruction { get; private set; }
@@ -1971,23 +1920,19 @@ public sealed class RunCommandTests
             CancellationToken cancellationToken,
             bool hasExplicitFileContext = false)
         {
-
             PositionalInstruction = positionalInstruction;
 
             HasExplicitFileContext = hasExplicitFileContext;
 
             return Task.FromResult(Result);
-
         }
 
         public bool HasExplicitFileContext { get; private set; }
-
     }
 
     private sealed class FakeRunAttachmentStager(
         RunAttachmentStageResult result) : IRunAttachmentStager
     {
-
         public IReadOnlyList<string>? WithValues { get; private set; }
 
         public string? WorkingDirectory { get; private set; }
@@ -2000,7 +1945,6 @@ public sealed class RunCommandTests
             string? pipedContent,
             CancellationToken cancellationToken)
         {
-
             WithValues = withValues;
 
             WorkingDirectory = workingDirectory;
@@ -2008,15 +1952,12 @@ public sealed class RunCommandTests
             PipedContent = pipedContent;
 
             return Task.FromResult(result);
-
         }
-
     }
 
     private sealed class FakeContextResolver(
         CliInferenceContextResult result) : ICliInferenceContextResolver
     {
-
         public CliInferenceContextRequest? Request { get; private set; }
 
         public int CallCount { get; private set; }
@@ -2025,51 +1966,41 @@ public sealed class RunCommandTests
             CliInferenceContextRequest request,
             CancellationToken cancellationToken)
         {
-
             CallCount++;
 
             Request = request;
 
             return Task.FromResult(result);
-
         }
-
     }
 
     private sealed class FakeRunExecutionDispatcher : IRunExecutionDispatcher
     {
-
         public RunExecutionRequest? Request { get; private set; }
 
         public Task<int> ExecuteAsync(
             RunExecutionRequest request,
             CancellationToken cancellationToken)
         {
-
             Request = request;
 
             return Task.FromResult(0);
-
         }
-
     }
 
     private sealed class NoopGrimoireInitialization :
         IGrimoireCliInitialization,
         IServiceProvider
     {
-
         public int CallCount { get; private set; }
 
         public Task<T> RunExclusiveAsync<T>(
             Func<IServiceProvider, CancellationToken, Task<T>> operation,
             CancellationToken cancellationToken)
         {
-
             CallCount++;
 
             return operation(this, cancellationToken);
-
         }
 
         public Task<T> RunExclusiveWithBootstrapAsync<T>(
@@ -2078,18 +2009,15 @@ public sealed class RunCommandTests
             RunExclusiveAsync(operation, cancellationToken);
 
         public object? GetService(Type serviceType) => null;
-
     }
 
     private sealed class NoopServeLauncher : IArcanumServeLauncher
     {
-
         public int CallCount { get; private set; }
 
         public Task<ServeLaunchResult> EnsureRunningAsync(
             CancellationToken cancellationToken)
         {
-
             CallCount++;
 
             return Task.FromResult(
@@ -2099,58 +2027,59 @@ public sealed class RunCommandTests
                     TimeSpan.Zero,
                     null,
                     null));
-
         }
+    }
 
+    private sealed class FixedServeLauncher(ServeLaunchResult result)
+        : IArcanumServeLauncher
+    {
+        public Task<ServeLaunchResult> EnsureRunningAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(result);
+        }
     }
 
     private sealed class FakeStartupProbe(
         ActiveInstallationReset? active,
         bool fresh) : IInstallationStartupProbe
     {
-
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<ActiveInstallationReset?>.Success(active));
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(fresh);
-
     }
 
     private sealed class FakeSetupCommand(
         int exitCode = (int)CliExitCode.Success) : ISetupCommand
     {
-
         public int CallCount { get; private set; }
 
         public Task<int> RunAsync(
             SetupCommandOptions options,
             CancellationToken cancellationToken)
         {
-
             CallCount++;
 
             return Task.FromResult(exitCode);
-
         }
-
     }
 
     private sealed class FakeCliEnvironment(bool interactive) : ICliEnvironment
     {
-
         public bool IsInteractive => interactive;
 
         public bool ColorEnabled => interactive;
 
         public bool ShouldShowManaBar => false;
-
     }
 
     private sealed class RecordingConsole : IConsoleDispatcher
     {
-
         public List<string> Diagnostics { get; } = [];
 
         public List<string> Verbose { get; } = [];
@@ -2159,7 +2088,6 @@ public sealed class RunCommandTests
 
         public void WritePayload(string value)
         {
-
         }
 
         public void WriteDiagnostic(string value) =>
@@ -2172,9 +2100,7 @@ public sealed class RunCommandTests
             T value,
             JsonTypeInfo<T> typeInfo)
         {
-
             JsonValues.Add(value!);
-
         }
 
         public void WriteJson(JsonElement value) =>
@@ -2182,15 +2108,12 @@ public sealed class RunCommandTests
 
         public void BeginJsonStream()
         {
-
         }
-
     }
 
     private sealed class FakeResourceCatalog(
         ResourceSelectionResult<SpellSummary> spellResult) : ICliResourceCatalog
     {
-
         public string? SpellIdentifier { get; private set; }
 
         public string? SpellWorkspace { get; private set; }
@@ -2226,13 +2149,11 @@ public sealed class RunCommandTests
             string? workspace,
             CancellationToken cancellationToken)
         {
-
             SpellIdentifier = identifier;
 
             SpellWorkspace = workspace;
 
             return Task.FromResult(spellResult);
-
         }
 
         public Task<ResourceSelectionResult<ApprenticeSummaryDto>> SelectApprenticeAsync(
@@ -2254,28 +2175,22 @@ public sealed class RunCommandTests
             string? identifier,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001"),
 
                 Timeout = Timeout.InfiniteTimeSpan,
-
             };
-
     }
 
     private sealed class CapturingNdjsonHandler : HttpMessageHandler
     {
-
         public string? RequestPath { get; private set; }
 
         public string Body { get; private set; } = string.Empty;
@@ -2284,7 +2199,6 @@ public sealed class RunCommandTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             RequestPath = request.RequestUri?.AbsolutePath;
 
             Body = request.Content is null
@@ -2298,7 +2212,6 @@ public sealed class RunCommandTests
                     "/api/perception/chronosync",
                     StringComparison.Ordinal))
             {
-
                 byte[] response = JsonSerializer.SerializeToUtf8Bytes(
                     new ApiResponse<ChronosyncReport>(
                         new ChronosyncReport(null, [], [], false),
@@ -2308,18 +2221,14 @@ public sealed class RunCommandTests
 
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-
                     Content = new ByteArrayContent(response),
-
                 };
-
             }
 
             string ndjson = string.Join(
                 '\n',
                 new[]
                 {
-
                     new IntelligenceEvent(
                         IntelligenceEventType.Token,
                         string.Empty,
@@ -2329,7 +2238,6 @@ public sealed class RunCommandTests
                         IntelligenceEventType.Result,
                         "complete",
                         "complete"),
-
                 }.Select(
                     static frame => JsonSerializer.Serialize(
                         frame,
@@ -2338,21 +2246,16 @@ public sealed class RunCommandTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new StringContent(
                     ndjson,
                     Encoding.UTF8,
                     "application/x-ndjson"),
-
             };
-
         }
-
     }
 
     private sealed class ResearchCaptureHandler : HttpMessageHandler
     {
-
         public string? RequestPath { get; private set; }
 
         public string Body { get; private set; } = string.Empty;
@@ -2361,7 +2264,6 @@ public sealed class RunCommandTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             RequestPath = request.RequestUri?.AbsolutePath;
 
             Body = request.Content is null
@@ -2375,21 +2277,16 @@ public sealed class RunCommandTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new StringContent(
                     ndjson,
                     Encoding.UTF8,
                     "application/x-ndjson"),
-
             };
-
         }
-
     }
 
     private sealed class PreviewCaptureHandler : HttpMessageHandler
     {
-
         public List<string> RequestPaths { get; } = [];
 
         public string Body { get; private set; } = string.Empty;
@@ -2398,7 +2295,6 @@ public sealed class RunCommandTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             RequestPaths.Add(request.RequestUri?.AbsolutePath ?? string.Empty);
 
             Body = request.Content is null
@@ -2416,18 +2312,13 @@ public sealed class RunCommandTests
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = new ByteArrayContent(response),
-
             };
-
         }
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -2443,12 +2334,10 @@ public sealed class RunCommandTests
         public Task SaveGrimoireEncryptionSecretAsync(
             string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeEye : IEyeOfTheWorld
     {
-
         public Task<PatternSnapshot> PerceivePatternAsync(
             string directoryPath,
             CancellationToken cancellationToken) =>
@@ -2457,7 +2346,5 @@ public sealed class RunCommandTests
                     DomainType.Unknown,
                     directoryPath,
                     []));
-
     }
-
 }

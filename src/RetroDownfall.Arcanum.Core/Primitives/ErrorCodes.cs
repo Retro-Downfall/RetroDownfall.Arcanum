@@ -6,11 +6,9 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
-
     /// <summary>Validation — client input rejected before domain work.</summary>
     public static class Validation
     {
-
         public const string InvalidPrompt = "Validation.InvalidPrompt";
 
         public const string AttachedFiles = "Validation.AttachedFiles";
@@ -88,7 +86,6 @@ public static class ErrorCodes
 
         /// <summary>The requested override spell name matches no spell in the catalog.</summary>
         public const string SpellOverride = "Validation.SpellOverride";
-
     }
 
     /// <summary>Hub — intelligence provider / inference pipeline failures.</summary>
@@ -139,13 +136,11 @@ public static class ErrorCodes
         /// claim can be reported but never resumed or replayed.
         /// </summary>
         public const string SessionTurnRestoredInterrupted = "Hub.SessionTurnRestoredInterrupted";
-
     }
 
     /// <summary>Campaign — forge workspace registration and paths.</summary>
     public static class Campaign
     {
-
         public const string NotFound = "Campaign.NotFound";
 
         public const string InvalidPath = "Campaign.InvalidPath";
@@ -176,13 +171,11 @@ public static class ErrorCodes
         /// (§10.12).
         /// </remarks>
         public const string PathIdentityRequired = "Campaign.PathIdentityRequired";
-
     }
 
     /// <summary>Session — grimoire conversation persistence.</summary>
     public static class Session
     {
-
         public const string NotFound = "Session.NotFound";
 
         public const string InvalidStatus = "Session.InvalidStatus";
@@ -226,13 +219,11 @@ public static class ErrorCodes
         /// until an authenticated operator resolves the binding (§10.12).
         /// </summary>
         public const string CampaignBindingRequired = "Session.CampaignBindingRequired";
-
     }
 
     /// <summary>Attachment — standalone session-attachment lifecycle.</summary>
     public static class Attachment
     {
-
         public const string Disabled = "Attachment.Disabled";
 
         public const string InvalidRequest = "Attachment.InvalidRequest";
@@ -250,24 +241,33 @@ public static class ErrorCodes
         public const string TooLarge = "Attachment.TooLarge";
 
         public const string LimitExceeded = "Attachment.LimitExceeded";
-
     }
 
     /// <summary>Grimoire — lore and knowledge store.</summary>
     public static class Grimoire
     {
-
         public const string LoreNotFound = "Grimoire.LoreNotFound";
 
         /// <summary>A durable Grimoire write did not commit. The transaction wrote nothing.</summary>
         public const string WriteFailed = "Grimoire.WriteFailed";
 
+        /// <summary>
+        /// Maintenance owns database admission and the request was refused before it ran. A deliberate,
+        /// temporary refusal the caller should retry, never a product failure.
+        /// </summary>
+        public const string MaintenanceUnavailable = "Grimoire.MaintenanceUnavailable";
+
+        /// <summary>
+        /// A database transformation could not take the database offline because ordinary work would
+        /// not drain in time. Nothing was erased and ordinary admission is open again, so the caller's
+        /// action is to ask once whatever held the database open has finished.
+        /// </summary>
+        public const string WorkDrainTimeout = "Grimoire.WorkDrainTimeout";
     }
 
     /// <summary>Apprentice — autonomous agent orchestration.</summary>
     public static class Apprentice
     {
-
         public const string NotFound = "Apprentice.NotFound";
 
         public const string Disabled = "Apprentice.Disabled";
@@ -297,12 +297,12 @@ public static class ErrorCodes
         public const string ConclaveDisabled = "Apprentice.ConclaveDisabled";
 
         public const string InvalidName = "Apprentice.InvalidName";
-
     }
 
     /// <summary>Workspace — registered filesystem roots.</summary>
     public static class Workspace
     {
+        public const string IndexingUnavailable = "Workspace.IndexingUnavailable";
 
         public const string NotFound = "Workspace.NotFound";
 
@@ -340,13 +340,11 @@ public static class ErrorCodes
 
         public const string ContinuationCheckpointMissing =
             "Workspace.ContinuationCheckpointMissing";
-
     }
 
     /// <summary>Perception — filesystem pattern snapshots.</summary>
     public static class Perception
     {
-
         /// <summary>The requested directory could not be resolved, or does not exist.</summary>
         public const string InvalidPath = "Perception.InvalidPath";
 
@@ -359,13 +357,11 @@ public static class ErrorCodes
         /// probe, so a denied caller cannot use the endpoint as a filesystem existence oracle.
         /// </summary>
         public const string PathNotAllowed = "Perception.PathNotAllowed";
-
     }
 
     /// <summary>Spell — workspace spell files and execution.</summary>
     public static class Spell
     {
-
         public const string NotFound = "Spell.NotFound";
 
         public const string PathNotAllowed = "Spell.PathNotAllowed";
@@ -400,13 +396,11 @@ public static class ErrorCodes
         /// exception detail stays in the server log, so no absolute server path reaches the caller.
         /// </summary>
         public const string WriteFailed = "Spell.WriteFailed";
-
     }
 
     /// <summary>Prompt — named prompt templates.</summary>
     public static class Prompt
     {
-
         public const string NotFound = "Prompt.NotFound";
 
         public const string CodexPathNotContained = "Prompt.CodexPathNotContained";
@@ -418,13 +412,11 @@ public static class ErrorCodes
         public const string InvalidVersion = "Prompt.InvalidVersion";
 
         public const string InvalidRequest = "Prompt.InvalidRequest";
-
     }
 
     /// <summary>Codex — the per-campaign CODEX context document.</summary>
     public static class Codex
     {
-
         /// <summary>The submitted CODEX body exceeds the configured UTF-8 byte ceiling.</summary>
         public const string ContentTooLarge = "Codex.ContentTooLarge";
 
@@ -433,31 +425,25 @@ public static class ErrorCodes
         /// campaign root is frequently an untrusted repository, and a repository can ship that link.
         /// </summary>
         public const string PathNotContained = "Codex.PathNotContained";
-
     }
 
     /// <summary>Intelligence — cross-surface inference helpers.</summary>
     public static class Intelligence
     {
-
         public const string HumanPromptNotFound = "Intelligence.HumanPromptNotFound";
-
     }
 
     /// <summary>StructuredOutput — JSON schema validation and constrained decoding.</summary>
     public static class StructuredOutput
     {
-
         public const string ValidationFailed = "StructuredOutput.ValidationFailed";
 
         public const string SchemaInvalid = "StructuredOutput.SchemaInvalid";
-
     }
 
     /// <summary>Mcp — Model Context Protocol servers and transport.</summary>
     public static class Mcp
     {
-
         public const string AmbiguousServer = "Mcp.AmbiguousServer";
 
         public const string MissingWorkspace = "Mcp.MissingWorkspace";
@@ -487,32 +473,26 @@ public static class ErrorCodes
 
         /// <summary>Diagnostic MCP Invocation: the route exists only on the Development edition.</summary>
         public const string DiagnosticDisabled = "Mcp.DiagnosticDisabled";
-
     }
 
     /// <summary>Daemon — background job orchestration.</summary>
     public static class Daemon
     {
-
         public const string NotFound = "Daemon.NotFound";
 
         /// <summary>Cancellation was requested for an execution that is absent or already terminal.</summary>
         public const string NotRunning = "Daemon.NotRunning";
-
     }
 
     /// <summary>Execution — individual daemon execution records.</summary>
     public static class Execution
     {
-
         public const string NotFound = "Execution.NotFound";
-
     }
 
     /// <summary>Operation — durable long-running operations (<c>/api/operations</c>).</summary>
     public static class Operation
     {
-
         public const string NotFound = "Operation.NotFound";
 
         /// <summary>The <c>state</c> filter named something that is not a durable operation state.</summary>
@@ -523,45 +503,35 @@ public static class ErrorCodes
         /// this transition accepts. The caller can re-read and decide, so it is a conflict, not a fault.
         /// </summary>
         public const string StateConflict = "Operation.StateConflict";
-
     }
 
     /// <summary>CommLink — outbound webhook notifications. Suppressed outcomes are expected, not 5xx.</summary>
     public static class CommLink
     {
-
         public const string Suppressed = "CommLink.Suppressed";
-
     }
 
     /// <summary>Api — HTTP surface and streaming admission.</summary>
     public static class Api
     {
-
         public const string TooManyConnections = "Api.TooManyConnections";
-
     }
 
     /// <summary>RateLimit — request throttling.</summary>
     public static class RateLimit
     {
-
         public const string TooManyRequests = "RateLimit.TooManyRequests";
-
     }
 
     /// <summary>Budget — daily cost spend enforcement.</summary>
     public static class Budget
     {
-
         public const string Exceeded = "Budget.Exceeded";
-
     }
 
     /// <summary>Data lifecycle planning and destructive execution.</summary>
     public static class Data
     {
-
         public const string InvalidRequest = "Data.InvalidRequest";
 
         public const string PlanChanged = "Data.PlanChanged";
@@ -619,23 +589,19 @@ public static class ErrorCodes
         public const string ExternalRemediationRequired = "Data.ExternalRemediationRequired";
 
         public const string ExternalRemediationInvalid = "Data.ExternalRemediationInvalid";
-
     }
 
     /// <summary>Connection — client transport failures.</summary>
     public static class Connection
     {
-
         public const string Timeout = "Connection.Timeout";
 
         public const string Unreachable = "Connection.Unreachable";
-
     }
 
     /// <summary>Auth — request authentication outcomes emitted by the API-key filter (DESIGN §11.3).</summary>
     public static class Auth
     {
-
         /// <summary>
         /// The only 401 the server itself emits: <c>ApiKeyEndpointFilter</c> rejected a missing,
         /// ambiguous, oversized, or non-matching API key. Distinct from
@@ -643,19 +609,30 @@ public static class ErrorCodes
         /// configured and no request was ever sent.
         /// </summary>
         public const string Unauthorized = "Auth.Unauthorized";
-
     }
 
     /// <summary>Security — authentication and outbound URL policy.</summary>
     public static class Security
     {
-
         /// <summary>
         /// Client-synthesized only: the CLI and The Forge emit this when no API key is available
         /// locally, so the request is never sent. The server never returns it — a rejected key
         /// comes back as <see cref="Auth.Unauthorized"/>.
         /// </summary>
         public const string MissingApiKey = "Security.MissingApiKey";
+
+        /// <summary>
+        /// Client-synthesized only: a local API credential exists but secure storage could not
+        /// return a usable value. This is distinct from an absent credential and from a server
+        /// rejecting a readable credential.
+        /// </summary>
+        public const string CredentialUnreadable = "Security.CredentialUnreadable";
+
+        /// <summary>
+        /// Client-synthesized only: the configured local endpoint answered but could not prove it
+        /// was the Arcanum process for this installation. No reusable credential was disclosed.
+        /// </summary>
+        public const string UnverifiedLocalApi = "Security.UnverifiedLocalApi";
 
         public const string BlockedOutboundUrl = "Security.BlockedOutboundUrl";
 
@@ -670,57 +647,47 @@ public static class ErrorCodes
 
         /// <summary>Another process currently owns a live claim for this idempotency key.</summary>
         public const string IdempotencyInProgress = "Security.IdempotencyInProgress";
-
     }
 
     /// <summary>Files — OpenAI-compatible <c>/v1/files</c> upload storage.</summary>
     public static class Files
     {
-
         public const string NotFound = "Files.NotFound";
 
         public const string TooLarge = "Files.TooLarge";
 
         public const string InvalidMimeType = "Files.InvalidMimeType";
-
     }
 
     /// <summary>Batches — OpenAI-compatible <c>/v1/batches</c> asynchronous bulk chat completion.</summary>
     public static class Batches
     {
-
         public const string NotFound = "Batches.NotFound";
 
         public const string InvalidEndpoint = "Batches.InvalidEndpoint";
 
         public const string InputFileNotFound = "Batches.InputFileNotFound";
-
     }
 
     /// <summary>Embeddings — The Weave (embedding substrate) and Divination (semantic search).</summary>
     public static class Embeddings
     {
-
         public const string ProviderUnavailable = "Embeddings.ProviderUnavailable";
 
         public const string FeatureDisabled = "Embeddings.FeatureDisabled";
 
         public const string ConfirmationRequired = "Embeddings.ConfirmationRequired";
-
     }
 
     /// <summary>Provider rows in <c>Arcanum:Providers</c>.</summary>
     public static class Provider
     {
-
         public const string NotFound = "Provider.NotFound";
-
     }
 
     /// <summary>ProvingGrounds — spell/prompt/plan validation trials.</summary>
     public static class ProvingGrounds
     {
-
         public const string InvalidTrial = "ProvingGrounds.InvalidTrial";
 
         public const string WorkspaceNotAllowed = "ProvingGrounds.WorkspaceNotAllowed";
@@ -730,13 +697,11 @@ public static class ErrorCodes
         public const string PromptNotFound = "ProvingGrounds.PromptNotFound";
 
         public const string InferenceFailed = "ProvingGrounds.InferenceFailed";
-
     }
 
     /// <summary>Saga — RAG Phase 4 long-term associative memory.</summary>
     public static class Saga
     {
-
         public const string NotFound = "Saga.NotFound";
 
         public const string NotEmpty = "Saga.NotEmpty";
@@ -762,13 +727,11 @@ public static class ErrorCodes
         /// than leaving this memory's text and its vector disagreeing about what it says.
         /// </summary>
         public const string EmbeddingUnavailable = "Saga.EmbeddingUnavailable";
-
     }
 
     /// <summary>Lexicon — structured agent-directed entity memory (replaces model-facing Lore).</summary>
     public static class Lexicon
     {
-
         public const string InvalidName = "Lexicon.InvalidName";
 
         public const string InvalidFact = "Lexicon.InvalidFact";
@@ -778,13 +741,11 @@ public static class ErrorCodes
         public const string WriteFailed = "Lexicon.WriteFailed";
 
         public const string SearchFailed = "Lexicon.SearchFailed";
-
     }
 
     /// <summary>Scrying — vision/multimodality capability gate and image validation.</summary>
     public static class Scrying
     {
-
         public const string VisionNotSupported = "Scrying.VisionNotSupported";
 
         public const string ImageTooLarge = "Scrying.ImageTooLarge";
@@ -797,13 +758,11 @@ public static class ErrorCodes
         public const string InvalidImageData = "Scrying.InvalidImageData";
 
         public const string FeatureDisabled = "Scrying.FeatureDisabled";
-
     }
 
     /// <summary>Sending — A2A (Agent-to-Agent) protocol interoperability surface for The Conclave.</summary>
     public static class Sending
     {
-
         public const string AgentUnreachable = "Sending.AgentUnreachable";
 
         public const string AgentCardInvalid = "Sending.AgentCardInvalid";
@@ -836,13 +795,11 @@ public static class ErrorCodes
         /// for, or one the outbound URL guard blocked (issue #67).
         /// </summary>
         public const string PushNotificationRejected = "Sending.PushNotificationRejected";
-
     }
 
     /// <summary>WebBrowsing — built-in <c>browse_web</c> tool errors.</summary>
     public static class WebBrowsing
     {
-
         public const string SsrfBlocked = "WebBrowsing.SsrfBlocked";
 
         public const string TooLarge = "WebBrowsing.TooLarge";
@@ -850,13 +807,11 @@ public static class ErrorCodes
         public const string Timeout = "WebBrowsing.Timeout";
 
         public const string InvalidUrl = "WebBrowsing.InvalidUrl";
-
     }
 
     /// <summary>WebResearch — native synthesized search and direct URL-reading failures.</summary>
     public static class WebResearch
     {
-
         public const string MissingCredential = "WebResearch.MissingCredential";
 
         public const string AuthenticationOrCreditsFailed =
@@ -902,25 +857,25 @@ public static class ErrorCodes
         /// result rather than on an HTTP route, so §8.23 gives it no status row.
         /// </summary>
         public const string InternalError = "WebResearch.InternalError";
-
     }
 
     /// <summary>ClientTools — client-supplied tool forwarding errors.</summary>
     public static class ClientTools
     {
-
         public const string Disabled = "ClientTools.Disabled";
 
         public const string TooMany = "ClientTools.TooMany";
 
         public const string InvalidSchema = "ClientTools.InvalidSchema";
 
+        public const string ModelUnsupported = "ClientTools.ModelUnsupported";
+
+        public const string ToolChoiceUnavailable = "ClientTools.ToolChoiceUnavailable";
     }
 
     /// <summary>Guardrails — content filter (PII / toxicity / topic) violations (Tier 3 Phase 4).</summary>
     public static class Guardrails
     {
-
         /// <summary>Personally-identifiable information (email/phone/SSN/credit-card) was detected in the
         /// input and the turn was rejected before inference ran. Distinct from <see cref="Blocked"/> so
         /// callers and operators can distinguish "redact-and-retry" PII from policy blocks.</summary>
@@ -928,26 +883,21 @@ public static class ErrorCodes
 
         /// <summary>A toxicity-blocklist hit or an allowed/blocked-topic rule matched, rejecting the turn.</summary>
         public const string Blocked = "Guardrails.Blocked";
-
     }
 
     /// <summary>Ward — tool-call audit records and retained active-record compatibility.</summary>
     public static class Ward
     {
-
         public const string NotFound = "Ward.NotFound";
 
         public const string AlreadyResolved = "Ward.AlreadyResolved";
-
     }
 
     /// <summary>Sanctum — tool execution containment policy.</summary>
     public static class Sanctum
     {
-
         /// <summary>The submitted Sanctum configuration is internally inconsistent.</summary>
         public const string InvalidConfig = "Sanctum.InvalidConfig";
-
     }
 
     /// <summary>
@@ -961,7 +911,6 @@ public static class ErrorCodes
     /// </remarks>
     public static class Covenant
     {
-
         /// <summary>A Covenant tier is absent, damaged, closed, or otherwise not open for this work.</summary>
         public const string Unavailable = "Covenant.Unavailable";
 
@@ -1094,7 +1043,5 @@ public static class ErrorCodes
         /// permitting a mutation between advertisement and dispatch (§10.14).
         /// </remarks>
         public const string IneligibleTurn = "Covenant.IneligibleTurn";
-
     }
-
 }

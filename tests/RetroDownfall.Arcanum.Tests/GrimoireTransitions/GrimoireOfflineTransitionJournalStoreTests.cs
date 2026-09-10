@@ -2793,14 +2793,7 @@ public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 
         File.WriteAllBytes(path, bytes);
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
-        }
+        Assert.True(SecureFilePermissions.TryApplyOwnerOnlyFileStrict(path, logFailure: false));
 
     }
 

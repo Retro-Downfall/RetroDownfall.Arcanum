@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record FeatureSettings
 {
-
     public bool EnterpriseTelemetry { get; set; }
 
     public bool ScalarUi { get; set; }
@@ -133,7 +132,6 @@ public sealed record FeatureSettings
     /// ignore an explicit opt-out while <c>arcanum.json</c> said otherwise.</para>
     /// </remarks>
     public bool Annals { get; set; } = true;
-
 }
 
 /// <summary>
@@ -141,7 +139,6 @@ public sealed record FeatureSettings
 /// </summary>
 public sealed record IntegrationSettings
 {
-
     public A2AIntegrationSettings A2A { get; set; } = new();
 
     public CommLinkIntegrationSettings CommLink { get; set; } = new();
@@ -153,12 +150,10 @@ public sealed record IntegrationSettings
     public WebResearchIntegrationSettings WebResearch { get; set; } = new();
 
     public WorkspaceCheckIntegrationSettings WorkspaceChecks { get; set; } = new();
-
 }
 
 public sealed record A2AIntegrationSettings
 {
-
     public string ServerPath { get; set; } = "/api/conclave/a2a";
 
     public string? AgentCardName { get; set; }
@@ -214,7 +209,6 @@ public sealed record A2AIntegrationSettings
     /// <see cref="ServerPath"/>.
     /// </summary>
     public string PushCallbackBaseUrl { get; set; } = string.Empty;
-
 }
 
 /// <summary>
@@ -227,7 +221,6 @@ public sealed record A2AIntegrationSettings
 /// </remarks>
 public sealed record A2ASkillSettings
 {
-
     /// <summary>Stable identifier peers match on. Required; a skill without one is ignored.</summary>
     public string? Id { get; set; }
 
@@ -238,12 +231,10 @@ public sealed record A2ASkillSettings
     public string[] InputModes { get; set; } = [];
 
     public string[] OutputModes { get; set; } = [];
-
 }
 
 public sealed record CommLinkIntegrationSettings
 {
-
     /// <summary>
     /// Optional exact environment-variable name containing the secret-bearing webhook URL.
     /// When omitted, dispatch uses <c>ARCANUM_COMMLINK_WEBHOOK_URL</c>.
@@ -253,12 +244,10 @@ public sealed record CommLinkIntegrationSettings
     public string[] AllowedSchemes { get; set; } = ["https"];
 
     public string[] AllowedHosts { get; set; } = [];
-
 }
 
 public sealed record EmbeddingIntegrationSettings
 {
-
     public string? Provider { get; set; }
 
     public string? Model { get; set; }
@@ -270,7 +259,6 @@ public sealed record EmbeddingIntegrationSettings
     /// code-owned mechanics — see <see cref="TapestryEmbeddingSettings"/>.
     /// </summary>
     public TapestryIntegrationSettings Tapestry { get; set; } = new();
-
 }
 
 /// <summary>
@@ -279,7 +267,6 @@ public sealed record EmbeddingIntegrationSettings
 /// </summary>
 public sealed record TapestryIntegrationSettings
 {
-
     /// <summary>
     /// <c>CollapsedTree</c> (default) searches leaf and summary nodes as one pool;
     /// <c>TreeTraversal</c> descends level by level from the terminal layer.
@@ -291,14 +278,13 @@ public sealed record TapestryIntegrationSettings
     /// <c>Arcanum:DefaultModel</c>.
     /// </summary>
     public string? SummaryModel { get; set; }
-
 }
 
 public sealed record McpIntegrationSettings
 {
+    public bool BootstrapBlocksStartup { get; set; } = true;
 
     public string[] AllowedHttpHosts { get; set; } = [];
-
 }
 
 public sealed record WebResearchIntegrationSettings
@@ -321,12 +307,10 @@ public sealed record WebResearchIntegrationSettings
 
 public sealed record WorkspaceCheckIntegrationSettings
 {
-
     public WorkspaceCheckExecutableCatalogSettings ExecutableCatalog { get; set; } = new();
 
     public Dictionary<string, WorkspaceCheckProfileSettings> CustomProfiles { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
-
 }
 
 /// <summary>
@@ -334,7 +318,6 @@ public sealed record WorkspaceCheckIntegrationSettings
 /// </summary>
 public sealed record ExecutionSettings
 {
-
     public int MaxConcurrentApprentices { get; set; } = 5;
 
     public int MaxConcurrentApprenticeBranches { get; set; } = 3;
@@ -348,7 +331,6 @@ public sealed record ExecutionSettings
     public int MaxConcurrentBatches { get; set; } = 3;
 
     public int MaxConcurrentRequestsPerBatch { get; set; } = 1;
-
 }
 
 /// <summary>
@@ -356,43 +338,34 @@ public sealed record ExecutionSettings
 /// </summary>
 public sealed record CostSettings
 {
-
     public PricingSettings Pricing { get; set; } = new();
 
     public BudgetPolicySettings Budget { get; set; } = new();
-
 }
 
 public sealed record BudgetPolicySettings
 {
-
     public bool Enabled { get; set; }
 
     public decimal DailyLimitUsd { get; set; }
-
 }
 
 public sealed record HostAuditPolicySettings
 {
-
     public bool Enabled { get; set; }
 
     public bool RedactToolArguments { get; set; } = true;
-
 }
 
 public sealed record WardPolicySettings
 {
-
     public List<string> ForbiddenArts { get; set; } = [];
 
     public bool UnattendedMode { get; set; }
-
 }
 
 public sealed record GuardrailsPolicySettings
 {
-
     public bool DetectPii { get; set; } = true;
 
     public bool BlockToxicity { get; set; }
@@ -404,12 +377,9 @@ public sealed record GuardrailsPolicySettings
     public string[] BlockedTopics { get; set; } = [];
 
     public GuardrailsAuditPolicySettings AuditLog { get; set; } = new();
-
 }
 
 public sealed record GuardrailsAuditPolicySettings
 {
-
     public bool Enabled { get; set; }
-
 }

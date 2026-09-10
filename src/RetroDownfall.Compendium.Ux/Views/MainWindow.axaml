@@ -5,6 +5,7 @@
         xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
         x:Class="RetroDownfall.Compendium.Ux.Views.MainWindow"
         x:DataType="vm:ConfigurationViewModel"
+        Icon="/Assets/compendium.ico"
         Title="Compendium"
         Width="1100"
         Height="720"

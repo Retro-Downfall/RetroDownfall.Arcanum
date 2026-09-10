@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 
@@ -18,7 +19,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 /// </summary>
 internal static class DurableOperationCounts
 {
-
     internal const string Table = "LongRunningOperations";
 
     internal readonly record struct Snapshot(
@@ -34,7 +34,6 @@ internal static class DurableOperationCounts
         DateTimeOffset utcNow,
         CancellationToken cancellationToken)
     {
-
         long reconciliation = 0;
 
         long failed = 0;
@@ -45,7 +44,6 @@ internal static class DurableOperationCounts
 
         await using (SqliteCommand states = connection.CreateCommand())
         {
-
             states.CommandText = $"SELECT \"State\", count(*) FROM \"{Table}\" GROUP BY \"State\";";
 
             await using SqliteDataReader reader =
@@ -53,14 +51,12 @@ internal static class DurableOperationCounts
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 LongRunningOperationState state = (LongRunningOperationState)reader.GetInt32(0);
 
                 long count = reader.GetInt64(1);
 
                 switch (state)
                 {
-
                     case LongRunningOperationState.ReconciliationRequired:
                         reconciliation += count;
                         break;
@@ -81,11 +77,8 @@ internal static class DurableOperationCounts
 
                     default:
                         break;
-
                 }
-
             }
-
         }
 
         long expired = 0;
@@ -94,14 +87,13 @@ internal static class DurableOperationCounts
 
         await using (SqliteCommand leases = connection.CreateCommand())
         {
-
             // Lease expiry is stored as a round-trip timestamp string, so it is compared as one.
             leases.CommandText =
                 $"SELECT \"Kind\", count(*) FROM \"{Table}\" "
                 + "WHERE \"LeaseExpiresAt\" IS NOT NULL AND \"LeaseExpiresAt\" < $now "
                 + "AND \"State\" IN ($pending, $running, $waiting, $cancelling) GROUP BY \"Kind\";";
 
-            _ = leases.Parameters.AddWithValue("$now", utcNow.UtcDateTime.ToString("O"));
+            _ = leases.Parameters.AddWithValue("$now", UtcInstantText.Format(utcNow));
 
             _ = leases.Parameters.AddWithValue("$pending", (int)LongRunningOperationState.Pending);
 
@@ -116,19 +108,14 @@ internal static class DurableOperationCounts
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 kinds.Add(reader.GetString(0));
 
                 expired += reader.GetInt64(1);
-
             }
-
         }
 
         return new Snapshot(reconciliation, failed, abandoned, active, expired, kinds);
-
     }
-
 }
 
 /// <summary>
@@ -142,7 +129,6 @@ internal static class DurableOperationCounts
 /// </summary>
 public sealed class DurableOperationRepairCheck(ISecretStore secretStore) : IDoctorCheck
 {
-
     public const string CheckId = "operations.awaiting_repair";
 
     public string Id => CheckId;
@@ -155,17 +141,14 @@ public sealed class DurableOperationRepairCheck(ISecretStore secretStore) : IDoc
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         await using GrimoireProbe.OpenResult opened =
             await GrimoireProbe.OpenReadOnlyAsync(secretStore, cancellationToken).ConfigureAwait(false);
 
         if (opened.State != GrimoireProbe.OpenState.Opened)
         {
-
             return GrimoireProbe.DescribeUnreadable(
                 opened,
                 "so no durable operation can be recorded");
-
         }
 
         DurableOperationCounts.Snapshot snapshot = await DurableOperationCounts
@@ -174,13 +157,11 @@ public sealed class DurableOperationRepairCheck(ISecretStore secretStore) : IDoc
 
         if (snapshot.ReconciliationRequired == 0 && snapshot.Failed == 0 && snapshot.Abandoned == 0)
         {
-
             return new DoctorFinding(
                 DoctorOutcome.Healthy,
                 snapshot.Active == 0
                     ? "No durable operation needs attention."
                     : $"{snapshot.Active} durable operation(s) are in flight and none needs attention.");
-
         }
 
         return new DoctorFinding(
@@ -194,9 +175,7 @@ public sealed class DurableOperationRepairCheck(ISecretStore secretStore) : IDoc
                     DoctorRemedyCommands.OperationListNeedingRepair,
                     "List what needs a human, then run 'arcanum operation reconcile' with the host running."),
             ]);
-
     }
-
 }
 
 /// <summary>
@@ -207,7 +186,6 @@ public sealed class DurableOperationRepairCheck(ISecretStore secretStore) : IDoc
 /// </summary>
 public sealed class StaleOperationLeaseCheck(ISecretStore secretStore) : IDoctorCheck
 {
-
     public const string CheckId = "operations.stale_leases";
 
     public string Id => CheckId;
@@ -220,15 +198,12 @@ public sealed class StaleOperationLeaseCheck(ISecretStore secretStore) : IDoctor
 
     public async Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         await using GrimoireProbe.OpenResult opened =
             await GrimoireProbe.OpenReadOnlyAsync(secretStore, cancellationToken).ConfigureAwait(false);
 
         if (opened.State != GrimoireProbe.OpenState.Opened)
         {
-
             return GrimoireProbe.DescribeUnreadable(opened, "so no operation lease can be recorded");
-
         }
 
         DurableOperationCounts.Snapshot snapshot = await DurableOperationCounts
@@ -237,9 +212,7 @@ public sealed class StaleOperationLeaseCheck(ISecretStore secretStore) : IDoctor
 
         if (snapshot.ExpiredLeases == 0)
         {
-
             return new DoctorFinding(DoctorOutcome.Healthy, "No operation lease has expired.");
-
         }
 
         // Kinds only — an operation id identifies a specific piece of user work and has no place in
@@ -256,7 +229,5 @@ public sealed class StaleOperationLeaseCheck(ISecretStore secretStore) : IDoctor
                     DoctorRemedyCommands.OperationList,
                     "Start the host to reclaim expired leases, then review anything still stuck."),
             ]);
-
     }
-
 }

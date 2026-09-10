@@ -24,23 +24,23 @@ using Spectre.Console;
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 [ExcludeFromCodeCoverage] // Reason: long-running Kestrel host entrypoint; config readers are covered via internal static unit tests.
-public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient apiClient)
+public sealed class ServeCommand(
+    IThemePalette themePalette,
+    ArcanumApiClient apiClient,
+    ISecureStorageNotice secureStorageNotice)
 {
-
     /// <summary>
     /// Stops the running Arcanum host from anywhere (asks the API to shut itself down; requires the
     /// master API key like every other /api verb).
     /// </summary>
     public async Task<int> Quit(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         Result<bool> result = await apiClient.QuitServerAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(
@@ -48,14 +48,12 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
                         + "If no host is running there is nothing to stop.")));
 
             return 1;
-
         }
 
         AnsiConsole.MarkupLine(
             themePalette.HighlightMarkup(Markup.Escape("Arcanum host shutdown requested.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -64,19 +62,15 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
     /// </summary>
     internal int? EnforceListenAnyPolicy(bool requiresInteractiveConfirmation)
     {
-
         if (!requiresInteractiveConfirmation)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
 
             return null;
-
         }
 
         if (!AnsiConsole.Console.Profile.Capabilities.Interactive)
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape(
@@ -86,24 +80,20 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
             // failure (exit 2), not a generic runtime error — see the exit-code table in
             // docs/Arcanum.Command.Reference.md.
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
 
         if (!AnsiConsole.Confirm(ListenAnySecurityPolicy.InteractiveConfirmPrompt, defaultValue: false))
         {
-
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
                     Markup.Escape("Aborted. Set Arcanum:Host:ListenAny to false or unset ARCANUM_HOST_ANY to use loopback only.")));
 
             return (int)CliExitCode.GenericError;
-
         }
 
         return null;
-
     }
 
     /// <summary>
@@ -112,7 +102,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
     /// </summary>
     public async Task<int> Run(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         ConfigurationManager probeConfig = new();
@@ -126,7 +115,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
         if (configuredListenAny)
         {
-
             bool requiresInteractiveConfirmation =
                 ListenAnySecurityPolicy.RequiresInteractiveConfirmation(
                     ReadConfiguredListenAny(probeConfig));
@@ -135,24 +123,19 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
             if (refusal is not null)
             {
-
                 return refusal.Value;
-
             }
 
             persistListenAnyAcknowledgement = requiresInteractiveConfirmation;
-
         }
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
         TaskScheduler.UnobservedTaskException += static (_, e) =>
         {
-
             Log.Error(e.Exception, "Unobserved task exception.");
 
             e.SetObserved();
-
         };
 
         builder.Host.UseWindowsService(options => options.ServiceName = "ArcanumDaemon");
@@ -175,51 +158,18 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
         bool autoLaunched = IsAutoLaunched();
 
+        if (autoLaunched || persistListenAnyAcknowledgement)
+        {
+            builder.Services.AddSingleton<IGrimoirePostTopologyStartupAction>(
+                new ServePostTopologyStartupAction(
+                    autoLaunched,
+                    persistListenAnyAcknowledgement));
+        }
+
         WebApplication app = builder.Build();
 
         GrimoireDatabaseHostedService databaseHost = app.Services
             .GetRequiredService<GrimoireDatabaseHostedService>();
-
-        if (autoLaunched || persistListenAnyAcknowledgement)
-        {
-
-            databaseHost.ConfigurePostTopologyStartupAction(() =>
-            {
-
-                IDisposable? consoleRedirection = null;
-
-                try
-                {
-
-                    if (autoLaunched)
-                    {
-
-                        consoleRedirection = RedirectConsoleToBootstrapLog();
-
-                    }
-
-                    if (persistListenAnyAcknowledgement)
-                    {
-
-                        ListenAnySecurityPolicy.PersistAcknowledgement();
-
-                    }
-
-                    return consoleRedirection;
-
-                }
-                catch
-                {
-
-                    consoleRedirection?.Dispose();
-
-                    throw;
-
-                }
-
-            });
-
-        }
 
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(builder.Configuration));
 
@@ -256,13 +206,19 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
 
         try
         {
+            if (!autoLaunched)
+            {
+                secureStorageNotice.ExplainBeforeHostBootstrap();
+            }
+
             await app.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            secureStorageNotice.MarkHostBootstrapCompleted();
 
             string? newApiKey = databaseHost.TakeGeneratedMasterApiKey();
 
             if (newApiKey is not null)
             {
-
                 if (autoLaunched)
                 {
                     AnsiConsole.MarkupLine(
@@ -279,7 +235,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
                         themePalette.HighlightMarkup(
                             Markup.Escape("New Master API Key generated and secured. Save this key — it will not be shown again.")));
                 }
-
             }
 
             IGrimoireDbReadiness readiness = app.Services.GetRequiredService<IGrimoireDbReadiness>();
@@ -415,22 +370,50 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
             writer);
     }
 
+    private sealed class ServePostTopologyStartupAction(
+        bool autoLaunched,
+        bool persistListenAnyAcknowledgement)
+        : IGrimoirePostTopologyStartupAction
+    {
+        public IDisposable? Activate()
+        {
+            IDisposable? consoleRedirection = null;
+
+            try
+            {
+                if (autoLaunched)
+                {
+                    consoleRedirection = RedirectConsoleToBootstrapLog();
+                }
+
+                if (persistListenAnyAcknowledgement)
+                {
+                    ListenAnySecurityPolicy.PersistAcknowledgement();
+                }
+
+                return consoleRedirection;
+            }
+            catch
+            {
+                consoleRedirection?.Dispose();
+
+                throw;
+            }
+        }
+    }
+
     private sealed class ConsoleRedirectionLease(
         TextWriter previousOut,
         TextWriter previousError,
         StreamWriter writer) : IDisposable
     {
-
         private int _disposed;
 
         public void Dispose()
         {
-
             if (Interlocked.Exchange(ref _disposed, 1) == 1)
             {
-
                 return;
-
             }
 
             Console.SetOut(previousOut);
@@ -438,9 +421,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
             Console.SetError(previousError);
 
             writer.Dispose();
-
         }
-
     }
-
 }

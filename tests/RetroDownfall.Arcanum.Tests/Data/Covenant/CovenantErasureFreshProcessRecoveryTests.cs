@@ -17,8 +17,11 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -29,6 +32,8 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantErasureFreshProcessRecoveryTests
 {
+    private const string InMemoryCredentialOptInVariable =
+        "ARCANUM_TEST_IN_MEMORY_CREDENTIALS";
 
     private const string OriginalOwner = "task-9-original-process";
 
@@ -37,7 +42,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
     [SkippableFact]
     public async Task Inventory_checkpoint_is_adopted_before_readiness_and_completed_by_the_fresh_process()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string testHome = Path.Combine(
@@ -51,16 +55,20 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         string? originalAspNet = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
+        string? originalInMemoryCredentialOptIn = global::System.Environment.GetEnvironmentVariable(
+            InMemoryCredentialOptInVariable);
+
         using GrimoireFixture fixture = new();
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", testHome);
 
             global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
             global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+            global::System.Environment.SetEnvironmentVariable(InMemoryCredentialOptInVariable, "1");
 
             Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
@@ -80,7 +88,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             await using (ServiceProvider original = CreateProcess(fixture.Passphrase))
             {
-
                 await using (SqliteConnection install = await InitializeProcessAsync(original))
                 {
                 }
@@ -96,7 +103,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
                 foreach (CovenantEnvelopePurpose purpose in Enum.GetValues<CovenantEnvelopePurpose>())
                 {
-
                     Result<string> encoded = codec.Encode(
                         purpose,
                         [(byte)purpose],
@@ -105,7 +111,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
                     Assert.True(encoded.IsSuccess, encoded.Error.Message);
 
                     oldTokens.Add(purpose, encoded.Value);
-
                 }
 
                 await using AsyncServiceScope scope = original.CreateAsyncScope();
@@ -149,7 +154,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
                 operationId = started.Operation.Id;
 
                 durableOwner = prepared.Value.Owner;
-
             }
 
             SqliteConnection.ClearAllPools();
@@ -162,28 +166,24 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             await using (SqliteConnection install = await InitializeProcessAsync(recovery))
             {
-
                 foreach ((CovenantEnvelopePurpose purpose, string token) in oldTokens)
                 {
-
                     Assert.True(recoveryCodec.Decode(purpose, token).IsFailure);
-
                 }
 
-                Result<CovenantExclusiveRecoveryOwner?> adopted = await recovery
+                Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await recovery
                     .GetRequiredService<CovenantErasureStartupRecoveryOwnerAdopter>()
                     .AdoptBeforeReadinessAsync(install, CancellationToken.None);
 
                 Assert.True(adopted.IsSuccess, adopted.Error.Message);
 
-                Assert.Equal(durableOwner, adopted.Value);
+                Assert.Equal(durableOwner, adopted.Value?.Owner);
 
                 gate.PublishReadiness();
 
                 Assert.True((await gate.AcquireReadAsync(
                     CovenantOperationScope.Global,
                     CancellationToken.None)).IsFailure);
-
             }
 
             await using AsyncServiceScope recoveryScope = recovery.CreateAsyncScope();
@@ -231,15 +231,11 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             foreach ((CovenantEnvelopePurpose purpose, string token) in oldTokens)
             {
-
                 Assert.True(recoveryCodec.Decode(purpose, token).IsFailure);
-
             }
-
         }
         finally
         {
-
             SqliteConnection.ClearAllPools();
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalTestHome);
@@ -248,20 +244,19 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
             global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNet);
 
+            global::System.Environment.SetEnvironmentVariable(
+                InMemoryCredentialOptInVariable,
+                originalInMemoryCredentialOptIn);
+
             if (Directory.Exists(testHome))
             {
-
                 Directory.Delete(testHome, recursive: true);
-
             }
-
         }
-
     }
 
     private static ServiceProvider CreateProcess(string passphrase)
     {
-
         HostApplicationBuilder builder = Host.CreateApplicationBuilder();
 
         builder.Services.AddSingleton<IWeaveService>(static _ => null!);
@@ -274,27 +269,35 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
+        // The production authority borrows the installation lock the database hosted service holds,
+        // and this fresh process is a bare container with no hosted services in it - so nothing has
+        // attached one and every journal it tried to open would refuse. The substitute is the real
+        // authority over a temporary guarded root with its own lock: what changes is where the journal
+        // lives, not what is allowed to be written into it.
+        builder.Services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(
+            static sp => new LocalOfflineTransitionPhaseAuthority(
+                sp.GetRequiredService<ILongRunningOperationStore>()));
+
         ServiceProvider provider = builder.Services.BuildServiceProvider(
             new ServiceProviderOptions
             {
-
                 ValidateOnBuild = true,
 
                 ValidateScopes = true,
-
             });
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            provider.GetRequiredService<IOsCredentialStore>());
 
         Assert.IsType<GrimoireDbPassphraseSource>(
             provider.GetRequiredService<IGrimoireDbPassphraseSource>())
             .SetPassphrase(passphrase);
 
         return provider;
-
     }
 
     private static async Task<SqliteConnection> InitializeProcessAsync(ServiceProvider provider)
     {
-
         IDesignTimeGrimoireConnectionFactory connections =
             new DesignTimeGrimoireConnectionFactory(
                 provider.GetRequiredService<IGrimoireDbPassphraseSource>());
@@ -303,7 +306,6 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         try
         {
-
             await provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()
                 .InitializeAsync(
                     connection,
@@ -367,17 +369,12 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
             Assert.NotNull(runtime.Current.Keys);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync();
 
             throw;
-
         }
-
     }
-
 }

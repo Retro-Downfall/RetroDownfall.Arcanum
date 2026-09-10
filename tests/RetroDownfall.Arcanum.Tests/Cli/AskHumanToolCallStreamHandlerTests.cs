@@ -6,52 +6,43 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class AskHumanToolCallStreamHandlerTests
 {
-
     private static ArcanumApiClient CreateApiClient(
         Func<string, string, CancellationToken, bool>? submitValidator = null,
         bool success = true,
         string? errorCode = null,
         string? errorMessage = null)
     {
-
         DelegatingHandler handler = new SubmitHandler(submitValidator, success, errorCode, errorMessage);
 
         IHttpClientFactory factory = new HttpClientFactoryStub(handler);
 
-        ISecretStore secretStore = new SecretStoreStub();
-
-        return new ArcanumApiClient(factory, secretStore);
-
+        return new ArcanumApiClient(
+            factory,
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
     }
 
     private sealed class HttpClientFactoryStub(DelegatingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name)
         {
-
             HttpClient client = new(handler)
             {
-
-                BaseAddress = new Uri("http://localhost:5000/")
-
+                BaseAddress = new Uri("http://localhost:5001/")
             };
 
             return client;
-
         }
-
     }
 
     private sealed class SecretStoreStub : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(Guid.NewGuid().ToString("N"));
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() => Task.FromResult(SecretStoreReadResult.Ok(Guid.NewGuid().ToString("N")));
@@ -61,12 +52,10 @@ public sealed class AskHumanToolCallStreamHandlerTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class SubmitHandler : DelegatingHandler
     {
-
         private readonly Func<string, string, CancellationToken, bool>? _submitValidator;
 
         private readonly bool _success;
@@ -81,7 +70,6 @@ public sealed class AskHumanToolCallStreamHandlerTests
             string? errorCode,
             string? errorMessage)
         {
-
             _submitValidator = submitValidator;
 
             _success = success;
@@ -89,17 +77,13 @@ public sealed class AskHumanToolCallStreamHandlerTests
             _errorCode = errorCode;
 
             _errorMessage = errorMessage;
-
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             if (request.RequestUri?.OriginalString?.EndsWith("api/intelligence/human-response", StringComparison.Ordinal) != true)
             {
-
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
-
             }
 
             string? promptId = null;
@@ -108,7 +92,6 @@ public sealed class AskHumanToolCallStreamHandlerTests
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).Result;
 
                 using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(body);
@@ -116,7 +99,6 @@ public sealed class AskHumanToolCallStreamHandlerTests
                 promptId = doc.RootElement.GetProperty("promptId").GetString();
 
                 answer = doc.RootElement.GetProperty("answer").GetString();
-
             }
 
             bool allowed = _submitValidator?.Invoke(promptId ?? string.Empty, answer ?? string.Empty, cancellationToken) ?? true;
@@ -132,14 +114,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
             response.Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(json));
 
             return Task.FromResult(response);
-
         }
-
     }
 
     private sealed class FakePalette : IThemePalette
     {
-
         public Color Text { get; } = Color.White;
 
         public Color Heading { get; } = Color.White;
@@ -149,13 +128,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
         public Color Error { get; } = Color.Red;
 
         public Color Muted { get; } = Color.Grey;
-
     }
 
     [Fact]
     public async Task TryHandleAskHumanAsync_NonToolCallEvent_ReturnsNotHandled()
     {
-
         IntelligenceEvent evt = new(IntelligenceEventType.Status, "ask_human", "{\"question\":\"q\",\"promptId\":\"p\"}");
 
         AskHumanResult result = await AskHumanToolCallStreamHandler.TryHandleAskHumanAsync(
@@ -167,13 +144,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
             CancellationToken.None);
 
         Assert.Equal(AskHumanResult.NotHandled, result);
-
     }
 
     [Fact]
     public async Task TryHandleAskHumanAsync_WrongToolName_ReturnsNotHandled()
     {
-
         IntelligenceEvent evt = new(IntelligenceEventType.ToolCall, "other_tool", "{\"question\":\"q\",\"promptId\":\"p\"}");
 
         AskHumanResult result = await AskHumanToolCallStreamHandler.TryHandleAskHumanAsync(
@@ -185,7 +160,6 @@ public sealed class AskHumanToolCallStreamHandlerTests
             CancellationToken.None);
 
         Assert.Equal(AskHumanResult.NotHandled, result);
-
     }
 
     [Theory]
@@ -196,7 +170,6 @@ public sealed class AskHumanToolCallStreamHandlerTests
     [InlineData("{\"question\":\"q\",\"promptId\":\"p\"")]
     public async Task TryHandleAskHumanAsync_InvalidData_ReturnsNotHandled(string? data)
     {
-
         IntelligenceEvent evt = new(IntelligenceEventType.ToolCall, "ask_human", data);
 
         AskHumanResult result = await AskHumanToolCallStreamHandler.TryHandleAskHumanAsync(
@@ -208,13 +181,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
             CancellationToken.None);
 
         Assert.Equal(AskHumanResult.NotHandled, result);
-
     }
 
     [Fact]
     public async Task TryHandleAskHumanAsync_UnattendedMode_SubmitsAutoReply()
     {
-
         string? receivedPromptId = null;
 
         string? receivedAnswer = null;
@@ -226,13 +197,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
 
         ArcanumApiClient client = CreateApiClient((promptId, answer, _) =>
         {
-
             receivedPromptId = promptId;
 
             receivedAnswer = answer;
 
             return true;
-
         });
 
         AskHumanResult result = await AskHumanToolCallStreamHandler.TryHandleAskHumanAsync(
@@ -248,13 +217,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
         Assert.Equal("prompt-42", receivedPromptId);
 
         Assert.Contains("unattended mode", receivedAnswer, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task TryHandleAskHumanAsync_NonInteractiveMode_SubmitsAutoReply()
     {
-
         string? receivedAnswer = null;
 
         IntelligenceEvent evt = new(
@@ -264,11 +231,9 @@ public sealed class AskHumanToolCallStreamHandlerTests
 
         ArcanumApiClient client = CreateApiClient((_, answer, _) =>
         {
-
             receivedAnswer = answer;
 
             return true;
-
         });
 
         AskHumanResult result = await AskHumanToolCallStreamHandler.TryHandleAskHumanAsync(
@@ -282,13 +247,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
         Assert.Equal(AskHumanResult.Handled, result);
 
         Assert.Contains("No interactive terminal", receivedAnswer, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task TryHandleAskHumanAsync_ApiSubmissionFails_ReturnsSubmitFailed()
     {
-
         IntelligenceEvent evt = new(
             IntelligenceEventType.ToolCall,
             "ask_human",
@@ -308,13 +271,11 @@ public sealed class AskHumanToolCallStreamHandlerTests
             CancellationToken.None);
 
         Assert.Equal(AskHumanResult.SubmitFailed, result);
-
     }
 
     [Fact]
     public async Task TryHandleAskHumanAsync_CancellationRequested_PropagatesCancel()
     {
-
         IntelligenceEvent evt = new(
             IntelligenceEventType.ToolCall,
             "ask_human",
@@ -326,11 +287,9 @@ public sealed class AskHumanToolCallStreamHandlerTests
 
         ArcanumApiClient client = CreateApiClient((_, _, ct) =>
         {
-
             cts.Token.ThrowIfCancellationRequested();
 
             return true;
-
         });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -341,7 +300,5 @@ public sealed class AskHumanToolCallStreamHandlerTests
                 client,
                 new FakePalette(),
                 cts.Token));
-
     }
-
 }

@@ -47,7 +47,6 @@ internal sealed record CampaignPathMarkerIntentRow(
 /// </remarks>
 internal sealed class CampaignPathMarkerIntentStore
 {
-
     private readonly CovenantSqliteConnectionInitializer _initializer;
 
     private readonly SqliteConnection _connection;
@@ -62,7 +61,6 @@ internal sealed class CampaignPathMarkerIntentStore
         SqliteTransaction transaction,
         TimeProvider timeProvider)
     {
-
         ArgumentNullException.ThrowIfNull(initializer);
 
         ArgumentNullException.ThrowIfNull(connection);
@@ -76,11 +74,9 @@ internal sealed class CampaignPathMarkerIntentStore
         // trigger would see an unauthorized connection while the caller believed it had permission.
         if (!ReferenceEquals(transaction.Connection, connection))
         {
-
             throw new ArgumentException(
                 "A Campaign path marker intent store requires the live transaction of its own connection.",
                 nameof(transaction));
-
         }
 
         _initializer = initializer;
@@ -90,7 +86,6 @@ internal sealed class CampaignPathMarkerIntentStore
         _transaction = transaction;
 
         _timeProvider = timeProvider;
-
     }
 
     /// <summary>
@@ -112,7 +107,6 @@ internal sealed class CampaignPathMarkerIntentStore
         long priorRevision,
         CancellationToken cancellationToken)
     {
-
         if (ownerOperationId == Guid.Empty
             || campaignId == Guid.Empty
             || !ownerEffectDigest.IsValid
@@ -121,11 +115,9 @@ internal sealed class CampaignPathMarkerIntentStore
             || targetDisplayPath.Length > 4096
             || priorRevision < 0)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A restore cleanup intent requires a complete owner, Campaign, evidence, and target.");
-
         }
 
         Guid? existing = await ReadExistingIntentIdAsync(
@@ -136,9 +128,7 @@ internal sealed class CampaignPathMarkerIntentStore
 
         if (existing is { } replayed)
         {
-
             return replayed;
-
         }
 
         Guid intentId = Guid.NewGuid();
@@ -187,7 +177,6 @@ internal sealed class CampaignPathMarkerIntentStore
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return intentId;
-
     }
 
     /// <summary>
@@ -213,7 +202,6 @@ internal sealed class CampaignPathMarkerIntentStore
         long priorRevision,
         CancellationToken cancellationToken)
     {
-
         // A full reset cleans up an already registered Campaign, so a zero prior revision would be
         // a first registration this kind never performs. The table says the same; saying it here
         // keeps the refusal typed rather than an exception from a constraint.
@@ -224,11 +212,9 @@ internal sealed class CampaignPathMarkerIntentStore
             || priorRevision <= 0
             || targetDisplayPath is { Length: 0 } or { Length: > 4096 })
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A full-installation reset cleanup intent requires a complete owner, Campaign, and evidence.");
-
         }
 
         Guid intentId = Guid.NewGuid();
@@ -279,7 +265,6 @@ internal sealed class CampaignPathMarkerIntentStore
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return intentId;
-
     }
 
     /// <summary>
@@ -289,7 +274,6 @@ internal sealed class CampaignPathMarkerIntentStore
         Guid intentId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = _transaction;
@@ -309,9 +293,7 @@ internal sealed class CampaignPathMarkerIntentStore
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return new CampaignPathMarkerIntentRow(
@@ -327,7 +309,6 @@ internal sealed class CampaignPathMarkerIntentStore
             (CampaignPathMarkerPhase)reader.GetInt32(9),
             reader.GetInt64(10),
             reader.IsDBNull(11) ? null : (CovenantExclusiveLeaseDisposition)reader.GetInt32(11));
-
     }
 
     /// <summary>
@@ -337,7 +318,6 @@ internal sealed class CampaignPathMarkerIntentStore
         Guid ownerOperationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = _transaction;
@@ -352,7 +332,6 @@ internal sealed class CampaignPathMarkerIntentStore
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -367,7 +346,6 @@ internal sealed class CampaignPathMarkerIntentStore
         Guid ownerOperationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = _transaction;
@@ -382,7 +360,6 @@ internal sealed class CampaignPathMarkerIntentStore
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -401,7 +378,6 @@ internal sealed class CampaignPathMarkerIntentStore
         CovenantExclusiveLeaseDisposition? pendingDisposition,
         CancellationToken cancellationToken)
     {
-
         string now = Iso(_timeProvider.GetUtcNow());
 
         using CovenantSqliteAuthorizationScope scope = _initializer.Authorize(
@@ -454,7 +430,6 @@ internal sealed class CampaignPathMarkerIntentStore
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "A Campaign path marker intent phase advance lost its compare-and-swap."));
-
     }
 
     private async Task<Guid?> ReadExistingIntentIdAsync(
@@ -463,7 +438,6 @@ internal sealed class CampaignPathMarkerIntentStore
         CampaignPathMarkerIntentKind kind,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = _connection.CreateCommand();
 
         command.Transaction = _transaction;
@@ -482,12 +456,10 @@ internal sealed class CampaignPathMarkerIntentStore
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? null : Guid.Parse((string)value);
-
     }
 
     private static byte[] ReadBlob(SqliteDataReader reader, int ordinal)
     {
-
         using System.IO.Stream stream = reader.GetStream(ordinal);
 
         using System.IO.MemoryStream buffer = new();
@@ -495,12 +467,10 @@ internal sealed class CampaignPathMarkerIntentStore
         stream.CopyTo(buffer);
 
         return buffer.ToArray();
-
     }
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
-
+        UtcInstantText.Format(value);
 }
 
 /// <summary>
@@ -521,9 +491,7 @@ internal readonly record struct CampaignPathMarkerTargetObservation(
 /// </summary>
 internal enum CampaignPathMarkerTargetObservationCode
 {
-
     Opened = 1,
 
     Absent = 2,
-
 }

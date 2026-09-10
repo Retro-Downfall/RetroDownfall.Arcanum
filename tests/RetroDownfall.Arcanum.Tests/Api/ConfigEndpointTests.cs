@@ -4,6 +4,8 @@ using System.Text;
 
 using System.Text.Json;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -18,25 +20,23 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
 public sealed class ConfigEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public ConfigEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task GetConfig_WithValidApiKey_ReturnsRedactedSettingsEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -56,13 +56,11 @@ public sealed class ConfigEndpointTests
         Assert.NotNull(body.Data);
 
         Assert.NotNull(body.Data.Host);
-
     }
 
     [SkippableFact]
     public async Task GetConfig_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -70,14 +68,12 @@ public sealed class ConfigEndpointTests
         HttpResponseMessage response = await client.GetAsync("/api/config");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     [SkippableFact]
 
     public async Task GetConfig_AfterRetentionUpdate_ReturnsLivePersistedRule()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateLiveConfigurationFactory();
@@ -108,14 +104,12 @@ public sealed class ConfigEndpointTests
         Assert.True(body.Data.Retention.ArchivedSessions.Enabled);
 
         Assert.Equal(73, body.Data.Retention.ArchivedSessions.Days);
-
     }
 
     [SkippableFact]
 
     public async Task PutConfig_RoundTripAfterRetentionUpdate_DoesNotRestoreStartupRule()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateLiveConfigurationFactory();
@@ -163,17 +157,21 @@ public sealed class ConfigEndpointTests
         Assert.True(policy.Data.ArchivedSessions.Enabled);
 
         Assert.Equal(73, policy.Data.ArchivedSessions.Days);
-
     }
 
     [SkippableFact]
 
     public async Task PutConfig_SerializesValidationAndWriteWithConcurrentRetentionUpdate()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
+        FakeDnsResolver fallback = new();
+        fallback.Add("localhost", IPAddress.Loopback);
+        BlockingDnsResolver resolver = new(
+            "config-race.invalid",
+            fallback);
         await using ArcanumWebApplicationFactory factory = CreateLiveConfigurationFactory();
+        factory.ServiceOverrides = services => services.AddSingleton<IDnsResolver>(resolver);
 
         using HttpClient client = factory.CreateAuthenticatedClient();
 
@@ -185,34 +183,21 @@ public sealed class ConfigEndpointTests
 
         ArcanumSettings replacement = snapshot.Data with
         {
-
             DefaultModel = "race-model",
 
             Providers =
             [
                 provider with
                 {
-
                     Endpoint = "https://config-race.invalid/v1",
 
                     Models = ["race-model"],
-
                 },
             ],
-
         };
-
-        IDnsResolver originalResolver = OutboundUrlGuard.DnsResolver;
-
-        BlockingDnsResolver resolver = new(
-            "config-race.invalid",
-            originalResolver);
-
-        OutboundUrlGuard.DnsResolver = resolver;
 
         try
         {
-
             string payload = JsonSerializer.Serialize(
                 replacement,
                 ArcanumJsonContext.Default.ArcanumSettings);
@@ -251,24 +236,17 @@ public sealed class ConfigEndpointTests
             Assert.True(current?.Data?.Retention.ArchivedSessions.Enabled);
 
             Assert.Equal(73, current?.Data?.Retention.ArchivedSessions.Days);
-
         }
         finally
         {
-
             resolver.Release();
-
-            OutboundUrlGuard.DnsResolver = originalResolver;
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task ConfigAndModelDiscoveryReadsShareTheLatestPersistedSnapshot()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateLiveConfigurationFactory();
@@ -283,19 +261,15 @@ public sealed class ConfigEndpointTests
 
         ArcanumSettings replacement = snapshot.Data with
         {
-
             DefaultModel = "qwen:latest",
 
             Providers =
             [
                 provider with
                 {
-
                     Models = ["qwen:latest"],
-
                 },
             ],
-
         };
 
         using HttpResponseMessage put = await client.PutAsync(
@@ -348,14 +322,12 @@ public sealed class ConfigEndpointTests
         Assert.Equal(
             "qwen:latest",
             Assert.Single(openAiModels?.Data ?? []).Id);
-
     }
 
     [SkippableFact]
 
     public async Task PostConfigValidate_MergesRedactedSnapshotBeforeOutboundValidation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -391,13 +363,11 @@ public sealed class ConfigEndpointTests
         Assert.DoesNotContain("Config.UnresolvedMask", validationJson, StringComparison.Ordinal);
 
         Assert.DoesNotContain("***", validationJson, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task PostConfigValidate_WithSemanticValidationFailure_ReturnsBadRequest()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -427,13 +397,11 @@ public sealed class ConfigEndpointTests
         string json = await response.Content.ReadAsStringAsync();
 
         Assert.Contains("Configuration.ValidationFailed", json, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task PostConfigValidate_WithValidSettings_ReturnsOk()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -462,13 +430,11 @@ public sealed class ConfigEndpointTests
             "\"isSuccess\":true",
             await response.Content.ReadAsStringAsync(),
             StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task PostConfigValidate_WithLlamaCppServerType_ReturnsMigrationValidationFailed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -499,13 +465,11 @@ public sealed class ConfigEndpointTests
         Assert.Contains("LlamaCppServer", json, StringComparison.Ordinal);
 
         Assert.Contains("OpenAICompatible", json, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task PostConfigValidate_WithRootLlamaCppKey_ReturnsMigrationValidationFailed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -536,13 +500,11 @@ public sealed class ConfigEndpointTests
         Assert.Contains("Configuration.ValidationFailed", json, StringComparison.Ordinal);
 
         Assert.Contains("llamaCpp", json, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
     public async Task PutConfig_WithLlamaCppServerType_ReturnsBadRequestWithoutWriting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -576,23 +538,19 @@ public sealed class ConfigEndpointTests
         HttpResponseMessage after = await client.GetAsync("/api/config");
 
         Assert.Equal(HttpStatusCode.OK, after.StatusCode);
-
     }
 
     private static ArcanumWebApplicationFactory CreateLiveConfigurationFactory() =>
         new()
         {
-
             SettingsOverride = settings => settings with
             {
-
                 DefaultModel = "mistral:latest",
 
                 Providers =
                 [
                     new ProviderSettings
                     {
-
                         Name = "local",
 
                         Type = AiProviderKind.OpenAICompatible,
@@ -600,18 +558,14 @@ public sealed class ConfigEndpointTests
                         Endpoint = "http://localhost:11434/v1",
 
                         Models = ["mistral:latest"],
-
                     },
                 ],
-
             },
-
         };
 
     private static async Task<ApiResponse<ArcanumSettings>?> ReadConfigAsync(
         HttpClient client)
     {
-
         using HttpResponseMessage response = await client.GetAsync("/api/config");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -619,14 +573,12 @@ public sealed class ConfigEndpointTests
         return JsonSerializer.Deserialize(
             await response.Content.ReadAsStringAsync(),
             ArcanumJsonContext.Default.ApiResponseArcanumSettings);
-
     }
 
     private sealed class BlockingDnsResolver(
         string blockedHost,
         IDnsResolver fallback) : IDnsResolver
     {
-
         private readonly TaskCompletionSource<bool> _entered = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -637,14 +589,11 @@ public sealed class ConfigEndpointTests
             string host,
             CancellationToken cancellationToken = default)
         {
-
             if (!string.Equals(host, blockedHost, StringComparison.OrdinalIgnoreCase))
             {
-
                 return await fallback
                     .GetHostAddressesAsync(host, cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             _entered.TrySetResult(true);
@@ -654,13 +603,10 @@ public sealed class ConfigEndpointTests
                 .ConfigureAwait(false);
 
             return [IPAddress.Parse("203.0.113.43")];
-
         }
 
         public Task WaitUntilBlockedAsync() => _entered.Task;
 
         public void Release() => _released.TrySetResult(true);
-
     }
-
 }

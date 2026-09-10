@@ -3478,7 +3478,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations,
             [new DataRetentionFactoryResetRecoveryHandler(service)],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
             "factory-finalizer-recovery-test",
@@ -3542,7 +3543,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations,
             [new DataRetentionFactoryResetRecoveryHandler(service)],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
             "factory-recovery-test",
@@ -3572,7 +3574,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task FactoryReset_lost_owner_cannot_renew_or_delete_for_the_new_owner(bool expired)
+    public async Task FactoryReset_lost_owner_cannot_delete_for_the_new_owner(bool expired)
     {
 
         RequireSqlCipher();
@@ -3645,20 +3647,35 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 stale,
                 CancellationToken.None);
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+        // An expired lease is no longer what says an owner has lost its row. Nothing renews a lease
+        // across the closed period, so an erasure long enough to matter always finds its own expired -
+        // and treating that as loss would make the operation impossible rather than safe. What loss
+        // means is that somebody else's name is on the row, which is the arm below.
+        if (expired)
+        {
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
+            Assert.Equal(LongRunningOperationState.Completed, result.State);
 
-        Assert.Equal(1, await _db!.Sessions.LongCountAsync());
+        }
+        else
+        {
 
-        LongRunningOperation after = Assert.IsType<LongRunningOperation>(
-            await operations.GetAsync(operation.Id));
+            Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
-        Assert.Equal(before.LeaseOwner, after.LeaseOwner);
+            Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
 
-        Assert.Equal(before.Revision, after.Revision);
+            Assert.Equal(1, await _db!.Sessions.LongCountAsync());
 
-        Assert.Equal(before.LeaseExpiresAt, after.LeaseExpiresAt);
+            LongRunningOperation after = Assert.IsType<LongRunningOperation>(
+                await operations.GetAsync(operation.Id));
+
+            Assert.Equal(before.LeaseOwner, after.LeaseOwner);
+
+            Assert.Equal(before.Revision, after.Revision);
+
+            Assert.Equal(before.LeaseExpiresAt, after.LeaseExpiresAt);
+
+        }
 
     }
 
@@ -3882,7 +3899,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             operations,
             [new DataRetentionFactoryResetRecoveryHandler(service)],
             TimeProvider.System,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
             workerId,

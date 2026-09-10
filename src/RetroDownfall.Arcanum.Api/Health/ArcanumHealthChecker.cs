@@ -22,11 +22,10 @@ public sealed class ArcanumHealthChecker(
     IProviderHealthTracker providerHealthTracker,
     IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null,
     LongRunningOperationReconciliationStatus? operationReconciliationStatus = null,
-    IEncryptedBlobDiagnostics? encryptedBlobDiagnostics = null,
+    IFileEncryptionRuntimeStatus? fileEncryptionRuntimeStatus = null,
     IProviderApiKeyResolver? providerApiKeyResolver = null,
     IDurableOperationDiagnostics? operationDiagnosticsSource = null)
 {
-
     private readonly IProviderApiKeyResolver _providerApiKeyResolver =
         providerApiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
@@ -52,7 +51,6 @@ public sealed class ArcanumHealthChecker(
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
     {
-
         List<HealthComponentDto> components = [];
 
         HealthStatus grimoireStatus;
@@ -217,45 +215,47 @@ public sealed class ArcanumHealthChecker(
             $"{operationSnapshot.PublicDetail ?? "Durable operation reconciliation completed."} "
             + operationDiagnostics.Describe()));
 
-        components.Add(await BuildFileEncryptionComponentAsync(
-                encryptedBlobDiagnostics,
-                cancellationToken)
-            .ConfigureAwait(false));
+        components.Add(BuildFileEncryptionComponent(fileEncryptionRuntimeStatus));
 
         HealthStatus overall = AggregateOverall(components);
 
         return new HealthReportDto(overall, components.ToArray());
-
     }
 
-    private static async Task<HealthComponentDto> BuildFileEncryptionComponentAsync(
-        IEncryptedBlobDiagnostics? diagnostics,
-        CancellationToken cancellationToken)
+    internal static HealthComponentDto BuildFileEncryptionComponent(
+        IFileEncryptionRuntimeStatus? status)
     {
-        if (diagnostics is null)
+        if (status is null)
         {
             return new HealthComponentDto(
                 "FileEncryption",
                 HealthStatus.Degraded,
-                "File-encryption diagnostics are unavailable.");
+                "File-encryption runtime status is unavailable.");
         }
 
         try
         {
-            FileEncryptionDiagnostics result = await diagnostics
-                .InspectAsync(cancellationToken)
-                .ConfigureAwait(false);
+            FileEncryptionRuntimeSnapshot result = status.Current;
+            HealthStatus health = result.State switch
+            {
+                FileEncryptionRuntimeState.Pending => HealthStatus.Degraded,
+                FileEncryptionRuntimeState.Deferred => HealthStatus.Healthy,
+                FileEncryptionRuntimeState.Ready => HealthStatus.Healthy,
+                FileEncryptionRuntimeState.Unavailable => HealthStatus.Unhealthy,
+                _ => HealthStatus.Unhealthy,
+            };
+
             return new HealthComponentDto(
                 "FileEncryption",
-                result.IsHealthy ? HealthStatus.Healthy : HealthStatus.Unhealthy,
+                health,
                 result.Detail);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             return new HealthComponentDto(
                 "FileEncryption",
                 HealthStatus.Unhealthy,
-                $"File-encryption diagnostics failed ({ex.GetType().Name}).");
+                $"File-encryption runtime status failed ({ex.GetType().Name}).");
         }
     }
 
@@ -360,5 +360,4 @@ public sealed class ArcanumHealthChecker(
 
         return worst;
     }
-
 }

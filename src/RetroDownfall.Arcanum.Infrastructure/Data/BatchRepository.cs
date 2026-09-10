@@ -15,10 +15,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 {
-
     public Task CreateAsync(BatchRecord record, CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -66,9 +64,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@status", record.Status);
 
-                AddParameter(cmd, "@createdAt", record.CreatedAt.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@createdAt", UtcInstantText.Format(record.CreatedAt));
 
-                AddParameter(cmd, "@completedAt", (object?)record.CompletedAt?.ToString("o", CultureInfo.InvariantCulture) ?? DBNull.Value);
+                AddParameter(cmd, "@completedAt", (object?)UtcInstantText.Format(record.CompletedAt) ?? DBNull.Value);
 
                 AddParameter(cmd, "@outputFileId", (object?)record.OutputFileId?.ToString() ?? DBNull.Value);
 
@@ -88,19 +86,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 if (rows != 1)
                 {
-
                     throw new BatchFileReferenceException(record.Id);
-
                 }
-
             },
             cancellationToken);
-
     }
 
     public async Task<BatchRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -129,12 +122,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 return ReadRecord(reader);
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<BatchRecord>> ListAsync(string? status, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -144,7 +135,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 if (string.IsNullOrWhiteSpace(status))
                 {
-
                     cmd.CommandText =
                         """
                         SELECT "Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt", "OutputFileId", "ErrorFileId",
@@ -152,11 +142,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         FROM "Batches"
                         ORDER BY "CreatedAt" DESC, "Id" DESC
                         """;
-
                 }
                 else
                 {
-
                     cmd.CommandText =
                         """
                         SELECT "Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt", "OutputFileId", "ErrorFileId",
@@ -167,7 +155,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         """;
 
                     AddParameter(cmd, "@status", status);
-
                 }
 
                 List<BatchRecord> records = [];
@@ -182,11 +169,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 return (IReadOnlyList<BatchRecord>)records;
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<BatchListPage> ListPageAsync(
-
         string? status,
 
         BatchListPosition? after,
@@ -196,17 +181,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken = default)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
 
         int fetchSize = checked(pageSize + 1);
 
         return await SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -216,7 +198,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 if (!filtered && after is null)
 
                 {
-
                     command.CommandText =
 
                         """
@@ -226,12 +207,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         ORDER BY "CreatedAt" DESC, "Id" DESC
                         LIMIT @fetchSize
                         """;
-
                 }
                 else if (filtered && after is null)
 
                 {
-
                     command.CommandText =
 
                         """
@@ -242,12 +221,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         ORDER BY "CreatedAt" DESC, "Id" DESC
                         LIMIT @fetchSize
                         """;
-
                 }
                 else if (!filtered)
 
                 {
-
                     command.CommandText =
 
                         """
@@ -259,12 +236,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         ORDER BY "CreatedAt" DESC, "Id" DESC
                         LIMIT @fetchSize
                         """;
-
                 }
                 else
 
                 {
-
                     command.CommandText =
 
                         """
@@ -279,7 +254,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         ORDER BY "CreatedAt" DESC, "Id" DESC
                         LIMIT @fetchSize
                         """;
-
                 }
 
                 AddParameter(command, "@fetchSize", fetchSize);
@@ -287,25 +261,20 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 if (filtered)
 
                 {
-
                     AddParameter(command, "@status", status!);
-
                 }
 
                 if (after is not null)
 
                 {
-
                     AddParameter(
-
                         command,
 
                         "@afterCreatedAt",
 
-                        after.CreatedAt.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+                        UtcInstantText.Format(after.CreatedAt));
 
                     AddParameter(command, "@afterId", after.Id.ToString("N"));
-
                 }
 
                 List<BatchRecord> records = new(fetchSize);
@@ -315,9 +284,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
 
                 {
-
                     records.Add(ReadRecord(reader));
-
                 }
 
                 bool hasMore = records.Count > pageSize;
@@ -325,26 +292,20 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 if (hasMore)
 
                 {
-
                     records.RemoveAt(records.Count - 1);
-
                 }
 
                 return new BatchListPage(records, hasMore);
-
             },
 
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<BatchRecord>> ListPendingPageAsync(
-
         int pageSize,
 
         CancellationToken cancellationToken = default)
     {
-
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -380,12 +341,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 return (IReadOnlyList<BatchRecord>)records;
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<BatchRecord>> ListByStatusAsync(string status, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -416,7 +375,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 return (IReadOnlyList<BatchRecord>)records;
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task UpdateStatusAsync(
@@ -427,7 +385,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         Guid? errorFileId,
         CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -443,6 +400,11 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         "OutputFileId" = @outputFileId,
                         "ErrorFileId" = @errorFileId
                     WHERE "Id" = @id
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM "BatchAccountingRecoveryClaims"
+                          WHERE "BatchId" = @id
+                      )
                       AND (
                           @outputFileId IS NULL
                           OR EXISTS (
@@ -465,7 +427,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@status", status);
 
-                AddParameter(cmd, "@completedAt", (object?)completedAt?.ToString("o", CultureInfo.InvariantCulture) ?? DBNull.Value);
+                AddParameter(cmd, "@completedAt", (object?)UtcInstantText.Format(completedAt) ?? DBNull.Value);
 
                 AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
 
@@ -484,14 +446,20 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                             cancellationToken)
                         .ConfigureAwait(false))
                 {
+                    if (await BatchHasRecoveryClaimAsync(
+                            connection,
+                            id,
+                            cancellationToken)
+                        .ConfigureAwait(false))
+                    {
+                        throw new InvalidOperationException(
+                            $"Batch '{id:D}' is owned by durable accounting recovery.");
+                    }
 
                     throw new BatchFileReferenceException(id);
-
                 }
-
             },
             cancellationToken);
-
     }
 
     public async Task<bool> TryCompareAndSetStatusAsync(
@@ -503,7 +471,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         Guid? errorFileId,
         CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -519,6 +486,11 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         "OutputFileId" = @outputFileId,
                         "ErrorFileId" = @errorFileId
                     WHERE "Id" = @id AND "Status" = @expectedStatus
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM "BatchAccountingRecoveryClaims"
+                          WHERE "BatchId" = @id
+                      )
                       AND (
                           @outputFileId IS NULL
                           OR EXISTS (
@@ -543,7 +515,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@newStatus", newStatus);
 
-                AddParameter(cmd, "@completedAt", (object?)completedAt?.ToString("o", CultureInfo.InvariantCulture) ?? DBNull.Value);
+                AddParameter(cmd, "@completedAt", (object?)UtcInstantText.Format(completedAt) ?? DBNull.Value);
 
                 AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
 
@@ -558,11 +530,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 return rows == 1;
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
-
         Guid batchId,
 
         long firstLine,
@@ -572,17 +542,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken = default)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfLessThan(firstLine, 1);
 
         ArgumentOutOfRangeException.ThrowIfLessThan(lastLine, firstLine);
 
         return await SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -605,15 +572,12 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 AddParameter(command, "@lastLine", lastLine);
 
                 return await ReadLineCheckpointsAsync(command, cancellationToken).ConfigureAwait(false);
-
             },
 
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
-
         Guid batchId,
 
         BatchLineCheckpointState state,
@@ -625,17 +589,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken = default)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfNegative(afterLine);
 
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
 
         return await SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -661,15 +622,12 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 AddParameter(command, "@pageSize", pageSize);
 
                 return await ReadLineCheckpointsAsync(command, cancellationToken).ConfigureAwait(false);
-
             },
 
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<bool> TryBeginLineAsync(
-
         Guid batchId,
 
         long lineNumber,
@@ -679,17 +637,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken = default)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfLessThan(lineNumber, 1);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(customId);
 
         return await SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -703,6 +658,11 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                     FROM "Batches"
                     WHERE "Id" = @batchId
                       AND "Status" = @inProgress
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM "BatchAccountingRecoveryClaims"
+                          WHERE "BatchId" = @batchId
+                      )
                       AND NOT EXISTS (
                           SELECT 1
                           FROM "BatchLineCheckpoints"
@@ -719,20 +679,17 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(command, "@dispatched", (int)BatchLineCheckpointState.Dispatched);
 
-                AddParameter(command, "@dispatchedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(command, "@dispatchedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 AddParameter(command, "@inProgress", BatchStatuses.InProgress);
 
                 return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-
             },
 
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<bool> TryRecordTerminalLineAsync(
-
         Guid batchId,
 
         long lineNumber,
@@ -748,7 +705,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken = default)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfLessThan(lineNumber, 1);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(customId);
@@ -756,11 +712,9 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         ArgumentNullException.ThrowIfNull(jsonLine);
 
         return await SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 // Claim and seal in ONE transaction. The intermediate Dispatched row exists only
@@ -773,7 +727,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 await using (DbCommand claim = connection.CreateCommand())
                 {
-
                     claim.Transaction = transaction;
 
                     claim.CommandText =
@@ -785,6 +738,11 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         FROM "Batches"
                         WHERE "Id" = @batchId
                           AND "Status" = @inProgress
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM "BatchAccountingRecoveryClaims"
+                              WHERE "BatchId" = @batchId
+                          )
                           AND NOT EXISTS (
                               SELECT 1
                               FROM "BatchLineCheckpoints"
@@ -801,24 +759,20 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                     AddParameter(claim, "@dispatched", (int)BatchLineCheckpointState.Dispatched);
 
-                    AddParameter(claim, "@at", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(claim, "@at", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                     AddParameter(claim, "@inProgress", BatchStatuses.InProgress);
 
                     if (await claim.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                     {
-
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                         return false;
-
                     }
-
                 }
 
                 await using (DbCommand seal = connection.CreateCommand())
                 {
-
                     seal.Transaction = transaction;
 
                     seal.CommandText =
@@ -842,28 +796,24 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                     AddParameter(seal, "@jsonLine", jsonLine);
 
-                    AddParameter(seal, "@completedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                    AddParameter(seal, "@completedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                     AddParameter(seal, "@batchId", batchId.ToString("N"));
 
                     AddParameter(seal, "@lineNumber", lineNumber);
 
                     _ = await seal.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
-
             },
 
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task CompleteLineAsync(
-
         Guid batchId,
 
         long lineNumber,
@@ -877,17 +827,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken = default)
 
     {
-
         ArgumentOutOfRangeException.ThrowIfLessThan(lineNumber, 1);
 
         ArgumentNullException.ThrowIfNull(jsonLine);
 
         return SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -914,7 +861,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(command, "@jsonLine", jsonLine);
 
-                AddParameter(command, "@completedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(command, "@completedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 AddParameter(command, "@batchId", batchId.ToString("N"));
 
@@ -927,13 +874,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 if (rows == 1)
 
                 {
-
                     return;
-
                 }
 
                 IReadOnlyList<BatchLineCheckpoint> existing = await ReadLineCheckpointAsync(
-
                     connection,
 
                     batchId,
@@ -953,35 +897,26 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                     && string.Equals(existing[0].JsonLine, jsonLine, StringComparison.Ordinal))
 
                 {
-
                     return;
-
                 }
 
                 throw new InvalidOperationException(
-
                     $"Batch line checkpoint '{batchId:D}/{lineNumber}' was missing or already completed with different content.");
-
             },
 
             cancellationToken);
-
     }
 
     public Task DeleteLineCheckpointsAsync(
-
         Guid batchId,
 
         CancellationToken cancellationToken = default)
 
     {
-
         return SqliteBusyRetry.ExecuteAsync(
-
             async () =>
 
             {
-
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand command = connection.CreateCommand();
@@ -996,15 +931,12 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 AddParameter(command, "@batchId", batchId.ToString("N"));
 
                 _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             },
 
             cancellationToken);
-
     }
 
     private static async Task<IReadOnlyList<BatchLineCheckpoint>> ReadLineCheckpointAsync(
-
         DbConnection connection,
 
         Guid batchId,
@@ -1014,7 +946,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         CancellationToken cancellationToken)
 
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -1032,17 +963,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         AddParameter(command, "@lineNumber", lineNumber);
 
         return await ReadLineCheckpointsAsync(command, cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<IReadOnlyList<BatchLineCheckpoint>> ReadLineCheckpointsAsync(
-
         DbCommand command,
 
         CancellationToken cancellationToken)
 
     {
-
         List<BatchLineCheckpoint> checkpoints = [];
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1050,13 +978,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
 
         {
-
             checkpoints.Add(ReadLineCheckpoint(reader));
-
         }
 
         return checkpoints;
-
     }
 
     private static async Task<bool> BatchExistsAsync(
@@ -1064,7 +989,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         Guid id,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -1079,12 +1003,23 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
             is not null;
+    }
 
+    private static async Task<bool> BatchHasRecoveryClaimAsync(
+        DbConnection connection,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        await using DbCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT 1 FROM \"BatchAccountingRecoveryClaims\" WHERE \"BatchId\" = @id LIMIT 1;";
+        AddParameter(command, "@id", id.ToString("N"));
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -1093,12 +1028,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1106,12 +1039,10 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static BatchRecord ReadRecord(DbDataReader reader)
     {
-
         Guid id = Guid.Parse(reader.GetString(0));
 
         Guid inputFileId = Guid.Parse(reader.GetString(1));
@@ -1120,11 +1051,11 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
         string status = reader.GetString(3);
 
-        DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture);
+        DateTimeOffset createdAt = UtcInstantText.Parse(reader.GetString(4));
 
         DateTimeOffset? completedAt = reader.IsDBNull(5)
             ? null
-            : DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture);
+            : UtcInstantText.Parse(reader.GetString(5));
 
         Guid? outputFileId = reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6));
 
@@ -1137,7 +1068,6 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
         long failedRequestCount = reader.GetInt64(10);
 
         return new BatchRecord(
-
             id,
 
             inputFileId,
@@ -1159,13 +1089,11 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
             completedRequestCount,
 
             failedRequestCount);
-
     }
 
     private static BatchLineCheckpoint ReadLineCheckpoint(DbDataReader reader)
 
     {
-
         Guid batchId = Guid.Parse(reader.GetString(0));
 
         long lineNumber = reader.GetInt64(1);
@@ -1188,20 +1116,15 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
         string? jsonLine = reader.IsDBNull(6) ? null : reader.GetString(6);
 
-        DateTimeOffset dispatchedAt = DateTimeOffset.Parse(
-
-            reader.GetString(7),
-
-            CultureInfo.InvariantCulture);
+        DateTimeOffset dispatchedAt = UtcInstantText.Parse(reader.GetString(7));
 
         DateTimeOffset? completedAt = reader.IsDBNull(8)
 
             ? null
 
-            : DateTimeOffset.Parse(reader.GetString(8), CultureInfo.InvariantCulture);
+            : UtcInstantText.Parse(reader.GetString(8));
 
         return new BatchLineCheckpoint(
-
             batchId,
 
             lineNumber,
@@ -1219,7 +1142,5 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
             dispatchedAt,
 
             completedAt);
-
     }
-
 }

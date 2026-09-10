@@ -24,20 +24,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class OpenAiV1EndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public OpenAiV1EndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -64,13 +60,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal("Auth.Unauthorized", body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_UnknownModel_ReturnsModelNotFound()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -97,7 +91,6 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal("model_not_found", body.Error.Code);
-
     }
 
     [SkippableFact]
@@ -196,6 +189,73 @@ public sealed class OpenAiV1EndpointTests
             StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData(
+        ErrorCodes.ClientTools.ModelUnsupported,
+        "The selected model does not support the requested tool choice.",
+        "unsupported_parameter")]
+    [InlineData(
+        ErrorCodes.ClientTools.ToolChoiceUnavailable,
+        "The requested tool choice cannot be satisfied with the available tools.",
+        "invalid_value")]
+    public async Task PostChatCompletions_StreamingLateToolChoiceFailure_UsesSanitizedRequestError(
+        string internalCode,
+        string expectedMessage,
+        string expectedOpenAiCode)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string canary = "CANARY_STREAM_MODEL_AND_PROVIDER_DETAILS";
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = settings.Features with { ClientTools = true },
+            },
+        };
+        factory.FakeIntelligence.NextFailure = new Error(internalCode, canary);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "stream": true,
+              "messages": [
+                { "role": "user", "content": "Use the weather tool." }
+              ],
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "parameters": { "type": "object" }
+                  }
+                }
+              ],
+              "tool_choice": "required"
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string sse = await response.Content.ReadAsStringAsync();
+        OpenAiChatChunk errorChunk = Assert.Single(
+            ParseSseChunks(sse),
+            static chunk => chunk.Error is not null);
+
+        Assert.Equal(expectedMessage, errorChunk.Error?.Message);
+        Assert.Equal("invalid_request_error", errorChunk.Error?.Type);
+        Assert.Equal(expectedOpenAiCode, errorChunk.Error?.Code);
+        Assert.Equal("tool_choice", errorChunk.Error?.Param);
+        Assert.Equal("error", Assert.Single(errorChunk.Choices).FinishReason);
+        Assert.Contains("data: [DONE]", sse, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, sse, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task PostChatCompletions_StreamingProviderIoException_EmitsErrorFrameRatherThanTruncating()
     {
@@ -237,8 +297,6 @@ public sealed class OpenAiV1EndpointTests
     public async Task PostChatCompletions_ReasoningFields_MapToNormalizedRequest()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        
 
         await using ArcanumWebApplicationFactory factory = new()
         {
@@ -295,8 +353,6 @@ public sealed class OpenAiV1EndpointTests
     public async Task PostChatCompletions_DefinedAndUndefinedNumericReasoningEnums_ReturnInvalidJson()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        
 
         await using ArcanumWebApplicationFactory factory = new()
         {
@@ -362,7 +418,6 @@ public sealed class OpenAiV1EndpointTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        
         await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
@@ -439,7 +494,6 @@ public sealed class OpenAiV1EndpointTests
     [SkippableFact]
     public async Task PostChatCompletions_UnsupportedContentPartType_Returns400InvalidValue()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -468,13 +522,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal("invalid_value", body!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_ImageToNonVisionModel_ReturnsVisionNotSupported()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -507,13 +559,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal("vision_not_supported", body!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_ImageToVisionCapableModel_Succeeds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -561,13 +611,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal(factory.FakeIntelligence.NextText, body!.Choices[0].Message.Content);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_ImageWithScryingDisabled_ReturnsFeatureDisabled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -615,13 +663,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal("feature_disabled", body!.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task GetModels_WithValidApiKey_ReturnsOpenAiModelList()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -639,13 +685,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal("list", body.ObjectKind);
 
         Assert.NotNull(body.Data);
-
     }
 
     [SkippableFact]
     public async Task GetModels_NativeAndOpenAiSurfacesShareConfiguredProviderModelInventory()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -723,13 +767,11 @@ public sealed class OpenAiV1EndpointTests
             static model => string.Equals(model.Id, "shared-model", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("provider-a", shared.ProviderName);
         Assert.True(shared.SupportsVision);
-
     }
 
     [SkippableFact]
     public async Task GetModels_WithValidApiKey_IncludesCapabilityEnrichment()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -763,13 +805,57 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal("test", model.OwnedBy);
 
         Assert.Null(model.WireDialect);
+    }
 
+    [SkippableFact]
+    public async Task GetModels_DeclaredNoTools_ReportsEffectiveCapability()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Providers =
+                [
+                    settings.Providers[0] with
+                    {
+                        Models = [new ModelEntry("mistral:latest", SupportsTools: false)],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/v1/models");
+
+        HttpResponseMessage nativeResponse = await client.GetAsync("/api/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, nativeResponse.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiModelListResponse? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.OpenAiModelListResponse);
+
+        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "mistral:latest");
+
+        Assert.False(model.SupportsTools);
+
+        ApiResponse<ModelInfoDto[]>? native = JsonSerializer.Deserialize(
+            await nativeResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray);
+
+        Assert.False(Assert.Single(native!.Data!).SupportsTools);
     }
 
     [SkippableFact]
     public async Task GetModels_KnownCatalogModel_ReportsVisionReasoningAndPromptCachingMetadata()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
@@ -825,7 +911,6 @@ public sealed class OpenAiV1EndpointTests
             PromptCachingWireDialect.OpenAiPromptCacheRetention,
             model.PromptCaching?.WireDialect);
         Assert.True(model.PromptCaching?.EmitCacheKey);
-
     }
 
     [SkippableFact]
@@ -923,7 +1008,6 @@ public sealed class OpenAiV1EndpointTests
     [SkippableFact]
     public async Task GetModels_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -941,7 +1025,6 @@ public sealed class OpenAiV1EndpointTests
         Assert.False(body.IsSuccess);
 
         Assert.Equal("Auth.Unauthorized", body.Error?.Code);
-
     }
 
     [SkippableTheory]
@@ -950,7 +1033,6 @@ public sealed class OpenAiV1EndpointTests
     [InlineData(null)]
     public async Task PostChatCompletions_NonJsonContentType_Returns415NotUnhandled(string? contentType)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -981,13 +1063,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal("invalid_request_error", body.Error.Type);
 
         Assert.Equal("unsupported_media_type", body.Error.Code);
-
     }
 
     [Fact]
     public async Task CreateRequestBodyReadErrorResult_OverSizeLimit_KeepsKestrels413InTheOpenAiEnvelope()
     {
-
         // Kestrel raises BadHttpRequestException(413) once WithLargeRequestBody's 16 MiB ceiling is
         // exceeded. It is not a JsonException, so it used to escape the handler and be answered as a
         // 500 api_error/inference_failed by ArcanumExceptionHandler.
@@ -1005,13 +1085,11 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal("invalid_request_error", body.Error.Type);
 
         Assert.Equal("payload_too_large", body.Error.Code);
-
     }
 
     [Fact]
     public async Task CreateRequestBodyReadErrorResult_OtherBadRequest_KeepsKestrelsStatusCode()
     {
-
         IResult result = OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(StatusCodes.Status400BadRequest);
 
         (int statusCode, string json) = await ExecuteResultAsync(result);
@@ -1025,12 +1103,10 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal("invalid_request_error", body.Error.Type);
 
         Assert.Equal("invalid_request", body.Error.Code);
-
     }
 
     private static async Task<(int StatusCode, string Body)> ExecuteResultAsync(IResult result)
     {
-
         DefaultHttpContext context = new()
         {
             RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
@@ -1043,7 +1119,6 @@ public sealed class OpenAiV1EndpointTests
         await result.ExecuteAsync(context);
 
         return (context.Response.StatusCode, Encoding.UTF8.GetString(buffer.ToArray()));
-
     }
 
     private static List<OpenAiChatChunk> ParseSseChunks(string sse) =>
@@ -1093,5 +1168,4 @@ public sealed class OpenAiV1EndpointTests
         LogLevel Level,
         string Message,
         Exception? Exception);
-
 }

@@ -1,4 +1,4 @@
-# Package Arcanum (Native AOT) + Compendium (+ optional The Forge) for Windows.
+# Package Arcanum Native AOT + Compendium (+ optional The Forge) for Windows.
 #
 # Defaults to win-x64 on the current Windows host. Cross-OS packaging is handled
 # by GitHub Actions.
@@ -12,7 +12,7 @@
 # -Sign requires Windows Authenticode credentials via env:
 #   WINDOWS_CERT_PATH  — path to .pfx
 #   WINDOWS_CERT_PASSWORD — certificate password; consumed only to import the PFX into a
-#     transient Cert:\CurrentUser\My entry, never passed to signtool on a command line.
+#     unique per-run CurrentUser certificate store, never passed to signtool on a command line.
 # Missing credentials with -Sign causes a clear failure (unsigned builds do not).
 
 [CmdletBinding()]
@@ -61,10 +61,100 @@ $Work = Join-Path ([System.IO.Path]::GetTempPath()) ("arcanum-win-pack-" + [guid
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
 $script:SignThumbprint = $null
-$script:SignCertImported = $false
+$script:SigningStoreName = "ArcanumPackaging-" + [guid]::NewGuid().ToString("N")
+$script:SigningStorePath = "Cert:\CurrentUser\$($script:SigningStoreName)"
+$script:SigningStoreOwned = $false
 
-# The Native AOT image does NOT absorb the P/Invoke shared libraries. SQLitePCLRaw only
-# static-links e_sqlcipher for browser-wasm, so every win-x64 publish emits e_sqlcipher.dll
+function Remove-OwnedSigningStore {
+    if (-not $script:SigningStoreOwned) {
+        return
+    }
+
+    $lastFailure = $null
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            if (-not (Test-Path -LiteralPath $script:SigningStorePath -ErrorAction Stop)) {
+                $script:SigningStoreOwned = $false
+                return
+            }
+
+            $certificates = @(
+                Get-ChildItem -LiteralPath $script:SigningStorePath -ErrorAction Stop
+            )
+
+            foreach ($certificate in $certificates) {
+                $certificatePath = Join-Path $script:SigningStorePath $certificate.Thumbprint
+                if ($certificate.HasPrivateKey) {
+                    Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction Stop
+                }
+                else {
+                    Remove-Item -LiteralPath $certificatePath -Force -ErrorAction Stop
+                }
+            }
+
+            Remove-Item `
+                -LiteralPath $script:SigningStorePath `
+                -Recurse `
+                -Force `
+                -ErrorAction Stop
+
+            if (-not (Test-Path -LiteralPath $script:SigningStorePath -ErrorAction Stop)) {
+                $script:SigningStoreOwned = $false
+                return
+            }
+
+            $lastFailure = [System.InvalidOperationException]::new(
+                "Owned signing store still exists after cleanup attempt ${attempt}: $($script:SigningStoreName)")
+        }
+        catch {
+            $lastFailure = $_.Exception
+        }
+
+        if ($attempt -lt 3) {
+            Start-Sleep -Milliseconds (50 * $attempt)
+        }
+    }
+
+    throw [System.InvalidOperationException]::new(
+        "Could not remove the owned signing store and private keys after three attempts: $($script:SigningStoreName)",
+        $lastFailure)
+}
+
+function Remove-PackagingWorkDirectory {
+    $lastFailure = $null
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            if (-not (Test-Path -LiteralPath $Work -ErrorAction Stop)) {
+                return
+            }
+
+            Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction Stop
+
+            if (-not (Test-Path -LiteralPath $Work -ErrorAction Stop)) {
+                return
+            }
+
+            $lastFailure = [System.IO.IOException]::new(
+                "Packaging temporary directory still exists after cleanup attempt ${attempt}: $Work")
+        }
+        catch {
+            $lastFailure = $_.Exception
+        }
+
+        if ($attempt -lt 3) {
+            Start-Sleep -Milliseconds (50 * $attempt)
+        }
+    }
+
+    throw [System.IO.IOException]::new(
+        "Could not remove packaging temporary directory after three attempts: $Work",
+        $lastFailure)
+}
+
+# The Native AOT image does not absorb the P/Invoke shared libraries. SQLitePCLRaw only
+# static-links e_sqlcipher for browser-wasm, so every Windows publish emits e_sqlcipher.dll
 # (and libonigwrap.dll) beside the host. Shipping a zip without them produces a CLI that
 # dies with DllNotFoundException the moment it opens the Grimoire, and nothing downstream
 # launches the binary — so assert here and fail the build loudly.
@@ -86,33 +176,42 @@ function Assert-StagedNatives {
     Write-Host "==> Verified native sidecars in ${StageDir}: $($Names -join ', ')"
 }
 
-# Cli.csproj enables PublishAot unconditionally for every non-Apple RuntimeIdentifier, so there is
-# no legitimate reason this script should ever produce the self-contained CoreCLR fallback shape
-# (unlike the macOS packager, which accepts the fallback on a host with no ld64.lld). A publish
-# that cannot find the Native AOT toolchain for this RID does not fail -- it degrades silently to
-# that fallback, which still packages, still ships, and is quietly no longer Native AOT (see
-# build-windows.yml's comment on this exact risk). hostfxr.dll exists only in the fallback shape:
-# unlike a raw *.dll count, it is not confused by e_sqlcipher.dll/libonigwrap.dll, which ship
-# beside the host either way.
+# Native AOT still carries native dependency DLLs, so a blanket DLL count is wrong. The managed CLI
+# assembly and CoreCLR host components are the forbidden fallback markers.
 function Assert-NativeAotPublish {
     param(
         [Parameter(Mandatory = $true)]
         [string]$StageDir
     )
 
-    $hostfxr = Join-Path $StageDir "hostfxr.dll"
-    if (Test-Path -LiteralPath $hostfxr) {
+    $forbidden = @(
+        "RetroDownfall.Arcanum.Cli.dll",
+        "hostfxr.dll",
+        "hostpolicy.dll"
+    )
+    $present = @($forbidden | Where-Object { Test-Path -LiteralPath (Join-Path $StageDir $_) })
+
+    if ($present.Count -gt 0) {
         Get-ChildItem -LiteralPath $StageDir | Format-Table Name, Length | Out-String | Write-Host
-        throw "Staged Arcanum CLI contains hostfxr.dll under $StageDir, so this is a self-contained CoreCLR fallback publish, not Native AOT. Install the missing Native AOT toolchain component (ILCompiler / MSVC linker) for this RID and republish."
+        throw "Staged Arcanum CLI is not Native AOT; forbidden managed runtime files are present: $($present -join ', ')."
     }
 
-    Write-Host "==> Verified Native AOT publish (no hostfxr.dll in the staged tree)"
+    Write-Host "==> Verified Native AOT publish"
 }
+
+$primaryFailure = $null
+$cleanupFailures = [System.Collections.Generic.List[System.Exception]]::new()
 
 try {
     if ($Sign) {
         $certPath = $env:WINDOWS_CERT_PATH
-        $certPassword = $env:WINDOWS_CERT_PASSWORD
+        $certPassword = [System.Environment]::GetEnvironmentVariable(
+            "WINDOWS_CERT_PASSWORD",
+            [System.EnvironmentVariableTarget]::Process)
+        [System.Environment]::SetEnvironmentVariable(
+            "WINDOWS_CERT_PASSWORD",
+            $null,
+            [System.EnvironmentVariableTarget]::Process)
         if ([string]::IsNullOrWhiteSpace($certPath) -or -not (Test-Path -LiteralPath $certPath)) {
             throw "-Sign requested but WINDOWS_CERT_PATH is missing or not a file."
         }
@@ -123,23 +222,45 @@ try {
             throw "signtool not found on PATH; install Windows SDK signing tools or omit -Sign."
         }
 
-        # Never hand the PFX password to signtool on the command line (CWE-214): a child
-        # process command line is visible to local process auditing (4688/Sysmon/EDR) and
-        # to any concurrent local user. Import once, then sign by thumbprint.
-        Write-Host "==> Importing signing certificate into Cert:\CurrentUser\My"
-        $thumbprintsBefore = [string[]] @(Get-ChildItem -Path Cert:\CurrentUser\My | Select-Object -ExpandProperty Thumbprint)
+        # Never hand the PFX password to signtool on the command line (CWE-214): a child process
+        # command line is visible to local process auditing and concurrent local users. A unique
+        # CurrentUser store also makes ownership structural: this run never modifies or scans My,
+        # and cleanup can remove the whole owned store plus every imported private key.
+        Write-Host "==> Creating owned signing store $($script:SigningStoreName)"
+        $script:SigningStoreOwned = $true
+        $signingStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+            $script:SigningStoreName,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+
+        try {
+            $signingStore.Open(
+                [System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        }
+        finally {
+            $signingStore.Dispose()
+        }
+
+        Write-Host "==> Importing signing certificate into owned store $($script:SigningStoreName)"
         $securePassword = ConvertTo-SecureString -String $certPassword -AsPlainText -Force
-        $imported = @(Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword)
-        $securePassword = $null
-        $certPassword = $null
+
+        try {
+            $imported = @(
+                Import-PfxCertificate `
+                    -FilePath $certPath `
+                    -CertStoreLocation $script:SigningStorePath `
+                    -Password $securePassword
+            )
+        }
+        finally {
+            $securePassword = $null
+            $certPassword = $null
+        }
+
         $leaf = $imported | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
         if ($null -eq $leaf) {
             throw "WINDOWS_CERT_PATH did not yield a certificate with a private key."
         }
         $script:SignThumbprint = $leaf.Thumbprint
-        # Only reclaim what this run actually added, so a developer's pre-installed
-        # certificate survives the cleanup in the finally block.
-        $script:SignCertImported = -not ($thumbprintsBefore -contains $script:SignThumbprint)
     }
 
     function Invoke-AuthenticodeSign {
@@ -148,7 +269,8 @@ try {
             [string[]]$Path
         )
 
-        & signtool sign /sha1 $script:SignThumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 @Path
+        & signtool sign /s $script:SigningStoreName /sha1 $script:SignThumbprint `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 @Path
         if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($Path -join ', ')" }
     }
 
@@ -204,9 +326,26 @@ try {
         $archive = Join-Path $OutputDir "$stageName.zip"
         $project = Join-Path $RepoRoot "src\RetroDownfall.Arcanum.Cli\RetroDownfall.Arcanum.Cli.csproj"
 
+        $publishAot = (& dotnet msbuild $project -nologo -getProperty:PublishAot `
+            "-p:Configuration=Release" "-p:RuntimeIdentifier=$Rid" | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Could not evaluate PublishAot for $Rid" }
+        if ($publishAot -ne "true") {
+            throw "PublishAot resolved to '$publishAot' for $Rid; expected true"
+        }
+
         Write-Host "==> Publishing Arcanum Native AOT ($Rid, Version=$Version)"
-        & dotnet publish $project -c Release -r $Rid --self-contained true "-p:Version=$Version" -o $publishDir
-        if ($LASTEXITCODE -ne 0) { throw "dotnet publish Cli failed" }
+        $publishOutput = @(& dotnet publish $project -c Release -r $Rid --self-contained true `
+            "-p:Version=$Version" -o $publishDir 2>&1)
+        $publishExitCode = $LASTEXITCODE
+        $publishOutput | ForEach-Object { Write-Host $_ }
+        if ($publishExitCode -ne 0) { throw "dotnet publish Cli failed" }
+
+        $publishWarnings = @($publishOutput | Where-Object {
+                $_ -match '(?i)(^|[\s:])warning([\s:]|$)'
+            })
+        if ($publishWarnings.Count -gt 0) {
+            throw "Arcanum publish emitted warning output: $($publishWarnings -join [System.Environment]::NewLine)"
+        }
 
         $published = Join-Path $publishDir "RetroDownfall.Arcanum.Cli.exe"
         if (-not (Test-Path -LiteralPath $published)) {
@@ -253,9 +392,18 @@ try {
         $project = Join-Path $RepoRoot $ProjectRelative
 
         Write-Host "==> Publishing $Product self-contained Avalonia folder ($Rid, Version=$Version)"
-        & dotnet publish $project -c Release -r $Rid --self-contained true `
-            "-p:Version=$Version" "-p:UseAppHost=true" "-p:PublishSingleFile=false" -o $publishDir
-        if ($LASTEXITCODE -ne 0) { throw "dotnet publish $Product failed" }
+        $publishOutput = @(& dotnet publish $project -c Release -r $Rid --self-contained true `
+            "-p:Version=$Version" "-p:UseAppHost=true" "-p:PublishSingleFile=false" -o $publishDir 2>&1)
+        $publishExitCode = $LASTEXITCODE
+        $publishOutput | ForEach-Object { Write-Host $_ }
+        if ($publishExitCode -ne 0) { throw "dotnet publish $Product failed" }
+
+        $publishWarnings = @($publishOutput | Where-Object {
+                $_ -match '(?i)(^|[\s:])warning([\s:]|$)'
+            })
+        if ($publishWarnings.Count -gt 0) {
+            throw "$Product publish emitted warning output: $($publishWarnings -join [System.Environment]::NewLine)"
+        }
 
         New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
         Copy-Item -Path (Join-Path $publishDir "*") -Destination $stageDir -Recurse -Force
@@ -302,11 +450,48 @@ try {
     Write-Host "==> Windows artifacts in $OutputDir"
     Get-ChildItem -LiteralPath $OutputDir | Format-Table Name, Length
 }
+catch {
+    $primaryFailure = $_.Exception
+}
 finally {
-    if ($script:SignCertImported -and -not [string]::IsNullOrWhiteSpace($script:SignThumbprint)) {
-        Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($script:SignThumbprint)" -Force -ErrorAction SilentlyContinue
+    if ($Sign) {
+        [System.Environment]::SetEnvironmentVariable(
+            "WINDOWS_CERT_PASSWORD",
+            $null,
+            [System.EnvironmentVariableTarget]::Process)
     }
-    if (Test-Path -LiteralPath $Work) {
-        Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
+
+    try {
+        Remove-OwnedSigningStore
     }
+    catch {
+        $cleanupFailures.Add($_.Exception)
+    }
+
+    try {
+        Remove-PackagingWorkDirectory
+    }
+    catch {
+        $cleanupFailures.Add($_.Exception)
+    }
+}
+
+$failures = [System.Collections.Generic.List[System.Exception]]::new()
+
+if ($null -ne $primaryFailure) {
+    $failures.Add($primaryFailure)
+}
+
+foreach ($cleanupFailure in $cleanupFailures) {
+    $failures.Add($cleanupFailure)
+}
+
+if ($failures.Count -eq 1) {
+    throw $failures[0]
+}
+
+if ($failures.Count -gt 1) {
+    throw [System.AggregateException]::new(
+        "Windows packaging failed and one or more cleanup operations also failed.",
+        [System.Exception[]] $failures)
 }

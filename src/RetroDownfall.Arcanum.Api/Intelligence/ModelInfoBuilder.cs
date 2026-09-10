@@ -17,32 +17,24 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </remarks>
 internal static class ModelInfoBuilder
 {
-
     public static List<ModelInfoDto> BuildModelInfoList(ArcanumSettings settings)
     {
-
         List<ModelInfoDto> models = [];
 
         foreach (ProviderSettings provider in settings.Providers ?? [])
         {
-
             string redactedEndpoint = RedactRequired(provider.Endpoint);
 
             foreach (ModelEntry model in provider.Models ?? [])
             {
-
                 if (string.IsNullOrWhiteSpace(model.Name))
                 {
-
                     continue;
-
                 }
 
                 if (FamiliarProviders.IsHidden(provider, model.Name))
                 {
-
                     continue;
-
                 }
 
                 // maxBudgetTokens means nothing without the dialect that says how a budget is carried on
@@ -59,16 +51,14 @@ internal static class ModelInfoBuilder
                     redactedEndpoint,
                     provider.ContextWindowLimit,
                     model.SupportsVision,
+                    model.SupportsTools is not false,
                     wireDialect,
                     wireDialect is null ? null : model.Reasoning?.MaxBudgetTokens,
                     ModelCapabilityCatalog.ResolvePromptCaching(provider, model.Name)));
-
             }
-
         }
 
         return models;
-
     }
 
     /// <summary>
@@ -87,5 +77,4 @@ internal static class ModelInfoBuilder
 
     private static string RedactRequired(string value) =>
         string.IsNullOrEmpty(value) ? value : "***";
-
 }

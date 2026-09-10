@@ -48,7 +48,9 @@ internal sealed record InstallationResetActiveRecord(
     [property: JsonIgnore]
     FullInstallationResetRemediationClaimV1? FullInstallationResetRemediationClaim = null,
     [property: JsonIgnore]
-    HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset = null);
+    HostToolsMarkerPairResetCheckpointV1? HostToolsMarkerPairReset = null,
+    [property: JsonIgnore]
+    InstallationResetNestedTransitionReceiptV1? NestedTransitionReceipt = null);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -59,7 +61,6 @@ internal sealed partial class InstallationResetActiveLegacyJsonContext : JsonSer
 
 internal interface IInstallationResetActiveStore
 {
-
     string GuardedRoot { get; }
 
     Task<Result<InstallationResetActiveRecoveryState>> RecoverAsync(
@@ -96,12 +97,10 @@ internal interface IInstallationResetActiveStore
     Task<Result> CompleteStartupCleanupAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default);
-
 }
 
 internal sealed class InstallationResetActiveStore : IInstallationResetActiveStore
 {
-
     public const int CurrentVersion = 1;
 
     public const int MaxBytes = 64 * 1024;
@@ -118,7 +117,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
     public InstallationResetActiveStore(string guardedRoot)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
 
         _guardedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(guardedRoot));
@@ -130,7 +128,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         string name = Path.GetFileNameWithoutExtension(lockPath);
 
         ActivePath = Path.Combine(parent, name + ".factory-reset.active.json");
-
     }
 
     internal InstallationResetActiveStore(
@@ -139,7 +136,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveFilePersistence? files = null)
         : this(guardedRoot)
     {
-
         ArgumentNullException.ThrowIfNull(credentials);
 
         _keys = new InstallationResetActiveRecordKeyProvider(credentials);
@@ -149,12 +145,89 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         _identities = new BackupRestoreJournalInstallationIdentityProvider(credentials);
 
         _files = files ?? new InstallationResetActiveFilePersistence();
-
     }
 
     public string ActivePath { get; }
 
     public string GuardedRoot => _guardedRoot;
+
+    /// <summary>
+    /// Proves whether any reset evidence exists without retrieving credential secret bytes.
+    /// </summary>
+    /// <remarks>
+    /// Only an exact public record or a positively identified reset credential returns present.
+    /// Unsafe file topology and indeterminate credential metadata fail closed. This distinction is
+    /// what keeps ordinary startup prompt-free without allowing orphaned authenticated evidence to
+    /// masquerade as absence.
+    /// </remarks>
+    internal Result<bool> ProbePresence()
+    {
+        Result dependencies = RequireAuthenticatedDependencies();
+
+        if (dependencies.IsFailure)
+        {
+            return Result<bool>.Failure(dependencies.Error);
+        }
+
+        Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
+            resolved = ResolveEvidenceLocation();
+
+        if (resolved.IsFailure)
+        {
+            return Result<bool>.Failure(resolved.Error);
+        }
+
+        (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
+            resolved.Value;
+
+        Result<bool> file = _files!.ProbePresence(location);
+
+        if (file.IsFailure)
+        {
+            return Result<bool>.Failure(file.Error);
+        }
+
+        if (file.Value)
+        {
+            return true;
+        }
+
+        Result<OsCredentialStoreStatus> anchor = _anchors!.ProbePresence(profile);
+
+        if (anchor.IsFailure)
+        {
+            return Result<bool>.Failure(anchor.Error);
+        }
+
+        if (anchor.Value is OsCredentialStoreStatus.Ok)
+        {
+            return true;
+        }
+
+        if (anchor.Value is not OsCredentialStoreStatus.NotFound)
+        {
+            return PresenceUnavailable();
+        }
+
+        Result<OsCredentialStoreStatus> key = _keys!.ProbePresence(profile);
+
+        if (key.IsFailure)
+        {
+            return Result<bool>.Failure(key.Error);
+        }
+
+        return key.Value switch
+        {
+            OsCredentialStoreStatus.Ok => true,
+            OsCredentialStoreStatus.NotFound => false,
+            _ => PresenceUnavailable(),
+        };
+    }
+
+    private static Result<bool> PresenceUnavailable() =>
+        new Error(
+            ErrorCodes.Data.ControlPathUnavailable,
+            "The installation-reset credential evidence could not be probed without reading secret data.");
 
     public async Task<Result<InstallationResetActivePublication>> BeginAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -162,7 +235,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveRecord record,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(record);
@@ -175,18 +247,14 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (dependencies.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(dependencies.Error);
-
         }
 
-        Result<InstallationResetActivePayloadV2> payload = ToAuthenticatedPayload(record);
+        Result<InstallationResetActivePayloadV3> payload = ToAuthenticatedPayload(record);
 
         if (installationId == Guid.Empty || payload.IsFailure)
         {
-
             return Integrity<InstallationResetActivePublication>();
-
         }
 
         Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
@@ -194,9 +262,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (resolved.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(resolved.Error);
-
         }
 
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
@@ -211,34 +277,26 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (preflight.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(preflight.Error);
-
         }
 
         Result noFile = _files!.RequireNoEvidence(location);
 
         if (noFile.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(noFile.Error);
-
         }
 
         Result<InstallationResetActiveAnchorV1?> anchorRead = _anchors!.Read(profile);
 
         if (anchorRead.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(anchorRead.Error);
-
         }
 
         if (anchorRead.Value is not null)
         {
-
             return Conflict<InstallationResetActivePublication>();
-
         }
 
         Result<Guid> identity = _identities!.SeedFromDatabase(
@@ -249,9 +307,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (identity.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(identity.Error);
-
         }
 
         Result<InstallationResetActiveRecordKeyLease> key = _keys!.CreateOrOpen(
@@ -261,9 +317,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (key.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(key.Error);
-
         }
 
         InstallationResetActiveAnchorV1 opening = new(
@@ -284,16 +338,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (anchored.IsFailure)
         {
-
             key.Value.Dispose();
 
             return Result<InstallationResetActivePublication>.Failure(anchored.Error);
-
         }
 
         using (key.Value)
         {
-
             return await PublishAsync(
                     heldInstallationLock,
                     profile,
@@ -304,9 +355,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     InstallationResetActiveRecordAuthenticator.ZeroDigest,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     public async Task<Result<InstallationResetActivePublication>> AdvanceAsync(
@@ -315,7 +364,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveRecord next,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(current);
@@ -332,34 +380,26 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (recovered.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(recovered.Error);
-
         }
 
         if (recovered.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             || recovered.Value.Publication is not { } actual
             || !SamePublication(current, actual))
         {
-
             return Conflict<InstallationResetActivePublication>();
-
         }
 
-        Result<InstallationResetActivePayloadV2> payload = ToAuthenticatedPayload(next);
+        Result<InstallationResetActivePayloadV3> payload = ToAuthenticatedPayload(next);
 
         if (payload.IsFailure || !IsMonotonicTransition(actual.Payload, payload.Value))
         {
-
             return Conflict<InstallationResetActivePublication>();
-
         }
 
         if (actual.Anchor.Revision >= InstallationResetActiveRecordAuthenticator.MaxRevision)
         {
-
             return Conflict<InstallationResetActivePublication>();
-
         }
 
         Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
@@ -367,9 +407,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (resolved.IsFailure || resolved.Value.Location != actual.Location)
         {
-
             return Integrity<InstallationResetActivePublication>();
-
         }
 
         BackupRestoreProfileNamespace profile = resolved.Value.Profile;
@@ -378,14 +416,11 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (key.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(key.Error);
-
         }
 
         using (key.Value)
         {
-
             return await PublishAsync(
                     heldInstallationLock,
                     profile,
@@ -396,16 +431,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     actual.EnvelopeDigest,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     public Task<Result<InstallationResetActiveRecoveryState>> RecoverAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(_guardedRoot);
@@ -414,7 +446,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             heldInstallationLock,
             mayAdvanceAnchor: true,
             cancellationToken);
-
     }
 
     public Task<Result<InstallationResetActiveRecoveryState>> InspectAsync(
@@ -444,7 +475,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         FileHandleIdentity? expectedIdentity,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(_guardedRoot);
@@ -455,11 +485,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (dependencies.IsFailure || installationId == Guid.Empty)
         {
-
             return dependencies.IsFailure
                 ? Result<InstallationResetActivePublication>.Failure(dependencies.Error)
                 : Integrity<InstallationResetActivePublication>();
-
         }
 
         Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
@@ -467,9 +495,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (resolved.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(resolved.Error);
-
         }
 
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
@@ -480,11 +506,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (fileRead.IsFailure || fileRead.Value is null)
         {
-
             return fileRead.IsFailure
                 ? Result<InstallationResetActivePublication>.Failure(fileRead.Error)
                 : EvidenceFailure<InstallationResetActivePublication>();
-
         }
 
         using InstallationResetActiveFileRead file = fileRead.Value;
@@ -493,9 +517,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (legacy.IsFailure)
         {
-
             return EvidenceFailure<InstallationResetActivePublication>();
-
         }
 
         if (expectedRecord is not null
@@ -503,18 +525,14 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 || file.Metadata.Identity != expectedIdentity.Value
                 || !SameLegacyRecord(expectedRecord, legacy.Value)))
         {
-
             return EvidenceFailure<InstallationResetActivePublication>();
-
         }
 
-        Result<InstallationResetActivePayloadV2> payload = ToAuthenticatedPayload(legacy.Value);
+        Result<InstallationResetActivePayloadV3> payload = ToAuthenticatedPayload(legacy.Value);
 
         if (payload.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(payload.Error);
-
         }
 
         Result preflight = InstallationResetActiveRecordAuthenticator.PreflightEnvelope(
@@ -526,18 +544,14 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (preflight.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(preflight.Error);
-
         }
 
         Result<InstallationResetActiveAnchorV1?> anchorRead = _anchors!.Read(profile);
 
         if (anchorRead.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(anchorRead.Error);
-
         }
 
         InstallationResetActiveAnchorV1 opening;
@@ -546,21 +560,16 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (anchorRead.Value is null)
         {
-
             Result<bool> keyPresent = _keys!.IsPresent(profile);
 
             if (keyPresent.IsFailure)
             {
-
                 return Result<InstallationResetActivePublication>.Failure(keyPresent.Error);
-
             }
 
             if (keyPresent.Value)
             {
-
                 return EvidenceFailure<InstallationResetActivePublication>();
-
             }
 
             Result<Guid> identity = _identities!.SeedFromDatabase(
@@ -571,9 +580,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (identity.IsFailure)
             {
-
                 return Result<InstallationResetActivePublication>.Failure(identity.Error);
-
             }
 
             key = _keys.CreateOrOpen(
@@ -583,9 +590,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (key.IsFailure)
             {
-
                 return Result<InstallationResetActivePublication>.Failure(key.Error);
-
             }
 
             opening = new InstallationResetActiveAnchorV1(
@@ -606,17 +611,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (stored.IsFailure)
             {
-
                 key.Value.Dispose();
 
                 return Result<InstallationResetActivePublication>.Failure(stored.Error);
-
             }
-
         }
         else
         {
-
             opening = anchorRead.Value;
 
             bool resumable = opening.State is InstallationResetActiveAnchorState.Active
@@ -630,36 +631,28 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (!resumable)
             {
-
                 return EvidenceFailure<InstallationResetActivePublication>();
-
             }
 
             Result identity = _identities!.RequireMatchesDatabase(profile, installationId);
 
             if (identity.IsFailure)
             {
-
                 return Result<InstallationResetActivePublication>.Failure(identity.Error);
-
             }
 
             key = _keys!.OpenExisting(profile);
 
             if (key.IsFailure)
             {
-
                 return key.Error.Code == ErrorCodes.Covenant.NotFound
                     ? EvidenceFailure<InstallationResetActivePublication>()
                     : Result<InstallationResetActivePublication>.Failure(key.Error);
-
             }
-
         }
 
         using (key.Value)
         {
-
             return await PublishAsync(
                     heldInstallationLock,
                     profile,
@@ -670,9 +663,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     InstallationResetActiveRecordAuthenticator.ZeroDigest,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     public async Task<Result> RetireAsync(
@@ -680,7 +671,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         Guid operationId,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(_guardedRoot);
@@ -691,16 +681,12 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (dependencies.IsFailure)
         {
-
             return dependencies;
-
         }
 
         if (operationId == Guid.Empty)
         {
-
             return Integrity();
-
         }
 
         Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
@@ -708,9 +694,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (resolved.IsFailure)
         {
-
             return resolved.Error;
-
         }
 
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
@@ -720,32 +704,25 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (anchorRead.IsFailure)
         {
-
             return anchorRead.Error;
-
         }
 
         if (anchorRead.Value is null)
         {
-
             return await RequireNoRetirementEvidenceAsync(
                     profile,
                     location,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         InstallationResetActiveAnchorV1 anchor = anchorRead.Value;
 
         if (anchor.State is InstallationResetActiveAnchorState.Closed)
         {
-
             if (anchor.OperationId != operationId)
             {
-
                 return OperationConflict();
-
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -759,7 +736,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     anchor,
                     checkpoint.Token)
                 .ConfigureAwait(false);
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await RecoverAsync(
@@ -768,24 +744,18 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (recovered.IsFailure)
         {
-
             return recovered.Error;
-
         }
 
         if (recovered.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             || recovered.Value.Publication is not { } publication)
         {
-
             return EvidenceFailure();
-
         }
 
         if (publication.Envelope.OperationId != operationId)
         {
-
             return OperationConflict();
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -804,9 +774,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (stored.IsFailure)
         {
-
             return stored;
-
         }
 
         using CancellationTokenSource cleanup = CreateCheckpointToken();
@@ -818,14 +786,12 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 closed,
                 cleanup.Token)
             .ConfigureAwait(false);
-
     }
 
     public async Task<Result> CompleteStartupCleanupAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(_guardedRoot);
@@ -836,9 +802,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (dependencies.IsFailure)
         {
-
             return dependencies;
-
         }
 
         Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
@@ -846,9 +810,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (resolved.IsFailure)
         {
-
             return resolved.Error;
-
         }
 
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
@@ -858,28 +820,22 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (anchorRead.IsFailure)
         {
-
             return anchorRead.Error;
-
         }
 
         if (anchorRead.Value is null)
         {
-
             return await CleanupKeyOnlySuffixAsync(
                     heldInstallationLock,
                     profile,
                     location,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (anchorRead.Value.State is not InstallationResetActiveAnchorState.Closed)
         {
-
             return EvidenceFailure();
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -893,7 +849,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 anchorRead.Value,
                 cleanup.Token)
             .ConfigureAwait(false);
-
     }
 
     private async Task<Result> RequireNoRetirementEvidenceAsync(
@@ -901,24 +856,19 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveLocation location,
         CancellationToken cancellationToken)
     {
-
         Result<InstallationResetActiveFileRead?> fileRead = await _files!
             .ReadIfPresentAsync(location, cancellationToken).ConfigureAwait(false);
 
         if (fileRead.IsFailure)
         {
-
             return fileRead.Error;
-
         }
 
         using InstallationResetActiveFileRead? file = fileRead.Value;
 
         if (file is not null)
         {
-
             return EvidenceFailure();
-
         }
 
         Result<bool> keyPresent = _keys!.IsPresent(profile);
@@ -928,7 +878,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             : keyPresent.Value
                 ? EvidenceFailure()
                 : Result.Success();
-
     }
 
     private async Task<Result> CleanupKeyOnlySuffixAsync(
@@ -937,33 +886,26 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveLocation location,
         CancellationToken cancellationToken)
     {
-
         Result<InstallationResetActiveFileRead?> fileRead = await _files!
             .ReadIfPresentAsync(location, cancellationToken).ConfigureAwait(false);
 
         if (fileRead.IsFailure)
         {
-
             return fileRead.Error;
-
         }
 
         using InstallationResetActiveFileRead? file = fileRead.Value;
 
         if (file is not null)
         {
-
             return EvidenceFailure();
-
         }
 
         Result<bool> keyPresent = _keys!.IsPresent(profile);
 
         if (keyPresent.IsFailure)
         {
-
             return keyPresent.Error;
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -974,7 +916,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 _guardedRoot,
                 profile)
             : Result.Success();
-
     }
 
     private async Task<Result> CompleteClosedSuffixAsync(
@@ -984,61 +925,47 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveAnchorV1 closed,
         CancellationToken checkpointToken)
     {
-
         if (closed.State is not InstallationResetActiveAnchorState.Closed
             || closed.ProfileNamespaceDigest != profile.Digest
             || closed.ActiveLocationDigest != location.Digest)
         {
-
             return EvidenceFailure();
-
         }
 
         Result<BackupRestoreJournalIdentityProbe> identity = _identities!.Probe(profile);
 
         if (identity.IsFailure)
         {
-
             return identity.Error;
-
         }
 
         if (identity.Value.Presence is not BackupRestoreJournalIdentityPresence.Present
             || identity.Value.InstallationId != closed.InstallationId)
         {
-
             return EvidenceFailure();
-
         }
 
         Result<InstallationResetActiveFileRead?> fileRead;
 
         try
         {
-
             fileRead = await _files!.ReadIfPresentAsync(location, checkpointToken)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             return CheckpointFailure();
-
         }
 
         if (fileRead.IsFailure)
         {
-
             return fileRead.Error;
-
         }
 
         using InstallationResetActiveFileRead? file = fileRead.Value;
 
         if (file is not null)
         {
-
             Result<InstallationResetActiveEnvelopeV2> envelope =
                 InstallationResetActiveRecordAuthenticator.DecodeEnvelope(file.Bytes.Span);
 
@@ -1049,9 +976,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 || envelope.Value.Revision != closed.Revision
                 || envelope.Value.ActiveLocationDigest != location.Digest)
             {
-
                 return EvidenceFailure();
-
             }
 
             Result<CovenantDigest> digest =
@@ -1059,12 +984,10 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (digest.IsFailure || digest.Value != closed.EnvelopeDigest)
             {
-
                 return EvidenceFailure();
-
             }
 
-            Result<InstallationResetActivePayloadV2> opened = OpenEnvelope(
+            Result<InstallationResetActivePayloadV3> opened = OpenEnvelope(
                 profile,
                 location,
                 closed.InstallationId,
@@ -1072,11 +995,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (opened.IsFailure)
             {
-
                 return opened.Error.Code == ErrorCodes.Covenant.NotFound
                     ? EvidenceFailure()
                     : opened.Error;
-
             }
 
             Result deleted = _files.DeleteDurably(
@@ -1087,15 +1008,11 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (deleted.IsFailure)
             {
-
                 return deleted;
-
             }
-
         }
         else
         {
-
             Result absent = _files!.ProveAbsentDurably(
                 heldInstallationLock,
                 _guardedRoot,
@@ -1103,11 +1020,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (absent.IsFailure)
             {
-
                 return absent;
-
             }
-
         }
 
         Result anchorRemoved = _anchors!.RemoveAndVerifyAbsent(
@@ -1118,16 +1032,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (anchorRemoved.IsFailure)
         {
-
             return anchorRemoved;
-
         }
 
         return _keys!.RemoveAndVerifyAbsent(
             heldInstallationLock,
             _guardedRoot,
             profile);
-
     }
 
     private async Task<Result<InstallationResetActiveRecoveryState>> RecoverCoreAsync(
@@ -1135,16 +1046,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         bool mayAdvanceAnchor,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         Result dependencies = RequireAuthenticatedDependencies();
 
         if (dependencies.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(dependencies.Error);
-
         }
 
         Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
@@ -1152,9 +1060,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (resolved.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(resolved.Error);
-
         }
 
         (BackupRestoreProfileNamespace profile, InstallationResetActiveLocation location) =
@@ -1164,9 +1070,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (anchorRead.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(anchorRead.Error);
-
         }
 
         Result<InstallationResetActiveFileRead?> fileRead = await _files!
@@ -1174,51 +1078,40 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (fileRead.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(fileRead.Error);
-
         }
 
         using InstallationResetActiveFileRead? file = fileRead.Value;
 
         if (anchorRead.Value is not { } anchor)
         {
-
             if (file is not null)
             {
-
                 Result<InstallationResetActiveRecord> legacy = DecodeLegacyV1(file.Bytes.Span);
 
                 if (legacy.IsFailure)
                 {
-
                     return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
                 }
 
                 Result<bool> legacyKeyPresent = _keys!.IsPresent(profile);
 
                 if (legacyKeyPresent.IsFailure)
                 {
-
                     return Result<InstallationResetActiveRecoveryState>.Failure(
                         legacyKeyPresent.Error);
-
                 }
 
                 return legacyKeyPresent.Value
                     ? EvidenceFailure<InstallationResetActiveRecoveryState>()
                     : Legacy(legacy.Value, file.Metadata.Identity);
-
             }
 
             Result<bool> keyPresent = _keys!.IsPresent(profile);
 
             if (keyPresent.IsFailure)
             {
-
                 return Result<InstallationResetActiveRecoveryState>.Failure(keyPresent.Error);
-
             }
 
             return keyPresent.Value
@@ -1227,40 +1120,31 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     InstallationResetActiveRecoveryOutcome.NoActiveRecord,
                     Publication: null,
                     LegacyRecord: null);
-
         }
 
         if (anchor.State is not InstallationResetActiveAnchorState.Active
             || anchor.ProfileNamespaceDigest != profile.Digest
             || anchor.ActiveLocationDigest != location.Digest)
         {
-
             return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
         }
 
         if (file is null)
         {
-
             return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
         }
 
         Result<BackupRestoreJournalIdentityProbe> identity = _identities!.Probe(profile);
 
         if (identity.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(identity.Error);
-
         }
 
         if (identity.Value.Presence is not BackupRestoreJournalIdentityPresence.Present
             || identity.Value.InstallationId != anchor.InstallationId)
         {
-
             return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
         }
 
         Result<InstallationResetActiveEnvelopeV2> envelope =
@@ -1268,7 +1152,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (envelope.IsFailure)
         {
-
             Result<InstallationResetActiveRecord> legacy = DecodeLegacyV1(file.Bytes.Span);
 
             bool resumableLegacy = legacy.IsSuccess
@@ -1279,26 +1162,21 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (!resumableLegacy)
             {
-
                 return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
             }
 
             Result<InstallationResetActiveRecordKeyLease> legacyKey = _keys!.OpenExisting(profile);
 
             if (legacyKey.IsFailure)
             {
-
                 return legacyKey.Error.Code == ErrorCodes.Covenant.NotFound
                     ? EvidenceFailure<InstallationResetActiveRecoveryState>()
                     : Result<InstallationResetActiveRecoveryState>.Failure(legacyKey.Error);
-
             }
 
             legacyKey.Value.Dispose();
 
             return Legacy(legacy.Value, file.Metadata.Identity);
-
         }
 
         if (envelope.Value.ProfileNamespaceDigest != profile.Digest
@@ -1306,12 +1184,10 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || envelope.Value.OperationId != anchor.OperationId
             || envelope.Value.ActiveLocationDigest != location.Digest)
         {
-
             return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
         }
 
-        Result<InstallationResetActivePayloadV2> payload = OpenEnvelope(
+        Result<InstallationResetActivePayloadV3> payload = OpenEnvelope(
             profile,
             location,
             anchor.InstallationId,
@@ -1319,9 +1195,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (payload.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(payload.Error);
-
         }
 
         Result<CovenantDigest> digest =
@@ -1329,22 +1203,18 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (digest.IsFailure)
         {
-
             return Result<InstallationResetActiveRecoveryState>.Failure(digest.Error);
-
         }
 
         if (envelope.Value.Revision == anchor.Revision
             && digest.Value == anchor.EnvelopeDigest)
         {
-
             return Authenticated(
                 location,
                 envelope.Value,
                 digest.Value,
                 payload.Value,
                 anchor);
-
         }
 
         bool oneAhead = anchor.Revision < InstallationResetActiveRecordAuthenticator.MaxRevision
@@ -1353,9 +1223,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (!oneAhead || !mayAdvanceAnchor || heldInstallationLock is null)
         {
-
             return EvidenceFailure<InstallationResetActiveRecoveryState>();
-
         }
 
         InstallationResetActiveAnchorV1 advanced = anchor with
@@ -1380,7 +1248,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 digest.Value,
                 payload.Value,
                 advanced);
-
     }
 
     private async Task<Result<InstallationResetActivePublication>> PublishAsync(
@@ -1389,16 +1256,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveLocation location,
         InstallationResetActiveAnchorV1 anchor,
         InstallationResetActiveRecordKeyLease sealingKey,
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         CovenantDigest previousEnvelopeDigest,
         CancellationToken cancellationToken)
     {
-
         if (anchor.Revision >= InstallationResetActiveRecordAuthenticator.MaxRevision)
         {
-
             return Conflict<InstallationResetActivePublication>();
-
         }
 
         ulong revision = anchor.Revision + 1;
@@ -1414,9 +1278,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (sealed_.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(sealed_.Error);
-
         }
 
         Result<CovenantDigest> digest =
@@ -1427,11 +1289,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (digest.IsFailure || encoded.IsFailure)
         {
-
             return digest.IsFailure
                 ? Result<InstallationResetActivePublication>.Failure(digest.Error)
                 : Result<InstallationResetActivePublication>.Failure(encoded.Error);
-
         }
 
         Result written = await _files!.ReplaceDurablyAsync(
@@ -1443,9 +1303,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         if (written.IsFailure)
         {
-
             return Result<InstallationResetActivePublication>.Failure(written.Error);
-
         }
 
         using CancellationTokenSource checkpoint = CreateCheckpointToken();
@@ -1454,39 +1312,30 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
         try
         {
-
             reread = await _files
                 .ReadIfPresentAsync(location, checkpoint.Token).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             return Result<InstallationResetActivePublication>.Failure(
                 CheckpointFailure().Error);
-
         }
 
         if (reread.IsFailure || reread.Value is null)
         {
-
             return reread.IsFailure
                 ? Result<InstallationResetActivePublication>.Failure(reread.Error)
                 : EvidenceFailure<InstallationResetActivePublication>();
-
         }
 
         using (reread.Value)
         {
-
             Result<InstallationResetActiveEnvelopeV2> landed =
                 InstallationResetActiveRecordAuthenticator.DecodeEnvelope(reread.Value.Bytes.Span);
 
             if (landed.IsFailure || landed.Value != sealed_.Value)
             {
-
                 return EvidenceFailure<InstallationResetActivePublication>();
-
             }
 
             Result<CovenantDigest> landedDigest =
@@ -1494,12 +1343,10 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (landedDigest.IsFailure || landedDigest.Value != digest.Value)
             {
-
                 return EvidenceFailure<InstallationResetActivePublication>();
-
             }
 
-            Result<InstallationResetActivePayloadV2> opened = OpenEnvelope(
+            Result<InstallationResetActivePayloadV3> opened = OpenEnvelope(
                 profile,
                 location,
                 anchor.InstallationId,
@@ -1507,11 +1354,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (opened.IsFailure || !SamePayload(payload, opened.Value))
             {
-
                 return opened.IsFailure
                     ? Result<InstallationResetActivePublication>.Failure(opened.Error)
                     : EvidenceFailure<InstallationResetActivePublication>();
-
             }
 
             InstallationResetActiveAnchorV1 advanced = anchor with
@@ -1536,56 +1381,45 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     digest.Value,
                     opened.Value,
                     advanced);
-
         }
-
     }
 
-    private Result<InstallationResetActivePayloadV2> OpenEnvelope(
+    private Result<InstallationResetActivePayloadV3> OpenEnvelope(
         BackupRestoreProfileNamespace profile,
         InstallationResetActiveLocation location,
         Guid installationId,
         InstallationResetActiveEnvelopeV2 envelope)
     {
-
         Result<InstallationResetActiveRecordKeyLease> key = _keys!.OpenExisting(profile);
 
         if (key.IsFailure)
         {
-
             return key.Error.Code == ErrorCodes.Covenant.NotFound
-                ? EvidenceFailure<InstallationResetActivePayloadV2>()
-                : Result<InstallationResetActivePayloadV2>.Failure(key.Error);
-
+                ? EvidenceFailure<InstallationResetActivePayloadV3>()
+                : Result<InstallationResetActivePayloadV3>.Failure(key.Error);
         }
 
         using (key.Value)
         {
-
             return InstallationResetActiveRecordAuthenticator.Open(
                 key.Value,
                 location,
                 installationId,
                 envelope);
-
         }
-
     }
 
     private Result<(BackupRestoreProfileNamespace Profile, InstallationResetActiveLocation Location)>
         ResolveEvidenceLocation()
     {
-
         Result<BackupRestoreProfileNamespace> profile =
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(_guardedRoot);
 
         if (profile.IsFailure)
         {
-
             return Result<(
                 BackupRestoreProfileNamespace Profile,
                 InstallationResetActiveLocation Location)>.Failure(profile.Error);
-
         }
 
         Result<InstallationResetActiveLocation> location =
@@ -1598,7 +1432,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 BackupRestoreProfileNamespace Profile,
                 InstallationResetActiveLocation Location)>.Failure(location.Error)
             : (profile.Value, location.Value);
-
     }
 
     private Result RequireAuthenticatedDependencies() =>
@@ -1608,67 +1441,58 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 ErrorCodes.Covenant.Unavailable,
                 "The authenticated installation-reset active store is not composed.");
 
-    private static Result<InstallationResetActivePayloadV2> ToAuthenticatedPayload(
+    private static Result<InstallationResetActivePayloadV3> ToAuthenticatedPayload(
         InstallationResetActiveRecord record)
     {
-
         try
         {
-
+            // The legacy plaintext version, the one earlier authenticated payload version, and the
+            // current one are all readable here; the projection stamps the current version, so a
+            // record read at an earlier one is migrated forward by its next publication rather than
+            // resealed at the version it arrived with.
             if (record.Version is not CurrentVersion
-                and not InstallationResetActiveRecordAuthenticator.EnvelopeVersion
+                and not InstallationResetActiveRecordAuthenticator.LegacyPayloadVersion
+                and not InstallationResetActiveRecordAuthenticator.PayloadVersion
                 || !IsValid(record with { Version = CurrentVersion }))
             {
-
-                return Integrity<InstallationResetActivePayloadV2>();
-
+                return Integrity<InstallationResetActivePayloadV3>();
             }
 
-            InstallationResetActivePayloadV2 payload =
-                InstallationResetActivePayloadV2.FromRecord(record);
+            InstallationResetActivePayloadV3 payload =
+                InstallationResetActivePayloadV3.FromRecord(record);
 
             Result valid = InstallationResetActiveRecordAuthenticator.ValidatePayload(payload);
 
             return valid.IsSuccess
                 ? payload
-                : Result<InstallationResetActivePayloadV2>.Failure(valid.Error);
-
+                : Result<InstallationResetActivePayloadV3>.Failure(valid.Error);
         }
         catch (Exception exception) when (
             exception is ArgumentException
                 or InvalidOperationException
                 or NullReferenceException)
         {
-
-            return Integrity<InstallationResetActivePayloadV2>();
-
+            return Integrity<InstallationResetActivePayloadV3>();
         }
-
     }
 
     private static Result<InstallationResetActiveRecord> DecodeLegacyV1(
         ReadOnlySpan<byte> bytes)
     {
-
         if (bytes.IsEmpty || bytes.Length > MaxBytes)
         {
-
             return Integrity<InstallationResetActiveRecord>();
-
         }
 
         try
         {
-
             InstallationResetActiveRecord? record = JsonSerializer.Deserialize(
                 bytes,
                 InstallationResetActiveLegacyJsonContext.Default.InstallationResetActiveRecord);
 
             if (record is null || !IsValid(record))
             {
-
                 return Integrity<InstallationResetActiveRecord>();
-
             }
 
             byte[] currentCanonical = JsonSerializer.SerializeToUtf8Bytes(
@@ -1677,16 +1501,12 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (bytes.SequenceEqual(currentCanonical))
             {
-
                 return record;
-
             }
 
             if (record.DataHandoff is not null || record.OnlineDataCompletion is not null)
             {
-
                 return Integrity<InstallationResetActiveRecord>();
-
             }
 
             // The only older canonical spelling predates these two trailing nullable fields.
@@ -1705,7 +1525,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             return historicalCanonical
                 ? record
                 : Integrity<InstallationResetActiveRecord>();
-
         }
         catch (Exception exception) when (
             exception is JsonException
@@ -1714,11 +1533,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 or InvalidOperationException
                 or NullReferenceException)
         {
-
             return Integrity<InstallationResetActiveRecord>();
-
         }
-
     }
 
     private static bool SamePublication(
@@ -1731,10 +1547,9 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         && SamePayload(expected.Payload, actual.Payload);
 
     private static bool IsMonotonicTransition(
-        InstallationResetActivePayloadV2 current,
-        InstallationResetActivePayloadV2 next)
+        InstallationResetActivePayloadV3 current,
+        InstallationResetActivePayloadV3 next)
     {
-
         if (next.OperationId != current.OperationId
             || !string.Equals(next.PlanId, current.PlanId, StringComparison.Ordinal)
             || next.Scope != current.Scope
@@ -1754,15 +1569,15 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || !IsCheckpointTransition(
                 current.HostToolsMarkerPairReset,
                 next.HostToolsMarkerPairReset)
+            || !IsNestedReceiptTransition(
+                current.NestedTransitionReceipt,
+                next.NestedTransitionReceipt)
             || !CredentialsAreMonotonic(current.CredentialResults, next.CredentialResults))
         {
-
             return false;
-
         }
 
         return true;
-
     }
 
     private static bool SameBinding(
@@ -1779,30 +1594,22 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         System.Collections.Immutable.ImmutableArray<InstallationResetActiveCredentialResultV2> current,
         System.Collections.Immutable.ImmutableArray<InstallationResetActiveCredentialResultV2> next)
     {
-
         Dictionary<string, InstallationResetActiveCredentialResultV2> nextByAccount =
             new(StringComparer.Ordinal);
 
         foreach (InstallationResetActiveCredentialResultV2 result in next)
         {
-
             if (!nextByAccount.TryAdd(result.Account, result))
             {
-
                 return false;
-
             }
-
         }
 
         foreach (InstallationResetActiveCredentialResultV2 prior in current)
         {
-
             if (!nextByAccount.TryGetValue(prior.Account, out var later))
             {
-
                 return false;
-
             }
 
             bool priorSucceeded = prior.Status is InstallationResetItemStatus.Preserved
@@ -1815,28 +1622,22 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
             if (priorSucceeded && laterFailed)
             {
-
                 return false;
-
             }
 
             if (prior.Status is InstallationResetItemStatus.Preserved
                 && later.Status is not InstallationResetItemStatus.Preserved)
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool SamePayload(
-        InstallationResetActivePayloadV2 expected,
-        InstallationResetActivePayloadV2 actual) =>
+        InstallationResetActivePayloadV3 expected,
+        InstallationResetActivePayloadV3 actual) =>
         expected.Version == actual.Version
         && expected.OperationId == actual.OperationId
         && string.Equals(expected.PlanId, actual.PlanId, StringComparison.Ordinal)
@@ -1857,20 +1658,53 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             actual.HostToolsMarkerPairReset)
         && SameClaim(
             expected.FullInstallationResetRemediationClaim,
-            actual.FullInstallationResetRemediationClaim);
+            actual.FullInstallationResetRemediationClaim)
+        && expected.NestedTransitionReceipt == actual.NestedTransitionReceipt;
+
+    /// <summary>
+    /// Admits only the one edge a nested receipt has, and refuses every way of unsaying it.
+    /// </summary>
+    /// <remarks>
+    /// Absent may become a claim, and a claim may become the completion of the same nested operation.
+    /// Nothing else: removing the receipt would let a reset forget it launched a database transition
+    /// whose journal it can no longer read, moving it back would let a finished transition be
+    /// relaunched, and renaming its operation would let one transition's proof stand in for another's.
+    ///
+    /// <para>A same-state republication is legal only when the receipt is unchanged, so the identity
+    /// comparison here doubles as the no-silent-edit rule the rest of the payload gets from
+    /// <c>SamePayload</c>.</para>
+    /// </remarks>
+    private static bool IsNestedReceiptTransition(
+        InstallationResetNestedTransitionReceiptV1? current,
+        InstallationResetNestedTransitionReceiptV1? next)
+    {
+        if (current is null)
+        {
+            return next is null
+                || next.Phase is InstallationResetNestedTransitionPhase.Claimed;
+        }
+
+        if (next is null || next.NestedOperationId != current.NestedOperationId)
+        {
+            return false;
+        }
+
+        return current.Phase is InstallationResetNestedTransitionPhase.Claimed
+            ? next.Phase is InstallationResetNestedTransitionPhase.Claimed
+                ? next == current
+                : next.Phase is InstallationResetNestedTransitionPhase.Completed
+            : next == current;
+    }
 
     private static bool IsCheckpointTransition(
         HostToolsMarkerPairResetCheckpointV1? current,
         HostToolsMarkerPairResetCheckpointV1? next)
     {
-
         if (current is null)
         {
-
             return next is null
                 || next.Phase is HostToolsMarkerPairResetPhase.PairJournaled
                     && ReceiptIsNull(next);
-
         }
 
         if (next is null
@@ -1878,36 +1712,27 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || (int)next.Phase < (int)current.Phase
             || (int)next.Phase > (int)current.Phase + 1)
         {
-
             return false;
-
         }
 
         if (next.Phase != current.Phase)
         {
-
             return SameReceipt(current, next);
-
         }
 
         if (current.Phase is not HostToolsMarkerPairResetPhase.PairAbsenceVerified)
         {
-
             return SameReceipt(current, next);
-
         }
 
         if (ReceiptIsNull(current))
         {
-
             return ReceiptIsNull(next) || ReceiptIsPrepared(next);
-
         }
 
         return ReceiptNeedsTerminalPublication(current)
             && ReceiptIsTerminal(next)
             && SameFixedReceipt(current, next);
-
     }
 
     private static bool SameCheckpoint(
@@ -1997,17 +1822,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         ImmutableArray<CampaignMarkerInventoryEntryV1> left,
         ImmutableArray<CampaignMarkerInventoryEntryV1> right)
     {
-
         if (left.IsDefault || right.IsDefault || left.Length != right.Length)
         {
-
             return left.IsDefault && right.IsDefault;
-
         }
 
         for (int index = 0; index < left.Length; index++)
         {
-
             CampaignMarkerInventoryEntryV1 leftEntry = left[index];
 
             CampaignMarkerInventoryEntryV1 rightEntry = right[index];
@@ -2025,15 +1846,11 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                     leftEntry.SameHandleOwnershipEvidenceDigest,
                     rightEntry.SameHandleOwnershipEvidenceDigest))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool SameReceipt(
@@ -2069,16 +1886,13 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
     private static bool ReceiptIsTerminal(
         HostToolsMarkerPairResetCheckpointV1 checkpoint)
     {
-
         if (checkpoint.MarkerIntentCount is not { } count
             || checkpoint.OrderedMarkerIntentIds is null
             || checkpoint.MarkerIntentVectorDigest is null
             || checkpoint.DeletedCount is not { } deleted
             || checkpoint.OrphanCount is not { } orphan)
         {
-
             return false;
-
         }
 
         return count == 0
@@ -2086,7 +1900,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             : (deleted != 0 || orphan != 0)
                 && deleted <= count
                 && orphan == count - deleted;
-
     }
 
     private static bool SameFixedReceipt(
@@ -2102,25 +1915,19 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         ImmutableArray<Guid>? left,
         ImmutableArray<Guid>? right)
     {
-
         if (left is null || right is null)
         {
-
             return left is null && right is null;
-
         }
 
         if (left.Value.IsDefault
             || right.Value.IsDefault
             || left.Value.Length != right.Value.Length)
         {
-
             return left.Value.IsDefault && right.Value.IsDefault;
-
         }
 
         return left.Value.AsSpan().SequenceEqual(right.Value.AsSpan());
-
     }
 
     private static bool SameClaim(
@@ -2152,10 +1959,8 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
         InstallationResetActiveRecord expected,
         InstallationResetActiveRecord actual)
     {
-
         try
         {
-
             byte[] expectedBytes = JsonSerializer.SerializeToUtf8Bytes(
                 expected,
                 InstallationResetActiveLegacyJsonContext.Default.InstallationResetActiveRecord);
@@ -2165,23 +1970,19 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 InstallationResetActiveLegacyJsonContext.Default.InstallationResetActiveRecord);
 
             return expectedBytes.AsSpan().SequenceEqual(actualBytes);
-
         }
         catch (Exception exception) when (
             exception is JsonException or NotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     private static Result<InstallationResetActiveRecoveryState> Authenticated(
         InstallationResetActiveLocation location,
         InstallationResetActiveEnvelopeV2 envelope,
         CovenantDigest digest,
-        InstallationResetActivePayloadV2 payload,
+        InstallationResetActivePayloadV3 payload,
         InstallationResetActiveAnchorV1 anchor) =>
         new InstallationResetActiveRecoveryState(
             InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
@@ -2245,7 +2046,6 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
 
     private static bool IsValid(InstallationResetActiveRecord record)
     {
-
         if (record.Version != CurrentVersion
             || record.OperationId == Guid.Empty
             || string.IsNullOrWhiteSpace(record.PlanId)
@@ -2263,9 +2063,7 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || binding.DataPlanIds is null
             || record.CredentialResults is null)
         {
-
             return false;
-
         }
 
         bool workspaceRequired = record.Scope is InstallationResetScope.Workspace
@@ -2280,14 +2078,11 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || binding.CredentialAccounts.Any(string.IsNullOrWhiteSpace)
             || binding.DataPlanIds.Any(string.IsNullOrWhiteSpace))
         {
-
             return false;
-
         }
 
         foreach (InstallationResetPreservedBackup backup in binding.PreservedBackups)
         {
-
             if (backup is null
                 || string.IsNullOrWhiteSpace(backup.CanonicalPath)
                 || backup.Identity is null
@@ -2295,32 +2090,23 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
                 || backup.Identity.Length < 0
                 || backup.Identity.HardLinkCount == 0)
             {
-
                 return false;
-
             }
-
         }
 
         foreach (InstallationResetCredentialResult result in record.CredentialResults)
         {
-
             if (result is null
                 || string.IsNullOrWhiteSpace(result.Account)
                 || !Enum.IsDefined(result.Status))
             {
-
                 return false;
-
             }
-
         }
 
         if (record.DataHandoff is null)
         {
-
             return record.OnlineDataCompletion is null;
-
         }
 
         if (record.DataHandoff is not InstallationResetDataHandoff.HostFactoryErasure
@@ -2328,16 +2114,12 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             || binding.DataPlanIds.Length != 1
             || string.IsNullOrWhiteSpace(binding.DataPlanIds[0]))
         {
-
             return false;
-
         }
 
         if (record.OnlineDataCompletion is not { } completion)
         {
-
             return record.Phase is InstallationResetPhase.Prepared;
-
         }
 
         return completion.ServerOperationId != Guid.Empty
@@ -2351,7 +2133,5 @@ internal sealed class InstallationResetActiveStore : IInstallationResetActiveSto
             && completion.FilesDeleted >= 0
             && completion.EstimatedBytesDeleted >= 0
             && completion.DerivedRecordsDeleted >= 0;
-
     }
-
 }

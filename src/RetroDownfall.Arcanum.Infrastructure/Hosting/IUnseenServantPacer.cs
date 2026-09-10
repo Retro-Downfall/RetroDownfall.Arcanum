@@ -9,16 +9,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public interface IUnseenServantPacer
 {
-
     /// <summary>
-    /// Applies a polling-interval override for a job configured under <c>Arcanum:Daemon:Jobs</c>.
+    /// Applies a polling-interval override for a configured job and awaits its Grimoire write-through
+    /// and asynchronous scope disposal. Genuine persistence failures warn while retaining the runtime override.
     /// </summary>
     /// <returns>
     /// <see langword="true"/> when a configured job matched and the override was applied;
     /// <see langword="false"/> when no such job is configured, in which case nothing was changed and
     /// the caller must report the failure rather than claiming success.
     /// </returns>
-    bool SetDynamicInterval(string jobName, int intervalMinutes);
+    Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default);
 
     int GetEffectiveInterval(UnseenServantJob job);
 
@@ -27,5 +27,4 @@ public interface IUnseenServantPacer
     /// on scheduler startup. Watermarks with <c>EffectiveIntervalMinutes == 0</c> (no override) are skipped.
     /// </summary>
     Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default);
-
 }

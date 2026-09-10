@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -24,55 +26,52 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
 /// <summary>
-/// Issue #118 — nothing ordinary and durable runs ahead of an active V3 Covenant reset checkpoint.
+/// Issue #118 — nothing ordinary and durable runs ahead of an active Covenant reset launch.
 /// </summary>
 /// <remarks>
-/// A V3 checkpoint means a reset was interrupted somewhere between canonical erasure and the
-/// verified reopen, so the state root it is about to replace or roll back is exactly the tree an
-/// ordinary writer would append to. The ordering is enforced in two places and both are asserted
-/// here: the descriptor's <see cref="LongRunningOperationStartupPriority.BeforeStateWrites"/> phase
-/// inside one reconciliation pass, and the hosted-service registration order that puts the whole
-/// pass ahead of every durable workload, optional initializer, worker, and ready-state publication
-/// (§10.20.3).
+/// An offline-transition launch row means a reset was interrupted somewhere between canonical
+/// erasure and the verified reopen, so the state root it is about to replace or roll back is
+/// exactly the tree an ordinary writer would append to. The ordering is enforced in two places and
+/// both are asserted here: the descriptor's
+/// <see cref="LongRunningOperationStartupPriority.BeforeStateWrites"/> phase inside one
+/// reconciliation pass, and the hosted-service registration order that puts the whole pass ahead of
+/// the startup-order participants named below (§10.20.3). The exhaustive hosted-producer inventory,
+/// not this narrow ordering test, owns the completeness claim.
 /// </remarks>
 public sealed class CovenantResetBootstrapBarrierTests
 {
-
     /// <summary>
-    /// Every hosted workload that may write to the state root, initialize an optional tier, run a
-    /// background worker, or publish readiness. Each must be registered after the reconciliation
-    /// pass, because hosted services start sequentially in registration order.
+    /// These five startup-order participants must be registered after the reconciliation pass because
+    /// hosted services start sequentially in registration order. This is intentionally not the
+    /// exhaustive hosted-producer catalog.
     /// </summary>
-    private static readonly string[] GatedHostedServices =
+    private static readonly string[] StartupRecoveryOrderingParticipants =
     [
         nameof(SessionAttachmentPendingGcHostedService),
         nameof(EntryWeavingService),
         nameof(SessionAttachmentIndexingService),
         nameof(WorkspaceIndexingService),
-        nameof(FileEncryptionKeyBootstrapHostedService),
         nameof(DataRetentionSweepHostedService),
     ];
 
     [Fact]
     public void The_data_retention_mutation_kind_recovers_before_ordinary_state_writes()
     {
-
         LongRunningOperationRecoveryDescriptor descriptor =
             LongRunningOperationRecoveryRegistry.Descriptors[
                 LongRunningOperationKinds.DataRetentionMutation];
 
         Assert.Equal(LongRunningOperationStartupPriority.BeforeStateWrites, descriptor.StartupPriority);
-
     }
 
     /// <summary>
     /// The reconciliation pass is registered after the Grimoire bootstrap that gives it a database
-    /// and before every workload that could append to the tree an interrupted reset is replacing.
+    /// and before each startup-order participant that could append to the tree an interrupted reset
+    /// is replacing.
     /// </summary>
     [Fact]
-    public void The_reconciliation_pass_starts_after_the_grimoire_and_before_every_durable_workload()
+    public void The_reconciliation_pass_starts_after_the_grimoire_and_before_each_startup_order_participant()
     {
-
         IConfiguration configuration = new ConfigurationBuilder().Build();
 
         ServiceCollection services = [];
@@ -97,9 +96,8 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         Assert.InRange(grimoire, 0, reconciler - 1);
 
-        foreach (string gated in GatedHostedServices)
+        foreach (string gated in StartupRecoveryOrderingParticipants)
         {
-
             int index = hosted.IndexOf(gated);
 
             Assert.True(index >= 0, $"{gated} is not registered as a hosted service.");
@@ -107,15 +105,12 @@ public sealed class CovenantResetBootstrapBarrierTests
             Assert.True(
                 index > reconciler,
                 $"{gated} starts at {index}, ahead of durable-operation recovery at {reconciler}.");
-
         }
-
     }
 
     [Fact]
     public void The_lock_first_startup_graph_is_resolvable_and_the_hosted_alias_uses_the_same_singleton()
     {
-
         IConfiguration configuration = new ConfigurationBuilder().Build();
 
         ServiceCollection services = [];
@@ -148,13 +143,11 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.Same(
             host,
             hostedAlias.ImplementationFactory!(provider));
-
     }
 
     [Fact]
     public void The_Covenant_feature_publisher_starts_immediately_after_lock_first_identity_verification()
     {
-
         IConfiguration configuration = new ConfigurationBuilder().Build();
 
         ServiceCollection services = [];
@@ -178,13 +171,11 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.True(grimoire >= 0, "The lock-first Grimoire host is not registered.");
 
         Assert.Equal(grimoire + 1, publisher);
-
     }
 
     [Fact]
     public async Task Production_hosted_order_keeps_Covenant_default_closed_when_lock_first_admission_fails()
     {
-
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -203,7 +194,6 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         try
         {
-
             ServiceCollection services = [];
 
             _ = services.AddArcanumApiServices(configuration);
@@ -246,37 +236,27 @@ public sealed class CovenantResetBootstrapBarrierTests
 
             foreach (string serviceName in relevantOrder)
             {
-
                 try
                 {
-
                     if (serviceName is nameof(GrimoireDatabaseHostedService))
                     {
-
                         await provider
                             .GetRequiredService<GrimoireDatabaseHostedService>()
                             .StartAsync(CancellationToken.None);
-
                     }
                     else
                     {
-
                         await provider
                             .GetRequiredService<CovenantFeatureConfigurationPublisher>()
                             .StartAsync(CancellationToken.None);
-
                     }
-
                 }
                 catch (Exception exception)
                 {
-
                     startupFailure = exception;
 
                     break;
-
                 }
-
             }
 
             Assert.IsType<InvalidOperationException>(startupFailure);
@@ -285,26 +265,19 @@ public sealed class CovenantResetBootstrapBarrierTests
                 .GetRequiredService<CovenantAvailability>();
 
             Assert.False(availability.Current.FeatureEnabled);
-
         }
         finally
         {
-
             if (Directory.Exists(testRoot))
             {
-
                 Directory.Delete(testRoot, recursive: true);
-
             }
-
         }
-
     }
 
     [Fact]
     public void The_pid_file_starts_immediately_after_verified_Covenant_feature_publication()
     {
-
         IConfiguration configuration = new ConfigurationBuilder().Build();
 
         ServiceCollection services = [];
@@ -328,13 +301,37 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.True(publisher >= 0, "The verified Covenant feature publisher is not registered.");
 
         Assert.Equal(publisher + 1, pidFile);
+    }
 
+    [Fact]
+    public void File_encryption_validation_starts_after_pid_and_before_every_background_producer()
+    {
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+        ServiceCollection services = [];
+        _ = services.AddArcanumApiServices(configuration);
+
+        List<string> hosted =
+        [
+            .. services
+                .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+                .Select(static descriptor =>
+                    descriptor.ImplementationType?.Name
+                    ?? descriptor.ImplementationInstance?.GetType().Name
+                    ?? HostedFactoryName(descriptor)),
+        ];
+
+        int pid = hosted.IndexOf(nameof(PidFileService));
+        int validator = hosted.IndexOf(nameof(FileEncryptionKeyBootstrapHostedService));
+        int firstProducer = hosted.IndexOf(nameof(LongRunningOperationStartupHostedService));
+
+        Assert.True(pid >= 0, "The PID hosted service is not registered.");
+        Assert.Equal(pid + 1, validator);
+        Assert.Equal(validator + 1, firstProducer);
     }
 
     [Fact]
     public void Every_application_hosted_service_after_pid_is_recovery_aware()
     {
-
         IConfiguration configuration = new ConfigurationBuilder().Build();
 
         ServiceCollection services = [];
@@ -359,7 +356,6 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         foreach (ServiceDescriptor descriptor in hosted[(pid + 1)..])
         {
-
             Type? implementation = descriptor.ImplementationFactory?
                 .GetType()
                 .GenericTypeArguments
@@ -372,15 +368,12 @@ public sealed class CovenantResetBootstrapBarrierTests
                 && implementation.GetGenericTypeDefinition()
                     == typeof(InstallationResetRecoveryAwareHostedService<>),
                 $"{implementation.Name} is not recovery-aware.");
-
         }
-
     }
 
     [Fact]
     public async Task Recovery_aware_hosted_service_never_starts_or_stops_a_known_writer_in_recovery_mode()
     {
-
         InstallationResetApiAdmission admission = new();
 
         admission.PublishRecovery(new ActiveInstallationReset(
@@ -404,13 +397,11 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.Equal(0, writer.StartCalls);
 
         Assert.Equal(0, writer.StopCalls);
-
     }
 
     [Fact]
     public async Task Recovery_aware_hosted_service_preserves_normal_start_and_stop_lifetime()
     {
-
         RecordingHostedWriter writer = new();
 
         InstallationResetRecoveryAwareHostedService<RecordingHostedWriter> guarded =
@@ -423,13 +414,11 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.Equal(1, writer.StartCalls);
 
         Assert.Equal(1, writer.StopCalls);
-
     }
 
     [Fact]
     public async Task Recovery_aware_hosted_service_remains_stoppable_when_container_disposal_precedes_host_stop()
     {
-
         RecordingHostedWriter writer = new();
 
         InstallationResetRecoveryAwareHostedService<RecordingHostedWriter> guarded =
@@ -444,13 +433,11 @@ public sealed class CovenantResetBootstrapBarrierTests
         Assert.Equal(1, writer.StartCalls);
 
         Assert.Equal(1, writer.StopCalls);
-
     }
 
     [Fact]
     public void Serve_defers_every_guarded_root_write_to_the_lock_first_post_topology_lifecycle()
     {
-
         IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
 
         ProductionSource serve = Assert.Single(
@@ -471,42 +458,55 @@ public sealed class CovenantResetBootstrapBarrierTests
             beforeHostStart,
             StringComparison.Ordinal);
 
+        Assert.DoesNotContain(
+            "ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync(",
+            beforeHostStart,
+            StringComparison.Ordinal);
+
         int configuredAction = beforeHostStart.IndexOf(
-            "ConfigurePostTopologyStartupAction(() =>",
+            "new ServePostTopologyStartupAction(",
             StringComparison.Ordinal);
 
-        int deferredRedirect = beforeHostStart.IndexOf(
+        int activation = serve.Text.IndexOf(
+            "public IDisposable? Activate()",
+            StringComparison.Ordinal);
+
+        int deferredRedirect = serve.Text.IndexOf(
             "RedirectConsoleToBootstrapLog()",
+            activation,
             StringComparison.Ordinal);
 
-        int deferredAcknowledgement = beforeHostStart.IndexOf(
+        int deferredAcknowledgement = serve.Text.IndexOf(
             "ListenAnySecurityPolicy.PersistAcknowledgement()",
+            activation,
             StringComparison.Ordinal);
 
-        Assert.InRange(configuredAction, 0, deferredRedirect - 1);
+        Assert.InRange(configuredAction, 0, hostStart - 1);
 
-        Assert.InRange(deferredRedirect, configuredAction + 1, deferredAcknowledgement - 1);
+        Assert.InRange(activation, configuredAction + 1, deferredRedirect - 1);
+
+        Assert.InRange(deferredRedirect, activation + 1, deferredAcknowledgement - 1);
 
         ProductionSource bootstrapComposition = Assert.Single(
             sources,
             static source => source.Names(
-                "ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync"));
+                "ArcanumMasterKeyBootstrapper.PrepareMasterApiKeyAsync"));
 
         Assert.True(
             bootstrapComposition.IsExactOwner(
                 "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs"),
             bootstrapComposition.RelativePath);
-
     }
 
     /// <summary>
-    /// Within one pass, an active V3 Covenant reset is claimed before any ordinary readiness-phase
-    /// operation, even when the ordinary work was discovered first.
+    /// Within one pass, a pre-state-write retention mutation is claimed before any ordinary
+    /// readiness-phase operation, even when the ordinary work was discovered first. Exact-owner
+    /// offline launches are recovered earlier by GrimoireOfflineTransitionStartupRecovery and are
+    /// intentionally not claimable by this generic reconciler.
     /// </summary>
     [Fact]
-    public async Task An_active_v3_checkpoint_is_settled_before_any_ordinary_operation()
+    public async Task A_pre_state_write_mutation_is_settled_before_any_readiness_operation()
     {
-
         FakeTimeProvider clock = new();
 
         FakeLongRunningOperationStore store = new(clock);
@@ -521,10 +521,10 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         clock.Advance(TimeSpan.FromMinutes(1));
 
-        LongRunningOperation reset = store.Seed(
+        LongRunningOperation mutation = store.Seed(
             LongRunningOperationKinds.DataRetentionMutation,
             LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            checkpointVersion: DataRetentionMutationCheckpointV3.CurrentVersion,
+            checkpointVersion: 2,
             leaseExpiresAt: clock.GetUtcNow().AddMinutes(-5));
 
         List<string> settled = [];
@@ -534,30 +534,27 @@ public sealed class CovenantResetBootstrapBarrierTests
             supportedCheckpointVersion: 0,
             _ =>
             {
-
                 settled.Add(LongRunningOperationKinds.WorkspaceIndex);
 
                 return LongRunningOperationRecoveryResult.Completed();
-
             });
 
-        RecordingRecoveryHandler resetHandler = new(
+        RecordingRecoveryHandler mutationHandler = new(
             LongRunningOperationKinds.DataRetentionMutation,
-            DataRetentionMutationCheckpointV3.CurrentVersion,
+            supportedCheckpointVersion: 2,
             _ =>
             {
-
                 settled.Add(LongRunningOperationKinds.DataRetentionMutation);
 
                 return LongRunningOperationRecoveryResult.Completed();
-
             });
 
         LongRunningOperationReconciler reconciler = new(
             store,
-            [ordinaryHandler, resetHandler],
+            [ordinaryHandler, mutationHandler],
             clock,
-            NullLogger<LongRunningOperationReconciler>.Instance);
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
 
         _ = await reconciler.ReconcileNowAsync("barrier", maxConcurrency: 1);
 
@@ -570,36 +567,43 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         // Discovery order really was the other way round, so the assertion above is about the
         // startup phase rather than about which row the expiry query happened to return.
-        Assert.True(ordinary.CreatedAt < reset.CreatedAt);
+        Assert.True(ordinary.CreatedAt < mutation.CreatedAt);
 
         Assert.Equal(
-            [reset.Id],
-            resetHandler.Invocations);
+            [mutation.Id],
+            mutationHandler.Invocations);
 
         Assert.Equal(
             [ordinary.Id],
             ordinaryHandler.Invocations);
-
     }
 
     /// <summary>
-    /// A V3 payload is inside the kind's declared window, so the reconciler hands it to the owning
-    /// handler rather than stranding it as <c>operation.checkpoint_version_unsupported</c>.
+    /// A launch payload is inside its kind's declared window, so the reconciler hands it to the
+    /// owning handler rather than stranding it as <c>operation.checkpoint_version_unsupported</c>.
     /// </summary>
+    /// <remarks>
+    /// The window and the payload shape are raised in two separate files, so a build that moved the
+    /// reset to an offline-transition launch without widening the registry would still write rows
+    /// the reconciler then refused to admit. That refusal is silent to the writer and permanent to
+    /// the row: an interrupted reset that closed admission would sit unrecoverable behind a version
+    /// number, which is the one failure this barrier exists to prevent. Asserting both ends against
+    /// the launch constants themselves is what keeps a future version bump from splitting them
+    /// again — a literal here would let the window drift while the test kept passing.
+    /// </remarks>
     [Fact]
-    public void The_v3_window_admits_the_checkpoint_the_reset_writes()
+    public void The_launch_window_admits_the_binding_the_reset_writes()
     {
-
         LongRunningOperationRecoveryDescriptor mutation =
             LongRunningOperationRecoveryRegistry.Descriptors[
                 LongRunningOperationKinds.DataRetentionMutation];
 
         Assert.Equal(0, mutation.MinCheckpointVersion);
 
-        Assert.Equal(DataRetentionMutationCheckpointV3.CurrentVersion, mutation.MaxCheckpointVersion);
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, mutation.MaxCheckpointVersion);
 
         Assert.Equal(
-            DataRetentionMutationCheckpointV3.CurrentVersion,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion,
             new DataRetentionMutationRecoveryHandler(null!).SupportedCheckpointVersion);
 
         LongRunningOperationRecoveryDescriptor factory =
@@ -608,12 +612,11 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         Assert.Equal(0, factory.MinCheckpointVersion);
 
-        Assert.Equal(DataRetentionFactoryResetCheckpointV1.CurrentVersion, factory.MaxCheckpointVersion);
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, factory.MaxCheckpointVersion);
 
         Assert.Equal(
-            DataRetentionFactoryResetCheckpointV1.CurrentVersion,
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
             new DataRetentionFactoryResetRecoveryHandler(null!).SupportedCheckpointVersion);
-
     }
 
     /// <summary>
@@ -623,12 +626,9 @@ public sealed class CovenantResetBootstrapBarrierTests
     /// </summary>
     private static string HostedFactoryName(ServiceDescriptor descriptor)
     {
-
         if (descriptor.ImplementationFactory?.GetType().GenericTypeArguments is not [_, Type implementation])
         {
-
             return "<unknown>";
-
         }
 
         return implementation.IsGenericType
@@ -636,12 +636,10 @@ public sealed class CovenantResetBootstrapBarrierTests
                 == typeof(InstallationResetRecoveryAwareHostedService<>)
             ? implementation.GetGenericArguments()[0].Name
             : implementation.Name;
-
     }
 
     private sealed class RejectingStartupRecovery : IInstallationResetStartupRecovery
     {
-
         public Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
@@ -653,14 +651,12 @@ public sealed class CovenantResetBootstrapBarrierTests
                         PlanId: "blocked-plan"),
                     ExpectedInstallationId: null,
                     IsLegacyV1: false)));
-
     }
 
     private sealed class FixedArcanumSettingsMonitor(
         ArcanumSettings settings)
         : IOptionsMonitor<ArcanumSettings>
     {
-
         public ArcanumSettings CurrentValue => settings;
 
         public ArcanumSettings Get(string? name) => settings;
@@ -671,43 +667,32 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         private sealed class NoopDisposable : IDisposable
         {
-
             internal static NoopDisposable Instance { get; } = new();
 
             public void Dispose()
             {
-
             }
-
         }
-
     }
 
     private sealed class RecordingHostedWriter : IHostedService
     {
-
         public int StartCalls { get; private set; }
 
         public int StopCalls { get; private set; }
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
-
             StartCalls++;
 
             return Task.CompletedTask;
-
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
-
             StopCalls++;
 
             return Task.CompletedTask;
-
         }
-
     }
-
 }

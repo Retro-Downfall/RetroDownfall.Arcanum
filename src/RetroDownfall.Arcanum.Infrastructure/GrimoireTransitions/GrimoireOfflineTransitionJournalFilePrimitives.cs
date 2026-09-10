@@ -28,7 +28,6 @@ internal enum GrimoireOfflineTransitionPreviousRetention : byte
     Previous,
 
 }
-
 internal readonly record struct GrimoireOfflineTransitionExchangeResult(
     GrimoireOfflineTransitionPreviousRetention Retention);
 
@@ -195,12 +194,14 @@ internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
 /// The retained-parent native capability for the fixed Grimoire transition-journal slot.
 /// </summary>
 /// <remarks>
-/// The parent handle is opened once without following links and every child lookup, enumeration,
-/// rename, and unlink is relative to that handle. Unix compare-unlink has no kernel primitive that
-/// combines the comparison and unlink: it therefore compares the retained handle with the relative
-/// name immediately before <c>unlinkat</c>, then requires the retained handle's link count to be zero
-/// and the fixed name to be absent. That proves the delegated operation converged; it deliberately
-/// does not claim that a same-UID attacker could not replace the name in the final instruction window.
+/// The parent handle is opened once without following links, and child lookup, enumeration, and
+/// unlink remain relative to it. Windows rename first opens the source through that capability and
+/// uses the native same-directory form, whose destination is anchored to the opened file object.
+/// Unix compare-unlink has no kernel primitive that combines the comparison and unlink: it therefore
+/// compares the retained handle with the relative name immediately before <c>unlinkat</c>, then
+/// requires the retained handle's link count to be zero and the fixed name to be absent. That proves
+/// the delegated operation converged; it deliberately does not claim that a same-UID attacker could
+/// not replace the name in the final instruction window.
 /// </remarks>
 internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     : IGrimoireOfflineTransitionJournalFilePrimitives
@@ -226,6 +227,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     private const uint FileReadAttributes = 0x00000080;
 
+    // NtCreateFile child opens use this retained handle as their RootDirectory.
+    private const uint FileTraverse = 0x00000020;
+
     private const uint FileListDirectory = 0x00000001;
 
     private const uint FileShareRead = 0x00000001;
@@ -235,7 +239,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     private const uint FileShareDelete = 0x00000004;
 
     internal const uint WindowsParentDesiredAccess =
-        FileListDirectory | FileReadAttributes | SynchronizeAccess | ReadControlAccess;
+        FileListDirectory
+        | FileTraverse
+        | FileReadAttributes
+        | SynchronizeAccess
+        | ReadControlAccess;
 
     internal const uint WindowsParentShareMode = FileShareRead | FileShareWrite;
 
@@ -273,7 +281,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     private const uint FileSynchronousIoNonAlert = 0x00000020;
 
-    private const int FileRenameInfo = 3;
+    private const int NtFileRenameInformation = 10;
 
     private const int FileDispositionInfoEx = 21;
 
@@ -284,6 +292,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     private const int FileIdBothDirectoryInformation = 37;
 
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
+
+    private const int StatusNoSuchFile = unchecked((int)0xC000000F);
 
     private const uint OwnerSecurityInformation = 0x00000001;
 
@@ -783,22 +793,17 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             writable: false,
             out SafeFileHandle? named);
 
-        using (named)
+        if (status is not SecureFileOpenStatus.Success || named is null
+            || !FileHandleIdentityInterop.TryGetHandleMetadata(
+                named,
+                out FileHandleMetadata current)
+            || current.Kind is not FileSystemObjectKind.RegularFile
+            || current.HardLinkCount != 1
+            || !FileHandleIdentity.IdentitiesMatch(before.Identity, current.Identity))
         {
+            named?.Dispose();
 
-            if (status is not SecureFileOpenStatus.Success || named is null
-                || !FileHandleIdentityInterop.TryGetHandleMetadata(
-                    named,
-                    out FileHandleMetadata current)
-                || current.Kind is not FileSystemObjectKind.RegularFile
-                || current.HardLinkCount != 1
-                || !FileHandleIdentity.IdentitiesMatch(before.Identity, current.Identity))
-            {
-
-                return RecoveryRequired();
-
-            }
-
+            return RecoveryRequired();
         }
 
         bool unlinked;
@@ -808,29 +813,33 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             if (OperatingSystem.IsWindows())
             {
-
                 uint disposition = FileDispositionDelete | FileDispositionPosixSemantics;
 
                 unlinked = SetFileInformationByHandle(
-                    expected.Handle,
+                    named,
                     FileDispositionInfoEx,
                     ref disposition,
                     sizeof(uint));
 
+                // Windows removes the visible link only when the handle carrying the POSIX
+                // disposition closes. Keep the independent expected handle open as the identity,
+                // zero-link-count, and readable-data witness after this exact named handle closes.
+                named.Dispose();
+
+                named = null;
             }
             else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
+                named.Dispose();
+
+                named = null;
 
                 unlinked = UnlinkAt(ParentDescriptor, relativeLeaf, flags: 0) == 0;
-
             }
             else
             {
-
                 unlinked = false;
-
             }
-
         }
         catch (Exception exception) when (
             exception is EntryPointNotFoundException
@@ -838,9 +847,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             unlinked = false;
-
+        }
+        finally
+        {
+            named?.Dispose();
         }
 
         if (!unlinked
@@ -1457,6 +1468,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             while (true)
             {
 
+                bool initialQuery = restart;
+
                 int status = NtQueryDirectoryFile(
                     ParentHandle.DangerousGetHandle(),
                     IntPtr.Zero,
@@ -1472,7 +1485,10 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
                 restart = false;
 
-                if (status == StatusNoMoreFiles)
+                if (IsWindowsDirectoryEnumerationComplete(
+                        status,
+                        initialQuery,
+                        names.Count))
                 {
 
                     return names;
@@ -1540,6 +1556,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
     }
 
+    internal static bool IsWindowsDirectoryEnumerationComplete(
+        int status,
+        bool initialQuery,
+        int observedNameCount) =>
+        status == StatusNoMoreFiles
+        || status == StatusNoSuchFile
+            && initialQuery
+            && observedNameCount == 0;
+
     private unsafe bool RenameWindowsHandle(string sourceLeaf, string destinationLeaf)
     {
 
@@ -1561,13 +1586,20 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
             byte[] target = System.Text.Encoding.Unicode.GetBytes(destinationLeaf);
 
-            byte[] buffer = new byte[20 + target.Length];
+            // Both shipping Windows ABIs are 64-bit: FILE_RENAME_INFORMATION is 24 bytes even
+            // though FileName starts at offset 20. With RootDirectory null, the NT simple-name form
+            // renames inside the source file object's existing directory. The source was opened
+            // relative to the retained no-follow parent, so neither process CWD nor _parentPath is
+            // resolved during publication.
+            const int fileRenameInformationBytes = 24;
+
+            byte[] buffer = new byte[fileRenameInformationBytes + target.Length];
 
             buffer[0] = 0;
 
             BinaryPrimitives.WriteInt64LittleEndian(
                 buffer.AsSpan(8),
-                ParentHandle.DangerousGetHandle().ToInt64());
+                0);
 
             BinaryPrimitives.WriteUInt32LittleEndian(
                 buffer.AsSpan(16),
@@ -1578,11 +1610,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             fixed (byte* pointer = buffer)
             {
 
-                return SetFileInformationByHandlePointer(
+                int renameStatus = NtSetInformationFile(
                     source,
-                    FileRenameInfo,
+                    out _,
                     new IntPtr(pointer),
-                    checked((uint)buffer.Length));
+                    checked((uint)buffer.Length),
+                    NtFileRenameInformation);
+
+                return renameStatus >= 0;
 
             }
 
@@ -1936,13 +1971,13 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         ref uint information,
         uint bufferSize);
 
-    [LibraryImport("kernel32.dll", EntryPoint = "SetFileInformationByHandle", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetFileInformationByHandlePointer(
+    [LibraryImport("ntdll.dll", EntryPoint = "NtSetInformationFile")]
+    private static partial int NtSetInformationFile(
         SafeFileHandle file,
-        int informationClass,
-        IntPtr information,
-        uint bufferSize);
+        out IoStatusBlock ioStatusBlock,
+        IntPtr fileInformation,
+        uint length,
+        int fileInformationClass);
 
     [LibraryImport("kernel32.dll", EntryPoint = "LocalFree", SetLastError = true)]
     private static partial IntPtr LocalFreeWindows(IntPtr memory);

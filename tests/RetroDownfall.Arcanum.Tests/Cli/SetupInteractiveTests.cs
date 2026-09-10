@@ -25,32 +25,23 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class SetupInteractiveTests : IDisposable
 {
-
     private const string ProviderSecret = "sk-interactive-provider-secret";
 
     private readonly string _workspaceRoot = CreateDirectory();
 
     public void Dispose()
     {
-
         try
         {
-
             if (Directory.Exists(_workspaceRoot))
             {
-
                 Directory.Delete(_workspaceRoot, recursive: true);
-
             }
-
         }
         catch (IOException)
         {
-
             // Best-effort cleanup.
-
         }
-
     }
 
     /// <summary>
@@ -72,7 +63,6 @@ public sealed class SetupInteractiveTests : IDisposable
     [InlineData(11)]
     public async Task Aborting_at_any_step_changes_nothing(int stopAfter)
     {
-
         SetupWorld world = NewWorld();
 
         ScriptedPrompt prompt = new(CompleteScript(_workspaceRoot), stopAfter);
@@ -98,13 +88,11 @@ public sealed class SetupInteractiveTests : IDisposable
         Assert.DoesNotContain(ProviderSecret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ProviderSecret, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Declining_the_final_plan_changes_nothing()
     {
-
         SetupWorld world = NewWorld();
 
         string[] script = [.. CompleteScript(_workspaceRoot)];
@@ -122,21 +110,21 @@ public sealed class SetupInteractiveTests : IDisposable
         Assert.Equal(0, world.ConfigurationWrites);
 
         Assert.Empty(world.ProviderCredentials);
-
     }
 
     [Fact]
     public async Task A_complete_interactive_run_commits_everything_exactly_once()
     {
-
         SetupWorld world = NewWorld();
+
+        RecordingSecureStorageNotice secureStorageNotice = new();
 
         string[] script = [.. CompleteScript(_workspaceRoot)];
 
         ScriptedPrompt prompt = new(script, script.Length);
 
         CliTestResult result = await CliTestHarness.RunAsync(
-            CreateServices(world, prompt),
+            CreateServices(world, prompt, secureStorageNotice: secureStorageNotice),
             ["setup"]);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
@@ -153,6 +141,7 @@ public sealed class SetupInteractiveTests : IDisposable
 
         Assert.DoesNotContain(ProviderSecret, result.Error, StringComparison.Ordinal);
 
+        Assert.Equal(1, secureStorageNotice.AfterSetupCount);
     }
 
     [Theory]
@@ -161,7 +150,6 @@ public sealed class SetupInteractiveTests : IDisposable
     [InlineData("An installation factory reset is active.")]
     public async Task Interactive_commit_refusal_prevents_every_setup_effect(string refusal)
     {
-
         SetupWorld world = NewWorld();
 
         string[] script = [.. CompleteScript(_workspaceRoot)];
@@ -189,7 +177,6 @@ public sealed class SetupInteractiveTests : IDisposable
         Assert.Null(world.WebResearchCredential);
 
         Assert.Null(world.SavedContext);
-
     }
 
     /// <summary>
@@ -200,7 +187,6 @@ public sealed class SetupInteractiveTests : IDisposable
     [Fact]
     public async Task An_interactive_json_run_still_emits_exactly_one_document()
     {
-
         SetupWorld world = NewWorld();
 
         ServiceCollection services = CreateServices(world);
@@ -226,23 +212,19 @@ public sealed class SetupInteractiveTests : IDisposable
         Assert.DoesNotContain(ProviderSecret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(ProviderSecret, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_failed_provider_probe_can_be_answered_by_going_back_a_step()
     {
-
         SetupWorld world = NewWorld() with
         {
-
             Connectivity = new SetupConnectivityResult(
                 SetupConnectivityStatus.Unreachable,
                 7,
                 0,
                 false,
                 "The endpoint could not be contacted."),
-
         };
 
         // Answer "no" to "continue anyway", which returns to the credential step, then end input.
@@ -271,7 +253,6 @@ public sealed class SetupInteractiveTests : IDisposable
         Assert.Equal(0, world.ConfigurationWrites);
 
         Assert.Empty(world.ProviderCredentials);
-
     }
 
     /// <summary>
@@ -282,7 +263,6 @@ public sealed class SetupInteractiveTests : IDisposable
     [Fact]
     public async Task A_credential_is_read_without_echo_when_stdin_is_a_terminal_under_json()
     {
-
         RecordingSecretPrompt secretPrompt = new("masked-provider-key");
 
         TextReader priorInput = Console.In;
@@ -291,7 +271,6 @@ public sealed class SetupInteractiveTests : IDisposable
 
         try
         {
-
             ConsoleSetupPrompt prompt = new(
                 new ConsoleDispatcher(new CliInvocationContext()),
                 new JsonInvocationContext(),
@@ -305,41 +284,31 @@ public sealed class SetupInteractiveTests : IDisposable
             Assert.Equal("masked-provider-key", secret);
 
             Assert.Equal(1, secretPrompt.Reads);
-
         }
         finally
         {
-
             Console.SetIn(priorInput);
-
         }
-
     }
 
     private sealed class JsonInvocationContext : ICliInvocationContext
     {
-
         public CliInvocationOptions Options { get; } =
             new(Json: true, Plain: false, Yes: false);
-
     }
 
     private sealed class RecordingSecretPrompt(string secret) : IBackupPassphrasePrompt
     {
-
         public int Reads { get; private set; }
 
         public ValueTask<char[]> ReadHiddenAsync(
             string prompt,
             CancellationToken cancellationToken)
         {
-
             Reads++;
 
             return ValueTask.FromResult(secret.ToCharArray());
-
         }
-
     }
 
     private static string[] CompleteScript(string workspaceRoot) =>
@@ -361,7 +330,6 @@ public sealed class SetupInteractiveTests : IDisposable
 
     private static string CreateDirectory()
     {
-
         string path = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-setup-interactive-{Guid.NewGuid():N}");
@@ -369,7 +337,6 @@ public sealed class SetupInteractiveTests : IDisposable
         _ = Directory.CreateDirectory(path);
 
         return path;
-
     }
 
     private SetupWorld NewWorld() =>
@@ -378,9 +345,9 @@ public sealed class SetupInteractiveTests : IDisposable
     private static ServiceCollection CreateServices(
         SetupWorld world,
         ISetupPrompt? prompt = null,
-        IGrimoireCliInitialization? initialization = null)
+        IGrimoireCliInitialization? initialization = null,
+        ISecureStorageNotice? secureStorageNotice = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -412,15 +379,33 @@ public sealed class SetupInteractiveTests : IDisposable
 
         services.AddSingleton<ISetupProviderProbe>(world);
 
+        if (secureStorageNotice is not null)
+        {
+            services.RemoveAll<ISecureStorageNotice>();
+            services.AddSingleton(secureStorageNotice);
+        }
+
         if (prompt is not null)
         {
-
             services.AddSingleton(prompt);
-
         }
 
         return services;
+    }
 
+    private sealed class RecordingSecureStorageNotice : ISecureStorageNotice
+    {
+        public int AfterSetupCount { get; private set; }
+
+        public void ExplainBeforeHostBootstrap()
+        {
+        }
+
+        public void ExplainAfterSetup() => AfterSetupCount++;
+
+        public void MarkHostBootstrapCompleted()
+        {
+        }
     }
 
     /// <summary>
@@ -429,14 +414,12 @@ public sealed class SetupInteractiveTests : IDisposable
     /// </summary>
     private sealed class ScriptedPrompt(IReadOnlyList<string> answers, int available) : ISetupPrompt
     {
-
         private int _index;
 
         public bool IsInteractive => true;
 
         public void Write(string line)
         {
-
         }
 
         public Task<string?> AskAsync(
@@ -450,14 +433,12 @@ public sealed class SetupInteractiveTests : IDisposable
             bool defaultValue,
             CancellationToken cancellationToken)
         {
-
             string? answer = Next();
 
             return Task.FromResult<bool?>(
                 answer is null
                     ? null
                     : answer.StartsWith('y') || answer.StartsWith('Y'));
-
         }
 
         public Task<string?> SelectAsync(
@@ -476,7 +457,6 @@ public sealed class SetupInteractiveTests : IDisposable
             _index >= available || _index >= answers.Count
                 ? null
                 : answers[_index++];
-
     }
 
     private sealed record SetupWorld :
@@ -490,7 +470,6 @@ public sealed class SetupInteractiveTests : IDisposable
         ICliContextExclusiveWriter,
         ISetupProviderProbe
     {
-
         public required string OriginalWorkspaceRoot { get; init; }
 
         private ArcanumSettings? _originalSettings;
@@ -498,9 +477,7 @@ public sealed class SetupInteractiveTests : IDisposable
         public ArcanumSettings OriginalSettings =>
             _originalSettings ??= new ArcanumSettings
             {
-
                 Workspaces = new WorkspaceSettings { DefaultRoot = OriginalWorkspaceRoot },
-
             };
 
         public Dictionary<string, string> ProviderCredentials { get; } =
@@ -543,13 +520,11 @@ public sealed class SetupInteractiveTests : IDisposable
             ArcanumSettings settings,
             CancellationToken cancellationToken)
         {
-
             ConfigurationWrites++;
 
             WrittenSettings = settings;
 
             return Task.FromResult(Result.Success());
-
         }
 
         public Task<Result> WriteUnderExclusiveAsync(
@@ -576,7 +551,6 @@ public sealed class SetupInteractiveTests : IDisposable
             string idOrName,
             CancellationToken cancellationToken = default)
         {
-
             PresetApplies++;
 
             ConfigurationPresetDefinition preset =
@@ -617,7 +591,6 @@ public sealed class SetupInteractiveTests : IDisposable
                         Applied: true,
                         AlreadyApplied: false,
                         ConfigurationPresetRollbackStatus.NotRequired)));
-
         }
 
         public Task<Result<ConfigurationPresetResetResult>> ResetAsync(
@@ -664,22 +637,18 @@ public sealed class SetupInteractiveTests : IDisposable
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             ProviderCredentials[providerName] = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task DeleteApiKeyAsync(
             string providerName,
             CancellationToken cancellationToken = default)
         {
-
             _ = ProviderCredentials.Remove(providerName);
 
             return Task.CompletedTask;
-
         }
 
         public Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
@@ -693,20 +662,16 @@ public sealed class SetupInteractiveTests : IDisposable
             string apiKey,
             CancellationToken cancellationToken = default)
         {
-
             WebResearchCredential = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task DeletePerplexityApiKeyAsync(CancellationToken cancellationToken = default)
         {
-
             WebResearchCredential = null;
 
             return Task.CompletedTask;
-
         }
 
         public CliContextDocument Load() => SavedContext ?? CliContextDocument.Empty;
@@ -722,7 +687,5 @@ public sealed class SetupInteractiveTests : IDisposable
             string? apiKey,
             CancellationToken cancellationToken) =>
             Task.FromResult(Connectivity);
-
     }
-
 }

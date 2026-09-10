@@ -9,6 +9,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using Xunit;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class CommandCenterHumanPromptCoordinatorTests
@@ -164,7 +166,7 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
         CommandCenterHardModalArbiter arbiter = new();
         ArcanumApiClient client = new(
             new Factory(new AsyncHandler(_ => gate.Task)),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         CommandCenterHumanPromptCoordinator coordinator = new(client, arbiter);
         List<string> closed = [];
         coordinator.SetUiCallbacks(
@@ -204,7 +206,7 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
     {
         ArcanumApiClient client = new(
             new Factory(new SyncHandler(respond)),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         return new CommandCenterHumanPromptCoordinator(client, new CommandCenterHardModalArbiter());
     }
 
@@ -213,7 +215,7 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
     {
         ArcanumApiClient client = new(
             new Factory(new AsyncHandler(respond)),
-            new FakeSecretStore());
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
         return new CommandCenterHumanPromptCoordinator(client, new CommandCenterHardModalArbiter());
     }
 
@@ -260,7 +262,7 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
     private sealed class Factory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) =>
-            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://127.0.0.1:9") };
+            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost:5001/") };
     }
 
     private sealed class SyncHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

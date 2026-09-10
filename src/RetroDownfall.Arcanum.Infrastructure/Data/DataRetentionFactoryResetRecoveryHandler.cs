@@ -9,7 +9,7 @@ internal sealed class DataRetentionFactoryResetRecoveryHandler(
 
     public string Kind => LongRunningOperationKinds.DataRetentionFactoryReset;
 
-    public int SupportedCheckpointVersion => DataRetentionFactoryResetCheckpointV1.CurrentVersion;
+    public int SupportedCheckpointVersion => DataRetentionFactoryTransitionLaunchV2.CurrentVersion;
 
     public Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,

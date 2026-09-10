@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Logging;
@@ -12,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed class ApprenticeRepository : IApprenticeRepository
 {
-
     private const int DefaultListLimit = 100;
 
     private readonly ArcanumDbContext _db;
@@ -28,10 +28,10 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
     public async Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        Apprentice? apprentice = await _db.Apprentices
-            .AsNoTracking()
-            .FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
-            .ConfigureAwait(false);
+        Apprentice? apprentice = await ReadSingleAsync(
+            $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\" WHERE \"Id\" = $id LIMIT 1;",
+            command => GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id)),
+            cancellationToken).ConfigureAwait(false);
 
         if (apprentice is not null)
         {
@@ -50,27 +50,64 @@ public sealed class ApprenticeRepository : IApprenticeRepository
     {
         int pageSize = ArcanumSettingClamps.ListQueryLimit(limit ?? DefaultListLimit);
 
-        IQueryable<Apprentice> query = _db.Apprentices.AsNoTracking();
-
-        if (campaignId is { } cid)
-        {
-            query = query.Where(a => a.CampaignId == cid);
-        }
-
-        if (!string.IsNullOrWhiteSpace(status))
-        {
-            string statusFilter = status.Trim();
-
-            query = query.Where(a => a.Status == statusFilter);
-        }
+        string? statusFilter = string.IsNullOrWhiteSpace(status) ? null : status.Trim();
 
         // DateTimeOffset comparison and ORDER BY cannot be translated by EF Core's SQLite
         // provider (see EntryTemporalQueries and PromptRepository.ListAsync). Materialize the
         // server-side-filtered set, then apply the temporal cursor and ordering client-side.
         // Apprentice tables are workspace-scoped and small, so this is not a performance concern.
-        List<Apprentice> matched = await query
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        List<Apprentice> matched;
+
+        if (campaignId is { } campaignFilter && statusFilter is not null)
+        {
+            matched = await ReadManyAsync(
+                $"""
+                SELECT {GrimoireEntitySql.ApprenticeColumns}
+                FROM "Apprentices"
+                WHERE "CampaignId" = $campaignId AND "Status" = $status;
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(
+                        command,
+                        "$campaignId",
+                        GrimoireEntitySql.Format(campaignFilter));
+                    GrimoireEntitySql.AddParameter(command, "$status", statusFilter);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        else if (campaignId is { } campaignOnly)
+        {
+            matched = await ReadManyAsync(
+                $"""
+                SELECT {GrimoireEntitySql.ApprenticeColumns}
+                FROM "Apprentices"
+                WHERE "CampaignId" = $campaignId;
+                """,
+                command => GrimoireEntitySql.AddParameter(
+                    command,
+                    "$campaignId",
+                    GrimoireEntitySql.Format(campaignOnly)),
+                cancellationToken).ConfigureAwait(false);
+        }
+        else if (statusFilter is not null)
+        {
+            matched = await ReadManyAsync(
+                $"""
+                SELECT {GrimoireEntitySql.ApprenticeColumns}
+                FROM "Apprentices"
+                WHERE "Status" = $status;
+                """,
+                command => GrimoireEntitySql.AddParameter(command, "$status", statusFilter),
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            matched = await ReadManyAsync(
+                $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\";",
+                static _ => { },
+                cancellationToken).ConfigureAwait(false);
+        }
 
         if (beforeUpdatedAt is DateTimeOffset beforeCutoff)
         {
@@ -151,9 +188,7 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
         if (tracked is not null)
         {
-
             tracked.State = EntityState.Detached;
-
         }
 
         _db.Apprentices.Update(apprentice);
@@ -167,10 +202,13 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        int deleted = await _db.Apprentices
-            .Where(a => a.Id == id)
-            .ExecuteDeleteAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            "DELETE FROM \"Apprentices\" WHERE \"Id\" = $id;",
+            cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id));
+
+        int deleted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return deleted > 0;
     }
@@ -181,20 +219,39 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
         string planning = ApprenticeStatus.Planning.ToString();
 
+        string idle = ApprenticeStatus.Idle.ToString();
+
         string emptyPlan = SerializePlan([]);
 
-        List<Apprentice> candidates = await _db.Apprentices
-            .AsNoTracking()
-            .Where(a => a.Status == running || a.Status == planning)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        List<Apprentice> candidates = await ReadManyAsync(
+            $"""
+            SELECT {GrimoireEntitySql.ApprenticeColumns}
+            FROM "Apprentices"
+            WHERE "Status" = $running
+               OR (
+                    "Status" = $planning
+                    AND (TRIM("Plan") = '' OR "Plan" = $emptyPlan))
+               OR (
+                    "Status" = $idle
+                    AND COALESCE(
+                        json_extract(
+                            CASE
+                                WHEN json_valid("CheckpointData") = 1 THEN "CheckpointData"
+                                ELSE NULL
+                            END,
+                            '$.launchRequested'),
+                        0) = 1);
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$running", running);
+                GrimoireEntitySql.AddParameter(command, "$planning", planning);
+                GrimoireEntitySql.AddParameter(command, "$idle", idle);
+                GrimoireEntitySql.AddParameter(command, "$emptyPlan", emptyPlan);
+            },
+            cancellationToken).ConfigureAwait(false);
 
-        return candidates
-            .Where(a =>
-                string.Equals(a.Status, running, StringComparison.Ordinal)
-                || string.IsNullOrWhiteSpace(a.Plan)
-                || string.Equals(a.Plan, emptyPlan, StringComparison.Ordinal))
-            .ToList();
+        return candidates;
     }
 
     public async Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
@@ -203,14 +260,62 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
         string emptyPlan = SerializePlan([]);
 
-        return await _db.Apprentices
-            .AsNoTracking()
-            .Where(a =>
-                a.Status == planning
-                && a.Plan != emptyPlan
-                && a.Plan != string.Empty)
-            .ToListAsync(cancellationToken)
+        return await ReadManyAsync(
+            $"""
+            SELECT {GrimoireEntitySql.ApprenticeColumns}
+            FROM "Apprentices"
+            WHERE "Status" = $planning
+              AND "Plan" <> $emptyPlan
+              AND "Plan" <> '';
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$planning", planning);
+                GrimoireEntitySql.AddParameter(command, "$emptyPlan", emptyPlan);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Apprentice?> ReadSingleAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? GrimoireEntitySql.ReadApprentice(reader)
+            : null;
+    }
+
+    private async Task<List<Apprentice>> ReadManyAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        List<Apprentice> apprentices = [];
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            apprentices.Add(GrimoireEntitySql.ReadApprentice(reader));
+        }
+
+        return apprentices;
     }
 
     public static List<PlanStep> DeserializePlan(string json)
@@ -238,5 +343,4 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
     public static string SerializeCheckpoint(ApprenticeCheckpoint checkpoint) =>
         JsonSerializer.Serialize(checkpoint, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint);
-
 }

@@ -8,6 +8,7 @@
         xmlns:whispers="using:RetroDownfall.TheForge.Ux.Views.Whispers"
         x:Class="RetroDownfall.TheForge.Ux.Views.MainWindow"
         x:DataType="vm:MainViewModel"
+        Icon="/Assets/the-forge.ico"
         Title="The Forge — Inference IDE"
         Width="1280" Height="800"
         MinWidth="960" MinHeight="600">

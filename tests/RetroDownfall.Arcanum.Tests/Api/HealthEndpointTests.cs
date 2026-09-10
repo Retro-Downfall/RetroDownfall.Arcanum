@@ -1,9 +1,12 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -11,20 +14,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class HealthEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public HealthEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task GetHealth_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -42,13 +41,11 @@ public sealed class HealthEndpointTests
         Assert.False(body.IsSuccess);
 
         Assert.Equal("Auth.Unauthorized", body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task GetHealth_WithValidApiKey_ReturnsComponentHealthPayload()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -80,13 +77,11 @@ public sealed class HealthEndpointTests
         Assert.Contains(body.Data.Components, static c => c.Name == "FileEncryption");
 
         Assert.Contains(body.Data.Components, static c => c.Name == "Conclave");
-
     }
 
     [SkippableFact]
     public async Task GetHealth_ReportsConclaveDisabledWithoutDegradingOverallHealth()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -105,13 +100,11 @@ public sealed class HealthEndpointTests
         Assert.Equal(HealthStatus.Healthy, conclave.Status);
 
         Assert.Contains("state=disabled", conclave.Detail, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task GetHealth_WithWrongApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -121,7 +114,41 @@ public sealed class HealthEndpointTests
         HttpResponseMessage response = await client.GetAsync("/api/health");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
+    [SkippableFact]
+    public async Task GetHealth_NeverInvokesDeepFileEncryptionDiagnostics()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ThrowingEncryptedBlobDiagnostics diagnostics = new();
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.RemoveAll<IEncryptedBlobDiagnostics>();
+                services.AddSingleton<IEncryptedBlobDiagnostics>(diagnostics);
+            },
+        };
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/health");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(0, diagnostics.Calls);
+    }
+
+    private sealed class ThrowingEncryptedBlobDiagnostics : IEncryptedBlobDiagnostics
+    {
+        public int Calls { get; private set; }
+
+        public Task<FileEncryptionDiagnostics> InspectAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+
+            throw new InvalidOperationException(
+                "Deep file-encryption diagnostics must not run from health.");
+        }
+    }
 }

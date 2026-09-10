@@ -2,9 +2,9 @@
 # Unit tests for verify-aot-il-warnings.sh.
 #
 # The gate is the only thing standing between a first-party AOT/trim warning and a published
-# build, and both of its historic failure modes were silent: a warning classified as third-party
-# because an allow-list token appeared in the *file path*, and an "ILC ran" assertion satisfied by
-# a different project's publish output. Both are pinned here.
+# build, and its historic failure modes were silent: warning ownership confused by an allow-list
+# token in a file path, ILC evidence borrowed from another publish leg, scans affected by caller
+# ripgrep configuration, and incremental reuse that supplied no fresh analysis. All are pinned here.
 #
 # The publish legs are driven through a stub `dotnet` on PATH, so nothing here compiles anything.
 # Requires ripgrep, the same as the gate itself.
@@ -97,6 +97,23 @@ expect_eq \
   "1" \
   "$(violations_for "$FIRST_PARTY_MESSAGE_NAMES_ALLOWED_COMPONENT")"
 
+# ILC diagnostics often have no source location. Their trailing project path says only which
+# publish produced the diagnostic, not which symbol owns it. A first-party symbol in the message
+# must therefore win over a later allow-listed dependency name.
+FIRST_PARTY_SOURCELESS_NAMES_ALLOWED_COMPONENT='ILC : warning IL2026: RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Run(): calls Microsoft.EntityFrameworkCore.Query.QueryCompiler.Execute<TResult>(Expression) [/repo/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]'
+
+expect_eq \
+  "a sourceless first-party ILC warning is counted even when its message names an allow-listed dependency" \
+  "1" \
+  "$(violations_for "$FIRST_PARTY_SOURCELESS_NAMES_ALLOWED_COMPONENT")"
+
+UNKNOWN_SOURCELESS='ILC : warning IL2026: Future.Dependency.DynamicEntryPoint(): requires unreferenced code [/repo/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]'
+
+expect_eq \
+  "an unattributed sourceless ILC warning fails closed until its owner is reviewed" \
+  "1" \
+  "$(violations_for "$UNKNOWN_SOURCELESS")"
+
 THIRD_PARTY_ILC='ILC : warning IL2026: Microsoft.EntityFrameworkCore.Query.QueryCompiler.Execute<TResult>(Expression): Using member which has '"'"'RequiresUnreferencedCodeAttribute'"'"' [/repo/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]'
 
 expect_eq \
@@ -136,6 +153,33 @@ expect_eq \
   "0" \
   "$(violations_for 'Build succeeded.')"
 
+# A caller-controlled ripgrep config must not be able to break the gate's scans. In particular,
+# ripgrep can report a missing config with the same exit code it uses for "no match", which makes a
+# banned-pattern scan look clean unless the gate explicitly disables external configuration.
+BROKEN_RG_CONFIG="$WORK/broken-ripgrep-config"
+printf '%s\n' '--definitely-not-a-real-ripgrep-option' >"$BROKEN_RG_CONFIG"
+CONFIG_PROBE_LOG="$WORK/config-probe.log"
+printf 'Build succeeded.\n' >"$CONFIG_PROBE_LOG"
+
+CONFIG_ISOLATED_OUTPUT="$(
+  export RIPGREP_CONFIG_PATH="$BROKEN_RG_CONFIG"
+
+  # shellcheck disable=SC1090
+  source "$GATE" >/dev/null 2>&1
+
+  if rg_capture 'Build succeeded' "$CONFIG_PROBE_LOG" 2>/dev/null; then
+    capture_exit=0
+  else
+    capture_exit=$?
+  fi
+  printf '\nexit=%s' "$capture_exit"
+)"
+
+expect_eq \
+  "gate scans ignore caller ripgrep configuration" \
+  $'Build succeeded.\nexit=0' \
+  "$CONFIG_ISOLATED_OUTPUT"
+
 # ---------------------------------------------------------------------------
 # ILC evidence, per publish leg
 # ---------------------------------------------------------------------------
@@ -161,10 +205,16 @@ case "${1:-}" in
     exit 0
     ;;
   publish)
+    if [[ "${STUB_REQUIRE_ISOLATED_ARTIFACTS:-0}" == 1 ]] \
+      && ! printf '%s\n' "$@" | grep -qx -- '--artifacts-path'; then
+      echo "Publish reused the project's incremental outputs."
+      exit 0
+    fi
+
     if printf '%s\n' "$@" | grep -q "RegexAotSmoke"; then
-      cat "$STUB_SMOKE_LOG"
+      /bin/cat "$STUB_SMOKE_LOG"
     else
-      cat "$STUB_CLI_LOG"
+      /bin/cat "$STUB_CLI_LOG"
     fi
     exit 0
     ;;
@@ -179,6 +229,46 @@ STUB
 
 STUB_BIN="$(install_stub_dotnet)"
 
+install_failing_cat() {
+  local bin="$WORK/failing-cat-bin"
+
+  mkdir -p "$bin"
+
+  cat >"$bin/cat" <<'STUB'
+#!/usr/bin/env bash
+echo "injected append failure" >&2
+exit 86
+STUB
+
+  chmod +x "$bin/cat"
+
+  printf '%s' "$bin"
+}
+
+FAILING_CAT_BIN="$(install_failing_cat)"
+
+install_failing_cleanup_rm() {
+  local bin="$WORK/failing-rm-bin"
+
+  mkdir -p "$bin"
+
+  cat >"$bin/rm" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -rf ]]; then
+  echo "injected cleanup failure" >&2
+  exit 87
+fi
+
+exec /bin/rm "$@"
+STUB
+
+  chmod +x "$bin/rm"
+
+  printf '%s' "$bin"
+}
+
+FAILING_RM_BIN="$(install_failing_cleanup_rm)"
+
 # Runs the gate for one RID under the stub toolchain. Echoes the combined output, then a final
 # line "exit=<status>". Never publishes: `dotnet` resolves to the stub.
 run_gate_for_rid() {
@@ -187,6 +277,8 @@ run_gate_for_rid() {
   local cli_log="$3"
   local smoke_log="$4"
 
+  # The helper deliberately gives each gate run an isolated stub environment.
+  # shellcheck disable=SC2030
   (
     export PATH="$STUB_BIN:$PATH"
     export STUB_PUBLISH_AOT="$publish_aot"
@@ -220,16 +312,16 @@ else
   pass "a CLI publish with no ILC output fails on an AOT RID"
 fi
 
-# Where the CLI is deliberately not AOT-compiled (osx), the run may pass — but it must not claim
-# a closure it never analysed.
+# A shipping RID that resolves the CLI away from AOT must fail closed. There is no managed or
+# analyzer-only shipping shape.
 OUTPUT="$(run_gate_for_rid osx-arm64 "" "$CLI_LOG_WITHOUT_ILC" "$SMOKE_LOG_WITH_ILC")"
 
-if [[ "$OUTPUT" != *"exit=0"* ]]; then
-  fail "a non-AOT RID should still pass the gate: $OUTPUT"
-elif [[ "$OUTPUT" != *"no ILC closure analysis"* ]]; then
-  fail "a non-AOT RID must report that the CLI closure was not analysed, got: $OUTPUT"
+if [[ "$OUTPUT" == *"exit=0"* ]]; then
+  fail "a shipping RID whose CLI is not Native AOT must fail: $OUTPUT"
+elif [[ "$OUTPUT" != *"PublishAot resolved off"* ]]; then
+  fail "a non-AOT shipping RID must name the failed invariant, got: $OUTPUT"
 else
-  pass "a non-AOT RID passes but reports that no ILC closure analysis ran"
+  pass "a non-AOT shipping RID fails closed"
 fi
 
 # The ordinary healthy case still passes.
@@ -239,6 +331,70 @@ if [[ "$OUTPUT" == *"exit=0"* && "$OUTPUT" == *"AOT IL gate passed"* ]]; then
   pass "a publish with ILC output on both legs passes"
 else
   fail "a healthy AOT publish should pass: $OUTPUT"
+fi
+
+# The outer RID loop intentionally disables errexit so it can report every matrix leg. A failed
+# append must therefore be checked explicitly: otherwise the complete per-leg logs pass their ILC
+# checks while the combined warning log stays empty and the warning scan reports a false green.
+# The command substitution deliberately owns its complete failing-tool environment.
+# shellcheck disable=SC2030,SC2031
+OUTPUT="$(
+  export PATH="$FAILING_CAT_BIN:$STUB_BIN:$PATH"
+  export STUB_PUBLISH_AOT=true
+  export STUB_CLI_LOG="$CLI_LOG_WITH_ILC"
+  export STUB_SMOKE_LOG="$SMOKE_LOG_WITH_ILC"
+
+  # shellcheck disable=SC1090
+  source "$GATE" >/dev/null 2>&1
+  set +e
+  run_single_rid linux-x64 1 2>&1
+  echo "exit=$?"
+)"
+
+if [[ "$OUTPUT" == *"exit=0"* ]]; then
+  fail "a failed combined-log append must fail the RID instead of scanning an incomplete log: $OUTPUT"
+elif [[ "$OUTPUT" != *"could not append CLI publish output"* ]]; then
+  fail "a failed combined-log append must name the incomplete evidence, got: $OUTPUT"
+else
+  pass "a failed combined-log append fails closed"
+fi
+
+# The command substitution deliberately owns its complete failing-tool environment.
+# shellcheck disable=SC2031
+OUTPUT="$(
+  export PATH="$FAILING_RM_BIN:$STUB_BIN:$PATH"
+  export STUB_PUBLISH_AOT=true
+  export STUB_CLI_LOG="$CLI_LOG_WITH_ILC"
+  export STUB_SMOKE_LOG="$SMOKE_LOG_WITH_ILC"
+
+  # shellcheck disable=SC1090
+  source "$GATE" >/dev/null 2>&1
+  set +e
+  run_single_rid linux-x64 1 2>&1
+  echo "exit=$?"
+)"
+
+if [[ "$OUTPUT" == *"exit=0"* ]]; then
+  fail "a failed private-artifact cleanup must fail the RID instead of leaking its temporary tree: $OUTPUT"
+elif [[ "$OUTPUT" != *"could not remove CLI publish artifacts"* ]]; then
+  fail "a failed private-artifact cleanup must name the leaked evidence, got: $OUTPUT"
+else
+  pass "a failed private-artifact cleanup fails closed"
+fi
+
+# A real second publish can otherwise reuse both native outputs and emit no ILC marker, making the
+# gate fail closed without actually performing the analysis it was invoked to verify. Fresh artifact
+# roots force both legs through their build and native-analysis pipelines without deleting repo output.
+export STUB_REQUIRE_ISOLATED_ARTIFACTS=1
+
+OUTPUT="$(run_gate_for_rid linux-x64 true "$CLI_LOG_WITH_ILC" "$SMOKE_LOG_WITH_ILC")"
+
+unset STUB_REQUIRE_ISOLATED_ARTIFACTS
+
+if [[ "$OUTPUT" == *"exit=0"* && "$OUTPUT" == *"AOT IL gate passed"* ]]; then
+  pass "both publish legs use isolated artifact roots"
+else
+  fail "the AOT audit must isolate both publish legs from incremental outputs: $OUTPUT"
 fi
 
 echo

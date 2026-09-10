@@ -1,5 +1,3 @@
-using System.Globalization;
-
 using Microsoft.Data.Sqlite;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -34,7 +32,6 @@ internal sealed record GrimoireSchemaTransitionJournalRow(
 /// </remarks>
 internal static class GrimoireSchemaTransitionJournal
 {
-
     private const string Projection = """
         SELECT FamilyCode, TransactionTierCode, FromVersion, TargetVersion, CompletedThroughVersion,
                TargetSourceDefinitionFingerprint, BackfillName, BackfillCursor, BackfillRowsProcessed,
@@ -48,7 +45,6 @@ internal static class GrimoireSchemaTransitionJournal
         GrimoireSchemaTransactionTier tier,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -65,7 +61,6 @@ internal static class GrimoireSchemaTransitionJournal
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? Project(reader)
             : null;
-
     }
 
     /// <summary>
@@ -75,7 +70,6 @@ internal static class GrimoireSchemaTransitionJournal
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -89,13 +83,10 @@ internal static class GrimoireSchemaTransitionJournal
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(Project(reader));
-
         }
 
         return rows;
-
     }
 
     /// <summary>
@@ -109,7 +100,6 @@ internal static class GrimoireSchemaTransitionJournal
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -149,10 +139,9 @@ internal static class GrimoireSchemaTransitionJournal
 
         _ = command.Parameters.AddWithValue("$revision", row.Revision);
 
-        _ = command.Parameters.AddWithValue("$now", nowUtc.ToString("o", CultureInfo.InvariantCulture));
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(nowUtc));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -169,7 +158,6 @@ internal static class GrimoireSchemaTransitionJournal
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -200,14 +188,13 @@ internal static class GrimoireSchemaTransitionJournal
 
         _ = command.Parameters.AddWithValue("$rows", backfillRowsProcessed);
 
-        _ = command.Parameters.AddWithValue("$now", nowUtc.ToString("o", CultureInfo.InvariantCulture));
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(nowUtc));
 
         _ = command.Parameters.AddWithValue("$tierCode", (long)row.TransactionTier);
 
         _ = command.Parameters.AddWithValue("$revision", row.Revision);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-
     }
 
     /// <summary>
@@ -219,7 +206,6 @@ internal static class GrimoireSchemaTransitionJournal
         GrimoireSchemaTransitionJournalRow row,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -240,7 +226,6 @@ internal static class GrimoireSchemaTransitionJournal
         _ = command.Parameters.AddWithValue("$revision", row.Revision);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-
     }
 
     /// <summary>
@@ -257,7 +242,6 @@ internal static class GrimoireSchemaTransitionJournal
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(errorCode);
@@ -274,12 +258,11 @@ internal static class GrimoireSchemaTransitionJournal
             "$code",
             errorCode.Length <= 64 ? errorCode : errorCode[..64]);
 
-        _ = command.Parameters.AddWithValue("$now", nowUtc.ToString("o", CultureInfo.InvariantCulture));
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(nowUtc));
 
         _ = command.Parameters.AddWithValue("$tierCode", (long)tier);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static GrimoireSchemaTransitionJournalRow Project(SqliteDataReader reader) =>
@@ -294,5 +277,4 @@ internal static class GrimoireSchemaTransitionJournal
             reader.IsDBNull(7) ? null : reader.GetString(7),
             reader.GetInt64(8),
             reader.GetInt64(9));
-
 }

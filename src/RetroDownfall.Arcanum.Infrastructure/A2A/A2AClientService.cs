@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -27,7 +28,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// </remarks>
 public sealed class A2AClientService : IA2AClientService
 {
-
     public const string OutboundHttpClientName = "A2AOutbound";
 
     /// <summary>
@@ -63,6 +63,8 @@ public sealed class A2AClientService : IA2AClientService
 
     private readonly ILogger<A2AClientService> _logger;
 
+    private readonly IDnsResolver _dnsResolver;
+
     private readonly ConcurrentDictionary<string, CachedCard> _cardCache = new(StringComparer.Ordinal);
 
     private readonly Lazy<SemaphoreSlim> _gate;
@@ -83,6 +85,7 @@ public sealed class A2AClientService : IA2AClientService
         IHttpClientFactory httpClientFactory,
         IOptionsMonitor<ArcanumSettings> options,
         ILogger<A2AClientService> logger,
+        IDnsResolver dnsResolver,
         IServiceScopeFactory? scopeFactory = null,
         A2ASendingCallbackRegistry? callbacks = null)
     {
@@ -94,6 +97,8 @@ public sealed class A2AClientService : IA2AClientService
 
         _logger = logger;
 
+        _dnsResolver = dnsResolver;
+
         _scopeFactory = scopeFactory;
 
         _gate = new Lazy<SemaphoreSlim>(() =>
@@ -103,7 +108,6 @@ public sealed class A2AClientService : IA2AClientService
 
             return new SemaphoreSlim(max, max);
         });
-
     }
 
     public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
@@ -116,13 +120,10 @@ public sealed class A2AClientService : IA2AClientService
         A2ADispatchMode mode = A2ADispatchMode.Blocking,
         A2ASendingOptions? options = null)
     {
-
         if (string.IsNullOrWhiteSpace(goal))
         {
-
             return Task.FromResult(Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Apprentice.InvalidGoal, "A non-empty goal is required to dispatch a Sending.")));
-
         }
 
         return RunGuardedAsync(
@@ -140,7 +141,6 @@ public sealed class A2AClientService : IA2AClientService
                 options,
                 slot,
                 ct));
-
     }
 
     public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
@@ -153,21 +153,16 @@ public sealed class A2AClientService : IA2AClientService
         A2ADispatchMode mode = A2ADispatchMode.Blocking,
         A2ASendingOptions? options = null)
     {
-
         if (string.IsNullOrWhiteSpace(taskId))
         {
-
             return Task.FromResult(Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.TaskRejected, "A non-empty remote task id is required to continue a Sending.")));
-
         }
 
         if (string.IsNullOrWhiteSpace(message))
         {
-
             return Task.FromResult(Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Apprentice.InvalidGoal, "A non-empty message is required to continue a Sending.")));
-
         }
 
         return RunGuardedAsync(
@@ -186,7 +181,6 @@ public sealed class A2AClientService : IA2AClientService
                 options,
                 slot,
                 ct));
-
     }
 
     public async Task<Result> CancelRemoteTaskAsync(
@@ -194,12 +188,9 @@ public sealed class A2AClientService : IA2AClientService
         string taskId,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(taskId))
         {
-
             return Result.Failure(new Error(ErrorCodes.Sending.TaskRejected, "A non-empty remote task id is required."));
-
         }
 
         Result<A2ADispatchResult> outcome = await RunGuardedAsync(
@@ -208,32 +199,25 @@ public sealed class A2AClientService : IA2AClientService
                 cancellationToken,
                 async (client, card, url, chain, slot, ct) =>
                 {
-
                     try
                     {
-
                         await client
                             .CancelTaskAsync(new CancelTaskRequest { Id = taskId.Trim() }, ct)
                             .ConfigureAwait(false);
 
                         return Result<A2ADispatchResult>.Success(
                             new A2ADispatchResult(taskId.Trim(), "canceled"));
-
                     }
                     catch (Exception ex) when (ex is HttpRequestException or A2AException)
                     {
-
                         return Result<A2ADispatchResult>.Failure(new Error(
                             ErrorCodes.Sending.AgentUnreachable,
                             $"Could not cancel remote task '{taskId}': {ex.Message}"));
-
                     }
-
                 })
             .ConfigureAwait(false);
 
         return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);
-
     }
 
     /// <summary>
@@ -246,25 +230,20 @@ public sealed class A2AClientService : IA2AClientService
         CancellationToken cancellationToken,
         Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, ConcurrencySlot, CancellationToken, Task<Result<A2ADispatchResult>>> operation)
     {
-
         ArcanumSettings settings = _options.CurrentValue;
 
         ConclaveA2ASettings a2a = settings.ResolveA2A();
 
         if (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ClientEnabled)
         {
-
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.Disabled, "A2A is disabled; dispatch_sending is not available."));
-
         }
 
         if (string.IsNullOrWhiteSpace(agentUrl) || !Uri.TryCreate(agentUrl.Trim(), UriKind.Absolute, out _))
         {
-
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.AgentCardInvalid, "A non-empty absolute agent_url is required to dispatch a Sending."));
-
         }
 
         string trimmedUrl = agentUrl.Trim();
@@ -273,22 +252,18 @@ public sealed class A2AClientService : IA2AClientService
 
         if (allowlist.Length > 0 && !IsAllowedAgent(trimmedUrl, allowlist))
         {
-
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.AgentNotAllowed, $"Remote agent '{trimmedUrl}' is not in the configured AllowedRemoteAgents allowlist."));
-
         }
 
         Result discoveryUrlCheck = await OutboundUrlGuard
-            .ValidateUntrustedUrlAsync(trimmedUrl, cancellationToken)
+            .ValidateUntrustedUrlAsync(trimmedUrl, _dnsResolver, cancellationToken)
             .ConfigureAwait(false);
 
         if (discoveryUrlCheck.IsFailure)
         {
-
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.AgentUnreachable, $"Remote agent URL rejected by outbound URL policy: {discoveryUrlCheck.Error.Message}"));
-
         }
 
         SemaphoreSlim gate = _gate.Value;
@@ -299,15 +274,12 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-
             Result<ConnectedPeer> peer = await ConnectAsync(trimmedUrl, allowlist, cancellationToken)
                 .ConfigureAwait(false);
 
             if (peer.IsFailure)
             {
-
                 return Result<A2ADispatchResult>.Failure(peer.Error);
-
             }
 
             return await operation(
@@ -318,18 +290,14 @@ public sealed class A2AClientService : IA2AClientService
                     slot,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             // Released here regardless of success, remote failure, or caller/host cancellation — and
             // idempotently, because a callback-mode Sending gives the slot back the moment the peer has
             // somewhere to report to (issue #67).
             slot.Release();
-
         }
-
     }
 
     /// <summary>
@@ -342,21 +310,15 @@ public sealed class A2AClientService : IA2AClientService
     /// </remarks>
     private sealed class ConcurrencySlot(SemaphoreSlim gate)
     {
-
         private int _released;
 
         public void Release()
         {
-
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
-
                 gate.Release();
-
             }
-
         }
-
     }
 
     private sealed record ConnectedPeer(IA2AClient Client, AgentCard Card);
@@ -366,33 +328,26 @@ public sealed class A2AClientService : IA2AClientService
         string[] allowlist,
         CancellationToken cancellationToken)
     {
-
         AgentCard card;
 
         try
         {
-
             card = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException)
         {
-
             _logger.LogWarning(ex, "dispatch_sending: failed to resolve Agent Card at {AgentUrl}.", discoveryUrl);
 
             return Result<ConnectedPeer>.Failure(
                 new Error(ErrorCodes.Sending.AgentCardInvalid, $"Could not resolve the remote agent's Agent Card: {ex.Message}"));
-
         }
 
         AgentInterface[] interfaces = [.. (card.SupportedInterfaces ?? []).Where(static i => !string.IsNullOrWhiteSpace(i.Url))];
 
         if (interfaces.Length == 0)
         {
-
             return Result<ConnectedPeer>.Failure(
                 new Error(ErrorCodes.Sending.AgentCardInvalid, "The remote Agent Card did not advertise a usable interface."));
-
         }
 
         // EVERY advertised interface is checked, not just the first: A2AClientFactory selects by protocol
@@ -400,29 +355,23 @@ public sealed class A2AClientService : IA2AClientService
         // the connection to an unchecked URL. All of these are remote-controlled values.
         foreach (AgentInterface advertised in interfaces)
         {
-
             string interfaceUrl = advertised.Url!;
 
             if (allowlist.Length > 0 && !IsAllowedAgent(interfaceUrl, allowlist))
             {
-
                 return Result<ConnectedPeer>.Failure(
                     new Error(ErrorCodes.Sending.AgentNotAllowed, $"Remote agent interface '{interfaceUrl}' is not in the configured AllowedRemoteAgents allowlist."));
-
             }
 
             Result interfaceUrlCheck = await OutboundUrlGuard
-                .ValidateUntrustedUrlAsync(interfaceUrl, cancellationToken)
+                .ValidateUntrustedUrlAsync(interfaceUrl, _dnsResolver, cancellationToken)
                 .ConfigureAwait(false);
 
             if (interfaceUrlCheck.IsFailure)
             {
-
                 return Result<ConnectedPeer>.Failure(
                     new Error(ErrorCodes.Sending.AgentUnreachable, $"Remote agent interface rejected by outbound URL policy: {interfaceUrlCheck.Error.Message}"));
-
             }
-
         }
 
         HttpClient httpClient = CreateOutboundClient(CredentialTargetForCard(card, discoveryUrl, allowlist), allowlist);
@@ -431,20 +380,15 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-
             client = A2AClientFactory.Create(card, httpClient);
-
         }
         catch (Exception ex) when (ex is A2AException or ArgumentException or InvalidOperationException)
         {
-
             return Result<ConnectedPeer>.Failure(
                 new Error(ErrorCodes.Sending.AgentCardInvalid, $"The remote Agent Card advertises no protocol binding this client supports: {ex.Message}"));
-
         }
 
         return Result<ConnectedPeer>.Success(new ConnectedPeer(client, card));
-
     }
 
     private Task<Result<A2ADispatchResult>> DispatchInternalAsync(
@@ -459,14 +403,11 @@ public sealed class A2AClientService : IA2AClientService
         ConcurrencySlot slot,
         CancellationToken cancellationToken)
     {
-
         Result<A2AOutboundModality> modality = NegotiateAsync(card, options);
 
         if (modality.IsFailure)
         {
-
             return Task.FromResult(Result<A2ADispatchResult>.Failure(modality.Error));
-
         }
 
         Message message = new()
@@ -490,7 +431,6 @@ public sealed class A2AClientService : IA2AClientService
             options?.BudgetReservationId,
             slot,
             cancellationToken);
-
     }
 
     private Task<Result<A2ADispatchResult>> ContinueInternalAsync(
@@ -506,14 +446,11 @@ public sealed class A2AClientService : IA2AClientService
         ConcurrencySlot slot,
         CancellationToken cancellationToken)
     {
-
         Result<A2AOutboundModality> modality = NegotiateAsync(card, options);
 
         if (modality.IsFailure)
         {
-
             return Task.FromResult(Result<A2ADispatchResult>.Failure(modality.Error));
-
         }
 
         // TaskId is what makes this a continuation rather than a second task: the peer routes it to the
@@ -540,7 +477,6 @@ public sealed class A2AClientService : IA2AClientService
             options?.BudgetReservationId,
             slot,
             cancellationToken);
-
     }
 
     /// <summary>
@@ -553,7 +489,6 @@ public sealed class A2AClientService : IA2AClientService
     /// </remarks>
     private Result<A2AOutboundModality> NegotiateAsync(AgentCard card, A2ASendingOptions? options)
     {
-
         Result<A2AOutboundModality> modality = A2AAgentCardPolicy.ValidateOutboundModes(
             _options.CurrentValue.ResolveA2A(),
             card,
@@ -561,15 +496,12 @@ public sealed class A2AClientService : IA2AClientService
 
         if (modality.IsFailure)
         {
-
             _logger.LogWarning(
                 "dispatch_sending: refusing to dispatch — {Reason}",
                 modality.Error.Message);
-
         }
 
         return modality;
-
     }
 
     /// <summary>
@@ -589,7 +521,6 @@ public sealed class A2AClientService : IA2AClientService
         ConcurrencySlot slot,
         CancellationToken cancellationToken)
     {
-
         // ReturnImmediately hands back the remote task id before the work finishes. That id is what makes
         // local cancellation propagatable — a blocking send abandons the HTTP call without ever learning
         // which remote task to cancel, leaving the peer running and billing (issue #12).
@@ -611,23 +542,18 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-
             response = await client.SendMessageAsync(sendRequest, cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException)
         {
-
             _logger.LogWarning(ex, "dispatch_sending: failed to send message to the remote agent.");
 
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.AgentUnreachable, $"Failed to send the Sending to the remote agent: {ex.Message}"));
-
         }
 
         if (response.PayloadCase == SendMessageResponseCase.Message)
         {
-
             // A stateless reply: no task was created, so there is nothing to poll and no task metadata to
             // read usage from. Unknown cost, not zero.
             return Result<A2ADispatchResult>.Success(new A2ADispatchResult(
@@ -636,7 +562,6 @@ public sealed class A2AClientService : IA2AClientService
                 A2ARemoteCost.Unknown,
                 dispatchedAt,
                 DateTimeOffset.UtcNow));
-
         }
 
         AgentTask task = response.Task
@@ -673,34 +598,27 @@ public sealed class A2AClientService : IA2AClientService
 
         if (callback is not null)
         {
-
             slot.Release();
-
         }
 
         try
         {
-
             task = callback is null
                 ? await AwaitSettledAsync(client, card, task, discoveryUrl, progress, transitions, cancellationToken)
                     .ConfigureAwait(false)
                 : await AwaitCallbackAsync(client, task, discoveryUrl, progress, transitions, callback, cancellationToken)
                     .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             await TryCancelRemoteTaskAsync(client, task.Id).ConfigureAwait(false);
 
             await ReleaseLedgerAsync(ledgerEntry).ConfigureAwait(false);
 
             throw;
-
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException)
         {
-
             // The remote accepted the task and then the transport failed. The work may still be running
             // there, so report the task id rather than letting an exception escape as an opaque tool error.
             // The ledger entry deliberately stays open: reconciliation will try to cancel it.
@@ -712,13 +630,10 @@ public sealed class A2AClientService : IA2AClientService
                 ErrorCodes.Sending.AgentUnreachable,
                 $"Lost contact with the remote agent while awaiting task '{task.Id}': {ex.Message}. "
                 + "The remote task may still be running; it was not cancelled."));
-
         }
         finally
         {
-
             callback?.Dispose();
-
         }
 
         DateTimeOffset settledAt = DateTimeOffset.UtcNow;
@@ -734,27 +649,21 @@ public sealed class A2AClientService : IA2AClientService
         if (task.Status.State is not (TaskState.InputRequired or TaskState.AuthRequired)
             || mode != A2ADispatchMode.Continuable)
         {
-
             await SettleLedgerAsync(ledgerEntry, cost).ConfigureAwait(false);
-
         }
         else
         {
-
             // Left open on purpose so the Mage can answer it, which also means this dispatch has stopped
             // holding it: the lease must lapse rather than be renewed for the host's lifetime.
             StopRenewing(ledgerEntry);
-
         }
 
         if (task.Status.State == TaskState.Completed)
         {
-
             RecordSettled("completed", cost, dispatchedAt, settledAt);
 
             return Result<A2ADispatchResult>.Success(
                 new A2ADispatchResult(task.Id, ExtractTaskText(task), cost, dispatchedAt, settledAt));
-
         }
 
         string reason = task.Status.Message is { } statusMessage
@@ -763,14 +672,12 @@ public sealed class A2AClientService : IA2AClientService
 
         if (task.Status.State is TaskState.InputRequired or TaskState.AuthRequired)
         {
-
             A2AContinuationNeed need = task.Status.State == TaskState.InputRequired
                 ? A2AContinuationNeed.Input
                 : A2AContinuationNeed.Authentication;
 
             if (mode == A2ADispatchMode.Continuable)
             {
-
                 RecordSettled("continuation", cost, dispatchedAt, settledAt);
 
                 // The remote task stays alive so the Mage can answer it. Cancelling here is what forces a
@@ -782,7 +689,6 @@ public sealed class A2AClientService : IA2AClientService
                     dispatchedAt,
                     settledAt,
                     new A2ASendingContinuation(task.Id, need, reason)));
-
             }
 
             // Neither state is terminal in A2A, but a blocking Sending has no way to supply the follow-up
@@ -800,33 +706,27 @@ public sealed class A2AClientService : IA2AClientService
                 ErrorCodes.Sending.TaskRejected,
                 $"The remote agent {wanted} before it could finish, which a blocking Sending cannot supply: {reason} "
                 + "Re-dispatch with --continuable to answer it instead of ending the Sending."));
-
         }
 
         RecordSettled("failed", cost, dispatchedAt, settledAt);
 
         return Result<A2ADispatchResult>.Failure(new Error(ErrorCodes.Sending.TaskRejected, reason));
-
     }
 
     /// <summary>A live outbound Sending's callback registration, and the wake-up it waits on.</summary>
     private sealed class A2ACallbackSubscription(string configId, SemaphoreSlim signal, IDisposable registration)
         : IDisposable
     {
-
         public string ConfigId => configId;
 
         public SemaphoreSlim Signal => signal;
 
         public void Dispose()
         {
-
             registration.Dispose();
 
             signal.Dispose();
-
         }
-
     }
 
     /// <summary>
@@ -849,7 +749,6 @@ public sealed class A2AClientService : IA2AClientService
         A2ASendingLedgerEntry ledgerEntry,
         CancellationToken cancellationToken)
     {
-
         ConclaveA2ASettings a2a = _options.CurrentValue.ResolveA2A();
 
         if (_callbacks is null
@@ -857,13 +756,11 @@ public sealed class A2AClientService : IA2AClientService
             || string.IsNullOrWhiteSpace(a2a.PushCallbackBaseUrl)
             || card.Capabilities?.PushNotifications != true)
         {
-
             _logger.LogDebug(
                 "dispatch_sending: callback mode is unavailable for remote task {TaskId}; waiting inline instead.",
                 remoteTaskId);
 
             return null;
-
         }
 
         string configId = A2ACallbackConfigId.Mint();
@@ -875,7 +772,6 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-
             await client
                 .CreateTaskPushNotificationConfigAsync(
                     new CreateTaskPushNotificationConfigRequest
@@ -891,11 +787,9 @@ public sealed class A2AClientService : IA2AClientService
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException)
         {
-
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: the peer would not register a callback for remote task {TaskId}; "
@@ -903,7 +797,6 @@ public sealed class A2AClientService : IA2AClientService
                 remoteTaskId);
 
             return null;
-
         }
 
         // Durable before the slot is released: a callback that arrives in a later process has only this
@@ -916,7 +809,6 @@ public sealed class A2AClientService : IA2AClientService
             configId,
             signal,
             _callbacks.Register(configId, A2ACallbackToken.Hash(token), signal));
-
     }
 
     /// <summary>The absolute path peers post outbound-Sending callbacks to.</summary>
@@ -954,22 +846,18 @@ public sealed class A2AClientService : IA2AClientService
         A2ACallbackSubscription callback,
         CancellationToken cancellationToken)
     {
-
         task = await ReadTaskAsync(client, task.Id, discoveryUrl, progress, transitions, cancellationToken)
             .ConfigureAwait(false);
 
         while (!IsSettled(task.Status.State))
         {
-
             await callback.Signal.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             task = await ReadTaskAsync(client, task.Id, discoveryUrl, progress, transitions, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         return task;
-
     }
 
     /// <summary>
@@ -983,54 +871,40 @@ public sealed class A2AClientService : IA2AClientService
         TransitionFilter transitions,
         CancellationToken cancellationToken)
     {
-
         AgentTask task = await client
             .GetTaskAsync(new GetTaskRequest { Id = taskId }, cancellationToken)
             .ConfigureAwait(false);
 
         if (transitions.ShouldReport(task.Status))
         {
-
             Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
-
         }
 
         return task;
-
     }
 
     private async Task RecordCallbackAsync(A2ASendingLedgerEntry entry, string configId, string tokenHash)
     {
-
         if (!entry.IsRecorded || _scopeFactory is null)
         {
-
             return;
-
         }
 
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             if (A2ASendingLedgerScope.Resolve(scope.ServiceProvider) is { } ledger)
             {
-
                 await ledger
                     .RecordOutboundCallbackAsync(entry, configId, tokenHash, CancellationToken.None)
                     .ConfigureAwait(false);
-
             }
-
         }
         catch (Exception ex)
         {
-
             _logger.LogWarning(ex, "dispatch_sending: could not record a Sending's callback registration.");
-
         }
-
     }
 
     /// <param name="continuation">
@@ -1045,58 +919,44 @@ public sealed class A2AClientService : IA2AClientService
         Guid? budgetReservationId,
         bool continuation = false)
     {
-
         if (_scopeFactory is null)
         {
-
             return default;
-
         }
 
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             IA2ASendingLedger? ledger = A2ASendingLedgerScope.Resolve(scope.ServiceProvider);
 
             if (ledger is null)
             {
-
                 return default;
-
             }
 
             if (continuation)
             {
-
                 A2ASendingLedgerEntry existing = await ledger
                     .FindOpenOutboundAsync(remoteTaskId, CancellationToken.None)
                     .ConfigureAwait(false);
 
                 if (existing.IsRecorded)
                 {
-
                     return existing;
-
                 }
-
             }
 
             return await ledger
                 .RegisterOutboundAsync(remoteTaskId, agentUrl, budgetReservationId, CancellationToken.None)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             _logger.LogWarning(ex, "dispatch_sending: could not record a durable Sending for remote task {TaskId}.", remoteTaskId);
 
             return default;
-
         }
-
     }
 
     /// <summary>
@@ -1109,18 +969,14 @@ public sealed class A2AClientService : IA2AClientService
     /// </remarks>
     private void StopRenewing(A2ASendingLedgerEntry entry)
     {
-
         if (!entry.IsRecorded || _scopeFactory is null)
         {
-
             return;
-
         }
 
         using IServiceScope scope = _scopeFactory.CreateScope();
 
         scope.ServiceProvider.GetService<A2ASendingLeaseRenewer>()?.Forget(entry);
-
     }
 
     /// <summary>
@@ -1143,47 +999,35 @@ public sealed class A2AClientService : IA2AClientService
     /// </summary>
     private async Task CloseLedgerAsync(A2ASendingLedgerEntry entry, A2ARemoteCost? cost)
     {
-
         if (!entry.IsRecorded || _scopeFactory is null)
         {
-
             return;
-
         }
 
         try
         {
-
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             IA2ASendingLedger? ledger = A2ASendingLedgerScope.Resolve(scope.ServiceProvider);
 
             if (ledger is null)
             {
-
                 return;
-
             }
 
             if (cost is null)
             {
-
                 await ledger.ReleaseAsync(entry, CancellationToken.None).ConfigureAwait(false);
 
                 return;
-
             }
 
             await ledger.SettleOutboundAsync(entry, cost, CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             _logger.LogWarning(ex, "dispatch_sending: could not close the durable record for a settled Sending.");
-
         }
-
     }
 
     /// <summary>
@@ -1200,7 +1044,6 @@ public sealed class A2AClientService : IA2AClientService
         DateTimeOffset dispatchedAt,
         DateTimeOffset settledAt)
     {
-
         KeyValuePair<string, object?> outcomeTag = new("outcome", outcome);
 
         ArcanumMetrics.ConclaveSendingsTotal.Add(
@@ -1210,25 +1053,18 @@ public sealed class A2AClientService : IA2AClientService
 
         if (cost.TotalTokens is { } tokens)
         {
-
             ArcanumMetrics.ConclaveSendingRemoteTokensTotal.Add(tokens, outcomeTag);
-
         }
 
         if (cost.CostUsd is { } usd)
         {
-
             ArcanumMetrics.ConclaveSendingRemoteCostUsdTotal.Add((double)usd, outcomeTag);
-
         }
 
         if (settledAt >= dispatchedAt && dispatchedAt != default)
         {
-
             ArcanumMetrics.ConclaveSendingDuration.Record((settledAt - dispatchedAt).TotalSeconds, outcomeTag);
-
         }
-
     }
 
     /// <summary>
@@ -1250,10 +1086,8 @@ public sealed class A2AClientService : IA2AClientService
         TransitionFilter transitions,
         CancellationToken cancellationToken)
     {
-
         if (card.Capabilities?.Streaming == true)
         {
-
             AgentTask? streamed = await TrySubscribeUntilSettledAsync(
                     client,
                     task,
@@ -1265,16 +1099,12 @@ public sealed class A2AClientService : IA2AClientService
 
             if (streamed is not null)
             {
-
                 return streamed;
-
             }
-
         }
 
         return await PollUntilSettledAsync(client, task, discoveryUrl, progress, transitions, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1303,65 +1133,49 @@ public sealed class A2AClientService : IA2AClientService
         TransitionFilter transitions,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             IAsyncEnumerable<StreamResponse> stream = client.SubscribeToTaskAsync(
                 new SubscribeToTaskRequest { Id = task.Id },
                 cancellationToken);
 
             await foreach (StreamResponse update in stream.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-
                 if (ReadState(update) is not { } observed)
                 {
-
                     continue;
-
                 }
 
                 if (transitions.ShouldReport(observed))
                 {
-
                     Report(progress, discoveryUrl, task.Id, observed.State, DateTimeOffset.UtcNow);
-
                 }
 
                 if (IsSettled(observed.State))
                 {
-
                     return await client
                         .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
                         .ConfigureAwait(false);
-
                 }
-
             }
 
             _logger.LogInformation(
                 "dispatch_sending: the push stream for remote task {TaskId} ended before it settled; falling back to polling.",
                 task.Id);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException)
         {
-
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: could not follow remote task {TaskId} by subscription; falling back to polling.",
                 task.Id);
-
         }
 
         return null;
-
     }
 
     /// <summary>
@@ -1397,12 +1211,10 @@ public sealed class A2AClientService : IA2AClientService
         TransitionFilter transitions,
         CancellationToken cancellationToken)
     {
-
         TimeSpan delay = InitialPollInterval;
 
         while (!IsSettled(task.Status.State))
         {
-
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
 
             delay = delay < MaxPollInterval
@@ -1415,15 +1227,11 @@ public sealed class A2AClientService : IA2AClientService
 
             if (transitions.ShouldReport(task.Status))
             {
-
                 Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
-
             }
-
         }
 
         return task;
-
     }
 
     /// <summary>
@@ -1432,21 +1240,17 @@ public sealed class A2AClientService : IA2AClientService
     /// </summary>
     private sealed class TransitionFilter(TaskState state, string statusText)
     {
-
         private TaskState _state = state;
 
         private string _statusText = statusText;
 
         public bool ShouldReport(A2ATaskStatus status)
         {
-
             string text = StatusText(status);
 
             if (status.State == _state && string.Equals(text, _statusText, StringComparison.Ordinal))
             {
-
                 return false;
-
             }
 
             _state = status.State;
@@ -1454,9 +1258,7 @@ public sealed class A2AClientService : IA2AClientService
             _statusText = text;
 
             return true;
-
         }
-
     }
 
     private static void Report(
@@ -1512,27 +1314,21 @@ public sealed class A2AClientService : IA2AClientService
     /// </summary>
     private async Task TryCancelRemoteTaskAsync(IA2AClient client, string taskId)
     {
-
         using CancellationTokenSource cleanupScope = new(RemoteCancelTimeout);
 
         try
         {
-
             await client
                 .CancelTaskAsync(new CancelTaskRequest { Id = taskId }, cleanupScope.Token)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: could not cancel remote A2A task {TaskId} after local cancellation.",
                 taskId);
-
         }
-
     }
 
     /// <summary>
@@ -1552,12 +1348,9 @@ public sealed class A2AClientService : IA2AClientService
     /// </remarks>
     private static string? CredentialTargetForCard(AgentCard card, string discoveryUrl, string[] allowlist)
     {
-
         if (!Uri.TryCreate(discoveryUrl, UriKind.Absolute, out Uri? discovery))
         {
-
             return null;
-
         }
 
         string discoveryOrigin = discovery.GetLeftPart(UriPartial.Authority);
@@ -1566,19 +1359,14 @@ public sealed class A2AClientService : IA2AClientService
 
         foreach (AgentInterface advertised in card.SupportedInterfaces ?? [])
         {
-
             if (string.IsNullOrWhiteSpace(advertised.Url))
             {
-
                 continue;
-
             }
 
             if (!Uri.TryCreate(advertised.Url, UriKind.Absolute, out Uri? target))
             {
-
                 return null;
-
             }
 
             bool vouchedFor = string.Equals(
@@ -1589,17 +1377,13 @@ public sealed class A2AClientService : IA2AClientService
 
             if (!vouchedFor)
             {
-
                 return null;
-
             }
 
             representative ??= advertised.Url;
-
         }
 
         return representative;
-
     }
 
     /// <summary>
@@ -1616,14 +1400,11 @@ public sealed class A2AClientService : IA2AClientService
         string[] allowlist,
         CancellationToken cancellationToken)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         if (_cardCache.TryGetValue(discoveryUrl, out CachedCard? cached) && cached.ExpiresAt > now)
         {
-
             return cached.Card;
-
         }
 
         Uri uri = new(discoveryUrl);
@@ -1644,10 +1425,8 @@ public sealed class A2AClientService : IA2AClientService
 
         foreach (string candidate in candidatePaths)
         {
-
             try
             {
-
                 A2ACardResolver resolver = new(new Uri(origin), httpClient, candidate);
 
                 AgentCard card = await resolver.GetAgentCardAsync(cancellationToken).ConfigureAwait(false);
@@ -1655,19 +1434,14 @@ public sealed class A2AClientService : IA2AClientService
                 CacheCard(discoveryUrl, card, now);
 
                 return card;
-
             }
             catch (Exception ex) when (ex is HttpRequestException or A2AException)
             {
-
                 lastFailure = ex;
-
             }
-
         }
 
         throw lastFailure ?? new A2AException("The remote agent did not serve an Agent Card.");
-
     }
 
     /// <summary>
@@ -1676,43 +1450,31 @@ public sealed class A2AClientService : IA2AClientService
     /// </summary>
     private void CacheCard(string discoveryUrl, AgentCard card, DateTimeOffset now)
     {
-
         if (_cardCache.Count >= MaxCachedCards)
         {
-
             foreach (KeyValuePair<string, CachedCard> entry in _cardCache)
             {
-
                 if (entry.Value.ExpiresAt <= now)
                 {
-
                     _cardCache.TryRemove(entry.Key, out _);
-
                 }
-
             }
 
             // Still full of live entries: drop the soonest-to-expire so the cache cannot grow without bound.
             while (_cardCache.Count >= MaxCachedCards)
             {
-
                 KeyValuePair<string, CachedCard> oldest = _cardCache
                     .OrderBy(static e => e.Value.ExpiresAt)
                     .FirstOrDefault();
 
                 if (oldest.Key is null || !_cardCache.TryRemove(oldest.Key, out _))
                 {
-
                     break;
-
                 }
-
             }
-
         }
 
         _cardCache[discoveryUrl] = new CachedCard(card, now.Add(CardCacheTtl));
-
     }
 
     /// <summary>
@@ -1735,21 +1497,17 @@ public sealed class A2AClientService : IA2AClientService
     /// </remarks>
     private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist)
     {
-
         HttpClient httpClient = _httpClientFactory.CreateClient(OutboundHttpClientName);
 
         ConclaveA2ASettings a2a = _options.CurrentValue.ResolveA2A();
 
         if (credentialTarget is null || string.IsNullOrWhiteSpace(a2a.OutboundCredentialEnvironmentVariable))
         {
-
             return httpClient;
-
         }
 
         if (allowlist.Length == 0 || !IsAllowedAgent(credentialTarget, allowlist))
         {
-
             _logger.LogWarning(
                 "dispatch_sending: withholding the outbound peer credential from '{AgentUrl}' because it "
                 + "matches no Arcanum:Integrations:A2A:AllowedRemoteAgents entry. The Sending is dispatched "
@@ -1757,7 +1515,6 @@ public sealed class A2AClientService : IA2AClientService
                 credentialTarget);
 
             return httpClient;
-
         }
 
         string? credential = System.Environment.GetEnvironmentVariable(
@@ -1765,14 +1522,12 @@ public sealed class A2AClientService : IA2AClientService
 
         if (string.IsNullOrWhiteSpace(credential))
         {
-
             _logger.LogWarning(
                 "dispatch_sending: Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable names "
                 + "'{EnvironmentVariable}', but it is not set; dispatching without a peer credential.",
                 a2a.OutboundCredentialEnvironmentVariable);
 
             return httpClient;
-
         }
 
         string header = string.IsNullOrWhiteSpace(a2a.OutboundCredentialHeader)
@@ -1784,36 +1539,27 @@ public sealed class A2AClientService : IA2AClientService
         httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header, credential);
 
         return httpClient;
-
     }
 
     private static bool IsAllowedAgent(string url, string[] allowlist)
     {
-
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
         {
-
             return false;
-
         }
 
         foreach (string entry in allowlist)
         {
-
             if (string.IsNullOrWhiteSpace(entry))
             {
-
                 continue;
-
             }
 
             string trimmed = entry.Trim();
 
             if (string.Equals(trimmed, url, StringComparison.OrdinalIgnoreCase))
             {
-
                 return true;
-
             }
 
             if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri? allowedUri)
@@ -1822,25 +1568,18 @@ public sealed class A2AClientService : IA2AClientService
                     uri.GetLeftPart(UriPartial.Authority),
                     StringComparison.OrdinalIgnoreCase))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     private static string ExtractText(IReadOnlyList<Part>? parts)
     {
-
         if (parts is null || parts.Count == 0)
         {
-
             return string.Empty;
-
         }
 
         IEnumerable<string> textParts = parts
@@ -1848,46 +1587,34 @@ public sealed class A2AClientService : IA2AClientService
             .Select(static p => p.Text!);
 
         return string.Join('\n', textParts);
-
     }
 
     private static string ExtractTaskText(AgentTask task)
     {
-
         Artifact? lastArtifact = task.Artifacts?.LastOrDefault();
 
         if (lastArtifact is { Parts.Count: > 0 })
         {
-
             string artifactText = ExtractText(lastArtifact.Parts);
 
             if (!string.IsNullOrEmpty(artifactText))
             {
-
                 return artifactText;
-
             }
-
         }
 
         if (task.Status.Message is { } statusMessage)
         {
-
             string statusText = ExtractText(statusMessage.Parts);
 
             if (!string.IsNullOrEmpty(statusText))
             {
-
                 return statusText;
-
             }
-
         }
 
         return "(The remote agent completed the Sending without a textual response.)";
-
     }
 
     private sealed record CachedCard(AgentCard Card, DateTimeOffset ExpiresAt);
-
 }

@@ -7,9 +7,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
+public sealed partial class UnseenServantWatermarkStoreTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -20,14 +19,11 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
 
     public UnseenServantWatermarkStoreTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -35,32 +31,24 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
         _store = new UnseenServantWatermarkStore(_db);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task SaveAsync_then_GetAsync_round_trips()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string jobKey = "MarketWatcher\0patrol";
@@ -78,13 +66,11 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
         Assert.Equal(lastRunAt, loaded.LastRunAt);
 
         Assert.Equal(30, loaded.EffectiveIntervalMinutes);
-
     }
 
     [SkippableFact]
     public async Task SaveAsync_upserts_existing_row()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string jobKey = "MarketWatcher\0patrol";
@@ -108,13 +94,11 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
         IReadOnlyList<UnseenServantWatermark> all = await _store.GetAllAsync(CancellationToken.None);
 
         Assert.Single(all, w => w.JobKey == jobKey);
-
     }
 
     [SkippableFact]
     public async Task GetAllAsync_returns_rows_ordered_by_job_key()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -138,25 +122,21 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
         Assert.Contains("Mu\0spell", keys);
 
         Assert.Contains("Zeta\0spell", keys);
-
     }
 
     [SkippableFact]
     public async Task GetAsync_returns_null_for_missing_key()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         UnseenServantWatermark? loaded = await _store!.GetAsync("DoesNotExist\0spell", CancellationToken.None);
 
         Assert.Null(loaded);
-
     }
 
     [SkippableFact]
     public async Task DeleteAsync_removes_row()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string jobKey = "MarketWatcher\0patrol";
@@ -168,13 +148,11 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
         UnseenServantWatermark? loaded = await _store.GetAsync(jobKey, CancellationToken.None);
 
         Assert.Null(loaded);
-
     }
 
     [SkippableFact]
     public async Task Migration_creates_UnseenServantWatermarks_table()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
@@ -183,9 +161,7 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
 
         if (cmd.Connection!.State != System.Data.ConnectionState.Open)
         {
-
             await cmd.Connection.OpenAsync(CancellationToken.None);
-
         }
 
         cmd.CommandText = """
@@ -198,7 +174,5 @@ public sealed class UnseenServantWatermarkStoreTests : IAsyncLifetime
         object? result = await cmd.ExecuteScalarAsync(CancellationToken.None);
 
         Assert.NotNull(result);
-
     }
-
 }

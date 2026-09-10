@@ -18,23 +18,19 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 
 public sealed partial class ArcanumApiClient
 {
-
     public async Task<Result<HealthReportDto>> GetHealthReportAsync(
         CancellationToken cancellationToken = default)
     {
-
         HealthWatchResult observation = await GetHealthWatchReportAsync(
                 cancellationToken)
             .ConfigureAwait(false);
 
         return observation.Report;
-
     }
 
     internal async Task<HealthWatchResult> GetHealthWatchReportAsync(
         CancellationToken cancellationToken = default)
     {
-
         HttpStatusCode? responseStatus = null;
 
         Result<HealthReportDto> report = await SendRequestAsync(
@@ -45,11 +41,9 @@ public sealed partial class ArcanumApiClient
             ArcanumJsonContext.Default.ApiResponseHealthReportDto,
             (response, _, envelope) =>
             {
-
                 responseStatus = response.StatusCode;
 
                 return MapHealthReport(response, envelope);
-
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -59,7 +53,6 @@ public sealed partial class ArcanumApiClient
                 : IsRetryableTransportError(report.Error));
 
         return new HealthWatchResult(report, retryable);
-
     }
 
     internal IAsyncEnumerable<WatchSseFrame> WatchSseAsync(
@@ -77,7 +70,6 @@ public sealed partial class ArcanumApiClient
         Func<TimeSpan, CancellationToken, Task> delayAsync,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-
         ValidateWatchPath(path);
 
         ArgumentNullException.ThrowIfNull(delayAsync);
@@ -86,35 +78,14 @@ public sealed partial class ArcanumApiClient
             diagnosticInterval,
             TimeSpan.Zero);
 
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-
-            yield return new WatchSseFrame(
-                WatchSseFrameType.Error,
-                Error: MissingApiKeyError);
-
-            yield break;
-
-        }
-
         HttpClient client = httpClientFactory.CreateClient(
             StreamingHttpClientName);
 
-        using HttpRequestMessage request = new(HttpMethod.Get, path);
-
-        request.Headers.Accept.Add(
-            new MediaTypeWithQualityHeaderValue("text/event-stream"));
-
-        _ = request.Headers.TryAddWithoutValidation(
-            ArcanumApiHeaders.ApiKey,
-            apiKey);
-
         HttpResponseMessage? response = null;
 
-        Task<HttpResponseMessage>? sendTask = null;
+        ArcanumAuthenticatedHttpResponse? sent = null;
+
+        Task<ArcanumAuthenticatedHttpResponse>? sendTask = null;
 
         Error? sendError = null;
 
@@ -122,57 +93,54 @@ public sealed partial class ArcanumApiClient
 
         try
         {
+            sendTask = ArcanumAuthenticatedHttpSender.SendAsync(
+                client,
+                credentialLease,
+                () =>
+                {
+                    HttpRequestMessage request = new(HttpMethod.Get, path);
 
-            sendTask = client.SendAsync(
-                request,
+                    request.Headers.Accept.Add(
+                        new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+                    return request;
+                },
                 HttpCompletionOption.ResponseHeadersRead,
+                canReplayAfterUnauthorized: true,
                 cancellationToken);
-
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
         {
-
             sendError = RequestTimeoutError;
 
             sendRetryable = true;
-
         }
         catch (HttpRequestException)
         {
-
             sendError = RequestUnreachableError;
 
             sendRetryable = true;
-
         }
         catch (IOException)
         {
-
             sendError = RequestDisconnectedError;
 
             sendRetryable = true;
-
         }
         catch (Exception)
         {
-
             sendError = RequestUnexpectedError;
-
         }
 
         if (sendTask is not null)
         {
-
             while (!sendTask.IsCompleted)
             {
-
                 bool reportWaiting = await WaitForOperationOrDiagnosticAsync(
                         sendTask,
                         diagnosticInterval,
@@ -182,79 +150,72 @@ public sealed partial class ArcanumApiClient
 
                 if (reportWaiting)
                 {
-
                     yield return new WatchSseFrame(
                         WatchSseFrameType.Heartbeat,
                         Diagnostic: "Still waiting for Arcanum API response headers; the watch remains active.");
-
                 }
-
             }
 
             try
             {
-
-                response = await sendTask.ConfigureAwait(false);
-
+                sent = await sendTask.ConfigureAwait(false);
+                response = sent.Response;
             }
             catch (OperationCanceledException)
                 when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (OperationCanceledException)
             {
-
                 sendError = RequestTimeoutError;
 
                 sendRetryable = true;
-
             }
             catch (HttpRequestException)
             {
-
                 sendError = RequestUnreachableError;
 
                 sendRetryable = true;
-
             }
             catch (IOException)
             {
-
                 sendError = RequestDisconnectedError;
 
                 sendRetryable = true;
-
             }
             catch (Exception)
             {
-
                 sendError = RequestUnexpectedError;
-
             }
-
         }
 
         if (sendError is not null || response is null)
         {
+            Error? credentialError = sent is { IsAuthenticated: false }
+                ? ArcanumApiCredentialFailureMapper.ToError(sent.Credentials)
+                : null;
+            bool credentialRetryable = sent is { IsAuthenticated: false }
+                && ArcanumApiCredentialFailureMapper.IsRetryable(sent.Credentials);
+
+            sent?.Dispose();
 
             yield return new WatchSseFrame(
                 WatchSseFrameType.Error,
-                Error: sendError ?? RequestUnreachableError,
-                Retryable: sendError is null || sendRetryable);
+                Error: sendError
+                    ?? credentialError
+                    ?? RequestUnreachableError,
+                Retryable: credentialError is not null
+                    ? credentialRetryable
+                    : sendError is null || sendRetryable);
 
             yield break;
-
         }
 
-        using (response)
+        using (sent)
         {
-
             if (!response.IsSuccessStatusCode)
             {
-
                 Task<(Error Error, bool Retryable)> errorTask =
                     ReadStreamErrorAsync(
                         response,
@@ -262,7 +223,6 @@ public sealed partial class ArcanumApiClient
 
                 while (!errorTask.IsCompleted)
                 {
-
                     bool reportWaiting = await WaitForOperationOrDiagnosticAsync(
                             errorTask,
                             diagnosticInterval,
@@ -272,13 +232,10 @@ public sealed partial class ArcanumApiClient
 
                     if (reportWaiting)
                     {
-
                         yield return new WatchSseFrame(
                             WatchSseFrameType.Heartbeat,
                             Diagnostic: "The API returned an error status; still waiting for its error details while the watch remains active.");
-
                     }
-
                 }
 
                 (Error error, bool retryable) = await errorTask
@@ -290,7 +247,6 @@ public sealed partial class ArcanumApiClient
                     Retryable: retryable);
 
                 yield break;
-
             }
 
             Stream? stream = null;
@@ -303,55 +259,41 @@ public sealed partial class ArcanumApiClient
 
             try
             {
-
                 openTask = response.Content.ReadAsStreamAsync(
                     cancellationToken);
-
             }
             catch (OperationCanceledException)
                 when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (OperationCanceledException)
             {
-
                 openError = RequestTimeoutError;
 
                 openRetryable = true;
-
             }
             catch (HttpRequestException)
             {
-
                 openError = RequestUnreachableError;
 
                 openRetryable = true;
-
             }
             catch (IOException)
             {
-
                 openError = RequestDisconnectedError;
 
                 openRetryable = true;
-
             }
             catch (Exception)
             {
-
                 openError = RequestUnexpectedError;
-
             }
 
             if (openTask is not null)
             {
-
                 while (!openTask.IsCompleted)
                 {
-
                     bool reportWaiting = await WaitForOperationOrDiagnosticAsync(
                             openTask,
                             diagnosticInterval,
@@ -361,76 +303,57 @@ public sealed partial class ArcanumApiClient
 
                     if (reportWaiting)
                     {
-
                         yield return new WatchSseFrame(
                             WatchSseFrameType.Heartbeat,
                             Diagnostic: "The API responded, but its response stream is not available yet; the watch remains active.");
-
                     }
-
                 }
 
                 try
                 {
-
                     stream = await openTask.ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException)
                     when (cancellationToken.IsCancellationRequested)
                 {
-
                     throw;
-
                 }
                 catch (OperationCanceledException)
                 {
-
                     openError = RequestTimeoutError;
 
                     openRetryable = true;
-
                 }
                 catch (HttpRequestException)
                 {
-
                     openError = RequestUnreachableError;
 
                     openRetryable = true;
-
                 }
                 catch (IOException)
                 {
-
                     openError = RequestDisconnectedError;
 
                     openRetryable = true;
-
                 }
                 catch (Exception)
                 {
-
                     openError = RequestUnexpectedError;
-
                 }
-
             }
 
             if (openError is not null || stream is null)
             {
-
                 yield return new WatchSseFrame(
                     WatchSseFrameType.Error,
                     Error: openError ?? RequestDisconnectedError,
                     Retryable: openError is null || openRetryable);
 
                 yield break;
-
             }
 
             await using (stream.ConfigureAwait(false))
             {
-
                 using StreamReader reader = new(
                     stream,
                     new UTF8Encoding(
@@ -451,7 +374,6 @@ public sealed partial class ArcanumApiClient
 
                 while (true)
                 {
-
                     bool hasFrame = false;
 
                     Error? readError = null;
@@ -460,141 +382,104 @@ public sealed partial class ArcanumApiClient
 
                     try
                     {
-
                         hasFrame = await frames
                             .MoveNextAsync()
                             .ConfigureAwait(false);
-
                     }
                     catch (OperationCanceledException)
                         when (cancellationToken.IsCancellationRequested)
                     {
-
                         throw;
-
                     }
                     catch (OperationCanceledException)
                     {
-
                         readError = RequestTimeoutError;
 
                         readRetryable = true;
-
                     }
                     catch (HttpRequestException)
                     {
-
                         readError = RequestUnreachableError;
 
                         readRetryable = true;
-
                     }
                     catch (IOException)
                     {
-
                         readError = RequestDisconnectedError;
 
                         readRetryable = true;
-
                     }
                     catch (DecoderFallbackException)
                     {
-
                         readError = InvalidResponseError;
-
                     }
                     catch (Exception)
                     {
-
                         readError = RequestUnexpectedError;
-
                     }
 
                     if (readError is Error error)
                     {
-
                         yield return new WatchSseFrame(
                             WatchSseFrameType.Error,
                             Error: error,
                             Retryable: readRetryable);
 
                         yield break;
-
                     }
 
                     if (!hasFrame)
                     {
-
                         yield break;
-
                     }
 
                     yield return frames.Current;
-
                 }
-
             }
-
         }
-
     }
 
     private async Task<(Error Error, bool Retryable)> ReadStreamErrorAsync(
         HttpResponseMessage response,
         CancellationToken cancellationToken)
     {
-
         bool retryable = IsRetryableStatusCode(response.StatusCode);
 
         byte[]? responseBytes;
 
         try
         {
-
             responseBytes = await TryReadCappedContentAsync(
                     response.Content,
                     MaxResponseBytes,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (OperationCanceledException)
         {
-
             return (RequestTimeoutError, true);
-
         }
         catch (IOException)
         {
-
             return (RequestDisconnectedError, true);
-
         }
         catch (HttpRequestException)
         {
-
             return (RequestUnreachableError, true);
-
         }
         catch (Exception)
         {
-
             return (RequestUnexpectedError, retryable);
-
         }
 
         if (responseBytes is null)
         {
-
             return (ResponseTooLargeError, retryable);
-
         }
 
         ApiResponse<string>? envelope = TryDeserialize(
@@ -603,7 +488,6 @@ public sealed partial class ArcanumApiClient
 
         if (envelope is { IsSuccess: false, Error: not null })
         {
-
             Error error = envelope.Error.Value;
 
             bool retryableError = retryable
@@ -613,7 +497,6 @@ public sealed partial class ArcanumApiClient
                     StringComparison.Ordinal);
 
             return (error, retryableError);
-
         }
 
         return (
@@ -621,7 +504,6 @@ public sealed partial class ArcanumApiClient
                 "Api.HttpError",
                 $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"),
             retryable);
-
     }
 
     private static async Task<bool> WaitForOperationOrDiagnosticAsync(
@@ -630,12 +512,9 @@ public sealed partial class ArcanumApiClient
         Func<TimeSpan, CancellationToken, Task> delayAsync,
         CancellationToken cancellationToken)
     {
-
         if (operation.IsCompleted)
         {
-
             return false;
-
         }
 
         using CancellationTokenSource delayCts =
@@ -651,32 +530,26 @@ public sealed partial class ArcanumApiClient
 
         if (completed == operation)
         {
-
             delayCts.Cancel();
 
             return false;
-
         }
 
         await diagnosticDelay.ConfigureAwait(false);
 
         return true;
-
     }
 
     private static bool IsRetryableStatusCode(HttpStatusCode statusCode)
     {
-
         int value = (int)statusCode;
 
         return value is 408 or 425 or 429
             || value is >= 500 and <= 599;
-
     }
 
     private static void ValidateWatchPath(string path)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
         string normalizedPath = path.StartsWith("/", StringComparison.Ordinal)
@@ -687,13 +560,10 @@ public sealed partial class ArcanumApiClient
             || path.Contains('\\')
             || !normalizedPath.StartsWith("api/", StringComparison.Ordinal))
         {
-
             throw new ArgumentException(
                 "Watch paths must be relative Arcanum API paths.",
                 nameof(path));
-
         }
-
     }
 
     private static bool IsRetryableTransportError(Error error) =>
@@ -710,36 +580,27 @@ public sealed partial class ArcanumApiClient
         HttpResponseMessage response,
         ApiResponse<HealthReportDto>? envelope)
     {
-
         if (envelope is { IsSuccess: true, Data: not null }
             && (response.IsSuccessStatusCode
                 || response.StatusCode == HttpStatusCode.ServiceUnavailable))
         {
-
             return Result<HealthReportDto>.Success(envelope.Data);
-
         }
 
         if (envelope is { IsSuccess: false, Error: not null })
         {
-
             return Result<HealthReportDto>.Failure(envelope.Error.Value);
-
         }
 
         if (response.IsSuccessStatusCode
             || response.StatusCode == HttpStatusCode.ServiceUnavailable)
         {
-
             return Result<HealthReportDto>.Failure(InvalidResponseError);
-
         }
 
         return Result<HealthReportDto>.Failure(
             new Error(
                 "Api.HttpError",
                 $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
-
     }
-
 }

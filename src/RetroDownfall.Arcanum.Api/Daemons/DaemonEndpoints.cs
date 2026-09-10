@@ -24,7 +24,6 @@ internal static class DaemonEndpoints
 
     public static RouteGroupBuilder MapDaemonEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         RouteGroupBuilder unseenServant = apiGroup.MapGroup("/unseen-servant");
 
         MapUnseenServantJobRoutes(unseenServant, routeNamePrefix: "UnseenServant");
@@ -218,7 +217,6 @@ internal static class DaemonEndpoints
         IUnseenServantPacer pacer,
         IUnseenServantJobTracker tracker)
     {
-
         int effectiveInterval = pacer.GetEffectiveInterval(job);
 
         return new UnseenServantJobStatusDto(
@@ -230,12 +228,10 @@ internal static class DaemonEndpoints
             tracker.GetLastRunAt(job),
             tracker.GetNextDueAt(job, effectiveInterval),
             tracker.GetLastResult(job));
-
     }
 
     private static void MapUnseenServantJobRoutes(RouteGroupBuilder group, string routeNamePrefix)
     {
-
         group.MapGet(
             "/jobs",
             (IOptionsMonitor<ArcanumSettings> settings, IUnseenServantPacer pacer, IUnseenServantJobTracker tracker, HttpContext httpContext) =>
@@ -315,10 +311,10 @@ internal static class DaemonEndpoints
                 UnseenServantJob? configured = configuredJobs.FirstOrDefault(
                     job => string.Equals(job.Name.Trim(), trimmedName, StringComparison.Ordinal));
 
-                if (configured is null)
+                if (configured is null
+                    || !await pacer.SetDynamicIntervalAsync(trimmedName, body.IntervalMinutes, cancellationToken).ConfigureAwait(false))
                 {
-
-                    // UnseenServantPacer.SetDynamicInterval is deliberately a no-op for an unconfigured name,
+                    // UnseenServantPacer.SetDynamicIntervalAsync is deliberately a no-op for an unconfigured name,
                     // so reporting 200 with a fabricated status would tell the operator a typo had landed.
                     Result<UnseenServantJobStatusDto> missing = Result<UnseenServantJobStatusDto>.Failure(
                         new Error(
@@ -330,10 +326,7 @@ internal static class DaemonEndpoints
                         ApiResponse<UnseenServantJobStatusDto>.FromResult(missing, traceId),
                         ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto,
                         statusCode: StatusCodes.Status404NotFound);
-
                 }
-
-                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
 
                 UnseenServantJobStatusDto dto = ToUnseenServantJobStatusDto(configured, pacer, tracker);
 

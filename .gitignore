@@ -29,3 +29,8 @@ mcp.db-wal
 
 # Agent scratch: task briefs, ledgers, and brainstorm session state.
 .superpowers/
+.worktrees/
+
+# Per-developer Claude Code settings. Local by definition: an allowlist one developer
+# chose is not one every checkout should inherit.
+.claude/settings.local.json

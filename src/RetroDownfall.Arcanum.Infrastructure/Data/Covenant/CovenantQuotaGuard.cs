@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer initializer)
 {
-
     /// <summary>
     /// A guard for callers that already hold the process-wide initializer singleton.
     /// </summary>
@@ -38,7 +37,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -51,13 +49,11 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (existing is not null)
         {
-
             return SameIdentity(existing, request.Identity) && existing.ClaimId == request.ClaimId
                 ? existing with { Replayed = true }
                 : new Error(
                     "Security.IdempotencyConflict",
                     "This finalization capacity reservation identity is already bound to different facts.");
-
         }
 
         Result counters = await MoveCountersAsync(
@@ -71,9 +67,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (counters.IsFailure)
         {
-
             return counters.Error;
-
         }
 
         await InsertReservationAsync(
@@ -91,7 +85,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             request.ClaimId,
             AssistantFinalizationCapacityState.Reserved,
             Replayed: false);
-
     }
 
     public ValueTask<Result<AssistantFinalizationCapacityReservation>> ConsumeReservedFinalizationAsync(
@@ -123,7 +116,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -136,13 +128,11 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (existing is not null)
         {
-
             return SameIdentity(existing, request.Identity) && existing.Origin == request.Origin
                 ? existing with { Replayed = true }
                 : new Error(
                     "Security.IdempotencyConflict",
                     "This finalization capacity reservation identity is already bound to different facts.");
-
         }
 
         Result counters = await MoveCountersAsync(
@@ -156,9 +146,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (counters.IsFailure)
         {
-
             return counters.Error;
-
         }
 
         await InsertReservationAsync(
@@ -176,7 +164,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             ClaimId: null,
             AssistantFinalizationCapacityState.Consumed,
             Replayed: false);
-
     }
 
     /// <summary>
@@ -187,7 +174,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -229,7 +215,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             : new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Session turn-capacity counters changed before retention could return them.");
-
     }
 
     /// <summary>
@@ -241,7 +226,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(demand);
 
         ArgumentNullException.ThrowIfNull(transaction);
@@ -253,9 +237,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (refusal is { } scopeError)
         {
-
             return scopeError;
-
         }
 
         // The scope-wide ceilings are orders of magnitude looser than the Section ceilings the
@@ -265,7 +247,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         // discovered at render time.
         foreach (CovenantSectionDemand section in demand.Sections)
         {
-
             Error? sectionRefusal = await CheckSectionAsync(
                     scope,
                     section,
@@ -275,15 +256,11 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
             if (sectionRefusal is { } sectionError)
             {
-
                 return sectionError;
-
             }
-
         }
 
         return Result<CovenantQuotaSnapshot>.Success(snapshot);
-
     }
 
     private static async ValueTask<Error?> CheckSectionAsync(
@@ -292,7 +269,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         CovenantSectionOccupancy retained = await ReadRetainedSectionAsync(
                 scope,
                 section,
@@ -308,7 +284,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             CovenantSectionCapacity.Placement(scope.Kind, section.Lane),
             retained,
             section);
-
     }
 
     /// <summary>
@@ -326,7 +301,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         // The shared builder rather than a second copy of the statement. The preflight a proposal runs
@@ -338,18 +312,14 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (scope.Kind == CovenantScope.Campaign)
         {
-
             Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
-
         }
 
         Bind(command, "$lane", (int)section.Lane);
 
         for (int index = 0; index < section.TouchedKeys.Length; index++)
         {
-
             Bind(command, $"$key{index}", section.TouchedKeys[index]);
-
         }
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -361,7 +331,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
                 reader.GetInt64(1),
                 (int)reader.GetInt64(2))
             : CovenantSectionOccupancy.Empty;
-
     }
 
     private async ValueTask<Result<AssistantFinalizationCapacityReservation>> TransitionAsync(
@@ -372,7 +341,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(transaction);
 
         using CovenantSqliteAuthorizationScope authorization = Authorize(transaction);
@@ -383,38 +351,30 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (existing is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.NotFound,
                 "There is no finalization capacity reservation with that identity.");
-
         }
 
         if (!SameIdentity(existing, identity))
         {
-
             return new Error(
                 "Security.IdempotencyConflict",
                 "This finalization capacity reservation belongs to a different Session or assistant entry.");
-
         }
 
         // Both non-reserved states are terminal, so a replayed transition is the same answer rather
         // than a second counter move.
         if (existing.State == target)
         {
-
             return existing with { Replayed = true };
-
         }
 
         if (existing.State != AssistantFinalizationCapacityState.Reserved)
         {
-
             return new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This finalization capacity reservation has already reached a terminal state.");
-
         }
 
         Result counters = await MoveCountersAsync(
@@ -428,9 +388,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (counters.IsFailure)
         {
-
             return counters.Error;
-
         }
 
         await using SqliteCommand command = transaction.CreateCommand();
@@ -451,15 +409,12 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (affected != 1)
         {
-
             return new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This finalization capacity reservation changed state before the transition could apply.");
-
         }
 
         return existing with { State = target, Replayed = false };
-
     }
 
     private CovenantSqliteAuthorizationScope Authorize(CovenantMutationTransaction transaction) =>
@@ -476,7 +431,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         Guid reservationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -492,9 +446,7 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return null;
-
         }
 
         return new AssistantFinalizationCapacityReservation(
@@ -506,7 +458,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
             reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3), CultureInfo.InvariantCulture),
             (AssistantFinalizationCapacityState)reader.GetInt32(4),
             Replayed: false);
-
     }
 
     private static async ValueTask InsertReservationAsync(
@@ -517,7 +468,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         AssistantFinalizationCapacityState state,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -542,7 +492,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         Bind(command, "$created", Iso(DateTimeOffset.UtcNow));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -556,10 +505,8 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         long consumedDelta,
         CancellationToken cancellationToken)
     {
-
         await using (SqliteCommand session = transaction.CreateCommand())
         {
-
             session.CommandText = """
                 UPDATE session_turn_quota_state
                 SET ClaimCount = ClaimCount + $claims,
@@ -580,29 +527,22 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
             try
             {
-
                 affected = await session.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
             catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
             {
-
                 // A CHECK refusal here is the ceiling doing its job, not a defect.
                 return new Error(
                     ErrorCodes.Covenant.CapacityExceeded,
                     "This Session has exhausted its turn-claim or finalization-guard capacity.");
-
             }
 
             if (affected != 1)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.NotFound,
                     "This Session has no turn-capacity counter row.");
-
             }
-
         }
 
         await using SqliteCommand installation = transaction.CreateCommand();
@@ -623,21 +563,16 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         try
         {
-
             return await installation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1
                 ? Result.Success()
                 : new Error(ErrorCodes.Covenant.NotFound, "The installation turn-capacity counter row is missing.");
-
         }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {
-
             return new Error(
                 ErrorCodes.Covenant.CapacityExceeded,
                 "This installation has exhausted its turn-claim or finalization-guard capacity.");
-
         }
-
     }
 
     private static async ValueTask<CovenantQuotaSnapshot> ReadSnapshotAsync(
@@ -646,7 +581,6 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         bool campaignScoped = scope.Kind == CovenantScope.Campaign;
 
         ImmutableArray<string> touched = demand.TouchedKeys;
@@ -657,20 +591,15 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
 
         if (campaignScoped)
         {
-
             Bind(command, "$campaign", scope.CampaignId!.Value.ToString("D"));
-
         }
 
         for (int index = 0; index < touched.Length; index++)
         {
-
             Bind(command, $"$xkey{index}", touched[index]);
-
         }
 
         return await CovenantQuotaSnapshotReader.ReadAsync(command, cancellationToken).ConfigureAwait(false);
-
     }
 
     private static void Bind(SqliteCommand command, string name, object value) =>
@@ -690,6 +619,5 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
         _ = command.Parameters.AddWithValue(name, value);
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
-
+        UtcInstantText.Format(value);
 }

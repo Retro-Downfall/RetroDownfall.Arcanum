@@ -8,6 +8,18 @@ namespace RetroDownfall.Arcanum.Tests.Api.Streaming;
 public sealed class SseStreamWriterTests
 {
 
+    /// <summary>
+    /// The answer for a stream no maintenance window may revoke.
+    /// </summary>
+    /// <remarks>
+    /// Every case in this suite is about client disconnect and heartbeat behaviour, which quiescence
+    /// does not change. Stating it rather than defaulting it is the point of the writer's parameter
+    /// being required: a stream that silently inherited "never quiesces" is exactly the stream that
+    /// holds a transition open until it times out.
+    /// </remarks>
+    private static readonly GrimoireStreamQuiescence NotQuiescing = new(CancellationToken.None);
+
+
     // W3.4 Group A (S10): a broken-pipe IOException from the per-frame write callback must
     // not propagate out of SseStreamWriter.StreamAsync. The caller's catch(OperationCanceledException)
     // only handles clean cancellation; an unhandled IOException would surface as an
@@ -45,6 +57,7 @@ public sealed class SseStreamWriterTests
 
             },
             TimeSpan.Zero,
+            NotQuiescing,
             cts.Token);
 
         Assert.Equal(1, framesWritten);
@@ -82,6 +95,7 @@ public sealed class SseStreamWriterTests
 
             },
             TimeSpan.Zero,
+            NotQuiescing,
             CancellationToken.None);
 
         Assert.Equal(1, framesWritten);
@@ -107,6 +121,7 @@ public sealed class SseStreamWriterTests
             source,
             async (_, _) => await Task.CompletedTask.ConfigureAwait(false),
             heartbeatInterval: TimeSpan.FromMilliseconds(20),
+            NotQuiescing,
             CancellationToken.None);
 
         try
@@ -157,6 +172,7 @@ public sealed class SseStreamWriterTests
             IdleSourceAsync(),
             static (_, _) => Task.CompletedTask,
             heartbeatInterval: TimeSpan.FromMilliseconds(20),
+            NotQuiescing,
             CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(30));
 
@@ -207,6 +223,7 @@ public sealed class SseStreamWriterTests
             ManyFramesAsync(frameCount),
             static (_, _) => Task.CompletedTask,
             heartbeatInterval: TimeSpan.FromMinutes(10),
+            NotQuiescing,
             CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(30));
 

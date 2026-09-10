@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -15,7 +16,6 @@ namespace RetroDownfall.Arcanum.Api;
 /// </summary>
 internal static partial class OpenAiV1Endpoints
 {
-
     internal sealed record ChatCompletionValidationFailure(
         string Message,
         string Type,
@@ -152,7 +152,7 @@ internal static partial class OpenAiV1Endpoints
             int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(
                 ArcanumRuntimeDefaults.StructuredOutput.SchemaMaxDepth);
 
-            Result toolsValidation = ValidateClientTools(
+            Result toolsValidation = ClientToolCapabilityValidator.ValidateToolDefinitions(
                 body.Tools,
                 clientTools.MaxClientTools,
                 schemaMaxDepth);
@@ -171,7 +171,9 @@ internal static partial class OpenAiV1Endpoints
         if (body.ToolChoice is { } toolChoice
             && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
         {
-            if (!IsValidClientToolChoice(toolChoice))
+            if (!ClientToolCapabilityValidator.TryParse(
+                    toolChoice,
+                    out ClientToolCapabilityValidator.ParsedChoice parsedChoice))
             {
                 return new ChatCompletionValidationFailure(
                     "Client-supplied `tool_choice` is not a valid shape; expected 'auto', 'none', 'required', or an object with type 'function' and function.name.",
@@ -181,9 +183,20 @@ internal static partial class OpenAiV1Endpoints
                     StatusCodes.Status400BadRequest);
             }
 
+            if (parsedChoice.RequiresToolCall
+                && body.Tools is not { Length: > 0 })
+            {
+                return new ChatCompletionValidationFailure(
+                    "Client-supplied `tool_choice` requires at least one client-supplied tool.",
+                    "invalid_request_error",
+                    "invalid_value",
+                    "tool_choice",
+                    StatusCodes.Status400BadRequest);
+            }
+
             if (!forwardClientTools)
             {
-                if (toolChoice.ValueKind == JsonValueKind.Object)
+                if (parsedChoice.Mode == ClientToolCapabilityValidator.ChoiceMode.Specific)
                 {
                     return new ChatCompletionValidationFailure(
                         "Client-supplied `tool_choice` named function is not supported. Arcanum uses its own server-side MCP toolset.",
@@ -193,16 +206,13 @@ internal static partial class OpenAiV1Endpoints
                         StatusCodes.Status400BadRequest);
                 }
             }
-            else if (toolChoice.ValueKind == JsonValueKind.Object
+            else if (parsedChoice.FunctionName is { } functionName
                 && body.Tools is { Length: > 0 } tools)
             {
-                string? functionName = toolChoice.TryGetProperty("function", out JsonElement functionElement)
-                    && functionElement.TryGetProperty("name", out JsonElement nameElement)
-                    ? nameElement.GetString()
-                    : null;
-
-                bool found = functionName is not null
-                    && tools.Any(t => string.Equals(t.Function?.Name, functionName, StringComparison.Ordinal));
+                bool found = tools.Any(t => string.Equals(
+                    t?.Function?.Name,
+                    functionName,
+                    StringComparison.Ordinal));
 
                 if (!found)
                 {
@@ -331,5 +341,4 @@ internal static partial class OpenAiV1Endpoints
             detail.Param,
             ArcanumErrorMapper.ResolveStatusCode(error.Code));
     }
-
 }

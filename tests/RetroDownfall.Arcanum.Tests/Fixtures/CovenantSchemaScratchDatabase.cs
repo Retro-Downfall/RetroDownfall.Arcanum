@@ -302,6 +302,18 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </summary>
     private const string Passphrase = "covenant-schema-scratch-key";
 
+    /// <summary>
+    /// The same key, for a maintenance path that has to open this file without going through one of
+    /// the helpers here.
+    /// </summary>
+    /// <remarks>
+    /// A closed period opens the database through the production factory, and that factory takes a
+    /// passphrase source rather than reaching for one. Handing it anything but this exact key would
+    /// produce a suite whose gate authorizes an open that then fails to decrypt — a failure about the
+    /// fixture wearing the shape of a failure about the erasure.
+    /// </remarks>
+    internal const string ScratchPassphrase = Passphrase;
+
     private const string OwnerDeletionEventsObjectName = "owner_deletion_events";
 
     /// <summary>

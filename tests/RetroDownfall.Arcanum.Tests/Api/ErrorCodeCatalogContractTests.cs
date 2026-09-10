@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -14,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </summary>
 public sealed class ErrorCodeCatalogContractTests
 {
-
     private static readonly Regex InlineErrorCode = new(
         "new\\s+Error\\(\\s*\"([^\"]+)\"",
         RegexOptions.CultureInvariant);
@@ -31,34 +31,27 @@ public sealed class ErrorCodeCatalogContractTests
     [Fact]
     public void Api_never_constructs_a_wire_error_code_from_an_inline_literal()
     {
-
         List<string> offenders = [];
 
         string apiRoot = Path.Combine(
-            FindRepositoryRoot(),
+            NativeSqlCipherTestPaths.RepositoryRoot(),
             "src",
             "RetroDownfall.Arcanum.Api");
 
         foreach (string file in Directory.EnumerateFiles(apiRoot, "*.cs", SearchOption.AllDirectories))
         {
-
             if (IsBuildOutput(apiRoot, file))
             {
-
                 continue;
-
             }
 
             string source = File.ReadAllText(file);
 
             foreach (Match match in InlineErrorCode.Matches(source))
             {
-
                 offenders.Add(
                     $"{Path.GetRelativePath(apiRoot, file)}: \"{match.Groups[1].Value}\"");
-
             }
-
         }
 
         Assert.True(
@@ -66,7 +59,6 @@ public sealed class ErrorCodeCatalogContractTests
             "Wire-stable error codes must come from ErrorCodes (Core) so the constant table and the "
             + "§8.23 catalog stay authoritative; these Api sites inline the literal instead: "
             + string.Join("; ", offenders));
-
     }
 
     /// <summary>
@@ -78,7 +70,6 @@ public sealed class ErrorCodeCatalogContractTests
     [Fact]
     public void Api_never_names_a_code_in_a_declared_error_family_by_string_literal()
     {
-
         HashSet<string> families = DeclaredErrorCodes()
             .Select(declared => declared.Nest)
             .ToHashSet(StringComparer.Ordinal);
@@ -87,19 +78,13 @@ public sealed class ErrorCodeCatalogContractTests
 
         foreach ((string relativePath, string source) in EnumerateApiSources())
         {
-
             foreach (Match match in DottedCodeLiteral.Matches(source))
             {
-
                 if (families.Contains(match.Groups[1].Value))
                 {
-
                     offenders.Add($"{relativePath}: \"{match.Groups[1].Value}.{match.Groups[2].Value}\"");
-
                 }
-
             }
-
         }
 
         Assert.True(
@@ -107,7 +92,6 @@ public sealed class ErrorCodeCatalogContractTests
             "A code inside a declared ErrorCodes family must be referenced through its constant, not "
             + "spelled out, so the constant table and the §8.23 catalog stay authoritative; these Api "
             + "sites spell it out instead: " + string.Join("; ", offenders));
-
     }
 
     /// <summary>
@@ -131,39 +115,42 @@ public sealed class ErrorCodeCatalogContractTests
     [InlineData("Validation.BodyTooLarge")]
     [InlineData("Validation.BodyReadTimeout")]
     [InlineData("Validation.RequestHeadersTooLarge")]
+    [InlineData("Grimoire.MaintenanceUnavailable")]
+    [InlineData("Grimoire.WorkDrainTimeout")]
     public void Catalog_and_constant_table_both_carry_every_code_a_route_emits(string code)
     {
-
         Assert.Contains(code, DeclaredErrorCodes().Select(declared => declared.Value));
 
         Assert.Contains(code, ReadErrorCatalogSection(), StringComparison.Ordinal);
+    }
 
+    [Theory]
+    [InlineData("Security.CredentialUnreadable")]
+    [InlineData("Security.UnverifiedLocalApi")]
+    public void Client_credential_failure_codes_are_declared_and_cataloged(string code)
+    {
+        Assert.Contains(code, DeclaredErrorCodes().Select(declared => declared.Value));
+        Assert.Contains(code, ReadErrorCatalogSection(), StringComparison.Ordinal);
     }
 
     [Fact]
     public void Every_declared_error_code_value_matches_its_nest_and_member_name()
     {
-
         List<string> offenders = [];
 
         foreach ((string nest, string member, string value) in DeclaredErrorCodes())
         {
-
             string expected = $"{nest}.{member}";
 
             if (!string.Equals(value, expected, StringComparison.Ordinal))
             {
-
                 offenders.Add($"ErrorCodes.{expected} = \"{value}\"");
-
             }
-
         }
 
         Assert.True(
             offenders.Count == 0,
             "Every ErrorCodes constant's value is its own dotted path: " + string.Join("; ", offenders));
-
     }
 
     /// <summary>
@@ -174,7 +161,6 @@ public sealed class ErrorCodeCatalogContractTests
     [Fact]
     public void Catalog_documents_the_401_code_the_host_actually_emits()
     {
-
         string catalog = ReadErrorCatalogSection();
 
         string[] unauthorizedRows = catalog
@@ -187,62 +173,49 @@ public sealed class ErrorCodeCatalogContractTests
         Assert.Contains(
             unauthorizedRows,
             row => row.Contains(ErrorCodes.Auth.Unauthorized, StringComparison.Ordinal));
-
     }
 
     private static IEnumerable<(string RelativePath, string Source)> EnumerateApiSources()
     {
-
         string apiRoot = Path.Combine(
-            FindRepositoryRoot(),
+            NativeSqlCipherTestPaths.RepositoryRoot(),
             "src",
             "RetroDownfall.Arcanum.Api");
 
         foreach (string file in Directory.EnumerateFiles(apiRoot, "*.cs", SearchOption.AllDirectories))
         {
-
             if (IsBuildOutput(apiRoot, file))
             {
-
                 continue;
-
             }
 
             yield return (Path.GetRelativePath(apiRoot, file), File.ReadAllText(file));
-
         }
-
     }
 
     private static IEnumerable<(string Nest, string Member, string Value)> DeclaredErrorCodes()
     {
-
         foreach (Type nest in typeof(ErrorCodes).GetNestedTypes(BindingFlags.Public))
         {
-
             FieldInfo[] fields = nest.GetFields(BindingFlags.Public | BindingFlags.Static);
 
             foreach (FieldInfo field in fields)
             {
-
                 if (field is { IsLiteral: true, IsInitOnly: false }
                     && field.GetRawConstantValue() is string value)
                 {
-
                     yield return (nest.Name, field.Name, value);
-
                 }
-
             }
-
         }
-
     }
 
     private static string ReadErrorCatalogSection()
     {
-
-        string path = Path.Combine(FindRepositoryRoot(), "docs", "Arcanum.API.md");
+        string path = Path.Combine(
+            NativeSqlCipherTestPaths.RepositoryRoot(),
+            "docs",
+            "Arcanum.API.md");
 
         string document = File.ReadAllText(path);
 
@@ -253,12 +226,10 @@ public sealed class ErrorCodeCatalogContractTests
         int end = document.IndexOf("### 8.24", start, StringComparison.Ordinal);
 
         return end < 0 ? document[start..] : document[start..end];
-
     }
 
     private static bool IsBuildOutput(string root, string file)
     {
-
         string relative = Path.GetRelativePath(root, file);
 
         string[] segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -266,30 +237,5 @@ public sealed class ErrorCodeCatalogContractTests
         return segments.Any(segment =>
             string.Equals(segment, "bin", StringComparison.Ordinal)
             || string.Equals(segment, "obj", StringComparison.Ordinal));
-
     }
-
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-
-                return directory.FullName;
-
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
-
 }

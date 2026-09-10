@@ -22,8 +22,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// fails closed while the recovery families — which are keyed by installation identity — keep working.
 /// That is exactly the asymmetry an operator needs in order to repair the tier at all.</para>
 ///
-/// <para>Failure here never aborts startup. Authority stays unpublished, which every consumer already
-/// reads as "no operator authority", and the rest of Arcanum keeps working.</para>
+/// <para>Failure here never aborts ordinary startup. Authority stays unpublished, which every consumer
+/// already reads as "no operator authority", and the rest of Arcanum keeps working. Whether it was
+/// published is reported rather than logged and dropped, because the pre-readiness recovery path has
+/// the opposite policy: it exists to obtain authority a handler then spends, so an unpublished
+/// authority there is a refusal rather than a degraded mode.</para>
 ///
 /// <para>The host-tools runtime policy is consulted first and is not advisory. A process the startup
 /// gate told is tainted, blocked, or simply unclassified must never derive an envelope key or publish
@@ -33,7 +36,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 internal static class CovenantAuthorityStartupReconciler
 {
 
-    internal static async Task ReconcileAsync(
+    internal static async Task<bool> ReconcileAsync(
         SqliteConnection installConnection,
         CovenantRuntimeGenerationProvider runtime,
         CovenantEnvelopeMasterKeyProvider keyProvider,
@@ -60,7 +63,7 @@ internal static class CovenantAuthorityStartupReconciler
                 "Covenant authority stays unavailable: the host-process-tools startup gate has not permitted it ({Disposition}).",
                 hostToolsPolicy.Disposition?.ToString() ?? "Unclassified");
 
-            return;
+            return false;
 
         }
 
@@ -79,7 +82,7 @@ internal static class CovenantAuthorityStartupReconciler
                 Log.Warning(
                     "Covenant authority state is absent after schema installation; operator authority stays unavailable.");
 
-                return;
+                return false;
 
             }
 
@@ -119,7 +122,7 @@ internal static class CovenantAuthorityStartupReconciler
                     "Covenant envelope key derivation failed with {ErrorCode}; opaque Covenant tokens stay unavailable.",
                     prepared.Error.Code);
 
-                return;
+                return false;
 
             }
 
@@ -134,13 +137,19 @@ internal static class CovenantAuthorityStartupReconciler
                     "Covenant runtime authority initialization failed with {ErrorCode}; authority and opaque tokens stay unavailable.",
                     initialized.Error.Code);
 
+                return false;
+
             }
+
+            return true;
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
 
             Log.Warning(ex, "Covenant authority reconciliation failed; operator authority stays unavailable.");
+
+            return false;
 
         }
 

@@ -302,7 +302,8 @@ WantedBy=default.target
 
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        Task exitTask = process.WaitForExitAsync(cancellationToken);
+        await Task.WhenAll(exitTask, stdoutTask, stderrTask).ConfigureAwait(false);
         string stdout = await stdoutTask.ConfigureAwait(false);
         string stderr = await stderrTask.ConfigureAwait(false);
         return new DaemonProcessOutcome(process.ExitCode, stdout, stderr, null);

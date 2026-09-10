@@ -11,64 +11,53 @@ namespace RetroDownfall.Arcanum.Core.Hosting;
 /// </summary>
 public static class ArcanumLocalApiAddress
 {
-
     public static string ResolveBaseUrl(HostSettings host)
     {
-
         ArgumentNullException.ThrowIfNull(host);
 
         if (ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny))
         {
-
             int httpsPort = ArcanumSettingClamps.HostHttpsPort(host.Https.Port);
 
             return $"https://localhost:{httpsPort}/";
-
         }
 
         int httpPort = ArcanumSettingClamps.HostPort(host.Port);
 
         return $"http://localhost:{httpPort}/";
-
     }
 
     public static string ResolveHealthProbeUrl(HostSettings host) =>
         $"{ResolveBaseUrl(host).TrimEnd('/')}/api/health";
 
+    public static string ResolvePresenceProbeUrl(HostSettings host) =>
+        $"{ResolveBaseUrl(host).TrimEnd('/')}/api/presence";
+
     public static string? ResolveHttpUrl(HostSettings host, bool listenAny)
     {
-
         ArgumentNullException.ThrowIfNull(host);
 
         if (listenAny)
         {
-
             return null;
-
         }
 
         int httpPort = ArcanumSettingClamps.HostPort(host.Port);
 
         return $"http://localhost:{httpPort}";
-
     }
 
     public static string? ResolveHttpsUrl(HostSettings host, bool httpsEnabled)
     {
-
         ArgumentNullException.ThrowIfNull(host);
 
         if (!httpsEnabled)
         {
-
             return null;
-
         }
 
         int httpsPort = ArcanumSettingClamps.HostHttpsPort(host.Https.Port);
 
         return $"https://localhost:{httpsPort}";
-
     }
-
 }

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
@@ -106,9 +108,34 @@ internal static class CovenantResidualArtifacts
             CovenantResidualArtifactClass.ExportStaging,
         ]);
 
-    /// <summary>The path an export writes its candidate database to.</summary>
-    internal static string ExportStagingPath(string databasePath) =>
-        databasePath + ExportStagingSuffix;
+    /// <summary>
+    /// The staging path one transition owns, distinguishable from any other transition's.
+    /// </summary>
+    /// <remarks>
+    /// Operation-bound so that a resumed run can ask whether the candidate sitting on disk is the one
+    /// its own journal recorded, rather than inferring it from the file simply being there. The name
+    /// alone does not settle that — a file can be replaced under a name — which is why the journal
+    /// also carries the candidate's physical identity; but the name is what makes the question
+    /// askable without opening a file the transition has not yet established a claim on.
+    ///
+    /// <para>The operation is the whole binding. A resumption of the same operation is entitled to
+    /// its own candidate and must find it under the same name, and a different operation gets a
+    /// different Guid, so nothing further distinguishes them. Binding the journal's slot epoch in as
+    /// well would break the first of those to defend against the second, which is already covered.</para>
+    ///
+    /// <para>It keeps the class suffix as its prefix, so the classifier still reads it as export
+    /// staging and the absence proof still names it by class rather than by path. And it is decidable
+    /// by string comparison alone, so a resumed process can answer "is this mine" about a file it
+    /// must not open.</para>
+    /// </remarks>
+    internal static string ExportStagingPath(string databasePath, Guid operationId) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{databasePath}{ExportStagingSuffix}.{operationId:N}");
+
+    /// <summary>The leaf name of one transition's export staging file.</summary>
+    internal static string ExportStagingLeaf(string databasePath, Guid operationId) =>
+        Path.GetFileName(ExportStagingPath(databasePath, operationId));
 
     /// <summary>The path the atomic replace stages the installed database at.</summary>
     internal static string ReplacementStagingPath(string databasePath) =>
@@ -250,6 +277,12 @@ internal static class CovenantResidualArtifacts
     /// would leave a second copy of state the erasure has promised to compact — while deleting
     /// anything else would make a proof into a cleaner, which is the one thing the absence proof must
     /// never become.
+    ///
+    /// <para>It sweeps the class rather than one transition's own leaf because there is never a second
+    /// live writer to take a candidate away from: the installation lock admits one process and the
+    /// admission gate admits one closed period within it, so an export staging file that is not the
+    /// caller's is abandoned litter, and litter that is a full copy of the database being erased is
+    /// the last thing a privacy erasure should leave lying there.</para>
     /// </remarks>
     internal static Result RemoveOwnStaging(string databasePath)
     {

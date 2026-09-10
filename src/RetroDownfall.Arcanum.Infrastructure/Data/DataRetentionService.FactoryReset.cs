@@ -28,7 +28,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class DataRetentionService
 {
-
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
         new("Sessions", RetentionDataClass.ActiveSessions, FactoryRecordKind.Physical, "lower(Status) <> 'archived'"),
@@ -137,19 +136,16 @@ internal sealed partial class DataRetentionService
         Guid? excludedOperationId,
         CancellationToken cancellationToken)
     {
-
         List<DataRetentionPlanItem> items = [];
 
         foreach (FactoryTablePlan source in FactoryPlanTables)
         {
-
             long count = await CountTableAsync(
                 source.Table,
                 source.Predicate,
                 cancellationToken).ConfigureAwait(false);
 
             AddFactoryPlanItem(items, source, count);
-
         }
 
         string operationPredicate = excludedOperationId is null
@@ -215,7 +211,6 @@ internal sealed partial class DataRetentionService
 
         if (daemonExecutions is not null)
         {
-
             DaemonExecutionSummary[] history = await daemonExecutions.GetHistoryAsync(
                 null,
                 cancellationToken).ConfigureAwait(false);
@@ -229,7 +224,6 @@ internal sealed partial class DataRetentionService
                     RetentionDataClass.DaemonExecutions,
                     FactoryRecordKind.Physical),
                 terminalHistory);
-
         }
 
         DataRetentionConflict[] conflicts = await ReadGlobalConflictsAsync(
@@ -243,7 +237,6 @@ internal sealed partial class DataRetentionService
             conflicts,
             items.Count == 0 ? [] : ["factory-reset"],
             requiresConfirmation: true);
-
     }
 
     private async Task<DataRetentionApplyResult> ApplyFactoryResetAsync(
@@ -252,7 +245,6 @@ internal sealed partial class DataRetentionService
         DataRetentionPlan plan,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
 
         // Lock ordering is managed-log gate -> SQLite writer transaction. Log publication never
@@ -274,7 +266,6 @@ internal sealed partial class DataRetentionService
 
         try
         {
-
             await using IAsyncDisposable? daemonLease = daemonMutationGate is null
                 ? null
                 : await daemonMutationGate.AcquireExclusiveAsync(
@@ -292,12 +283,10 @@ internal sealed partial class DataRetentionService
 
             if (conflicts.Length > 0 || daemonConflicts.Length > 0)
             {
-
                 string message = conflicts.FirstOrDefault()?.Message
                     ?? daemonConflicts[0].Message;
 
                 throw new RetentionConflictException(message);
-
             }
 
             DaemonExecutionSummary[] terminalDaemonHistory = daemonExecutions is null
@@ -315,16 +304,13 @@ internal sealed partial class DataRetentionService
 
             foreach (FactoryTablePlan table in FactoryDeletionTables)
             {
-
                 if (!await FactoryTableExistsAsync(
                         connection,
                         transaction,
                         table.Table,
                         cancellationToken).ConfigureAwait(false))
                 {
-
                     continue;
-
                 }
 
                 int deleted = await ClearFactoryTableAsync(
@@ -335,24 +321,18 @@ internal sealed partial class DataRetentionService
 
                 if (table.Kind == FactoryRecordKind.Physical)
                 {
-
                     physicalDeleted += deleted;
-
                 }
                 else
                 {
-
                     derivedDeleted += deleted;
-
                 }
-
             }
 
             int deletedOperations;
 
             do
             {
-
                 deletedOperations = await ExecuteAsync(
                     connection,
                     transaction,
@@ -369,7 +349,6 @@ internal sealed partial class DataRetentionService
                     ("@currentId", operationId.ToString("N"))).ConfigureAwait(false);
 
                 physicalDeleted += deletedOperations;
-
             }
 
             while (deletedOperations > 0);
@@ -381,44 +360,33 @@ internal sealed partial class DataRetentionService
                 || fileSystem.Files.LongLength != plan.Files
                 || fileSystem.Files.Sum(static file => file.Bytes) != plan.EstimatedBytes)
             {
-
                 throw new RetentionConflictException(
                     "Factory-reset data changed after preview; request a new dry-run before retrying.");
-
             }
 
             ValidateFactoryFileSystemSnapshot(fileSystem);
 
-            DateTimeOffset leaseRenewedAt = timeProvider.GetUtcNow();
-
-            int renewed = await ExecuteAsync(
+            // The launch row is preserved and reread rather than renewed. It used to have its lease
+            // extended, its heartbeat stamped and its revision advanced inside this very transaction,
+            // which is three things the closed period may not do: the revision in particular is the
+            // one the authenticated journal bound itself to, so advancing it here would make the
+            // terminal compare-exchange that has to happen before the journal can retire refuse its
+            // own row.
+            //
+            // What the renewal was proving - that this operation still owns what it is about to
+            // delete - is proved by reading the row back instead. A row that is not the exact launch
+            // this transaction belongs to is a refusal, never a repair.
+            bool owned = await FactoryLaunchRowSurvivesAsync(
                 connection,
                 transaction,
-                """
-                UPDATE LongRunningOperations
-                SET HeartbeatAt = @now,
-                    LeaseExpiresAt = @expiresAt,
-                    Revision = Revision + 1
-                WHERE lower(replace(Id, '-', '')) = @currentId
-                  AND State = @running
-                  AND LeaseOwner = @leaseOwner
-                  AND LeaseExpiresAt > @now
-                """,
-                cancellationToken,
-                ("@now", leaseRenewedAt.ToString("o", CultureInfo.InvariantCulture)),
-                ("@expiresAt", leaseRenewedAt
-                    .Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration)
-                    .ToString("o", CultureInfo.InvariantCulture)),
-                ("@currentId", operationId.ToString("N")),
-                ("@leaseOwner", leaseOwner),
-                ("@running", (int)LongRunningOperationState.Running)).ConfigureAwait(false);
+                operationId,
+                leaseOwner,
+                cancellationToken).ConfigureAwait(false);
 
-            if (renewed != 1)
+            if (!owned)
             {
-
                 throw new DataRetentionLeaseLostException(
-                    "Factory reset lost its durable operation lease before file cleanup.");
-
+                    "Factory reset no longer owns the durable operation it was launched under.");
             }
 
             QuarantineFactoryFiles(
@@ -431,21 +399,15 @@ internal sealed partial class DataRetentionService
 
             if (daemonExecutions is not null)
             {
-
                 foreach (DaemonExecutionSummary execution in terminalDaemonHistory)
                 {
-
                     if (await daemonExecutions.TryDeleteTerminalAsync(
                             execution.Id,
                             cancellationToken).ConfigureAwait(false))
                     {
-
                         physicalDeleted++;
-
                     }
-
                 }
-
             }
 
             DeleteQuarantinedFactoryFiles(quarantinedFiles);
@@ -462,10 +424,8 @@ internal sealed partial class DataRetentionService
 
             if (!reconciled)
             {
-
                 throw new RetentionQuarantineRecoveryRequiredException(
                     "Factory reset committed, but post-commit reconciliation found retained owned data.");
-
             }
 
             return new DataRetentionApplyResult(
@@ -478,180 +438,138 @@ internal sealed partial class DataRetentionService
                 reconciled,
                 plan.Blockers,
                 plan.Conflicts);
-
         }
         catch (Exception failure)
         {
-
             if (committed)
             {
-
                 if (failure is RetentionQuarantineRecoveryRequiredException)
                 {
-
                     throw;
-
                 }
 
                 throw new RetentionQuarantineRecoveryRequiredException(
                     "Factory reset committed, but its post-commit cleanup did not finish.",
                     failure);
-
             }
 
             if (!committed && transaction.Connection is not null)
             {
-
                 Exception? cleanupFailure = null;
 
                 try
                 {
-
                     RestoreQuarantinedFactoryFiles(quarantinedFiles);
-
                 }
                 catch (Exception ex)
                 {
-
                     cleanupFailure = ex;
-
                 }
 
                 try
                 {
-
                     await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
                 }
                 catch (Exception ex)
                 {
-
                     cleanupFailure = cleanupFailure is null
                         ? ex
                         : new AggregateException(cleanupFailure, ex);
-
                 }
 
                 if (cleanupFailure is not null)
                 {
-
                     throw new AggregateException(
                         "Factory reset could not fully restore its pre-commit state.",
                         failure,
                         cleanupFailure);
-
                 }
-
             }
 
             throw;
-
         }
-
     }
 
     internal async Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         if (!string.Equals(
                 operation.Kind,
                 LongRunningOperationKinds.DataRetentionFactoryReset,
                 StringComparison.Ordinal)
             || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.RestartIdempotently)
         {
-
             return LongRunningOperationRecoveryResult.Failed(
                 LongRunningOperationErrorCodes.InvalidRecoveryResult);
-
         }
 
         // Version 0 is the documented legacy arm: no payload, nothing to resume from, restarted
-        // idempotently from durable quarantine state below. Version 1 is a healthy-catalog Covenant
-        // erasure, which cannot be restarted — a factory erasure that already applied its canonical
-        // deletion cannot prove that by inspecting the result, so it is resumed from the exact phase
-        // its checkpoint recorded (§10.20.3).
-        if (operation.CheckpointVersion == DataRetentionFactoryResetCheckpointV1.CurrentVersion)
+        // idempotently from durable quarantine state below. Version 2 is a healthy-catalog Covenant
+        // erasure launch, which cannot be restarted — a factory erasure that already applied its
+        // canonical deletion cannot prove that by inspecting the result, only by comparing it against
+        // the target the launch committed to before it began (§10.20.3).
+        if (operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion)
         {
-
             return await RecoverCovenantFactoryErasureAsync(
                 operation,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (operation.CheckpointVersion != 0)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.ManualRecoveryRequired);
-
         }
 
         if (string.IsNullOrWhiteSpace(operation.LeaseOwner))
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.MaintenanceFailed);
-
         }
 
         try
         {
-
-            return await _leaseMaintainer.RunAsync(
+            // Planning is pre-closure work and keeps its lease renewed. The apply below is the closed
+            // period and runs outside the maintainer entirely - not merely on a different token,
+            // because a maintainer that is still ticking will advance the row's revision whether or
+            // not the work it wraps is listening, and that revision is the one the authenticated
+            // journal has bound itself to.
+            DataRetentionPlan plan = await _leaseMaintainer.RunAsync(
                 operation.Id,
                 operation.LeaseOwner,
-                async maintainedToken =>
-                {
-
-                    DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
-
-                    DataRetentionPlan plan = await BuildFactoryResetPlanCoreAsync(
-                        request,
-                        operation.Id,
-                        maintainedToken).ConfigureAwait(false);
-
-                    if (plan.Conflicts.Length > 0)
-                    {
-
-                        return LongRunningOperationRecoveryResult.Failed(
-                            ErrorCodes.Data.Conflict);
-
-                    }
-
-                    DataRetentionApplyResult result = await ApplyFactoryResetAsync(
-                        operation.Id,
-                        operation.LeaseOwner,
-                        plan,
-                        maintainedToken).ConfigureAwait(false);
-
-                    return result.Reconciled
-                        ? LongRunningOperationRecoveryResult.Completed()
-                        : LongRunningOperationRecoveryResult.Failed(
-                            ErrorCodes.Data.ReconciliationFailed);
-
-                },
+                maintainedToken => BuildFactoryResetPlanCoreAsync(
+                    new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+                    operation.Id,
+                    maintainedToken),
                 cancellationToken).ConfigureAwait(false);
 
+            if (plan.Conflicts.Length > 0)
+            {
+                return LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.Conflict);
+            }
+
+            DataRetentionApplyResult applied = await ApplyFactoryResetAsync(
+                operation.Id,
+                operation.LeaseOwner,
+                plan,
+                cancellationToken).ConfigureAwait(false);
+
+            return applied.Reconciled
+                ? LongRunningOperationRecoveryResult.Completed()
+                : LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.ReconciliationFailed);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (RetentionConflictException)
         {
-
             return LongRunningOperationRecoveryResult.Failed(
                 ErrorCodes.Data.Conflict);
-
         }
         catch (DataRetentionLeaseLostException ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Factory-reset recovery lost ownership of durable operation {OperationId}.",
@@ -659,11 +577,9 @@ internal sealed partial class DataRetentionService
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.MaintenanceFailed);
-
         }
         catch (RetentionQuarantineRecoveryRequiredException ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Factory-reset recovery still requires post-commit cleanup for durable operation {OperationId}.",
@@ -671,11 +587,9 @@ internal sealed partial class DataRetentionService
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
         catch (Exception ex)
         {
-
             logger.LogError(
                 ex,
                 "Factory-reset recovery failed for durable operation {OperationId}.",
@@ -683,9 +597,7 @@ internal sealed partial class DataRetentionService
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
-
         }
-
     }
 
     /// <summary>
@@ -701,13 +613,10 @@ internal sealed partial class DataRetentionService
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         if (operation.CheckpointPayload is null)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.ManualRecoveryRequired);
-
         }
 
         // The same projection the reset arm uses and the erasure coordinator resumes from. The two
@@ -716,23 +625,20 @@ internal sealed partial class DataRetentionService
         Result<CovenantErasureCheckpointState> state =
             CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 operation.Id,
+                operation.CheckpointVersion,
                 operation.CheckpointPayload);
 
         if (state.IsFailure)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.ManualRecoveryRequired);
-
         }
 
         if (string.IsNullOrWhiteSpace(operation.LeaseOwner)
             || _covenantErasureCoordinator is null)
         {
-
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.MaintenanceFailed);
-
         }
 
         logger.LogWarning(
@@ -745,34 +651,29 @@ internal sealed partial class DataRetentionService
 
         try
         {
-
-            recovered = await _leaseMaintainer.RunAsync(
-                operation.Id,
+            // Outside the lease maintainer: the closed period renews nothing, because a renewal moves
+            // the row's revision and the authenticated journal has bound itself to the exact revision
+            // the launch produced. A second recovery starting beside this one is kept off by the
+            // process-local claim the coordinator takes rather than by a heartbeat.
+            recovered = await _covenantErasureCoordinator.RunAsync(
+                operation,
+                state.Value,
                 operation.LeaseOwner,
-                maintainedToken => _covenantErasureCoordinator.RunAsync(
-                    operation,
-                    state.Value,
-                    operation.LeaseOwner,
-                    async continuationToken =>
-                    {
+                async continuationToken =>
+                {
+                    Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
+                        operation.Id,
+                        operation.LeaseOwner,
+                        continuationToken).ConfigureAwait(false);
 
-                        Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
-                            operation.Id,
-                            operation.LeaseOwner,
-                            continuationToken).ConfigureAwait(false);
-
-                        return continued.IsSuccess
-                            ? Result.Success()
-                            : Result.Failure(continued.Error);
-
-                    },
-                    maintainedToken),
+                    return continued.IsSuccess
+                        ? Result.Success()
+                        : Result.Failure(continued.Error);
+                },
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (DataRetentionLeaseLostException ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Covenant factory-erasure recovery lost ownership of durable operation {OperationId}.",
@@ -780,28 +681,23 @@ internal sealed partial class DataRetentionService
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.MaintenanceFailed);
-
         }
 
         return MapCovenantErasureRecovery(recovered);
-
     }
 
     private async Task<bool> ReconcileFactoryResetAsync(
         Guid operationId,
         CancellationToken cancellationToken)
     {
-
         bool reconciled = true;
 
         foreach (FactoryTablePlan table in FactoryDeletionTables)
         {
-
             reconciled &= await CountTableAsync(
                 table.Table,
                 null,
                 cancellationToken).ConfigureAwait(false) == 0;
-
         }
 
         reconciled &= CountManagedTreeContents(_attachmentsRoot).Files == 0;
@@ -834,17 +730,14 @@ internal sealed partial class DataRetentionService
 
         if (daemonExecutions is not null)
         {
-
             DaemonExecutionSummary[] remaining = await daemonExecutions.GetHistoryAsync(
                 null,
                 cancellationToken).ConfigureAwait(false);
 
             reconciled &= remaining.All(static execution => !IsTerminalDaemonExecution(execution));
-
         }
 
         return reconciled;
-
     }
 
     private async Task<DataRetentionConflict[]> ReadFactoryConflictsInTransactionAsync(
@@ -853,7 +746,6 @@ internal sealed partial class DataRetentionService
         Guid excludedOperationId,
         CancellationToken cancellationToken)
     {
-
         List<DataRetentionConflict> conflicts = [];
 
         conflicts.AddRange(
@@ -906,7 +798,7 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@claimed", (int)IdempotencyClaimState.Claimed),
                 ("@running", (int)IdempotencyClaimState.Running),
-                ("@now", timeProvider.GetUtcNow().ToString("o", CultureInfo.InvariantCulture))).ConfigureAwait(false));
+                ("@now", UtcInstantText.Format(timeProvider.GetUtcNow()))).ConfigureAwait(false));
 
         conflicts.AddRange(
             await ReadFactoryConflictRowsAsync(
@@ -929,7 +821,6 @@ internal sealed partial class DataRetentionService
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
             .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
-
     }
 
     private static async Task<DataRetentionConflict[]> ReadFactoryConflictRowsAsync(
@@ -941,7 +832,6 @@ internal sealed partial class DataRetentionService
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -950,9 +840,7 @@ internal sealed partial class DataRetentionService
 
         foreach ((string name, object value) in parameters)
         {
-
             Add(command, name, value);
-
         }
 
         List<DataRetentionConflict> conflicts = [];
@@ -962,17 +850,14 @@ internal sealed partial class DataRetentionService
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             conflicts.Add(
                 new DataRetentionConflict(
                     code,
                     Guid.Parse(reader.GetString(0)).ToString("D"),
                     message));
-
         }
 
         return [.. conflicts];
-
     }
 
     /// <summary>
@@ -990,16 +875,13 @@ internal sealed partial class DataRetentionService
         FactoryTablePlan table,
         CancellationToken cancellationToken)
     {
-
         if (string.Equals(table.Table, "annal_versions", StringComparison.Ordinal))
         {
-
             return await DeleteAnnalVersionsAsync(
                 connection,
                 transaction,
                 predicate: null,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         using CovenantSqliteAuthorizationScope? retention =
@@ -1014,7 +896,50 @@ internal sealed partial class DataRetentionService
             transaction,
             $"DELETE FROM \"{table.Table}\"",
             cancellationToken).ConfigureAwait(false);
+    }
 
+    /// <summary>
+    /// Whether the exact launch row this deletion belongs to is still there and still owned.
+    /// </summary>
+    /// <remarks>
+    /// Read inside the same transaction as the deletion, so the answer cannot change between the
+    /// check and the rows it authorizes. It reads rather than renews: the revision this row carries
+    /// is the one the authenticated journal bound itself to, and advancing it here would make the
+    /// terminal compare-exchange refuse the row it is trying to terminalize.
+    ///
+    /// <para>It asks who holds the row, not whether the lease is still live. Nothing renews a lease
+    /// across the closed period any more, so an erasure long enough to be worth doing will always
+    /// find its own lease expired - and refusing then would make the operation impossible rather than
+    /// safe. What an expiry used to stand in for is asked directly instead: if another owner had
+    /// adopted this row, the name on it would have changed, and the read happens inside the same
+    /// transaction as the deletion so nobody can adopt it in between.</para>
+    /// </remarks>
+    private static async Task<bool> FactoryLaunchRowSurvivesAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid operationId,
+        string leaseOwner,
+        CancellationToken cancellationToken)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM LongRunningOperations
+            WHERE lower(replace(Id, '-', '')) = @currentId
+              AND State = @running
+              AND LeaseOwner = @leaseOwner
+            """;
+
+        Add(command, "@currentId", operationId.ToString("N"));
+
+        Add(command, "@leaseOwner", leaseOwner);
+
+        Add(command, "@running", (int)LongRunningOperationState.Running);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
     }
 
     private static async Task<bool> FactoryTableExistsAsync(
@@ -1023,7 +948,6 @@ internal sealed partial class DataRetentionService
         string table,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -1037,7 +961,6 @@ internal sealed partial class DataRetentionService
             cancellationToken).ConfigureAwait(false);
 
         return result is not null && result != DBNull.Value;
-
     }
 
     private static void AddFactoryPlanItem(
@@ -1045,12 +968,9 @@ internal sealed partial class DataRetentionService
         FactoryTablePlan source,
         long count)
     {
-
         if (count == 0)
         {
-
             return;
-
         }
 
         items.Add(
@@ -1060,7 +980,6 @@ internal sealed partial class DataRetentionService
                 0,
                 0,
                 source.Kind == FactoryRecordKind.Derived ? count : 0));
-
     }
 
     private static void AddFactoryFilePlanItem(
@@ -1069,21 +988,16 @@ internal sealed partial class DataRetentionService
         long files,
         long bytes)
     {
-
         if (files == 0)
         {
-
             return;
-
         }
 
         items.Add(new DataRetentionPlanItem(dataClass, 0, files, bytes, 0));
-
     }
 
     private static (long Files, long Bytes) CountManagedTreeContents(string root)
     {
-
         List<FactoryFileCandidate> files = [];
 
         List<IdentityOwnedFileSystemArtifact> directories = [];
@@ -1093,12 +1007,10 @@ internal sealed partial class DataRetentionService
         return (
             files.Count,
             files.Sum(static file => file.Bytes));
-
     }
 
     private FactoryFileSystemSnapshot CaptureFactoryFileSystemSnapshot()
     {
-
         List<FactoryFileCandidate> files = [];
 
         List<IdentityOwnedFileSystemArtifact> directories = [];
@@ -1123,7 +1035,6 @@ internal sealed partial class DataRetentionService
             [.. files],
             [.. directories
                 .OrderByDescending(static artifact => artifact.Path.Length)]);
-
     }
 
     private static void CaptureManagedTree(
@@ -1131,12 +1042,9 @@ internal sealed partial class DataRetentionService
         List<FactoryFileCandidate> files,
         List<IdentityOwnedFileSystemArtifact> directories)
     {
-
         if (!TryEnsureStrictFactoryRoot(root))
         {
-
             return;
-
         }
 
         Stack<string> pending = new();
@@ -1145,36 +1053,28 @@ internal sealed partial class DataRetentionService
 
         while (pending.TryPop(out string? directory))
         {
-
             foreach (string path in EnumerateStrictFactoryEntries(directory))
             {
-
                 if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                         path,
                         out FileHandleMetadata metadata)
                     || IsFactoryReparsePoint(path))
                 {
-
                     throw new IOException(
                         "Factory reset refused a managed entry whose no-follow identity could not be captured.");
-
                 }
 
                 if (metadata.Kind == FileSystemObjectKind.RegularFile)
                 {
-
                     FactoryFileCandidate file = CaptureFactoryFile(path, files);
 
                     if (file.Artifact.Metadata != metadata)
                     {
-
                         throw new IOException(
                             "Factory reset refused a managed file whose identity changed during inventory.");
-
                     }
 
                     continue;
-
                 }
 
                 if (metadata.Kind != FileSystemObjectKind.Directory
@@ -1184,20 +1084,15 @@ internal sealed partial class DataRetentionService
                         out IdentityOwnedFileSystemArtifact artifact)
                     || artifact.Metadata != metadata)
                 {
-
                     throw new IOException(
                         "Factory reset refused a managed entry that was not an owned regular file or directory.");
-
                 }
 
                 directories.Add(artifact);
 
                 pending.Push(artifact.Path);
-
             }
-
         }
-
     }
 
     private static void CaptureFactoryLogFiles(
@@ -1206,12 +1101,9 @@ internal sealed partial class DataRetentionService
         List<FactoryFileCandidate> files,
         List<IdentityOwnedFileSystemArtifact> directories)
     {
-
         if (!TryEnsureStrictFactoryRoot(root))
         {
-
             return;
-
         }
 
         foreach (string path in Directory.EnumerateFiles(
@@ -1219,9 +1111,7 @@ internal sealed partial class DataRetentionService
                      pattern,
                      FactoryLogEnumeration))
         {
-
             CaptureFactoryFile(path, files);
-
         }
 
         foreach (string directory in Directory.EnumerateDirectories(
@@ -1229,15 +1119,12 @@ internal sealed partial class DataRetentionService
                      ".arcanum-cleanup-*",
                      FactoryLogEnumeration))
         {
-
             _ = CaptureFactoryQuarantinedLogFiles(
                 directory,
                 pattern,
                 files,
                 directories);
-
         }
-
     }
 
     private static bool CaptureFactoryQuarantinedLogFiles(
@@ -1246,7 +1133,6 @@ internal sealed partial class DataRetentionService
         List<FactoryFileCandidate> files,
         List<IdentityOwnedFileSystemArtifact> directories)
     {
-
         EnsureStrictFactoryDirectory(directory);
 
         bool captured = false;
@@ -1256,11 +1142,9 @@ internal sealed partial class DataRetentionService
                      pattern,
                      FactoryLogEnumeration))
         {
-
             CaptureFactoryFile(path, files);
 
             captured = true;
-
         }
 
         foreach (string child in Directory.EnumerateDirectories(
@@ -1268,20 +1152,16 @@ internal sealed partial class DataRetentionService
                      ".arcanum-cleanup-*",
                      FactoryLogEnumeration))
         {
-
             captured |= CaptureFactoryQuarantinedLogFiles(
                 child,
                 pattern,
                 files,
                 directories);
-
         }
 
         if (!captured)
         {
-
             return false;
-
         }
 
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -1289,48 +1169,38 @@ internal sealed partial class DataRetentionService
                 FileSystemObjectKind.Directory,
                 out IdentityOwnedFileSystemArtifact artifact))
         {
-
             throw new IOException(
                 "Factory reset refused an interrupted log-cleanup directory whose no-follow identity could not be captured.");
-
         }
 
         directories.Add(artifact);
 
         return true;
-
     }
 
     private static (long Files, long Bytes) CountFactoryLogFiles(
         string root,
         string pattern)
     {
-
         List<FactoryFileCandidate> files = [];
 
         foreach (string path in EnumerateFactoryLogFiles(root, pattern))
         {
-
             CaptureFactoryFile(path, files);
-
         }
 
         return (
             files.Count,
             files.Sum(static file => file.Bytes));
-
     }
 
     private static IEnumerable<string> EnumerateFactoryLogFiles(
         string root,
         string pattern)
     {
-
         if (!TryEnsureStrictFactoryRoot(root))
         {
-
             yield break;
-
         }
 
         foreach (string path in Directory.EnumerateFiles(
@@ -1338,9 +1208,7 @@ internal sealed partial class DataRetentionService
                      pattern,
                      FactoryLogEnumeration))
         {
-
             yield return path;
-
         }
 
         foreach (string directory in Directory.EnumerateDirectories(
@@ -1348,25 +1216,19 @@ internal sealed partial class DataRetentionService
                      ".arcanum-cleanup-*",
                      FactoryLogEnumeration))
         {
-
             foreach (string path in EnumerateFactoryQuarantinedLogFiles(
                          directory,
                          pattern))
             {
-
                 yield return path;
-
             }
-
         }
-
     }
 
     private static IEnumerable<string> EnumerateFactoryQuarantinedLogFiles(
         string directory,
         string pattern)
     {
-
         EnsureStrictFactoryDirectory(directory);
 
         foreach (string path in Directory.EnumerateFiles(
@@ -1374,9 +1236,7 @@ internal sealed partial class DataRetentionService
                      pattern,
                      FactoryLogEnumeration))
         {
-
             yield return path;
-
         }
 
         foreach (string child in Directory.EnumerateDirectories(
@@ -1384,34 +1244,26 @@ internal sealed partial class DataRetentionService
                      ".arcanum-cleanup-*",
                      FactoryLogEnumeration))
         {
-
             foreach (string path in EnumerateFactoryQuarantinedLogFiles(
                          child,
                          pattern))
             {
-
                 yield return path;
-
             }
-
         }
-
     }
 
     private static FactoryFileCandidate CaptureFactoryFile(
         string path,
         List<FactoryFileCandidate> files)
     {
-
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                 path,
                 FileSystemObjectKind.RegularFile,
                 out IdentityOwnedFileSystemArtifact artifact))
         {
-
             throw new IOException(
                 "Factory reset refused a managed file whose no-follow identity could not be captured.");
-
         }
 
         FactoryFileCandidate candidate = new(
@@ -1421,15 +1273,12 @@ internal sealed partial class DataRetentionService
         files.Add(candidate);
 
         return candidate;
-
     }
 
     private static string[] EnumerateStrictFactoryEntries(string directory)
     {
-
         try
         {
-
             return
             [
                 .. Directory.EnumerateFileSystemEntries(
@@ -1438,44 +1287,34 @@ internal sealed partial class DataRetentionService
                         FactoryManagedTreeEnumeration)
                     .OrderBy(static path => path, StringComparer.Ordinal),
             ];
-
         }
         catch (UnauthorizedAccessException ex)
         {
-
             throw new IOException(
                 "Factory reset could not enumerate every entry in a managed directory.",
                 ex);
-
         }
-
     }
 
     private static void EnsureStrictFactoryDirectory(string directory)
     {
-
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                 directory,
                 FileSystemObjectKind.Directory,
                 out _)
             || IsFactoryReparsePoint(directory))
         {
-
             throw new IOException(
                 "Factory reset refused a managed directory whose no-follow identity could not be captured.");
-
         }
-
     }
 
     private static bool TryEnsureStrictFactoryRoot(string root)
     {
-
         if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                 root,
                 out FileHandleMetadata metadata))
         {
-
             if (metadata.Kind != FileSystemObjectKind.Directory
                 || IsFactoryReparsePoint(root)
                 || !IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -1484,202 +1323,146 @@ internal sealed partial class DataRetentionService
                     out IdentityOwnedFileSystemArtifact rootArtifact)
                 || rootArtifact.Metadata != metadata)
             {
-
                 throw new IOException(
                     "Factory reset refused a managed root that was not an owned ordinary directory.");
-
             }
 
             return true;
-
         }
 
         try
         {
-
             _ = File.GetAttributes(root);
-
         }
         catch (FileNotFoundException)
         {
-
             return false;
-
         }
         catch (DirectoryNotFoundException)
         {
-
             return false;
-
         }
         catch (UnauthorizedAccessException ex)
         {
-
             throw new IOException(
                 "Factory reset could not inspect a managed root.",
                 ex);
-
         }
 
         throw new IOException(
             "Factory reset could not prove the no-follow identity of an existing managed root.");
-
     }
 
     private static bool IsFactoryReparsePoint(string path)
     {
-
         try
         {
-
             return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
-
         }
         catch (UnauthorizedAccessException ex)
         {
-
             throw new IOException(
                 "Factory reset could not inspect a managed entry without following it.",
                 ex);
-
         }
-
     }
 
     private static void ValidateFactoryFileSystemSnapshot(
         FactoryFileSystemSnapshot snapshot)
     {
-
         foreach (FactoryFileCandidate file in snapshot.Files)
         {
-
             if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                     file.Artifact.Path,
                     FileSystemObjectKind.RegularFile,
                     out IdentityOwnedFileSystemArtifact current)
                 || current.Metadata != file.Artifact.Metadata)
             {
-
                 throw new RetentionConflictException(
                     "A managed file changed identity after the factory-reset preview.");
-
             }
-
         }
 
         foreach (IdentityOwnedFileSystemArtifact directory in snapshot.Directories)
         {
-
             if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                     directory.Path,
                     FileSystemObjectKind.Directory,
                     out IdentityOwnedFileSystemArtifact current)
                 || current.Metadata != directory.Metadata)
             {
-
                 throw new RetentionConflictException(
                     "A managed directory changed identity after the factory-reset preview.");
-
             }
-
         }
-
     }
 
     private static void QuarantineFactoryFiles(
         FactoryFileSystemSnapshot snapshot,
         List<IdentityOwnedFileSystemQuarantine> quarantined)
     {
-
         foreach (FactoryFileCandidate file in snapshot.Files)
         {
-
             bool succeeded = IdentityOwnedFileSystemCleanup.TryQuarantine(
                 file.Artifact,
                 out IdentityOwnedFileSystemQuarantine quarantine);
 
             if (quarantine != default)
             {
-
                 quarantined.Add(quarantine);
-
             }
 
             if (!succeeded || quarantine == default)
             {
-
                 throw new IOException(
                     "Factory reset refused a managed file whose identity changed before quarantine.");
-
             }
-
         }
-
     }
 
     private static void DeleteQuarantinedFactoryFiles(
         IEnumerable<IdentityOwnedFileSystemQuarantine> quarantinedFiles)
     {
-
         foreach (IdentityOwnedFileSystemQuarantine quarantine in quarantinedFiles)
         {
-
             if (!IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(quarantine))
             {
-
                 throw new RetentionQuarantineRecoveryRequiredException(
                     "Factory reset could not finalize a quarantined managed file after the database commit.");
-
             }
-
         }
-
     }
 
     private static void RestoreQuarantinedFactoryFiles(
         IEnumerable<IdentityOwnedFileSystemQuarantine> quarantinedFiles)
     {
-
         foreach (IdentityOwnedFileSystemQuarantine quarantine in quarantinedFiles.Reverse())
         {
-
             if (!IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(quarantine))
             {
-
                 throw new IOException(
                     "Factory reset could not restore a managed file after the database transaction rolled back.");
-
             }
-
         }
-
     }
 
     private static void DeleteFactoryDirectories(
         IEnumerable<IdentityOwnedFileSystemArtifact> directories)
     {
-
         foreach (IdentityOwnedFileSystemArtifact directory in directories)
         {
-
             if (!Directory.Exists(directory.Path)
                 || Directory.EnumerateFileSystemEntries(directory.Path).Any())
             {
-
                 continue;
-
             }
 
             if (!IdentityOwnedFileSystemCleanup.TryDelete(directory))
             {
-
                 throw new IOException(
                     "Factory reset refused an empty managed directory whose identity changed before deletion.");
-
             }
-
         }
-
     }
 
     private static bool IsTerminalDaemonExecution(DaemonExecutionSummary execution) =>
@@ -1690,7 +1473,6 @@ internal sealed partial class DataRetentionService
     private static EnumerationOptions FactoryLogEnumeration { get; } =
         new()
         {
-
             RecurseSubdirectories = false,
 
             AttributesToSkip = 0,
@@ -1698,13 +1480,11 @@ internal sealed partial class DataRetentionService
             IgnoreInaccessible = false,
 
             ReturnSpecialDirectories = false,
-
         };
 
     private static EnumerationOptions FactoryManagedTreeEnumeration { get; } =
         new()
         {
-
             RecurseSubdirectories = false,
 
             AttributesToSkip = 0,
@@ -1712,7 +1492,6 @@ internal sealed partial class DataRetentionService
             IgnoreInaccessible = false,
 
             ReturnSpecialDirectories = false,
-
         };
 
     private static string FactoryTerminalOperationStates =>
@@ -1736,11 +1515,8 @@ internal sealed partial class DataRetentionService
 
     private enum FactoryRecordKind
     {
-
         Physical,
 
         Derived,
-
     }
-
 }

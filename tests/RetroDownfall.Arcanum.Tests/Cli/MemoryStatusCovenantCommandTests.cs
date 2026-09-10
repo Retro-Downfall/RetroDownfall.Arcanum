@@ -44,7 +44,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </remarks>
 public sealed class MemoryStatusCovenantCommandTests : IDisposable
 {
-
     private readonly IAnsiConsole _priorConsole = AnsiConsole.Console;
 
     private readonly TestConsole _console = new();
@@ -58,7 +57,6 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
     [Fact]
     public async Task The_counts_the_server_measured_are_the_counts_the_operator_reads()
     {
-
         RecordingDispatcher dispatcher = await StatusAsync(Covenant(
         [
             new CovenantScopeCountDto(CovenantScope.Global, CovenantLane.Confirmed, CovenantLifecycle.Set, 3),
@@ -89,26 +87,22 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         // The ceiling travels with the totals. A byte count with nothing to compare it against tells
         // an operator nothing about whether they are near the limit.
         Assert.Contains("ceiling 4096", rendered, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task An_installation_holding_nothing_says_so_rather_than_printing_an_empty_table()
     {
-
         RecordingDispatcher dispatcher = await StatusAsync(Covenant([]));
 
         Assert.Contains(
             "No Covenant entries.",
             string.Join("\n", dispatcher.Payloads),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task An_unavailable_arm_names_its_degradation_beside_the_word_unavailable()
     {
-
         RecordingDispatcher dispatcher = await StatusAsync(
             Covenant([]) with { Available = false, DegradationCode = "canonical-unavailable" });
 
@@ -119,7 +113,6 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         // A degraded tier is still a readable one. This census was taken and found nothing, so the
         // empty answer is a measurement and says so.
         Assert.Contains("No Covenant entries.", rendered, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -134,7 +127,6 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
     [Fact]
     public async Task A_census_that_could_not_be_taken_is_never_rendered_as_an_empty_installation()
     {
-
         RecordingDispatcher dispatcher = await StatusAsync(
             Covenant([]) with { Census = CovenantCensusReadState.Refused });
 
@@ -149,20 +141,17 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         // The byte line is withheld too. Printing "Global Confirmed 0 (ceiling 4096)" beside an
         // uncounted census would be a second, quieter claim that the installation is empty.
         Assert.DoesNotContain("Rendered bytes", rendered, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task An_installation_without_a_covenant_arm_prints_nothing_rather_than_zeroes()
     {
-
         RecordingDispatcher dispatcher = await StatusAsync(covenant: null);
 
         string rendered = string.Join("\n", dispatcher.Payloads);
 
         // A zero is a measurement. The honest rendering of something never measured is absence.
         Assert.DoesNotContain("Covenant", rendered, StringComparison.Ordinal);
-
     }
 
     private static CovenantStatusDto Covenant(CovenantScopeCountDto[] counts) =>
@@ -184,7 +173,6 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
 
     private static async Task<RecordingDispatcher> StatusAsync(CovenantStatusDto? covenant)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -194,6 +182,10 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(new StatusHandler(covenant)));
 
         services.AddSingleton<ISecretStore>(new FixedSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "arc_test_0123456789abcdef0123456789abcdef");
 
         using ServiceProvider provider = services.BuildServiceProvider();
 
@@ -208,12 +200,10 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         Assert.Equal(0, await commands.Status(sessionIdentifier: null, Token));
 
         return dispatcher;
-
     }
 
     private sealed class StatusHandler(CovenantStatusDto? covenant) : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
@@ -228,20 +218,16 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
                     Encoding.UTF8,
                     "application/json"),
             });
-
     }
 
     private sealed class SingleHandlerFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
-            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost:5000/") };
-
+            new(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost:5001/") };
     }
 
     private sealed class RecordingDispatcher : IConsoleDispatcher
     {
-
         internal List<string> Payloads { get; } = [];
 
         internal List<string> Diagnostics { get; } = [];
@@ -262,20 +248,16 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         public void BeginJsonStream()
         {
         }
-
     }
 
     private sealed class RefusingConfirmation : IConfirmationPrompt
     {
-
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Reading status asks the operator nothing.");
-
     }
 
     private sealed class FixedSecretStore : ISecretStore
     {
-
         private const string Key = "arc_test_0123456789abcdef0123456789abcdef";
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(Key);
@@ -288,7 +270,5 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
-
 }

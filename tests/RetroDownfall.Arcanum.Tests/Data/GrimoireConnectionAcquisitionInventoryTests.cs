@@ -12,8 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-
-    private const int ExpectedProductionAcquisitionCount = 406;
+    private const int ExpectedProductionAcquisitionCount = 434;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -35,7 +34,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadReceiptOnFreshConnectionAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(3)"),
-        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(2)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
     ];
 
@@ -48,7 +47,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureFreshProcessRecoveryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureInventorySourceTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantErasureSameProcessTests.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantV3MaintenanceTestAuthority.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Data/Covenant/CovenantClosedPeriodTestAuthority.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/GrimoireConnectionAcquisitionInventoryTests.cs",
         "tests/RetroDownfall.Arcanum.Tests/Fixtures/CovenantSchemaScratchDatabase.cs",
         "tests/RetroDownfall.Arcanum.Tests/InstallationReset/HostToolsMarkerPairResetCoordinatorTests.cs",
@@ -58,7 +57,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     [Fact]
     public void Injected_unlisted_acquisition_fails_independently()
     {
-
         AcquisitionSource unlisted = Source("""
             using Microsoft.Data.Sqlite;
             sealed class Fixture
@@ -75,13 +73,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             []);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery);
-
     }
 
     [Fact]
     public void Injected_unlisted_target_typed_acquisition_has_normalized_identity_and_fails_independently()
     {
-
         AcquisitionSource unlisted = Source("""
             using Microsoft.Data.Sqlite;
             sealed class Fixture
@@ -115,13 +111,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery
                 && failure.Identity == identity);
-
     }
 
     [Fact]
     public void Stale_catalog_entry_fails_independently()
     {
-
         AcquisitionIdentity stale = new(
             "Fixtures/Stale.cs",
             "Fixture",
@@ -136,13 +130,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [Entry(stale)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.StaleCatalogEntry);
-
     }
 
     [Fact]
     public void Broad_catalog_identity_fails_independently()
     {
-
         AcquisitionIdentity broad = new(
             "src/RetroDownfall.Arcanum.Infrastructure/*",
             "Fixture",
@@ -157,13 +149,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [Entry(broad)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Mismatched_non_serving_proof_evidence_fails_independently()
     {
-
         AcquisitionIdentity identity = ProofIdentity("Mismatched");
 
         IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
@@ -171,13 +161,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [NegativeProofEntry(identity, "Other.Open(0)")]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Shared_non_serving_proof_evidence_fails_independently()
     {
-
         AcquisitionIdentity first = ProofIdentity("First");
 
         AcquisitionIdentity second = ProofIdentity("Second");
@@ -191,13 +179,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
         Assert.Contains(failures, failure => failure.Identity == second
             && failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Broad_non_serving_proof_evidence_fails_independently()
     {
-
         AcquisitionIdentity identity = ProofIdentity("Broad");
 
         IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
@@ -205,13 +191,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [NegativeProofEntry(identity, "*")]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Empty_non_serving_proof_evidence_fails_independently()
     {
-
         AcquisitionIdentity identity = ProofIdentity("Empty");
 
         IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
@@ -219,13 +203,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [NegativeProofEntry(identity, string.Empty)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Misclassified_canonical_live_acquisition_fails_independently()
     {
-
         AcquisitionSource live = Source("""
             using Microsoft.Data.Sqlite;
             sealed class Fixture
@@ -248,13 +230,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 new(ExactNonServingProofKind.TypedStagingOrSnapshot, "Fixture.Open()"))]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Nested_Task_ValueTask_and_Result_returns_require_a_marker()
     {
-
         AcquisitionSource source = Source("""
             using System;
             using System.Threading.Tasks;
@@ -274,13 +254,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.Equal(
             1,
             failures.Count(failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
-
     }
 
     [Fact]
     public void Unmarked_private_opaque_helper_called_by_marked_sibling_requires_a_marker()
     {
-
         AcquisitionSource source = Source("""
             using System;
             using System.Threading.Tasks;
@@ -300,13 +278,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.Equal(
             1,
             failures.Count(failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
-
     }
 
     [Fact]
     public void Unmarked_marker_pair_session_return_requires_a_marker()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -321,13 +297,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.Equal(
             1,
             failures.Count(failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
-
     }
 
     [Fact]
     public void Direct_connection_routes_and_failure_only_opaque_helpers_do_not_require_markers()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -352,13 +326,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.DoesNotContain(
             failures,
             failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Mixed_success_and_failure_opaque_route_requires_a_marker()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -379,13 +351,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(1)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Qualified_unrelated_failure_call_does_not_exempt_an_opaque_route()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -402,13 +372,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Multi_argument_Result_failure_call_does_not_exempt_an_opaque_route()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -425,13 +393,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Generic_failure_call_does_not_exempt_an_opaque_route()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -448,13 +414,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Ambiguous_same_name_failure_helper_does_not_exempt_an_opaque_route()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -475,13 +439,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Any_failure_only_helper_delegation_requires_a_marker()
     {
-
         AcquisitionSource source = Source("""
             using System.Threading.Tasks;
             sealed class Fixture
@@ -500,13 +462,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Pattern_and_out_var_shadowed_failure_delegations_require_markers()
     {
-
         AcquisitionSource source = Source("""
             using System;
             using System.Threading.Tasks;
@@ -545,13 +505,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures.Count(failure => failure.Identity?.EnclosingMember
                     is "AcquireFromPatternAsync(1)" or "AcquireFromOutAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker));
-
     }
 
     [Fact]
     public void Successful_local_helper_shadowing_failure_only_member_requires_a_marker()
     {
-
         AcquisitionSource source = Source("""
             using System;
             using System.Threading.Tasks;
@@ -579,13 +537,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Identity?.EnclosingMember == "AcquireAsync(0)"
                 && failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Same_named_Open_returning_domain_result_stays_unmarked()
     {
-
         AcquisitionSource source = Source("""
             sealed class Fixture
             {
@@ -599,13 +555,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.DoesNotContain(
             failures,
             failure => failure.Code == InventoryFailureCode.MissingRequiredRouteMarker);
-
     }
 
     [Fact]
     public void Duplicate_marked_route_names_fail_independently()
     {
-
         AcquisitionSource source = Source("""
             using System;
             sealed class GrimoireConnectionAcquisitionRouteAttribute : Attribute { }
@@ -625,13 +579,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             GrimoireConnectionAcquisitionScanner.ValidateMarkerCoverage([source]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.DuplicateMarkedRouteName);
-
     }
 
     [Fact]
     public void Exact_non_database_candidate_requires_one_negative_proof()
     {
-
         AcquisitionSource source = Source("""
             sealed class Fixture
             {
@@ -652,13 +604,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireAcquisitionKind.NonGrimoireCandidate)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.MissingNonServingProof);
-
     }
 
     [Fact]
     public void Serving_route_requires_live_authority_and_its_matching_runtime_route()
     {
-
         AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
         [
             Source("""
@@ -679,13 +629,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 runtimeRoute: GrimoireRuntimeAdmissionRoute.ExactNonServingProof)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Non_serving_authority_requires_its_matching_kind_route_and_proof()
     {
-
         AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
         [
             Source("""
@@ -707,13 +655,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireRuntimeAdmissionRoute.ExactNonServingProof)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Legacy_v3_maintenance_requires_its_exact_lease_proof()
     {
-
         AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
         [
             Source("""
@@ -730,18 +676,22 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             [Entry(
                 identity,
                 GrimoirePathAuthority.LiveGrimoire,
-                GrimoireAcquisitionKind.LegacyV3Maintenance,
-                new(ExactNonServingProofKind.LegacyV3ExclusiveLease, "Fixture.Open()", 124),
+                // A journal maintenance route that also claims an exact non-serving proof. The two
+                // are mutually exclusive by construction — a maintenance open is authorized by the
+                // closed generation its capability came from, and an entry carrying a second,
+                // separate proof is describing an acquisition that has two answers to "what makes
+                // this safe". Any such pair will do here; this one exists to prove the validator
+                // rejects it rather than to describe a route anything actually takes.
+                GrimoireAcquisitionKind.JournalMaintenance,
+                new(ExactNonServingProofKind.StoppedHostAuthority, "Fixture.Open()", 124),
                 GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
-
     }
 
     [Fact]
     public void Local_function_acquisition_uses_the_local_function_identity()
     {
-
         AcquisitionIdentity identity = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover(
         [
             Source("""
@@ -757,13 +707,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ]));
 
         Assert.Equal("Local(0)", identity.EnclosingMember);
-
     }
 
     [Fact]
     public void Ordinary_factory_marker_declaration_and_route_inventory_are_exact()
     {
-
         AttributeUsageAttribute usage = Assert.Single(
             typeof(GrimoireConnectionAcquisitionRouteAttribute)
                 .GetCustomAttributes<AttributeUsageAttribute>());
@@ -821,28 +769,47 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ];
 
         Assert.All(routeSurface, identity => Assert.Contains(identity, catalog));
-
     }
 
     [Fact]
     public void Journal_maintenance_factory_contract_marker_and_inert_route_inventory_are_exact()
     {
-
-        MethodInfo contract = Assert.Single(
-            typeof(IGrimoireMaintenanceConnectionFactory).GetMethods(
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly));
-
-        Assert.Equal("OpenJournalCanonicalErasureAsync", contract.Name);
+        // One narrow member per maintenance purpose, and the set is closed. A single method taking a
+        // purpose would collapse seven distinguishable acquisitions into one catalogue line a
+        // reviewer cannot tell apart, which is the whole thing this inventory exists to prevent.
+        MethodInfo[] contract = [.. typeof(IGrimoireMaintenanceConnectionFactory)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .OrderBy(static method => method.Name, StringComparer.Ordinal)];
 
         Assert.Equal(
             [
-                typeof(IGrimoireMaintenanceConnectionCapability),
-                typeof(IGrimoireMaintenanceIoLane),
-                typeof(CancellationToken),
+                "OpenJournalAcceleratorInitializationAsync",
+                "OpenJournalCandidateReopenAsync",
+                "OpenJournalCanonicalErasureAsync",
+                "OpenJournalCompactionAsync",
+                "OpenJournalExportVerificationAsync",
+                "OpenJournalInventorySnapshotAsync",
+                "OpenJournalPostReplaceRestoreAsync",
+                "OpenJournalWalTruncationAsync",
             ],
-            contract.GetParameters().Select(static parameter => parameter.ParameterType));
+            contract.Select(static method => method.Name));
 
-        Assert.Empty(contract.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+        Assert.All(
+            contract,
+            static method => Assert.Equal(
+                [
+                    typeof(IGrimoireMaintenanceConnectionCapability),
+                    typeof(IGrimoireMaintenanceIoLane),
+                    typeof(CancellationToken),
+                ],
+                method.GetParameters().Select(static parameter => parameter.ParameterType)));
+
+        // The interface stays inert. The marker belongs on the implementation, because a contract a
+        // test double also implements would otherwise catalogue the double as an acquisition route.
+        Assert.All(
+            contract,
+            static method =>
+                Assert.Empty(method.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>()));
 
         PropertyInfo leaseProperty = Assert.Single(
             typeof(IGrimoireMaintenanceConnectionLease).GetProperties(
@@ -852,13 +819,19 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
 
         Assert.Equal(typeof(Microsoft.Data.Sqlite.SqliteConnection), leaseProperty.PropertyType);
 
-        MethodInfo implementation = typeof(GrimoireMaintenanceConnectionFactory).GetMethod(
-            "OpenJournalCanonicalErasureAsync",
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
-            ?? throw new InvalidOperationException("The journal maintenance acquisition route is missing.");
+        Assert.All(
+            contract,
+            static declared =>
+            {
+                MethodInfo implementation = typeof(GrimoireMaintenanceConnectionFactory).GetMethod(
+                    declared.Name,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                    ?? throw new InvalidOperationException(
+                        $"The journal maintenance acquisition route {declared.Name} is missing.");
 
-        _ = Assert.Single(
-            implementation.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+                _ = Assert.Single(
+                    implementation.GetCustomAttributes<GrimoireConnectionAcquisitionRouteAttribute>());
+            });
 
         IReadOnlyList<AcquisitionSource> sources = ProductionSources();
 
@@ -896,26 +869,22 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                     StringComparison.Ordinal)));
 
         Assert.Empty(markerFailures);
-
     }
 
     [Fact]
     public void Scoped_serving_raw_members_have_no_direct_provider_open()
     {
-
         Assert.DoesNotContain(
             ProductionServingRawDiscoveries(),
             discovery => discovery.Identity.ConstructKind
                 is AcquisitionConstructKind.ProviderOpen
                 && ScopedMigrationMembers.Contains(
                     (discovery.Identity.RelativePath, discovery.Identity.EnclosingMember)));
-
     }
 
     [Fact]
     public void Fresh_serving_raw_members_use_only_the_marked_ordinary_factory_route()
     {
-
         IReadOnlyList<AcquisitionSource> sources = ProductionSources();
 
         IReadOnlyList<AcquisitionIdentity> discoveries =
@@ -924,7 +893,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         foreach ((string relativePath, string enclosingType, string enclosingMember)
             in FreshMigrationMembers)
         {
-
             AcquisitionIdentity route = Assert.Single(
                 discoveries,
                 discovery =>
@@ -985,7 +953,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 static creation => creation.Type.ToString().EndsWith(
                     "SqliteConnection",
                     StringComparison.Ordinal));
-
         }
 
         foreach (string relativePath in FreshMigrationMembers
@@ -993,7 +960,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             .Where(static path => path.Contains("/Data/Covenant/", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal))
         {
-
             AcquisitionSource source = Assert.Single(
                 sources,
                 candidate => candidate.RelativePath == relativePath);
@@ -1002,25 +968,20 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 "IDesignTimeGrimoireConnectionFactory",
                 source.Text,
                 StringComparison.Ordinal);
-
         }
-
     }
 
     [Fact]
     public void Ambient_maintenance_factory_has_no_production_or_test_reference()
     {
-
         Assert.Empty(SourcesReferencingAmbientMaintenanceFactory(ProductionSources()));
 
         Assert.Empty(SourcesReferencingAmbientMaintenanceFactory(TestSources()));
-
     }
 
     [Fact]
     public void Production_inventory_is_bijective()
     {
-
         IReadOnlyList<AcquisitionIdentity> discoveries =
             GrimoireConnectionAcquisitionScanner.Discover(ProductionSources());
 
@@ -1038,13 +999,11 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             string.Join(System.Environment.NewLine, failures.Select(static failure => failure.ToString())));
 
         Assert.Equal(discoveries.Count, catalog.Count);
-
     }
 
     [Fact]
     public void Connection_owning_return_routes_are_all_marked()
     {
-
         IReadOnlyList<AcquisitionSource> sources = ProductionSources();
 
         IReadOnlyList<InventoryFailure> markerFailures =
@@ -1082,12 +1041,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         [
             .. catalog.Where(entry => entry.AcquisitionKind
                 is GrimoireAcquisitionKind.StoppedHostRecovery),
-        ];
-
-        GrimoireAcquisitionCatalogEntry[] legacyV3 =
-        [
-            .. catalog.Where(entry => entry.AcquisitionKind
-                is GrimoireAcquisitionKind.LegacyV3Maintenance),
         ];
 
         GrimoireAcquisitionCatalogEntry[] preReadiness =
@@ -1168,15 +1121,14 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory,
                 ExactNonServingProofKind.StoppedHostAuthority));
 
-        Assert.NotEmpty(legacyV3);
-
+        // The staging path is now reached by a journal maintenance route as well as by the typed
+        // staging acquisitions, so it is asserted here rather than left to the staging projection
+        // below: the export verification opener's purpose resolves to the candidate file, and its
+        // safety comes from the closed generation rather than from a proof of its own.
         Assert.All(
-            legacyV3,
-            entry => AssertExactProof(
-                entry,
-                GrimoireRuntimeAdmissionRoute.MaintenanceConnectionFactory,
-                ExactNonServingProofKind.LegacyV3ExclusiveLease,
-                248));
+            journalMaintenance.Where(entry =>
+                entry.PathAuthority is GrimoirePathAuthority.RestoreOrCompactionStaging),
+            static entry => Assert.Null(entry.NonServingProof));
 
         Assert.NotEmpty(preReadiness);
 
@@ -1258,7 +1210,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                     || entry.Identity.EnclosingMember.Contains(character, StringComparison.Ordinal)
                     || entry.Identity.CalleeOrConstructedType.Contains(character, StringComparison.Ordinal)
                     || entry.Identity.Fingerprint.Contains(character, StringComparison.Ordinal)));
-
     }
 
     private static GrimoireAcquisitionCatalogEntry Entry(
@@ -1301,7 +1252,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ExactNonServingProofKind proofKind,
         int removalIssue = 0)
     {
-
         Assert.Equal(route, entry.RuntimeRoute);
 
         ExactNonServingProof proof = Assert.IsType<ExactNonServingProof>(entry.NonServingProof);
@@ -1309,14 +1259,12 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         Assert.Equal(proofKind, proof.Kind);
 
         Assert.Equal(removalIssue, proof.RemovalIssue);
-
     }
 
     private static AcquisitionSource Source(string text) => new("Fixtures/Fixture.cs", text);
 
     private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> ProductionServingRawDiscoveries()
     {
-
         HashSet<AcquisitionIdentity> discoveries =
         [
             .. GrimoireConnectionAcquisitionScanner.Discover(ProductionSources()),
@@ -1329,12 +1277,10 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                     entry.AcquisitionKind == GrimoireAcquisitionKind.ServingRawOrdinary
                     && discoveries.Contains(entry.Identity)),
         ];
-
     }
 
     private static IReadOnlyList<AcquisitionSource> ProductionSources()
     {
-
         Assert.NotEmpty(ProductionSourceInventory.Sources());
 
         string repositoryRoot = NativeSqlCipherTestPaths.RepositoryRoot();
@@ -1351,12 +1297,10 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                     Path.GetRelativePath(repositoryRoot, path).Replace('\\', '/'),
                     File.ReadAllText(path))),
         ];
-
     }
 
     private static IReadOnlyList<AcquisitionSource> TestSources()
     {
-
         string repositoryRoot = NativeSqlCipherTestPaths.RepositoryRoot();
 
         string testRoot = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Arcanum.Tests");
@@ -1371,7 +1315,6 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                     Path.GetRelativePath(repositoryRoot, path).Replace('\\', '/'),
                     File.ReadAllText(path))),
         ];
-
     }
 
     private static string[] SourcesReferencingAmbientMaintenanceFactory(
@@ -1384,5 +1327,4 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 .Select(static source => source.RelativePath)
                 .Order(StringComparer.Ordinal),
         ];
-
 }

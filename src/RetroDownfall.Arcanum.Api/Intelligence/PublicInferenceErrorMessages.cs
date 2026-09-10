@@ -14,4 +14,10 @@ internal static class PublicInferenceErrorMessages
 
     public const string ModelNotConfigured =
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
+
+    public const string ToolChoiceModelUnsupported =
+        "The selected model does not support the requested tool choice.";
+
+    public const string ToolChoiceUnavailable =
+        "The requested tool choice cannot be satisfied with the available tools.";
 }

@@ -36,6 +36,7 @@ internal sealed class EntryWeavingService(
     IWeaveService weaveService,
     WeaveIndexAvailability weaveIndexAvailability,
     IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate admissionGate,
     ILogger<EntryWeavingService> logger) : BackgroundService
 {
 
@@ -76,7 +77,20 @@ internal sealed class EntryWeavingService(
 
                 }
 
-                await RunTickAsync(embeddings, stoppingToken).ConfigureAwait(false);
+                EntryWeavingTickOutcome outcome = await RunTickAsync(embeddings, stoppingToken)
+                    .ConfigureAwait(false);
+
+                if (outcome == EntryWeavingTickOutcome.DeferredForMaintenance)
+                {
+
+                    // Debug, and then the ordinary cadence below. A maintenance window is expected
+                    // and temporary, so it must not reach the catch-all's Error log or its
+                    // one-second backoff: that would report a deliberate refusal as a product fault
+                    // once a second for the length of the window, each with a stack trace.
+                    logger.LogDebug(
+                        "Entry Weaving deferred this tick: maintenance owns Grimoire admission.");
+
+                }
 
                 int intervalSeconds = ArcanumSettingClamps.EmbeddingsEmbeddingQueueIntervalSeconds(
                     embeddings.EmbeddingQueueIntervalSeconds);
@@ -118,7 +132,17 @@ internal sealed class EntryWeavingService(
 
     }
 
-    internal async Task RunTickAsync(EmbeddingSettings embeddings, CancellationToken cancellationToken)
+    /// <summary>Runs one imprinting tick, reporting whether maintenance stood it down.</summary>
+    /// <remarks>
+    /// The work lease is declared before the scope so that reverse-order disposal releases the scope
+    /// first. That ordering is the point of the lease, not an incidental detail: releasing it around
+    /// the scope instead would let a transition's stage one conclude the worker had drained while
+    /// the pooled context and its enrolled physical handle were still going back, which is the exact
+    /// window an offline transition must not close in.
+    /// </remarks>
+    internal async Task<EntryWeavingTickOutcome> RunTickAsync(
+        EmbeddingSettings embeddings,
+        CancellationToken cancellationToken)
     {
 
         if (!weaveService.IsAvailable)
@@ -127,9 +151,20 @@ internal sealed class EntryWeavingService(
             logger.LogDebug(
                 "Entry Weaving tick skipped: The Weave is unavailable (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model).");
 
-            return;
+            return EntryWeavingTickOutcome.Woven;
 
         }
+
+        if (!admissionGate.TryAcquireWorkLease(
+                GrimoireWorkKind.EntryWeaving,
+                out IGrimoireWorkLease? workLease))
+        {
+
+            return EntryWeavingTickOutcome.DeferredForMaintenance;
+
+        }
+
+        await using IGrimoireWorkLease lease = workLease!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
@@ -149,12 +184,29 @@ internal sealed class EntryWeavingService(
         if (pending.Count == 0)
         {
 
-            return;
+            return EntryWeavingTickOutcome.Woven;
 
         }
 
+        // One group for the provider call and every write that follows from it. The span is wider
+        // than the upserts because IWeaveService.EmbedBatchAsync opens an accounting scope of its
+        // own and writes an inference-run row before any provider I/O, then completes it after — so
+        // a group that began after the provider returned would leave the billable call and its own
+        // durable row outside the frontier entirely.
+        if (!lease.TryBeginExternalEffectGroup(
+                out IGrimoireExternalEffectGroup? effectGroup))
+        {
+
+            return EntryWeavingTickOutcome.DeferredForMaintenance;
+
+        }
+
+        await using IGrimoireExternalEffectGroup effect = effectGroup!;
+
         List<string> contents = pending.ConvertAll(static p => p.Content);
 
+        // The host token, never the lease's revocation. Once the frontier is won maintenance waits
+        // through this group and its durable disposition rather than cancelling into it.
         Result<Embedding<float>[]> embedResult = await weaveService.EmbedBatchAsync(contents, cancellationToken).ConfigureAwait(false);
 
         if (embedResult.IsFailure)
@@ -165,7 +217,7 @@ internal sealed class EntryWeavingService(
                 embedResult.Error.Code,
                 embedResult.Error.Message);
 
-            return;
+            return EntryWeavingTickOutcome.Woven;
 
         }
 
@@ -185,7 +237,7 @@ internal sealed class EntryWeavingService(
                 generated.Length,
                 pending.Count);
 
-            return;
+            return EntryWeavingTickOutcome.Woven;
 
         }
 
@@ -195,6 +247,8 @@ internal sealed class EntryWeavingService(
             await UpsertEmbeddingAsync(db, pending[i].EntryId, generated[i].Vector.ToArray(), cancellationToken).ConfigureAwait(false);
 
         }
+
+        return EntryWeavingTickOutcome.Woven;
 
     }
 

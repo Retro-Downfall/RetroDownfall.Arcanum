@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -28,7 +29,6 @@ internal sealed record CovenantSchemaRepairIntent(
     CovenantSchemaRepairPhase Phase,
     long Revision)
 {
-
     /// <summary>The exact gate owner this intent belongs to.</summary>
     public CovenantExclusiveRecoveryOwner Owner =>
         new(OperationId, CovenantExclusiveOperation.SchemaRepair, EffectDigest);
@@ -39,7 +39,6 @@ internal sealed record CovenantSchemaRepairIntent(
         or CovenantSchemaRepairPhase.CatalogCommitted
         or CovenantSchemaRepairPhase.HealthVerified
         or CovenantSchemaRepairPhase.ReopenPending;
-
 }
 
 /// <summary>
@@ -54,7 +53,6 @@ internal sealed record CovenantSchemaRepairIntent(
 /// </remarks>
 internal static class CovenantSchemaRepairJournal
 {
-
     /// <summary>
     /// Reads the single nonterminal intent, if one exists.
     /// </summary>
@@ -62,14 +60,12 @@ internal static class CovenantSchemaRepairJournal
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.CommandText = """
@@ -87,23 +83,17 @@ internal static class CovenantSchemaRepairJournal
                 .ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false))
             {
-
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     Result<CovenantSchemaRepairIntent> parsed = ParseActive(reader);
 
                     if (parsed.IsFailure)
                     {
-
                         return Result<CovenantSchemaRepairIntent?>.Failure(parsed.Error);
-
                     }
 
                     intents.Add(parsed.Value);
-
                 }
-
             }
 
             // Two live intents mean two operations each believe they closed admission, and neither can
@@ -111,26 +101,19 @@ internal static class CovenantSchemaRepairJournal
             return intents.Count > 1
                 ? ReadFailure()
                 : Result<CovenantSchemaRepairIntent?>.Success(intents.FirstOrDefault());
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             return ReadFailure();
-
         }
-
     }
 
     private static Result<CovenantSchemaRepairIntent> ParseActive(SqliteDataReader reader)
     {
-
         if (reader.GetValue(0) is not string rawOperationId
             || !Guid.TryParseExact(rawOperationId, "D", out Guid operationId)
             || !string.Equals(
@@ -156,30 +139,22 @@ internal static class CovenantSchemaRepairJournal
             || reader.GetValue(8) is not long revision
             || revision < 0)
         {
-
             return IntentFailure();
-
         }
 
         Guid? generation;
 
         if (reader.IsDBNull(5))
         {
-
             generation = null;
-
         }
         else if (reader.GetValue(5) is byte[] { Length: 16 } rawGeneration)
         {
-
             generation = new Guid(rawGeneration);
-
         }
         else
         {
-
             return IntentFailure();
-
         }
 
         CovenantSchemaRepairAction action = (CovenantSchemaRepairAction)(byte)rawAction;
@@ -188,9 +163,7 @@ internal static class CovenantSchemaRepairJournal
                 ? generation is not null
                 : generation is null)
         {
-
             return IntentFailure();
-
         }
 
         return Result<CovenantSchemaRepairIntent>.Success(
@@ -204,7 +177,6 @@ internal static class CovenantSchemaRepairJournal
                 authorityEpoch,
                 (CovenantSchemaRepairPhase)(byte)rawPhase,
                 revision));
-
     }
 
     private static Result<CovenantSchemaRepairIntent?> ReadFailure() =>
@@ -234,7 +206,6 @@ internal static class CovenantSchemaRepairJournal
         DateTimeOffset utcNow,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(initializer);
@@ -243,12 +214,10 @@ internal static class CovenantSchemaRepairJournal
 
         try
         {
-
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
             await using (SqliteCommand command = connection.CreateCommand())
             {
-
                 command.Transaction = transaction;
 
                 command.CommandText = """
@@ -281,21 +250,16 @@ internal static class CovenantSchemaRepairJournal
                 _ = command.Parameters.AddWithValue("$now", Iso(utcNow));
 
                 _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return Result.Success();
-
         }
         catch (SqliteException exception)
         {
-
             return Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
-
         }
-
     }
 
     /// <summary>
@@ -310,7 +274,6 @@ internal static class CovenantSchemaRepairJournal
         DateTimeOffset utcNow,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(initializer);
@@ -319,14 +282,12 @@ internal static class CovenantSchemaRepairJournal
 
         try
         {
-
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
             int changed;
 
             using (initializer.Authorize(connection, CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance))
             {
-
                 await using SqliteCommand command = connection.CreateCommand();
 
                 command.Transaction = transaction;
@@ -355,35 +316,27 @@ internal static class CovenantSchemaRepairJournal
                 _ = command.Parameters.AddWithValue("$expectedRevision", intent.Revision);
 
                 changed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             if (changed != 1)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Result<bool>.Success(false);
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<bool>.Success(true);
-
         }
         catch (SqliteException exception)
         {
-
             return Result<bool>.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
-
         }
-
     }
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
 }

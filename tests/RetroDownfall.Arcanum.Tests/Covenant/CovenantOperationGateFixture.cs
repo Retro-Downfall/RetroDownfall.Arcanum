@@ -32,7 +32,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 internal static class CovenantOperationGateFixture
 {
-
     internal static readonly Guid DatasetGeneration = new("11111111-1111-4111-8111-111111111111");
 
     internal static readonly Guid CampaignOne = new("22222222-2222-4222-8222-222222222222");
@@ -41,18 +40,14 @@ internal static class CovenantOperationGateFixture
 
     internal static CovenantDigest Digest(byte seed)
     {
-
         byte[] bytes = new byte[CovenantLimits.DigestBytes];
 
         for (int index = 0; index < bytes.Length; index++)
         {
-
             bytes[index] = unchecked((byte)(seed + index));
-
         }
 
         return new CovenantDigest(bytes);
-
     }
 
     internal static CovenantExclusiveRecoveryOwner Owner(
@@ -75,7 +70,6 @@ internal static class CovenantOperationGateFixture
         FakeCovenantCampaignScopeProbe? campaigns = null,
         TimeSpan? drainTimeout = null)
     {
-
         FakeCovenantAvailability resolvedAvailability = availability ?? new FakeCovenantAvailability();
 
         FakeCovenantAuthorityProvider resolvedAuthority = authority ?? new FakeCovenantAuthorityProvider();
@@ -84,7 +78,6 @@ internal static class CovenantOperationGateFixture
 
         if (resolvedAuthority.Current is null)
         {
-
             _ = runtime.PublishAvailability(_ => resolvedAvailability.Current);
 
             resolvedAvailability.Bind(runtime);
@@ -95,7 +88,6 @@ internal static class CovenantOperationGateFixture
                 runtime,
                 campaigns ?? new FakeCovenantCampaignScopeProbe(),
                 drainTimeout ?? TimeSpan.FromSeconds(5));
-
         }
 
         CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -111,9 +103,7 @@ internal static class CovenantOperationGateFixture
 
         if (prepared.IsFailure)
         {
-
             throw new InvalidOperationException(prepared.Error.Message);
-
         }
 
         using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
@@ -131,9 +121,7 @@ internal static class CovenantOperationGateFixture
 
         if (initialized.IsFailure)
         {
-
             throw new InvalidOperationException(initialized.Error.Message);
-
         }
 
         resolvedAvailability.Bind(runtime, keys);
@@ -144,14 +132,11 @@ internal static class CovenantOperationGateFixture
             runtime,
             campaigns ?? new FakeCovenantCampaignScopeProbe(),
             drainTimeout ?? TimeSpan.FromSeconds(5));
-
     }
-
 }
 
 internal sealed class FakeCovenantAvailability : ICovenantAvailability
 {
-
     private CovenantRuntimeGenerationProvider? _runtime;
 
     private CovenantEnvelopeMasterKeyProvider? _keys;
@@ -184,16 +169,13 @@ internal sealed class FakeCovenantAvailability : ICovenantAvailability
         CovenantRuntimeGenerationProvider runtime,
         CovenantEnvelopeMasterKeyProvider? keys = null)
     {
-
         _runtime = runtime;
 
         _keys = keys;
-
     }
 
     internal void PublishCommittedDataset(Guid datasetGeneration)
     {
-
         CovenantRuntimeGenerationProvider runtime = _runtime
             ?? throw new InvalidOperationException("The availability fixture is not runtime-bound.");
 
@@ -255,10 +237,8 @@ internal sealed class FakeCovenantAvailability : ICovenantAvailability
 
         if (built.IsFailure || prepared.IsFailure)
         {
-
             throw new InvalidOperationException(
                 built.IsFailure ? built.Error.Message : prepared.Error.Message);
-
         }
 
         using CovenantPreparedEnvelopeKeyGeneration owned = prepared.Value;
@@ -271,36 +251,27 @@ internal sealed class FakeCovenantAvailability : ICovenantAvailability
 
         if (published.IsFailure)
         {
-
             throw new InvalidOperationException(published.Error.Message);
-
         }
-
     }
 
     internal void Mutate(Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> change)
     {
-
         if (_runtime is { } runtime)
         {
-
             _ = runtime.PublishAvailability(change);
 
             return;
-
         }
 
         CovenantAvailabilitySnapshot current = Volatile.Read(ref _current);
 
         Volatile.Write(ref _current, change(current) with { Generation = current.Generation + 1 });
-
     }
-
 }
 
 internal sealed class FakeCovenantAuthorityProvider : ICovenantAuthoritySnapshotProvider
 {
-
     private CovenantRuntimeGenerationProvider? _runtime;
 
     private CovenantAuthoritySnapshot? _current = new(
@@ -320,47 +291,37 @@ internal sealed class FakeCovenantAuthorityProvider : ICovenantAuthoritySnapshot
 
     internal void Advance()
     {
-
         if (_runtime is { } runtime)
         {
-
             _ = runtime.RetireAuthorityGeneration(
                 runtime.Current.RuntimeAuthorityGeneration,
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair));
 
             return;
-
         }
 
         Volatile.Write(
             ref _current,
             Current! with { AuthorityEpoch = Current.AuthorityEpoch + 1 });
-
     }
 
     internal void Clear()
     {
-
         if (_runtime is { } runtime)
         {
-
             _ = runtime.RetireAuthorityGeneration(
                 runtime.Current.RuntimeAuthorityGeneration,
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.SchemaRepair));
 
             return;
-
         }
 
         Volatile.Write(ref _current, null);
-
     }
-
 }
 
 internal sealed class FakeCovenantCampaignScopeProbe : ICovenantCampaignScopeProbe
 {
-
     private readonly Dictionary<Guid, CovenantCampaignScopeState> _states = new()
     {
         [CovenantOperationGateFixture.CampaignOne] = CovenantCampaignScopeState.Live,
@@ -370,36 +331,27 @@ internal sealed class FakeCovenantCampaignScopeProbe : ICovenantCampaignScopePro
 
     internal void Set(Guid campaignId, CovenantCampaignScopeState state)
     {
-
         lock (_states)
         {
-
             _states[campaignId] = state;
-
         }
-
     }
 
     public ValueTask<Result<CovenantCampaignScopeState>> ResolveAsync(
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_states)
         {
-
             return ValueTask.FromResult(
                 Result<CovenantCampaignScopeState>.Success(
                     _states.TryGetValue(campaignId, out CovenantCampaignScopeState state)
                         ? state
                         : CovenantCampaignScopeState.Deleted));
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -408,7 +360,6 @@ internal sealed class FakeCovenantCampaignScopeProbe : ICovenantCampaignScopePro
 internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
     : ICovenantExclusivePostDispositionFinalizer
 {
-
     private int _invocations;
 
     internal int Invocations => Volatile.Read(ref _invocations);
@@ -419,7 +370,6 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
         CovenantExclusiveLeaseDisposition disposition,
         CancellationToken cancellationToken)
     {
-
         _ = Interlocked.Increment(ref _invocations);
 
         ObservedDisposition = disposition;
@@ -428,9 +378,7 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
             succeed
                 ? Result.Success()
                 : Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, "The durable journal did not advance.")));
-
     }
-
 }
 
 /// <summary>
@@ -446,7 +394,6 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
 [Collection("Grimoire")]
 public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -457,14 +404,11 @@ public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
 
     public CovenantCampaignScopeProbeTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -477,39 +421,29 @@ public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
         Directory.CreateDirectory(_workspaceRoot);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_workspaceRoot))
         {
-
             Directory.Delete(_workspaceRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ResolveAsync_reports_deleted_for_a_campaign_the_deletion_trigger_recorded()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CampaignRepository campaigns = new(
@@ -560,7 +494,80 @@ public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
         Assert.True(resolved.IsSuccess, resolved.IsFailure ? resolved.Error.Message : string.Empty);
 
         Assert.Equal(CovenantCampaignScopeState.Deleted, resolved.Value);
-
     }
 
+    [SkippableFact]
+    public async Task ResolveAsync_reports_live_for_a_campaign_still_in_the_catalog()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid campaignId = await AddCampaignAsync("live probe scope test");
+
+        await using ServiceProvider provider = CreateProbeProvider();
+
+        CovenantCampaignScopeProbe probe = new(provider.GetRequiredService<IServiceScopeFactory>());
+
+        Result<CovenantCampaignScopeState> resolved = await probe.ResolveAsync(
+            campaignId,
+            CancellationToken.None);
+
+        Assert.True(resolved.IsSuccess, resolved.IsFailure ? resolved.Error.Message : string.Empty);
+        Assert.Equal(CovenantCampaignScopeState.Live, resolved.Value);
+    }
+
+    [SkippableFact]
+    public async Task ResolveAsync_reports_unknown_for_an_identity_never_in_the_catalog()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ServiceProvider provider = CreateProbeProvider();
+
+        CovenantCampaignScopeProbe probe = new(provider.GetRequiredService<IServiceScopeFactory>());
+
+        Result<CovenantCampaignScopeState> resolved = await probe.ResolveAsync(
+            Guid.NewGuid(),
+            CancellationToken.None);
+
+        Assert.True(resolved.IsSuccess, resolved.IsFailure ? resolved.Error.Message : string.Empty);
+        Assert.Equal(CovenantCampaignScopeState.Unknown, resolved.Value);
+    }
+
+    private async Task<Guid> AddCampaignAsync(string name)
+    {
+        CampaignRepository campaigns = new(
+            _db!,
+            NullLogger<CampaignRepository>.Instance,
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Result<Campaign> added = await campaigns.AddAsync(
+            new Campaign
+            {
+                Id = Guid.NewGuid(),
+                Name = name,
+                Path = _workspaceRoot,
+                Type = WorkspaceType.Campaign,
+                Settings = CampaignRepository.SerializeSettings(CampaignSettings.CreateDefault()),
+                SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(
+                    CampaignRepository.DefaultSanctumConfig()),
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            CancellationToken.None);
+
+        Assert.True(added.IsSuccess, added.IsFailure ? added.Error.Message : string.Empty);
+
+        return added.Value.Id;
+    }
+
+    private ServiceProvider CreateProbeProvider()
+    {
+        ServiceCollection services = new();
+
+        services.AddSingleton(_db!);
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            new RecordingScopedOrdinaryConnectionFactory());
+
+        return services.BuildServiceProvider();
+    }
 }

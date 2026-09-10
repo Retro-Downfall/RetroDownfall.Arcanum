@@ -25,11 +25,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// </remarks>
 public sealed partial class InstallationResetServiceTests
 {
-
     [Fact]
     public async Task An_attested_apply_ends_the_reset_once_the_managed_file_inventory_is_verified()
     {
-
         Guid operationId = Guid.Parse("5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a");
 
         FakeActiveStore active = new();
@@ -48,6 +46,7 @@ public sealed partial class InstallationResetServiceTests
             pairReader: new FakePairReader(JoinResult(
                 HostProcessToolsMarkerPairDisposition.TaintedMatched)),
             remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
             terminalContinuation: () => terminal);
 
         InstallationResetPlanRequest planRequest = new(
@@ -91,15 +90,13 @@ public sealed partial class InstallationResetServiceTests
         // that carried its own older record forward would have written this straight back to null,
         // leaving an installation whose credentials are gone and whose record says they never were.
         Assert.Equal(
-            InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+            InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
             active.Writes[^1].HostToolsMarkerPairReset?.RestoreCredentialCleanup);
-
     }
 
     [Fact]
     public async Task An_attested_apply_short_of_a_verified_inventory_reports_admitted_and_deletes_nothing()
     {
-
         Guid operationId = Guid.Parse("5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b5b");
 
         FakeActiveStore active = new();
@@ -118,6 +115,7 @@ public sealed partial class InstallationResetServiceTests
             pairReader: new FakePairReader(JoinResult(
                 HostProcessToolsMarkerPairDisposition.TaintedMatched)),
             remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
             terminalContinuation: () => terminal);
 
         InstallationResetPlanRequest planRequest = new(
@@ -146,13 +144,11 @@ public sealed partial class InstallationResetServiceTests
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Value.ErrorCode);
 
         Assert.Empty(active.RetiredOperationIds);
-
     }
 
     [Fact]
     public async Task A_terminal_step_that_refuses_leaves_the_reset_resumable_rather_than_verified()
     {
-
         Guid operationId = Guid.Parse("5c5c5c5c-5c5c-4c5c-8c5c-5c5c5c5c5c5c");
 
         FakeActiveStore active = new();
@@ -177,6 +173,7 @@ public sealed partial class InstallationResetServiceTests
             pairReader: new FakePairReader(JoinResult(
                 HostProcessToolsMarkerPairDisposition.TaintedMatched)),
             remediationVerifier: new FakeRemediationVerifier(Authorization(operationId)),
+            markerPairReset: () => PassThroughMarkerPairResetCoordinator.Instance,
             terminalContinuation: () => terminal);
 
         InstallationResetPlanRequest planRequest = new(
@@ -209,7 +206,6 @@ public sealed partial class InstallationResetServiceTests
         Assert.NotEqual(InstallationResetPhase.Completed, applied.Value.Phase);
 
         Assert.Empty(active.RetiredOperationIds);
-
     }
 
     /// <summary>
@@ -218,7 +214,6 @@ public sealed partial class InstallationResetServiceTests
     private static HostToolsMarkerPairResetCheckpointV1 TerminalMarkerCheckpoint(
         InstallationResetActiveRecord record)
     {
-
         ImmutableArray<Guid> empty = [];
 
         FullInstallationResetRemediationClaimV1 claim =
@@ -285,11 +280,29 @@ public sealed partial class InstallationResetServiceTests
                 CompletedWorkItemCount: 0,
                 ManualWorkItemOrphanCount: 0,
                 FullInstallationResetManagedFileDigests.TerminalClassification([], []).Value));
-
     }
 
     private static CovenantDigest Fixed(byte value) =>
         new([.. Enumerable.Repeat(value, 32)]);
+
+    private sealed class PassThroughMarkerPairResetCoordinator
+        : IHostToolsMarkerPairResetCoordinator
+    {
+        internal static PassThroughMarkerPairResetCoordinator Instance { get; } = new();
+
+        public Task<Result<InstallationResetActivePublication>> BeginAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            InstallationResetActivePublication acceptedClaim,
+            FullInstallationResetExternalRemediationAttestation attestation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<InstallationResetActivePublication>.Success(acceptedClaim));
+
+        public Task<Result<InstallationResetActivePublication>> ResumeAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            InstallationResetActivePublication checkpoint,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<InstallationResetActivePublication>.Success(checkpoint));
+    }
 
     /// <summary>
     /// A terminal continuation that records whether it ran and what it answered.
@@ -302,7 +315,6 @@ public sealed partial class InstallationResetServiceTests
     /// </remarks>
     private sealed class RecordingTerminalContinuation : IFullInstallationResetTerminalContinuation
     {
-
         internal int Calls { get; private set; }
 
         /// <summary>The store this step publishes into, exactly as the real one does.</summary>
@@ -315,7 +327,6 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetActivePublication publication,
             CancellationToken cancellationToken)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             ArgumentNullException.ThrowIfNull(publication);
@@ -324,9 +335,7 @@ public sealed partial class InstallationResetServiceTests
 
             if (Outcome is { } fixedOutcome)
             {
-
                 return Task.FromResult(fixedOutcome);
-
             }
 
             // The real step publishes each irreversible removal before it returns, so what it hands
@@ -340,7 +349,7 @@ public sealed partial class InstallationResetServiceTests
                         publication.Payload.HostToolsMarkerPairReset! with
                         {
                             RestoreCredentialCleanup =
-                                InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                                InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
                         },
                 };
 
@@ -349,14 +358,11 @@ public sealed partial class InstallationResetServiceTests
             return Task.FromResult(
                 Result<FullInstallationResetTerminalOutcome>.Success(
                     new FullInstallationResetTerminalOutcome(
-                        InstallationResetRestoreCredentialCleanupPhase.VerifiedAbsent,
+                        InstallationResetRestoreCredentialCleanupPhase.TransitionCredentialsVerifiedAbsent,
                         publication with
                         {
-                            Payload = InstallationResetActivePayloadV2.FromRecord(published),
+                            Payload = InstallationResetActivePayloadV3.FromRecord(published),
                         })));
-
         }
-
     }
-
 }

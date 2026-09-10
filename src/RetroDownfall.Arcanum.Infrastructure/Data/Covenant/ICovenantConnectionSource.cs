@@ -119,6 +119,23 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
 
         }
 
+        // An already-open connection is used as it stands rather than leased again. During a closed
+        // period the admission gate has admitted this exact connection object under a scoped permit
+        // and the erasure has physically opened it, so it is open precisely because something with
+        // the authority to close the database said it could be. Asking for an ordinary lease there
+        // would be asking a gate that is correctly refusing every ordinary open, and the refusal
+        // would fall on the erasure's own work rather than on the ordinary callers it is aimed at.
+        //
+        // Outside a closed period this changes nothing: an ordinary caller reaches an open connection
+        // only by having taken a lease for it already, and that lease is what the retained one above
+        // is.
+        if (connection.State is System.Data.ConnectionState.Open)
+        {
+
+            return connection;
+
+        }
+
         await _leaseGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try

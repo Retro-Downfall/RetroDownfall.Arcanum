@@ -1,27 +1,43 @@
 using System.Collections.Concurrent;
+
 using System.Threading.Channels;
+
 using Microsoft.Extensions.AI;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Options;
+
 using ModelContextProtocol.Client;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Environment;
+
 using RetroDownfall.Arcanum.Core.Events;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Mcp;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed partial class McpConnectionManager
 {
-
     // W-MCP-HTTP: transport factory. Stdio spawns a subprocess + correlation client; Http builds a
     // stateless Streamable HTTP client over the SSRF-guarded named HttpClient; legacy SSE remains
     // unsupported. Both transports converge on FinishStartAsync (initialize + tools/list + wiring).
@@ -153,7 +169,7 @@ public sealed partial class McpConnectionManager
     // Shared start completion for both transports: run the initialize handshake, project tools, and
     // wire the entry. On any non-cancellation failure the freshly created client is disposed (which
     // tears down a stdio subprocess) and the entry is reset so a retry starts clean.
-    private async Task<Result> FinishStartAsync(
+    internal async Task<Result> FinishStartAsync(
         ManagedMcpServerEntry entry,
         McpServerConfig cfg,
         IMcpClient client,
@@ -168,24 +184,30 @@ public sealed partial class McpConnectionManager
 
             IReadOnlyList<McpBridgeTool> tools = await pending.GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
-            entry.Client = pending;
+            LoadedMcpToolRow[] loadedTools = tools
+                .Select(tool => new LoadedMcpToolRow(tool, cfg, client))
+                .ToArray();
 
-            pending = null;
+            string[] toolNames = tools.Select(static tool => tool.Name).ToArray();
 
             entry.LoadedTools.Clear();
 
-            foreach (McpBridgeTool t in tools)
-            {
-                entry.LoadedTools.Add(new LoadedMcpToolRow(t, cfg, entry.Client));
-            }
+            entry.LoadedTools.AddRange(loadedTools);
 
-            entry.Tools = tools.Select(static t => t.Name).ToArray();
+            entry.Tools = toolNames;
 
             logger.LogInformation(
                 "Started MCP server {ServerName} ({Scope}) with {ToolCount} tools.",
                 entry.Name,
                 logScope,
                 tools.Count);
+
+            // This is the ownership transfer. It is deliberately the last potentially observable
+            // state change in the successful path: every operation that can throw while projecting
+            // the remote tool catalog still leaves pending responsible for disposing the client.
+            entry.Client = pending;
+
+            pending = null;
 
             return Result.Success();
         }
@@ -199,18 +221,16 @@ public sealed partial class McpConnectionManager
             // stood up before cancellation.
             if (pending is not null)
             {
-                await pending.DisposeAsync().ConfigureAwait(false);
+                await DisposeClientAfterFailedStartAsync(
+                    pending,
+                    entry,
+                    logScope).ConfigureAwait(false);
             }
 
             throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (pending is not null)
-            {
-                await pending.DisposeAsync().ConfigureAwait(false);
-            }
-
             Exception baseEx = ex.GetBaseException();
 
             entry.Client = null;
@@ -219,6 +239,14 @@ public sealed partial class McpConnectionManager
 
             entry.Tools = [];
 
+            if (pending is not null)
+            {
+                await DisposeClientAfterFailedStartAsync(
+                    pending,
+                    entry,
+                    logScope).ConfigureAwait(false);
+            }
+
             logger.LogError(
                 ex,
                 "MCP server {ServerName} ({Scope}) failed to start or list tools.",
@@ -226,6 +254,25 @@ public sealed partial class McpConnectionManager
                 entry.ScopeWorkingDirectory ?? "global");
 
             return new Error("Mcp.StartFailed", baseEx.Message);
+        }
+    }
+
+    private async Task DisposeClientAfterFailedStartAsync(
+        IMcpClient client,
+        ManagedMcpServerEntry entry,
+        string logScope)
+    {
+        try
+        {
+            await client.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception cleanupException)
+        {
+            logger.LogWarning(
+                cleanupException,
+                "Error disposing MCP client for server {ServerName} ({Scope}) after its start did not complete.",
+                entry.Name,
+                logScope);
         }
     }
 
@@ -423,29 +470,21 @@ public sealed partial class McpConnectionManager
 
     private void HandleTransportEnded(ManagedMcpServerEntry entry, long transportGeneration)
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         Task handlerTask = Task.Run(async () =>
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             if (!ManagedMcpServerEntry.IsTransportGenerationCurrent(transportGeneration, entry.TransportGeneration))
             {
-
                 return;
-
             }
 
             McpServerEvent? pendingEvent = null;
@@ -614,7 +653,9 @@ public sealed partial class McpConnectionManager
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).
         // On setup failure before a client is attached, the finally block completes the channel so
         // the server task cannot orphan forever.
-        Task serverTask = Task.Run(() => server.RunAsync(_hostLifetimeCts.Token), CancellationToken.None);
+        Task serverTask = Task.Run(
+            () => server.RunAsync(_globalInitializationLifetime.Token),
+            CancellationToken.None);
 
         ObserveInternalServerTask(serverTask);
 
@@ -657,7 +698,6 @@ public sealed partial class McpConnectionManager
                         ToolRiskClassifier.SearchWorkspaceToolName,
                         StringComparison.Ordinal))
                 {
-
                     trustedTool = trustedTool.WithTrustedStructuredResult(
                         TrustedStructuredToolResultKind.WorkspaceSearch);
                 }
@@ -666,7 +706,6 @@ public sealed partial class McpConnectionManager
                              ToolRiskClassifier.ApplyPatchToolName,
                              StringComparison.Ordinal))
                 {
-
                     trustedTool = trustedTool.WithTrustedStructuredResult(
                         TrustedStructuredToolResultKind.WorkspacePatch);
                 }
@@ -675,7 +714,6 @@ public sealed partial class McpConnectionManager
                              ToolRiskClassifier.WorkspaceCheckToolName,
                              StringComparison.Ordinal))
                 {
-
                     trustedTool = trustedTool
                         .WithTrustedStructuredResult(
                             TrustedStructuredToolResultKind.WorkspaceCheck);
@@ -751,5 +789,4 @@ public sealed partial class McpConnectionManager
             TaskContinuationOptions.None,
             TaskScheduler.Default);
     }
-
 }

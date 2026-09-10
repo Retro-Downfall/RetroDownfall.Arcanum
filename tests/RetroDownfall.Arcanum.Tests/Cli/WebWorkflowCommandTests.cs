@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class WebWorkflowCommandTests
 {
-
     [Theory]
 
     [InlineData("search", "--count", "--freshness", "--include-domain", "--exclude-domain")]
@@ -33,7 +32,6 @@ public sealed class WebWorkflowCommandTests
         string command,
         params string[] expected)
     {
-
         CliTestResult result = RunCommand(
             new RecordingHandler(),
             [command, "--help"]);
@@ -42,18 +40,14 @@ public sealed class WebWorkflowCommandTests
 
         foreach (string option in expected)
         {
-
             Assert.Contains(option, result.Output, StringComparison.Ordinal);
-
         }
-
     }
 
     [Fact]
 
     public void Search_posts_filters_and_writes_one_typed_json_payload()
     {
-
         RecordingHandler handler = new(
             request => JsonResponse(
                 """
@@ -113,14 +107,12 @@ public sealed class WebWorkflowCommandTests
         Assert.Contains("\"citations\"", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Searching", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Browse_posts_render_mode_and_reports_javascript_degradation()
     {
-
         RecordingHandler handler = new(
             request => JsonResponse(
                 """
@@ -152,7 +144,6 @@ public sealed class WebWorkflowCommandTests
             StringComparison.Ordinal);
 
         Assert.Contains("--render static", result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -167,7 +158,6 @@ public sealed class WebWorkflowCommandTests
 
     public void Search_reports_a_failed_attachment_on_stderr_without_failing_the_run()
     {
-
         RecordingHandler handler = new(
             request => JsonResponse(
                 """
@@ -213,7 +203,6 @@ public sealed class WebWorkflowCommandTests
             "The session was archived before the attachment was written.",
             result.Output,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -224,7 +213,6 @@ public sealed class WebWorkflowCommandTests
 
     public void Browse_reports_a_failed_attachment_on_stderr_without_failing_the_run()
     {
-
         RecordingHandler handler = new(
             request => JsonResponse(
                 """
@@ -261,7 +249,6 @@ public sealed class WebWorkflowCommandTests
             "The session was purged before the attachment was written.",
             result.Error,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -272,7 +259,6 @@ public sealed class WebWorkflowCommandTests
 
     public void Search_names_the_attachment_id_when_the_attachment_succeeded()
     {
-
         RecordingHandler handler = new(
             request => JsonResponse(
                 """
@@ -308,21 +294,18 @@ public sealed class WebWorkflowCommandTests
             "22222222-2222-2222-2222-222222222222",
             result.Error,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Search_save_writes_final_markdown_with_citations()
     {
-
         string path = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-search-{Guid.NewGuid():N}.md");
 
         try
         {
-
             RecordingHandler handler = new(
                 request => JsonResponse(
                     """
@@ -359,27 +342,20 @@ public sealed class WebWorkflowCommandTests
                 StringComparison.Ordinal);
 
             Assert.Contains("Saved", result.Error, StringComparison.Ordinal);
-
         }
         finally
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
-
     }
 
     [Fact]
 
     public void Research_stream_keeps_progress_on_stderr_and_markdown_on_stdout()
     {
-
         RecordingHandler handler = new(
             request => NdjsonResponse(
                 """
@@ -439,7 +415,6 @@ public sealed class WebWorkflowCommandTests
         Assert.Contains("Rendering", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("Synthesizing", result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -451,7 +426,6 @@ public sealed class WebWorkflowCommandTests
 
     public void Research_transport_failure_carries_the_doctor_hint_ask_appends()
     {
-
         RecordingHandler handler = new(
             _ => throw new HttpRequestException("No listener on the configured port."));
 
@@ -470,14 +444,12 @@ public sealed class WebWorkflowCommandTests
             ArcanumApiClient.StreamDoctorHint,
             result.Error,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Research_rejects_an_undocumented_format_without_calling_the_api()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(
@@ -489,7 +461,6 @@ public sealed class WebWorkflowCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--format", result.Error, StringComparison.Ordinal);
-
     }
 
     private static HttpResponseMessage JsonResponse(
@@ -497,17 +468,13 @@ public sealed class WebWorkflowCommandTests
         HttpStatusCode status = HttpStatusCode.OK) =>
         new(status)
         {
-
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
-
         };
 
     private static HttpResponseMessage NdjsonResponse(string ndjson) =>
         new(HttpStatusCode.OK)
         {
-
             Content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson"),
-
         };
 
     private static string ReadBody(HttpRequestMessage request) =>
@@ -518,7 +485,6 @@ public sealed class WebWorkflowCommandTests
         RecordingHandler handler,
         string[] args)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -535,13 +501,15 @@ public sealed class WebWorkflowCommandTests
         services.AddSingleton<ISecretStore>(
             new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>(apiKey);
 
@@ -556,46 +524,37 @@ public sealed class WebWorkflowCommandTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(
         RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
-
             };
-
     }
 
     private sealed class RecordingHandler(
         Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content
                     .ReadAsByteArrayAsync(cancellationToken)
                     .GetAwaiter()
                     .GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
-
             }
 
             Requests.Add(snapshot);
@@ -605,9 +564,6 @@ public sealed class WebWorkflowCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

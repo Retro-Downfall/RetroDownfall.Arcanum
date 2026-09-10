@@ -33,7 +33,6 @@ internal sealed class SessionTurnClaimStore(
     CovenantQuotaGuard quotas,
     Guid bootId) : ISessionTurnClaimCoordinator
 {
-
     /// <summary>
     /// How long an acquisition owns its claim before another boot may take it over. Code-owned: a
     /// caller that could choose its own fencing window could choose never to be fenced.
@@ -53,14 +52,11 @@ internal sealed class SessionTurnClaimStore(
         SessionTurnRequestIdentity request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         if (Validate(request) is { } invalid)
         {
-
             return invalid;
-
         }
 
         SqliteConnection connection = await connections
@@ -70,7 +66,6 @@ internal sealed class SessionTurnClaimStore(
         return await SqliteBusyRetry.ExecuteAsync(
             () => AcquireWithinTransactionAsync(connection, request, cancellationToken),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<SessionTurnClaim>> MarkBegunAsync(
@@ -78,7 +73,6 @@ internal sealed class SessionTurnClaimStore(
         AssistantReplyBeginReceipt begin,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(lease);
 
         ArgumentNullException.ThrowIfNull(begin);
@@ -90,7 +84,6 @@ internal sealed class SessionTurnClaimStore(
         return await SqliteBusyRetry.ExecuteAsync(
             () => MarkBegunWithinTransactionAsync(connection, lease, begin, cancellationToken),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<SessionTurnClaim>> CompleteAsync(
@@ -98,7 +91,6 @@ internal sealed class SessionTurnClaimStore(
         SessionTurnClaimOutcome outcome,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(lease);
 
         ArgumentNullException.ThrowIfNull(outcome);
@@ -110,7 +102,6 @@ internal sealed class SessionTurnClaimStore(
         return await SqliteBusyRetry.ExecuteAsync(
             () => CompleteWithinTransactionAsync(connection, lease, outcome, cancellationToken),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<Result<SessionTurnClaimLease>> AcquireWithinTransactionAsync(
@@ -118,7 +109,6 @@ internal sealed class SessionTurnClaimStore(
         SessionTurnRequestIdentity request,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
         CovenantMutationTransaction owned = new(connection, transaction);
@@ -132,23 +122,19 @@ internal sealed class SessionTurnClaimStore(
 
         if (existing is { } found)
         {
-
             Result<SessionTurnClaimLease> resumed = await ResumeAsync(owned, request, found, cancellationToken)
                 .ConfigureAwait(false);
 
             if (resumed.IsFailure)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return resumed.Error;
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return resumed;
-
         }
 
         // A different client turn ID while this Session already has live work is the case the partial
@@ -156,13 +142,11 @@ internal sealed class SessionTurnClaimStore(
         // typed answer a competing client is supposed to receive.
         if (await HasLiveClaimAsync(owned, request.SessionId, cancellationToken).ConfigureAwait(false))
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Hub.SessionTurnBusy,
                 "This Session already has a turn in flight, so a second one cannot claim it.");
-
         }
 
         Guid claimId = Guid.NewGuid();
@@ -184,13 +168,11 @@ internal sealed class SessionTurnClaimStore(
 
         if (reserved.IsFailure)
         {
-
             // Nothing is committed, so a capacity refusal leaves no claim, no reservation, no counter
             // movement, and no disclosure subject behind.
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return reserved.Error;
-
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -209,24 +191,20 @@ internal sealed class SessionTurnClaimStore(
 
         if (inserted.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return inserted.Error;
-
         }
 
         ClaimRow? created = await ReadByClaimIdAsync(owned, claimId, cancellationToken).ConfigureAwait(false);
 
         if (created is not { } row)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The inserted session turn claim could not be read back inside its own transaction.");
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -239,7 +217,6 @@ internal sealed class SessionTurnClaimStore(
                 row.ExecutorId,
                 row.Claim.OwnerBootId,
                 row.LeaseDeadlineUtc));
-
     }
 
     /// <summary>
@@ -258,16 +235,13 @@ internal sealed class SessionTurnClaimStore(
         ClaimRow existing,
         CancellationToken cancellationToken)
     {
-
         if (existing.Claim.SessionId != request.SessionId
             || existing.Claim.Surface != request.Surface
             || !existing.Claim.RequestDigest.Equals(request.RequestDigest))
         {
-
             return new Error(
                 ErrorCodes.Security.IdempotencyConflict,
                 "This client turn ID is already bound to a different request.");
-
         }
 
         Guid futureAssistantEntryId = await ReadReservedAssistantEntryAsync(
@@ -278,7 +252,6 @@ internal sealed class SessionTurnClaimStore(
 
         if (existing.Claim.IsTerminal)
         {
-
             return Result<SessionTurnClaimLease>.Success(
                 new SessionTurnClaimLease(
                     existing.Claim,
@@ -287,7 +260,6 @@ internal sealed class SessionTurnClaimStore(
                     ExecutorId: null,
                     existing.Claim.OwnerBootId,
                     LeaseDeadlineUtc: null));
-
         }
 
         // Nonterminal work is about to keep running, so the plan it was frozen under still has to
@@ -295,11 +267,9 @@ internal sealed class SessionTurnClaimStore(
         // never admitted for.
         if (!existing.Claim.DependencyDigest.Equals(request.DependencyDigest))
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The execution dependencies this turn was planned under changed before it could resume.");
-
         }
 
         SessionTurnClaimDisposition disposition = existing.Claim.OwnerBootId == bootId
@@ -335,11 +305,9 @@ internal sealed class SessionTurnClaimStore(
 
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
-
             return new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This session turn claim reached a terminal state before it could be resumed.");
-
         }
 
         return Result<SessionTurnClaimLease>.Success(
@@ -350,7 +318,6 @@ internal sealed class SessionTurnClaimStore(
                 executorId,
                 bootId,
                 deadline));
-
     }
 
     private async Task<Result<SessionTurnClaim>> MarkBegunWithinTransactionAsync(
@@ -359,7 +326,6 @@ internal sealed class SessionTurnClaimStore(
         AssistantReplyBeginReceipt begin,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
         CovenantMutationTransaction owned = new(connection, transaction);
@@ -369,11 +335,9 @@ internal sealed class SessionTurnClaimStore(
 
         if (found is not { } existing)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(ErrorCodes.Covenant.NotFound, "There is no session turn claim with that identity.");
-
         }
 
         Guid reservedAssistantEntryId = await ReadReservedAssistantEntryAsync(
@@ -386,26 +350,21 @@ internal sealed class SessionTurnClaimStore(
 
         if (refusal is { } error)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return error;
-
         }
 
         // A repeated begin for the exact same Entries is the same durable fact, not a second one.
         if (existing.Claim.State == SessionTurnClaimState.Begun)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<SessionTurnClaim>.Success(existing.Claim);
-
         }
 
         await using (SqliteCommand command = owned.CreateCommand())
         {
-
             command.CommandText = """
                 UPDATE session_turn_claims
                 SET StateCode = 2, UserEntryId = $user, AssistantEntryId = $assistant, HeartbeatAtUtc = $now
@@ -424,20 +383,16 @@ internal sealed class SessionTurnClaimStore(
 
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "This session turn claim changed owner or state before assistant begin could record it.");
-
             }
-
         }
 
         return await CommitAndReadAsync(owned, transaction, existing.Claim.ClaimId, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<Result<SessionTurnClaim>> CompleteWithinTransactionAsync(
@@ -446,7 +401,6 @@ internal sealed class SessionTurnClaimStore(
         SessionTurnClaimOutcome outcome,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
         CovenantMutationTransaction owned = new(connection, transaction);
@@ -456,35 +410,28 @@ internal sealed class SessionTurnClaimStore(
 
         if (found is not { } existing)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(ErrorCodes.Covenant.NotFound, "There is no session turn claim with that identity.");
-
         }
 
         if (existing.Claim.IsTerminal)
         {
-
             return await CompleteTerminalAsync(owned, transaction, existing, outcome, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (RefuseLiveEdge(existing.Claim.State, outcome.State) is { } refusal)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return refusal;
-
         }
 
         // A claim that never began will never reach the transaction that consumes its guard slot, so
         // this is the only place that slot can be handed back.
         if (existing.Claim.State == SessionTurnClaimState.PendingMaintenance)
         {
-
             Guid reservedAssistantEntryId = await ReadReservedAssistantEntryAsync(
                     owned,
                     existing.Claim.FinalizationReservationId,
@@ -503,18 +450,14 @@ internal sealed class SessionTurnClaimStore(
 
             if (released.IsFailure)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return released.Error;
-
             }
-
         }
 
         await using (SqliteCommand command = owned.CreateCommand())
         {
-
             // Clearing the executor and deadline is not tidiness: the schema refuses to keep either on
             // a terminal claim, because an expired owner could otherwise renew a lease and resume a
             // turn that already has an answer.
@@ -538,20 +481,16 @@ internal sealed class SessionTurnClaimStore(
 
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "This session turn claim changed owner or state before it could be terminalized.");
-
             }
-
         }
 
         return await CommitAndReadAsync(owned, transaction, existing.Claim.ClaimId, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -570,35 +509,29 @@ internal sealed class SessionTurnClaimStore(
         SessionTurnClaimOutcome outcome,
         CancellationToken cancellationToken)
     {
-
         if (existing.Claim.State == outcome.State
             && string.Equals(
                 existing.Claim.Outcome?.TerminalErrorCode,
                 outcome.TerminalErrorCode,
                 StringComparison.Ordinal))
         {
-
             await owner.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return Result<SessionTurnClaim>.Success(existing.Claim);
-
         }
 
         if (existing.Claim.State != SessionTurnClaimState.Committed
             || outcome.State != SessionTurnClaimState.Erased)
         {
-
             await owner.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This session turn claim already recorded a different terminal answer.");
-
         }
 
         await using (SqliteCommand command = transaction.CreateCommand())
         {
-
             // Deliberately narrow. A committed claim refuses any change to its owner, heartbeat,
             // checkpoint revision, or step mask, so the tombstone edge moves the state and its
             // timestamp and nothing else.
@@ -614,20 +547,16 @@ internal sealed class SessionTurnClaimStore(
 
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
-
                 await owner.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "This session turn claim left its committed state before the erasure tombstone could apply.");
-
             }
-
         }
 
         return await CommitAndReadAsync(transaction, owner, existing.Claim.ClaimId, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static Error? RefuseBegin(
@@ -636,52 +565,41 @@ internal sealed class SessionTurnClaimStore(
         ClaimRow existing,
         Guid reservedAssistantEntryId)
     {
-
         if (existing.Claim.IsTerminal)
         {
-
             return new Error(
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This session turn claim is terminal and cannot record an assistant begin.");
-
         }
 
         if (existing.ExecutorId != lease.ExecutorId || existing.Claim.OwnerBootId != lease.OwnerBootId)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "This session turn claim was taken over by another executor.");
-
         }
 
         if (begin.SessionId != existing.Claim.SessionId)
         {
-
             return new Error(
                 ErrorCodes.Security.IdempotencyConflict,
                 "This assistant begin names a different Session than the claim is bound to.");
-
         }
 
         // The reserved identity is the whole point of reserving one. Recording any other assistant
         // Entry would bind the claim to a placeholder its finalization guard does not cover.
         if (begin.AssistantEntryId != reservedAssistantEntryId)
         {
-
             return new Error(
                 ErrorCodes.Security.IdempotencyConflict,
                 "This assistant begin names an Entry identity other than the one the claim reserved.");
-
         }
 
         if (begin.Preflight.PreRequestHistoryRevision != existing.Claim.PreRequestHistoryRevision)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "Session history moved after this turn was admitted, so its frozen evidence no longer holds.");
-
         }
 
         return existing.Claim.State == SessionTurnClaimState.Begun
@@ -690,7 +608,6 @@ internal sealed class SessionTurnClaimStore(
                     ErrorCodes.Security.IdempotencyConflict,
                     "This session turn claim already recorded a different user Entry.")
                 : null;
-
     }
 
     /// <summary>
@@ -719,34 +636,27 @@ internal sealed class SessionTurnClaimStore(
 
     private static Error? Validate(SessionTurnRequestIdentity request)
     {
-
         if (request.OriginInstallationId == Guid.Empty
             || request.ClientTurnId == Guid.Empty
             || request.SessionId == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Validation.InvalidFields,
                 "A session turn claim requires a nonempty installation, client turn, and Session identity.");
-
         }
 
         if (!Enum.IsDefined(request.Surface))
         {
-
             return new Error(
                 ErrorCodes.Validation.InvalidFields,
                 "A session turn claim requires a defined turn surface.");
-
         }
 
         if (!request.RequestDigest.IsValid || !request.DependencyDigest.IsValid)
         {
-
             return new Error(
                 ErrorCodes.Validation.InvalidFields,
                 "A session turn claim requires both a request digest and an execution-dependency digest.");
-
         }
 
         return request.OriginRestoreEpoch < 0
@@ -756,7 +666,6 @@ internal sealed class SessionTurnClaimStore(
                     ErrorCodes.Validation.InvalidFields,
                     "A session turn claim cannot freeze a negative restore epoch or revision.")
                 : null;
-
     }
 
     private async ValueTask<Result> InsertClaimAsync(
@@ -768,7 +677,6 @@ internal sealed class SessionTurnClaimStore(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -827,21 +735,16 @@ internal sealed class SessionTurnClaimStore(
 
         try
         {
-
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             return Result.Success();
-
         }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {
-
             // A constraint refusal here is the claim tier's own guard, so it is reported rather than
             // swallowed: the message names which invariant declined the row.
             return new Error(ErrorCodes.Covenant.LifecycleConflict, exception.Message);
-
         }
-
     }
 
     private static async Task<Result<SessionTurnClaim>> CommitAndReadAsync(
@@ -850,25 +753,21 @@ internal sealed class SessionTurnClaimStore(
         Guid claimId,
         CancellationToken cancellationToken)
     {
-
         ClaimRow? updated = await ReadByClaimIdAsync(transaction, claimId, cancellationToken)
             .ConfigureAwait(false);
 
         if (updated is not { } row)
         {
-
             await owner.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The updated session turn claim could not be read back inside its own transaction.");
-
         }
 
         await owner.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return Result<SessionTurnClaim>.Success(row.Claim);
-
     }
 
     private static async ValueTask<bool> HasLiveClaimAsync(
@@ -876,7 +775,6 @@ internal sealed class SessionTurnClaimStore(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -890,7 +788,6 @@ internal sealed class SessionTurnClaimStore(
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is not (null or DBNull);
-
     }
 
     /// <summary>
@@ -907,7 +804,6 @@ internal sealed class SessionTurnClaimStore(
         Guid reservationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -922,7 +818,6 @@ internal sealed class SessionTurnClaimStore(
         return value is string text
             ? Guid.Parse(text, CultureInfo.InvariantCulture)
             : Guid.Empty;
-
     }
 
     private static ValueTask<ClaimRow?> ReadByClaimIdAsync(
@@ -957,7 +852,6 @@ internal sealed class SessionTurnClaimStore(
         Action<SqliteCommand> bind,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = $"SELECT {ClaimColumns} FROM session_turn_claims {predicate};";
@@ -970,12 +864,10 @@ internal sealed class SessionTurnClaimStore(
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? Materialize(reader)
             : null;
-
     }
 
     private static ClaimRow Materialize(SqliteDataReader reader)
     {
-
         SessionTurnClaimState state = (SessionTurnClaimState)reader.GetInt32(8);
 
         SessionTurnClaim claim = new(
@@ -1002,7 +894,6 @@ internal sealed class SessionTurnClaimStore(
             ReadOptionalTimestamp(reader, 24) ?? default);
 
         return new ClaimRow(claim, ReadOptionalGuid(reader, 17), ReadOptionalTimestamp(reader, 18));
-
     }
 
     private static SessionTurnClaimOutcome? ReadOutcome(SqliteDataReader reader, SessionTurnClaimState state) =>
@@ -1027,7 +918,6 @@ internal sealed class SessionTurnClaimStore(
 
     private static void BindOutcome(SqliteCommand command, SessionTurnClaimOutcome outcome)
     {
-
         Bind(command, "$state", (int)outcome.State);
 
         Bind(command, "$code", outcome.TerminalErrorCode ?? (object)DBNull.Value);
@@ -1042,7 +932,6 @@ internal sealed class SessionTurnClaimStore(
             command,
             "$digest",
             outcome.TerminalParameterDigest is { } digest ? digest.Bytes : (object)DBNull.Value);
-
     }
 
     private static Guid ReadGuid(SqliteDataReader reader, int ordinal) =>
@@ -1054,10 +943,7 @@ internal sealed class SessionTurnClaimStore(
     private static DateTimeOffset? ReadOptionalTimestamp(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal)
             ? null
-            : DateTimeOffset.Parse(
-                reader.GetString(ordinal),
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
+            : UtcInstantText.Parse(reader.GetString(ordinal));
 
     /// <summary>
     /// Binds a value, with identities bound as <see cref="Guid"/> rather than formatted text.
@@ -1073,11 +959,10 @@ internal sealed class SessionTurnClaimStore(
         _ = command.Parameters.AddWithValue(name, value);
 
     private static string Iso(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+        UtcInstantText.Format(value);
 
     private readonly record struct ClaimRow(
         SessionTurnClaim Claim,
         Guid? ExecutorId,
         DateTimeOffset? LeaseDeadlineUtc);
-
 }

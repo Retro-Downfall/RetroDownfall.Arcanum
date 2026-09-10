@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -377,5 +378,113 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(second, await _store.GetWatermarkAsync(sessionId, CancellationToken.None));
 
     }
+
+    [SkippableFact]
+    public async Task ExtractionCursor_RoundTripsSequenceAndTimestamp_AndLegacyGetterProjectsTimestamp()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SagaExtractionCursor cursor = new(
+            17,
+            DateTimeOffset.Parse("2026-02-03T04:05:06Z"));
+
+        Assert.Null(await _store!.GetExtractionCursorAsync(sessionId, CancellationToken.None));
+
+        await _store.SetExtractionCursorAsync(sessionId, cursor, CancellationToken.None);
+
+        Assert.Equal(cursor, await _store.GetExtractionCursorAsync(sessionId, CancellationToken.None));
+
+        Assert.Equal(cursor.EntryCreatedAt, await _store.GetWatermarkAsync(sessionId, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task LegacyWatermarkSetter_DerivesTheLastEntrySequenceAtOrBeforeTheTimestamp()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        DateTimeOffset firstAt = DateTimeOffset.Parse("2026-03-02T00:00:00Z");
+
+        DateTimeOffset watermarkAt = firstAt.AddTicks(1);
+
+        DateTimeOffset laterAt = watermarkAt.AddTicks(1);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Status = "active",
+            CreatedAt = firstAt,
+            UpdatedAt = laterAt,
+        });
+
+        _db.Entries.AddRange(
+            NewEntry(sessionId, sequence: 1, firstAt),
+            NewEntry(sessionId, sequence: 2, watermarkAt),
+            NewEntry(sessionId, sequence: 3, watermarkAt),
+            NewEntry(sessionId, sequence: 4, laterAt));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        await _store!.SetWatermarkAsync(sessionId, watermarkAt, CancellationToken.None);
+
+        Assert.Equal(
+            new SagaExtractionCursor(3, watermarkAt),
+            await _store.GetExtractionCursorAsync(sessionId, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task LegacyWatermarkSetter_StopsBeforeTheFirstLaterEntryEvenWhenAHigherSequenceIsEarlier()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        DateTimeOffset watermarkAt = DateTimeOffset.Parse("2026-03-02T00:00:00Z");
+
+        DateTimeOffset laterAt = watermarkAt.AddTicks(1);
+
+        DateTimeOffset earlierAt = watermarkAt.AddTicks(-1);
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Status = "active",
+            CreatedAt = earlierAt,
+            UpdatedAt = laterAt,
+        });
+
+        _db.Entries.AddRange(
+            NewEntry(sessionId, sequence: 1, laterAt),
+            NewEntry(sessionId, sequence: 2, earlierAt));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        await _store!.SetWatermarkAsync(sessionId, watermarkAt, CancellationToken.None);
+
+        Assert.Equal(
+            new SagaExtractionCursor(0, watermarkAt),
+            await _store.GetExtractionCursorAsync(sessionId, CancellationToken.None));
+
+    }
+
+    private static Entry NewEntry(Guid sessionId, long sequence, DateTimeOffset createdAt) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.User,
+            Content = $"entry {sequence}",
+            ModelUsed = "test-model",
+            CreatedAt = createdAt,
+            Sequence = sequence,
+        };
 
 }

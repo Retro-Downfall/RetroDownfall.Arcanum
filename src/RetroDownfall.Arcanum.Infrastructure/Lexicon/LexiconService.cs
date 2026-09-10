@@ -36,7 +36,6 @@ internal sealed class LexiconService(
     IOptionsMonitor<ArcanumSettings> options,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ILexiconService
 {
-
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
     private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId";
@@ -57,11 +56,9 @@ internal sealed class LexiconService(
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(provenance);
 
         return UpsertCoreAsync(name, type, facts, scope, provenance, cancellationToken);
-
     }
 
     private async Task<Result<LexiconEntryDto>> UpsertCoreAsync(
@@ -72,7 +69,6 @@ internal sealed class LexiconService(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
-
         string trimmedName = name?.Trim() ?? string.Empty;
 
         if (trimmedName.Length == 0)
@@ -110,7 +106,6 @@ internal sealed class LexiconService(
             return await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     // BEGIN IMMEDIATE acquires the write lock up front so the read-merge-write is
@@ -145,7 +140,6 @@ internal sealed class LexiconService(
 
                         if (options.CurrentValue.Features.Annals)
                         {
-
                             // One call for both arms. The writer decides between an assertion and a
                             // correction from the claim it finds, so a first write and a later one cannot
                             // disagree about which this is, and a merge that added no fact appends
@@ -174,7 +168,6 @@ internal sealed class LexiconService(
                                 now,
                                 sourceSessionId: null,
                                 cancellationToken).ConfigureAwait(false);
-
                         }
 
                         LexiconFactProvenance[] factProvenance = await ReplaceFactProvenanceAsync(
@@ -213,7 +206,6 @@ internal sealed class LexiconService(
 
             return new Error(ErrorCodes.Lexicon.WriteFailed, "Lexicon write failed.");
         }
-
     }
 
     public async Task<Result<bool>> DeleteByNameAsync(
@@ -221,7 +213,6 @@ internal sealed class LexiconService(
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         string trimmedName = name?.Trim() ?? string.Empty;
 
         if (trimmedName.Length == 0)
@@ -235,26 +226,20 @@ internal sealed class LexiconService(
         // remove a labelled Lexicon entity and strand its label (§10.20.2).
         if (_labeledArtifactGuard is { } guard)
         {
-
             Result<LexiconEntryDto?> existing = await GetByNameInScopeAsync(trimmedName, scope, cancellationToken)
                 .ConfigureAwait(false);
 
             if (existing.IsSuccess && existing.Value is { } entity)
             {
-
                 Result unlabeled = await guard
                     .EnsureUnlabeledAsync(SensitiveArtifactKind.Lexicon, entity.Id, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (unlabeled.IsFailure)
                 {
-
                     return unlabeled.Error;
-
                 }
-
             }
-
         }
 
         try
@@ -262,7 +247,6 @@ internal sealed class LexiconService(
             bool removed = await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     await ExecuteNonQueryAsync(connection, cancellationToken, "BEGIN IMMEDIATE").ConfigureAwait(false);
@@ -326,7 +310,6 @@ internal sealed class LexiconService(
 
             return new Error(ErrorCodes.Lexicon.WriteFailed, "Lexicon delete failed.");
         }
-
     }
 
     public async Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
@@ -335,7 +318,6 @@ internal sealed class LexiconService(
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         if (entities is null || entities.Count == 0)
         {
             return Result<IReadOnlyList<LexiconEntryDto>>.Success(Array.Empty<LexiconEntryDto>());
@@ -359,7 +341,6 @@ internal sealed class LexiconService(
             return await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     // The Campaign tier is resolved whole - exact hits, then FTS hits - before the
@@ -374,7 +355,6 @@ internal sealed class LexiconService(
 
                     if (!scope.IsGlobal)
                     {
-
                         await FillTierAsync(
                             connection,
                             scope.Key,
@@ -384,12 +364,10 @@ internal sealed class LexiconService(
                             shadowedNames,
                             ordered,
                             cancellationToken).ConfigureAwait(false);
-
                     }
 
                     if (ordered.Count < clampedLimit)
                     {
-
                         await FillTierAsync(
                             connection,
                             LexiconScope.Global.Key,
@@ -399,7 +377,6 @@ internal sealed class LexiconService(
                             shadowedNames,
                             ordered,
                             cancellationToken).ConfigureAwait(false);
-
                     }
 
                     if (ordered.Count > clampedLimit)
@@ -414,7 +391,6 @@ internal sealed class LexiconService(
 
                     for (int index = 0; index < ordered.Count; index++)
                     {
-
                         LexiconEntryDto entry = ordered[index];
 
                         ordered[index] = entry with
@@ -423,7 +399,6 @@ internal sealed class LexiconService(
                                 ? facts
                                 : [],
                         };
-
                     }
 
                     return Result<IReadOnlyList<LexiconEntryDto>>.Success(ordered);
@@ -436,7 +411,6 @@ internal sealed class LexiconService(
 
             return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon search failed.");
         }
-
     }
 
     public async Task<Result<LexiconEntryDto?>> GetByNameAsync(
@@ -444,7 +418,6 @@ internal sealed class LexiconService(
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         string trimmedName = name?.Trim() ?? string.Empty;
 
         if (trimmedName.Length == 0)
@@ -459,7 +432,6 @@ internal sealed class LexiconService(
             LexiconEntryDto? entry = await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     // The Campaign tier answers first and the global one only when it has not, which is
@@ -485,7 +457,6 @@ internal sealed class LexiconService(
 
             return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon lookup failed.");
         }
-
     }
 
     public async Task<Result<LexiconEntryDto?>> GetByNameInScopeAsync(
@@ -493,7 +464,6 @@ internal sealed class LexiconService(
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         string trimmedName = name?.Trim() ?? string.Empty;
 
         if (trimmedName.Length == 0)
@@ -508,7 +478,6 @@ internal sealed class LexiconService(
             LexiconEntryDto? entry = await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                     return await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
@@ -524,20 +493,16 @@ internal sealed class LexiconService(
 
             return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon lookup failed.");
         }
-
     }
 
     public async Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
         CancellationToken cancellationToken = default)
     {
-
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
-
                     DbConnection connection = await OpenConnectionAsync(cancellationToken)
                         .ConfigureAwait(false);
 
@@ -558,23 +523,19 @@ internal sealed class LexiconService(
 
                     while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-
                         entries.Add(ReadEntry(reader));
-
                     }
 
                     await reader.DisposeAsync().ConfigureAwait(false);
 
                     if (entries.Count > 0)
                     {
-
                         Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadAllFactProvenanceAsync(
                             connection,
                             cancellationToken).ConfigureAwait(false);
 
                         for (int index = 0; index < entries.Count; index++)
                         {
-
                             LexiconEntryDto entry = entries[index];
 
                             entries[index] = entry with
@@ -583,28 +544,21 @@ internal sealed class LexiconService(
                                     ? facts
                                     : [],
                             };
-
                         }
-
                     }
 
                     return Result<IReadOnlyList<LexiconEntryDto>>.Success(entries);
-
                 },
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-
             logger.LogWarning(exception, "Lexicon list failed.");
 
             return new Error(
                 ErrorCodes.Lexicon.SearchFailed,
                 "Lexicon listing failed.");
-
         }
-
     }
 
     private static string NormalizeName(string value) =>
@@ -612,7 +566,6 @@ internal sealed class LexiconService(
 
     private static List<string> NormalizeIncomingFacts(IReadOnlyList<string> facts)
     {
-
         List<string> result = [];
 
         if (facts is null)
@@ -637,7 +590,6 @@ internal sealed class LexiconService(
 
     private static string ResolveType(LexiconEntryDto? existing, string incomingType)
     {
-
         if (!string.IsNullOrEmpty(incomingType))
         {
             return incomingType;
@@ -653,7 +605,6 @@ internal sealed class LexiconService(
 
     private static List<string> MergeFacts(LexiconEntryDto? existing, List<string> incoming)
     {
-
         List<string> merged = [];
 
         HashSet<string> seen = new(StringComparer.Ordinal);
@@ -685,7 +636,6 @@ internal sealed class LexiconService(
 
     private static string BuildFactsText(List<string> facts)
     {
-
         StringBuilder sb = new(facts.Count * 32);
 
         for (int i = 0; i < facts.Count; i++)
@@ -703,7 +653,6 @@ internal sealed class LexiconService(
 
     private static string[] DeserializeFacts(string factsJson)
     {
-
         if (string.IsNullOrWhiteSpace(factsJson))
         {
             return [];
@@ -719,7 +668,6 @@ internal sealed class LexiconService(
         {
             return [];
         }
-
     }
 
     /// <summary>
@@ -741,7 +689,6 @@ internal sealed class LexiconService(
         List<LexiconEntryDto> ordered,
         CancellationToken cancellationToken)
     {
-
         int remaining = limit - ordered.Count;
 
         if (remaining <= 0)
@@ -776,7 +723,6 @@ internal sealed class LexiconService(
 
         foreach (LexiconEntryDto entry in exactHits.Concat(ftsHits))
         {
-
             if (ordered.Count >= limit)
             {
                 break;
@@ -785,9 +731,7 @@ internal sealed class LexiconService(
             _ = shadowedNames.Add(NormalizeName(entry.Name));
 
             ordered.Add(entry);
-
         }
-
     }
 
     private async Task FillExactMatchesAsync(
@@ -800,7 +744,6 @@ internal sealed class LexiconService(
         HashSet<string> exactNames,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         StringBuilder sql = new();
@@ -843,7 +786,6 @@ internal sealed class LexiconService(
                 exactNames.Add(NormalizeName(entry.Name));
             }
         }
-
     }
 
     private async Task FillFtsMatchesAsync(
@@ -855,7 +797,6 @@ internal sealed class LexiconService(
         List<LexiconEntryDto> ftsHits,
         CancellationToken cancellationToken)
     {
-
         string matchQuery = BuildFtsMatchQuery(unresolved);
 
         if (matchQuery.Length == 0)
@@ -873,7 +814,6 @@ internal sealed class LexiconService(
 
             await FillFtsMatchesViaLikeAsync(connection, scopeKey, unresolved, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
         }
-
     }
 
     private static async Task FillFtsMatchesViaMatchAsync(
@@ -885,7 +825,6 @@ internal sealed class LexiconService(
         List<LexiconEntryDto> ftsHits,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         // bm25() weight arguments map positionally to the FTS5 columns (Name, Type, FactsText):
@@ -924,7 +863,6 @@ internal sealed class LexiconService(
                 ftsHits.Add(entry);
             }
         }
-
     }
 
     private static async Task FillFtsMatchesViaLikeAsync(
@@ -936,7 +874,6 @@ internal sealed class LexiconService(
         List<LexiconEntryDto> ftsHits,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         StringBuilder sql = new();
@@ -988,12 +925,10 @@ internal sealed class LexiconService(
                 ftsHits.Add(entry);
             }
         }
-
     }
 
     private static string BuildFtsMatchQuery(List<string> unresolved)
     {
-
         StringBuilder sb = new();
 
         foreach (string term in unresolved)
@@ -1027,7 +962,6 @@ internal sealed class LexiconService(
         string scopeKey,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
@@ -1042,16 +976,12 @@ internal sealed class LexiconService(
 
         await using (DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 return null;
-
             }
 
             entry = ReadEntry(reader);
-
         }
 
         LexiconFactProvenance[] provenance = await ReadFactProvenanceAsync(
@@ -1060,7 +990,6 @@ internal sealed class LexiconService(
             cancellationToken).ConfigureAwait(false);
 
         return entry with { FactProvenance = provenance };
-
     }
 
     private static async Task<LexiconFactProvenance[]> ReplaceFactProvenanceAsync(
@@ -1072,7 +1001,6 @@ internal sealed class LexiconService(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
-
         // MergeFacts is an uncapped union, so `retained` grows monotonically over an entry's life.
         // Probing it with Enumerable.Contains made both loops below O(existing x retained) ordinal
         // scans inside the BEGIN IMMEDIATE critical section.
@@ -1084,34 +1012,25 @@ internal sealed class LexiconService(
 
         if (provenance is not null)
         {
-
             foreach (string fact in incoming)
             {
-
                 if (retainedSet.Contains(fact))
                 {
-
                     sources[fact] = provenance;
-
                 }
-
             }
-
         }
 
         if (HasProvenanceChanged(existing, sources))
         {
-
             await using (DbCommand delete = connection.CreateCommand())
             {
-
                 delete.CommandText =
                     "DELETE FROM lexicon_fact_attachment_provenance WHERE EntryId = @entryId";
 
                 AddParameter(delete, "@entryId", entryId.ToString("N"));
 
                 _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             // One command, re-executed with fresh parameter values per row. A multi-row INSERT would
@@ -1131,7 +1050,6 @@ internal sealed class LexiconService(
 
             foreach ((string fact, AttachmentMemoryProvenance source) in sources)
             {
-
                 insert.Parameters.Clear();
 
                 AddParameter(insert, "@entryId", entryId.ToString("N"));
@@ -1143,9 +1061,7 @@ internal sealed class LexiconService(
                 AddProvenanceParameters(insert, source);
 
                 _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
-
         }
 
         return
@@ -1155,7 +1071,6 @@ internal sealed class LexiconService(
                     pair.Key,
                     pair.Value with { Availability = AttachmentSourceAvailability.Available })),
         ];
-
     }
 
     /// <summary>
@@ -1171,7 +1086,6 @@ internal sealed class LexiconService(
         IReadOnlyList<LexiconFactProvenance> existing,
         Dictionary<string, AttachmentMemoryProvenance> sources)
     {
-
         if (existing.Count != sources.Count)
         {
             return true;
@@ -1179,18 +1093,15 @@ internal sealed class LexiconService(
 
         foreach (LexiconFactProvenance item in existing)
         {
-
             if (!sources.TryGetValue(item.Fact, out AttachmentMemoryProvenance? source)
                 || item.Source with { Availability = AttachmentSourceAvailability.Available }
                     != source with { Availability = AttachmentSourceAvailability.Available })
             {
                 return true;
             }
-
         }
 
         return false;
-
     }
 
     private static async Task<LexiconFactProvenance[]> ReadFactProvenanceAsync(
@@ -1198,14 +1109,12 @@ internal sealed class LexiconService(
         Guid entryId,
         CancellationToken cancellationToken)
     {
-
         Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadFactProvenanceBatchAsync(
             connection,
             [entryId],
             cancellationToken).ConfigureAwait(false);
 
         return provenance.TryGetValue(entryId, out LexiconFactProvenance[]? facts) ? facts : [];
-
     }
 
     /// <summary>
@@ -1235,7 +1144,6 @@ internal sealed class LexiconService(
         IReadOnlyList<Guid>? entryIds,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         StringBuilder sql = new(
@@ -1251,12 +1159,10 @@ internal sealed class LexiconService(
 
         if (entryIds is not null)
         {
-
             _ = sql.Append(" WHERE p.EntryId IN (");
 
             for (int index = 0; index < entryIds.Count; index++)
             {
-
                 if (index > 0)
                 {
                     _ = sql.Append(", ");
@@ -1267,11 +1173,9 @@ internal sealed class LexiconService(
                 _ = sql.Append(parameterName);
 
                 AddParameter(command, parameterName, entryIds[index].ToString("N"));
-
             }
 
             _ = sql.Append(')');
-
         }
 
         // rowid ordering is global here, which preserves each entry's own insertion order because
@@ -1286,14 +1190,13 @@ internal sealed class LexiconService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             AttachmentMemoryProvenance source = new(
                 Guid.Parse(reader.GetString(2)),
                 Guid.Parse(reader.GetString(3)),
                 reader.GetString(4),
                 reader.GetInt32(5),
                 reader.GetString(6),
-                DateTimeOffset.Parse(reader.GetString(7), CultureInfo.InvariantCulture),
+                UtcInstantText.Parse(reader.GetString(7)),
                 reader.GetString(8),
                 reader.GetInt32(9) == 1
                     ? AttachmentSourceAvailability.Available
@@ -1303,35 +1206,28 @@ internal sealed class LexiconService(
 
             if (!grouped.TryGetValue(entryId, out List<LexiconFactProvenance>? facts))
             {
-
                 facts = [];
 
                 grouped[entryId] = facts;
-
             }
 
             facts.Add(new LexiconFactProvenance(reader.GetString(1), source));
-
         }
 
         Dictionary<Guid, LexiconFactProvenance[]> results = new(grouped.Count);
 
         foreach ((Guid entryId, List<LexiconFactProvenance> facts) in grouped)
         {
-
             results[entryId] = [.. facts];
-
         }
 
         return results;
-
     }
 
     private static void AddProvenanceParameters(
         DbCommand command,
         AttachmentMemoryProvenance provenance)
     {
-
         AddParameter(command, "@sessionId", provenance.SessionId.ToString());
 
         AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString().ToUpperInvariant());
@@ -1345,10 +1241,9 @@ internal sealed class LexiconService(
         AddParameter(
             command,
             "@materializedAt",
-            provenance.MaterializedAt.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(provenance.MaterializedAt));
 
         AddParameter(command, "@sourceType", provenance.SourceType);
-
     }
 
     private static string HashFact(string fact) =>
@@ -1366,7 +1261,6 @@ internal sealed class LexiconService(
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
@@ -1384,10 +1278,9 @@ internal sealed class LexiconService(
         AddParameter(cmd, "@type", type);
         AddParameter(cmd, "@factsJson", factsJson);
         AddParameter(cmd, "@factsText", factsText);
-        AddParameter(cmd, "@updatedAt", updatedAt.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(cmd, "@updatedAt", UtcInstantText.Format(updatedAt));
 
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task UpdateAsync(
@@ -1402,7 +1295,6 @@ internal sealed class LexiconService(
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
@@ -1426,15 +1318,13 @@ internal sealed class LexiconService(
         AddParameter(cmd, "@type", type);
         AddParameter(cmd, "@factsJson", factsJson);
         AddParameter(cmd, "@factsText", factsText);
-        AddParameter(cmd, "@updatedAt", updatedAt.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(cmd, "@updatedAt", UtcInstantText.Format(updatedAt));
 
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static LexiconEntryDto ReadEntry(DbDataReader reader)
     {
-
         Guid id = Guid.Parse(reader.GetString(0));
 
         string name = reader.GetString(1);
@@ -1443,7 +1333,7 @@ internal sealed class LexiconService(
 
         string factsJson = reader.GetString(3);
 
-        DateTimeOffset updatedAt = DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture);
+        DateTimeOffset updatedAt = UtcInstantText.Parse(reader.GetString(4));
 
         string scopeKey = reader.GetString(5);
 
@@ -1455,12 +1345,10 @@ internal sealed class LexiconService(
             updatedAt,
             FactProvenance: null,
             ScopeCampaignId: scopeKey.Length == 0 ? null : Guid.Parse(scopeKey));
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -1469,18 +1357,15 @@ internal sealed class LexiconService(
         }
 
         return connection;
-
     }
 
     private static async Task ExecuteNonQueryAsync(DbConnection connection, CancellationToken cancellationToken, string commandText)
     {
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText = commandText;
 
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1497,7 +1382,6 @@ internal sealed class LexiconService(
     /// </remarks>
     private async Task TryRollbackAsync(DbConnection connection, string entityName)
     {
-
         try
         {
             await ExecuteNonQueryAsync(connection, CancellationToken.None, "ROLLBACK").ConfigureAwait(false);
@@ -1519,12 +1403,10 @@ internal sealed class LexiconService(
                 "Lexicon rollback failed for entity {Name}; the write transaction was left to the connection reset.",
                 entityName);
         }
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -1532,7 +1414,5 @@ internal sealed class LexiconService(
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
-
 }

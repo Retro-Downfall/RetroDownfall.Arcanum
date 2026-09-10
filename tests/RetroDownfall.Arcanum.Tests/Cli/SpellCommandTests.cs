@@ -24,11 +24,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class SpellCommandTests
 {
-
     [Fact]
     public void Spell_list_calls_get_spells_with_workspace_query()
     {
-
         SpellSummary summary = new("greet", "Say hello", SpellSource.Workspace, ["demo"]);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -46,7 +44,6 @@ public sealed class SpellCommandTests
         Assert.Equal("/api/spells", request.RequestUri!.AbsolutePath);
 
         Assert.Contains("workspace=", request.RequestUri!.Query, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -60,7 +57,6 @@ public sealed class SpellCommandTests
     [Fact]
     public void Spell_list_reports_a_network_failure_and_names_the_configured_base_address()
     {
-
         const int ConfiguredPort = 19999;
 
         RecordingHandler handler = new(_ => throw new HttpRequestException("Connection refused"));
@@ -75,13 +71,11 @@ public sealed class SpellCommandTests
         string expectedAddress = ArcanumLocalApiAddress.ResolveBaseUrl(new HostSettings { Port = ConfiguredPort });
 
         Assert.Contains(expectedAddress, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Spell_get_binds_name_argument()
     {
-
         SpellDetail detail = new(
             "greet",
             "Say hello",
@@ -124,14 +118,12 @@ public sealed class SpellCommandTests
         HttpRequestMessage request = handler.Requests[^1];
 
         Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public void Spell_get_end_of_options_preserves_name_equal_to_private_launcher_flag()
     {
-
         const string SpellName = "--arcanum-deep-link";
 
         SpellDetail detail = Detail(SpellName, "/tmp/ws");
@@ -142,14 +134,12 @@ public sealed class SpellCommandTests
 
         FakeResourceCatalog resources = new()
         {
-
             SpellResult = ResourceSelectionResult<SpellSummary>.Selected(
                 new SpellSummary(
                     SpellName,
                     "A valid hyphenated Spell name.",
                     SpellSource.Workspace,
                     [])),
-
         };
 
         CliTestResult result = RunCommand(
@@ -172,13 +162,11 @@ public sealed class SpellCommandTests
             "Command Center application link",
             result.Output + result.Error,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Spell_get_resolves_workspace_id_to_server_path_before_spell_calls()
     {
-
         const string WorkspaceId = "workspace-opaque-42";
 
         const string WorkspacePath = "/server/workspaces/Spell Lab";
@@ -191,7 +179,6 @@ public sealed class SpellCommandTests
 
         FakeResourceCatalog resources = new()
         {
-
             WorkspaceResult = ResourceSelectionResult<WorkspaceInfo>.Selected(
                 Workspace(WorkspaceId, WorkspacePath)),
 
@@ -201,7 +188,6 @@ public sealed class SpellCommandTests
                     "Say hello",
                     SpellSource.Workspace,
                     [])),
-
         };
 
         CliTestResult result = RunCommand(
@@ -228,7 +214,6 @@ public sealed class SpellCommandTests
             WorkspaceId,
             request.RequestUri.Query,
             StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -237,14 +222,12 @@ public sealed class SpellCommandTests
     public void Spell_get_workspace_cancel_or_error_stops_before_spell_calls(
         bool cancelled)
     {
-
         const string WorkspaceId = "workspace-opaque-42";
 
         RecordingHandler handler = new();
 
         FakeResourceCatalog resources = new()
         {
-
             WorkspaceResult = cancelled
                 ? ResourceSelectionResult<WorkspaceInfo>.Cancelled()
                 : ResourceSelectionResult<WorkspaceInfo>.Failure(
@@ -256,7 +239,6 @@ public sealed class SpellCommandTests
                     "Say hello",
                     SpellSource.Workspace,
                     [])),
-
         };
 
         CliTestResult result = RunCommand(
@@ -271,13 +253,11 @@ public sealed class SpellCommandTests
         Assert.Equal(0, resources.SpellSelectionCount);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
     public void Spell_delete_requires_workspace_without_calling_api()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["spell", "delete", "greet"]);
@@ -285,14 +265,12 @@ public sealed class SpellCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     /// <summary>An irreversible delete must ask before it acts.</summary>
     [Fact]
     public void Spell_delete_requires_confirmation_before_sending_request()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["spell", "delete", "greet", "--workspace", "/tmp/demo"]);
@@ -302,13 +280,11 @@ public sealed class SpellCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Spell_delete_binds_name_when_confirmed()
     {
-
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
         CliTestResult result = RunCommand(
@@ -322,13 +298,11 @@ public sealed class SpellCommandTests
         Assert.Equal(HttpMethod.Delete, request.Method);
 
         Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
     public void Spell_execute_posts_prompt_and_prints_response()
     {
-
         PromptResponseDto response = new("Hello, world!", null);
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -348,13 +322,11 @@ public sealed class SpellCommandTests
         string body = ReadBody(request);
 
         Assert.Contains("\"prompt\":\"hi there\"", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Spell_create_merges_repeated_tag_flags_into_a_single_array()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<bool>(true, true, null),
             ArcanumJsonContext.Default.ApiResponseBoolean));
@@ -370,13 +342,11 @@ public sealed class SpellCommandTests
         string body = ReadBody(request);
 
         Assert.Contains("\"tags\":[\"a\",\"b\",\"c\"]", body, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Spell_search_binds_query_options()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<SpellSummary[]>([], true, null),
             ArcanumJsonContext.Default.ApiResponseSpellSummaryArray));
@@ -392,13 +362,11 @@ public sealed class SpellCommandTests
         Assert.Contains("q=greet", request.RequestUri!.Query, StringComparison.Ordinal);
 
         Assert.Contains("tag=demo", request.RequestUri!.Query, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Spell_search_rejects_an_undocumented_source_without_calling_the_api()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["spell", "search", "--source", "bogus"]);
@@ -408,7 +376,6 @@ public sealed class SpellCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--source", result.Error, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -418,7 +385,6 @@ public sealed class SpellCommandTests
     [Fact]
     public void Spell_show_body_preview_never_splits_a_surrogate_pair()
     {
-
         // The emoji occupies chars 799 and 800, so a raw 800-char slice keeps only its high half.
         string body = new string('a', 799) + "\U0001F600" + new string('b', 50);
 
@@ -458,7 +424,6 @@ public sealed class SpellCommandTests
         Assert.False(
             Utf16Assert.ContainsLoneSurrogate(result.Output),
             "The spell body preview emitted an unpaired surrogate.");
-
     }
 
     private static CliTestResult RunCommand(
@@ -467,7 +432,6 @@ public sealed class SpellCommandTests
         ICliResourceCatalog? resourceCatalog = null,
         Action<ServiceCollection>? configureServices = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -482,19 +446,20 @@ public sealed class SpellCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
         if (resourceCatalog is not null)
         {
-
             services.RemoveAll<ICliResourceCatalog>();
 
             services.AddSingleton(resourceCatalog);
-
         }
 
         configureServices?.Invoke(services);
 
         return CliTestHarness.Run(services, args);
-
     }
 
     private static SpellDetail Detail(string name, string workspacePath) =>
@@ -527,31 +492,26 @@ public sealed class SpellCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private static string ReadBody(HttpRequestMessage request)
     {
-
         if (request.Content is null)
         {
             return string.Empty;
         }
 
         return request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -562,23 +522,19 @@ public sealed class SpellCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class FakeResourceCatalog : ICliResourceCatalog
     {
-
         public ResourceSelectionResult<WorkspaceInfo> WorkspaceResult { get; init; } =
             ResourceSelectionResult<WorkspaceInfo>.Failure(
                 "Unexpected workspace selection.");
@@ -597,11 +553,9 @@ public sealed class SpellCommandTests
             string? identifier,
             CancellationToken cancellationToken)
         {
-
             WorkspaceIdentifier = identifier;
 
             return Task.FromResult(WorkspaceResult);
-
         }
 
         public Task<ResourceSelectionResult<SpellSummary>> SelectSpellAsync(
@@ -609,13 +563,11 @@ public sealed class SpellCommandTests
             string? workspace,
             CancellationToken cancellationToken)
         {
-
             SpellSelectionCount++;
 
             SpellWorkspace = workspace;
 
             return Task.FromResult(SpellResult);
-
         }
 
         public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
@@ -664,22 +616,18 @@ public sealed class SpellCommandTests
             Task.FromResult(
                 ResourceSelectionResult<T>.Failure(
                     "Unexpected resource selection."));
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -688,7 +636,6 @@ public sealed class SpellCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -698,9 +645,6 @@ public sealed class SpellCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

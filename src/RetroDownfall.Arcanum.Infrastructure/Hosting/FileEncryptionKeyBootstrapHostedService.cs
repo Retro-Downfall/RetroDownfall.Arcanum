@@ -4,11 +4,13 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 internal sealed class FileEncryptionKeyBootstrapHostedService(
-    IFileEncryptionKeyProvider keyProvider) : IHostedService
+    IFileEncryptionKeyStartupValidator startupValidator) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _ = await keyProvider.GetForWriteAsync(cancellationToken).ConfigureAwait(false);
+        await startupValidator
+            .ValidateStartupStateAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

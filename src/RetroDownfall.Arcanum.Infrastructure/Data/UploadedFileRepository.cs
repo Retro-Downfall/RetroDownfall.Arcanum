@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class UploadedFileRepository : IUploadedFileRepository
 {
-
     private readonly ArcanumDbContext _db;
 
     private readonly string _filesRoot;
@@ -25,14 +24,12 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
     public UploadedFileRepository(ArcanumDbContext db)
         : this(db, ArcanumPaths.FilesDirectory)
     {
-
     }
 
     internal UploadedFileRepository(
         ArcanumDbContext db,
         string filesRoot)
     {
-
         ArgumentNullException.ThrowIfNull(db);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(filesRoot);
@@ -40,12 +37,10 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         _db = db;
 
         _filesRoot = Path.GetFullPath(filesRoot);
-
     }
 
     public Task CreateAsync(UploadedFileRecord record, CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -57,17 +52,14 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                         record,
                         cancellationToken)
                     .ConfigureAwait(false);
-
             },
             cancellationToken);
-
     }
 
     public async Task CreateForOwnedFileAsync(
         UploadedFileRecord record,
         CancellationToken cancellationToken = default)
     {
-
         string path = Path.Combine(_filesRoot, record.Id.ToString("N"));
 
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -75,14 +67,11 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                 FileSystemObjectKind.RegularFile,
                 out IdentityOwnedFileSystemArtifact expected))
         {
-
             throw new UploadedFilePublicationException(record.Id);
-
         }
 
         try
         {
-
             await SqliteBusyRetry.ExecuteAsync(
                     () => CreateForOwnedFileOnceAsync(
                         record,
@@ -90,17 +79,13 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                         cancellationToken),
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch
         {
-
             _ = IdentityOwnedFileSystemCleanup.TryDelete(expected);
 
             throw;
-
         }
-
     }
 
     private async Task CreateForOwnedFileOnceAsync(
@@ -108,7 +93,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         IdentityOwnedFileSystemArtifact expected,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await BeginImmediateTransactionAsync(
@@ -120,16 +104,13 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         try
         {
-
             if (!IsSameOwnedFile(expected))
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 transactionCompleted = true;
 
                 throw new UploadedFilePublicationException(record.Id);
-
             }
 
             await InsertMetadataAsync(
@@ -142,27 +123,20 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             transactionCompleted = true;
-
         }
         catch
         {
-
             if (!transactionCompleted)
             {
-
                 _ = await TryRollbackAsync(transaction).ConfigureAwait(false);
-
             }
 
             throw;
-
         }
-
     }
 
     public async Task<UploadedFileRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -191,12 +165,10 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                 return ReadRecord(reader);
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public async Task<IReadOnlyList<UploadedFileRecord>> ListAsync(string? purpose, CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -206,7 +178,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
                 if (string.IsNullOrWhiteSpace(purpose))
                 {
-
                     cmd.CommandText =
                         """
                         SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
@@ -214,11 +185,9 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                         FROM "UploadedFiles"
                         ORDER BY "CreatedAt" DESC
                         """;
-
                 }
                 else
                 {
-
                     cmd.CommandText =
                         """
                         SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
@@ -229,7 +198,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                         """;
 
                     AddParameter(cmd, "@purpose", purpose);
-
                 }
 
                 List<UploadedFileRecord> records = [];
@@ -244,12 +212,10 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                 return (IReadOnlyList<UploadedFileRecord>)records;
             },
             cancellationToken).ConfigureAwait(false);
-
     }
 
     public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -268,25 +234,21 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
-
     }
 
     public async Task<UploadedFileDeleteStatus> TryDeleteUnreferencedAsync(
         Guid id,
         CancellationToken cancellationToken = default)
     {
-
         return await SqliteBusyRetry.ExecuteAsync(
             () => TryDeleteUnreferencedOnceAsync(id, cancellationToken),
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<UploadedFileDeleteStatus> TryDeleteUnreferencedOnceAsync(
         Guid id,
         CancellationToken cancellationToken)
     {
-
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await BeginImmediateTransactionAsync(
@@ -300,16 +262,13 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         try
         {
-
             if (HasRecognizableDeleteQuarantine(id))
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 transactionCompleted = true;
 
                 return UploadedFileDeleteStatus.RecoveryRequired;
-
             }
 
             UploadedFileDeleteStatus? classification = await ClassifyDeleteAsync(
@@ -321,13 +280,11 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
             if (classification is { } classifiedStatus)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 transactionCompleted = true;
 
                 return classifiedStatus;
-
             }
 
             string path = Path.Combine(_filesRoot, id.ToString("N"));
@@ -337,13 +294,11 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                     FileSystemObjectKind.RegularFile,
                     out IdentityOwnedFileSystemArtifact artifact))
             {
-
                 if (!IdentityOwnedFileSystemCleanup.TryQuarantine(
                         artifact,
                         $".arcanum-file-delete-{id:N}-",
                         out quarantine))
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     transactionCompleted = true;
@@ -351,30 +306,24 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                     return quarantine == default
                         ? UploadedFileDeleteStatus.StorageConflict
                         : UploadedFileDeleteStatus.RecoveryRequired;
-
                 }
 
                 if (quarantine == default)
                 {
-
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                     transactionCompleted = true;
 
                     return UploadedFileDeleteStatus.StorageConflict;
-
                 }
-
             }
             else if (!IsPathAbsent(path))
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 transactionCompleted = true;
 
                 return UploadedFileDeleteStatus.StorageConflict;
-
             }
 
             int deleted = await DeleteUnreferencedMetadataAsync(
@@ -386,60 +335,46 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
             if (deleted != 1)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 transactionCompleted = true;
 
                 if (quarantine != default)
                 {
-
                     _ = IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(quarantine);
-
                 }
 
                 return UploadedFileDeleteStatus.RecoveryRequired;
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             transactionCompleted = true;
-
         }
         catch
         {
-
             if (!transactionCompleted
                 && !await TryRollbackAsync(transaction).ConfigureAwait(false))
             {
-
                 return UploadedFileDeleteStatus.RecoveryRequired;
-
             }
 
             if (quarantine != default
                 && !IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(quarantine))
             {
-
                 return UploadedFileDeleteStatus.RecoveryRequired;
-
             }
 
             throw;
-
         }
 
         if (quarantine != default
             && !IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(quarantine))
         {
-
             return UploadedFileDeleteStatus.RecoveryRequired;
-
         }
 
         return UploadedFileDeleteStatus.Deleted;
-
     }
 
     private async Task<UploadedFileDeleteStatus?> ClassifyDeleteAsync(
@@ -448,7 +383,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         Guid id,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand classify = connection.CreateCommand();
 
         classify.Transaction = transaction;
@@ -476,15 +410,12 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         if (result is null)
         {
-
             return UploadedFileDeleteStatus.NotFound;
-
         }
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture) == 1
             ? UploadedFileDeleteStatus.ReferencedByBatch
             : null;
-
     }
 
     private static async Task<int> DeleteUnreferencedMetadataAsync(
@@ -493,7 +424,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         Guid id,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand delete = connection.CreateCommand();
 
         delete.Transaction = transaction;
@@ -514,87 +444,62 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         AddParameter(delete, "@id", id.ToString("N"));
 
         return await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private bool HasRecognizableDeleteQuarantine(Guid id)
     {
-
         if (!Directory.Exists(_filesRoot))
         {
-
             return false;
-
         }
 
         try
         {
-
             return Directory.EnumerateFileSystemEntries(
                     _filesRoot,
                     $".arcanum-file-delete-{id:N}-*",
                     SearchOption.TopDirectoryOnly)
                 .Any();
-
         }
         catch (IOException)
         {
-
             return true;
-
         }
         catch (UnauthorizedAccessException)
         {
-
             return true;
-
         }
-
     }
 
     private static bool IsPathAbsent(string path)
     {
-
         if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out _))
         {
-
             return false;
-
         }
 
         try
         {
-
             _ = File.GetAttributes(path);
 
             return false;
-
         }
         catch (FileNotFoundException)
         {
-
             return true;
-
         }
         catch (DirectoryNotFoundException)
         {
-
             return true;
-
         }
         catch (IOException)
         {
-
             return false;
-
         }
         catch (UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool IsSameOwnedFile(
@@ -615,7 +520,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         UploadedFileRecord record,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -643,7 +547,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         AddParameter(
             command,
             "@createdAt",
-            record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+            UtcInstantText.Format(record.CreatedAt));
 
         AddParameter(command, "@encryptionVersion", record.EncryptionVersion);
 
@@ -658,59 +562,45 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
             (object?)record.PlaintextSha256 ?? DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<DbTransaction> BeginImmediateTransactionAsync(
         DbConnection connection,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (connection is SqliteConnection sqliteConnection)
         {
-
             return sqliteConnection.BeginTransaction(deferred: false);
-
         }
 
         return await connection.BeginTransactionAsync(
                 IsolationLevel.Serializable,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static async Task<bool> TryRollbackAsync(DbTransaction transaction)
     {
-
         try
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return true;
-
         }
         catch (DbException)
         {
-
             return false;
-
         }
         catch (InvalidOperationException)
         {
-
             return false;
-
         }
-
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         DbConnection connection = _db.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
@@ -719,12 +609,10 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         }
 
         return connection;
-
     }
 
     private static void AddParameter(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -732,12 +620,10 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
 
     private static UploadedFileRecord ReadRecord(DbDataReader reader)
     {
-
         Guid id = Guid.Parse(reader.GetString(0));
 
         string filename = reader.GetString(1);
@@ -748,7 +634,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         string mimeType = reader.GetString(4);
 
-        DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture);
+        DateTimeOffset createdAt = UtcInstantText.Parse(reader.GetString(5));
 
         int encryptionVersion = reader.FieldCount > 6
             ? Convert.ToInt32(reader.GetValue(6), CultureInfo.InvariantCulture)
@@ -770,7 +656,5 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
             encryptionVersion,
             encryptionKeyId,
             plaintextSha256);
-
     }
-
 }

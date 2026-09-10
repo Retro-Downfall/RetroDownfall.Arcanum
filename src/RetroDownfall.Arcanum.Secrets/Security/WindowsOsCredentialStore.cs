@@ -8,39 +8,53 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 [SupportedOSPlatform("windows")]
 internal static partial class WindowsOsCredentialStore
 {
-
     private const int CredTypeGeneric = 1;
 
     private const int CredPersistLocalMachine = 2;
 
     private const int ErrorNotFound = 1168;
 
-    internal static OsCredentialStoreResult TryGet(string service, string account)
+    /// <summary>
+    /// Proves whether an item exists without copying or decoding its credential blob.
+    /// </summary>
+    internal static OsCredentialStoreStatus ProbePresence(string service, string account)
     {
-
         string target = TargetName(service, account);
 
         if (!CredReadW(target, CredTypeGeneric, 0, out nint credentialPtr))
         {
+            int error = Marshal.GetLastPInvokeError();
 
+            return error == ErrorNotFound
+                ? OsCredentialStoreStatus.NotFound
+                : OsCredentialStoreStatus.Failed;
+        }
+
+        CredFree(credentialPtr);
+
+        return OsCredentialStoreStatus.Ok;
+    }
+
+    internal static OsCredentialStoreResult TryGet(string service, string account)
+    {
+        string target = TargetName(service, account);
+
+        if (!CredReadW(target, CredTypeGeneric, 0, out nint credentialPtr))
+        {
             int error = Marshal.GetLastPInvokeError();
 
             return error == ErrorNotFound
                 ? OsCredentialStoreResult.NotFound()
                 : OsCredentialStoreResult.Failed($"CredReadW failed with error {error}.");
-
         }
 
         try
         {
-
             CREDENTIAL credential = Marshal.PtrToStructure<CREDENTIAL>(credentialPtr);
 
             if (credential.CredentialBlobSize == 0 || credential.CredentialBlob == nint.Zero)
             {
-
                 return OsCredentialStoreResult.NotFound();
-
             }
 
             byte[] bytes = new byte[credential.CredentialBlobSize];
@@ -52,20 +66,15 @@ internal static partial class WindowsOsCredentialStore
             return string.IsNullOrEmpty(secret)
                 ? OsCredentialStoreResult.NotFound()
                 : OsCredentialStoreResult.Ok(secret);
-
         }
         finally
         {
-
             CredFree(credentialPtr);
-
         }
-
     }
 
     internal static OsCredentialStoreResult Set(string service, string account, string secret)
     {
-
         string target = TargetName(service, account);
 
         using CredentialSecretBuffer blob = CredentialSecretBuffer.FromUtf16(secret);
@@ -76,7 +85,6 @@ internal static partial class WindowsOsCredentialStore
 
         try
         {
-
             CREDENTIAL credential = new()
             {
                 Type = CredTypeGeneric,
@@ -89,50 +97,38 @@ internal static partial class WindowsOsCredentialStore
 
             if (!CredWriteW(ref credential, 0))
             {
-
                 int error = Marshal.GetLastPInvokeError();
 
                 return OsCredentialStoreResult.Failed($"CredWriteW failed with error {error}.");
-
             }
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
         finally
         {
-
             Marshal.FreeCoTaskMem(targetPtr);
 
             Marshal.FreeCoTaskMem(userPtr);
-
         }
-
     }
 
     internal static OsCredentialStoreResult Delete(string service, string account)
     {
-
         string target = TargetName(service, account);
 
         if (!CredDeleteW(target, CredTypeGeneric, 0))
         {
-
             int error = Marshal.GetLastPInvokeError();
 
             if (error == ErrorNotFound)
             {
-
                 return OsCredentialStoreResult.Ok(string.Empty);
-
             }
 
             return OsCredentialStoreResult.Failed($"CredDeleteW failed with error {error}.");
-
         }
 
         return OsCredentialStoreResult.Ok(string.Empty);
-
     }
 
     private static string TargetName(string service, string account) => service + "/" + account;
@@ -155,7 +151,6 @@ internal static partial class WindowsOsCredentialStore
     [StructLayout(LayoutKind.Sequential)]
     private struct CREDENTIAL
     {
-
         public uint Flags;
 
         public int Type;
@@ -179,7 +174,5 @@ internal static partial class WindowsOsCredentialStore
         public nint TargetAlias;
 
         public nint UserName;
-
     }
-
 }

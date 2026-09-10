@@ -84,13 +84,15 @@ fi
 
 validate_semver "$VERSION"
 require_cmd dotnet
+require_cmd rg
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/arcanum-pack.XXXXXX")"
 cleanup() {
-  notarize_cleanup
-  rm -rf "$WORK"
+  local original_status=$?
+
+  packaging_cleanup_exit "$original_status" "$WORK"
 }
 trap cleanup EXIT
 
@@ -99,6 +101,19 @@ STAGE_DIR="$WORK/stage/arcanum-osx-arm64"
 ZIP_PATH="$OUTPUT_DIR/arcanum-osx-arm64.zip"
 PROJECT="$REPO_ROOT/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj"
 PUBLISHED_NAME="RetroDownfall.Arcanum.Cli"
+PUBLISH_LOG="$WORK/publish.log"
+
+PUBLISH_AOT="$(dotnet msbuild "$PROJECT" \
+  -nologo \
+  -getProperty:PublishAot \
+  -p:Configuration="$CONFIGURATION" \
+  -p:RuntimeIdentifier="$RID" \
+  | tr -d '\r')"
+
+if [[ "$PUBLISH_AOT" != "true" ]]; then
+  echo "error: PublishAot resolved to '$PUBLISH_AOT' for $RID; expected true" >&2
+  exit 1
+fi
 
 echo "==> Publishing Arcanum Native AOT ($RID, Version=$VERSION)"
 dotnet publish "$PROJECT" \
@@ -106,7 +121,20 @@ dotnet publish "$PROJECT" \
   -r "$RID" \
   --self-contained true \
   -p:Version="$VERSION" \
-  -o "$PUBLISH_DIR"
+  -o "$PUBLISH_DIR" \
+  2>&1 | tee "$PUBLISH_LOG"
+
+if rg --no-config -n -i '(^|[[:space:]:])warning([[:space:]:]|$)' "$PUBLISH_LOG"; then
+  echo "error: Arcanum publish emitted warning output" >&2
+  exit 1
+else
+  warning_scan_status=$?
+fi
+
+if [[ "$warning_scan_status" -ne 1 ]]; then
+  echo "error: could not scan Arcanum publish output (ripgrep exit $warning_scan_status)" >&2
+  exit 1
+fi
 
 if [[ ! -f "$PUBLISH_DIR/$PUBLISHED_NAME" ]]; then
   echo "error: expected published executable not found: $PUBLISH_DIR/$PUBLISHED_NAME" >&2
@@ -123,28 +151,35 @@ fi
 chmod +x "$STAGE_DIR/arcanum"
 cp "$REPO_ROOT/README.md" "$STAGE_DIR/README.md"
 
-# The csproj enables Native AOT on macOS only when ld64.lld is present and otherwise falls back to a
-# self-contained CoreCLR folder publish. That fallback signs, notarizes, launches, and passes every
-# check below, so without an explicit assertion a release host that simply lacks the linker ships a
-# non-AOT binary and says nothing. A Native AOT publish carries no managed assemblies at all, which
-# is the difference the two shapes cannot fake.
-MANAGED_DLL_COUNT="$(find "$STAGE_DIR" -maxdepth 1 -name '*.dll' | wc -l | tr -d ' ')"
+# Native AOT ships no managed application assembly or CoreCLR host. Check the staged package, not
+# only an MSBuild property, so a packaging regression cannot silently ship another runtime shape.
+DLL_MATCH=""
 
-if [[ "${ARCANUM_REQUIRE_MACOS_AOT:-}" == "true" ]]; then
-  if [[ "$MANAGED_DLL_COUNT" != "0" ]]; then
-    echo "error: ARCANUM_REQUIRE_MACOS_AOT=true but the publish contains $MANAGED_DLL_COUNT managed assemblies," >&2
-    echo "       so this is the CoreCLR fallback, not Native AOT. Install ld64.lld (brew install lld)." >&2
+if ! DLL_MATCH="$(find "$STAGE_DIR" -maxdepth 1 -name '*.dll' -print -quit)"; then
+  echo "error: could not inspect Native AOT package for managed assemblies" >&2
+  exit 1
+fi
+
+if [[ -n "$DLL_MATCH" ]]; then
+  echo "error: Native AOT package contains managed assemblies" >&2
+  exit 1
+fi
+
+for forbidden in '*hostfxr*' '*hostpolicy*'; do
+  FORBIDDEN_MATCH=""
+
+  if ! FORBIDDEN_MATCH="$(find "$STAGE_DIR" -maxdepth 1 -iname "$forbidden" -print -quit)"; then
+    echo "error: could not inspect Native AOT package for $forbidden" >&2
     exit 1
   fi
 
-  echo "==> Verified Native AOT publish (no managed assemblies in the staged tree)"
-else
-  if [[ "$MANAGED_DLL_COUNT" == "0" ]]; then
-    echo "==> Native AOT publish (no managed assemblies staged)"
-  else
-    echo "==> CoreCLR fallback publish ($MANAGED_DLL_COUNT managed assemblies); ld64.lld not found on this host"
+  if [[ -n "$FORBIDDEN_MATCH" ]]; then
+    echo "error: Native AOT package contains forbidden CoreCLR component: $forbidden" >&2
+    exit 1
   fi
-fi
+done
+
+echo "==> Verified Native AOT publish (no managed assemblies or CoreCLR host)"
 
 if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd codesign
@@ -157,16 +192,9 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
     require_signing_env
   fi
 
-  # These are the .NET JIT entitlements, and they are required whenever the macOS CLI falls back to
-  # the self-contained CoreCLR folder publish (no ld64.lld on the build host): the hardened runtime
-  # must be told to permit the RWX/MAP_JIT mappings the runtime creates, and signing without them
-  # still passes `codesign --verify` and `spctl --assess` while the binary aborts before Main.
-  #
-  # A Native AOT publish does not JIT and does not need them. They are left applied because an
-  # unused entitlement is permissive rather than breaking, and because dropping them cannot be
-  # verified without a Developer ID certificate and a notarization round-trip. Narrowing this to the
-  # AOT path is a real hardening improvement and should be done the next time a signed build can
-  # actually be exercised end to end -- not blind.
+  # Native AOT needs no JIT or library-validation exception. Keep the entitlement file explicit and
+  # privilege-free so a future managed fallback cannot acquire executable-memory authority merely
+  # by reusing this signing path.
   ENTITLEMENTS="$SCRIPT_DIR/entitlements.cli.plist"
   if [[ ! -f "$ENTITLEMENTS" ]]; then
     echo "error: entitlements plist not found: $ENTITLEMENTS" >&2
@@ -174,9 +202,9 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
   fi
 
   if [[ "$LOCAL_SIGN" -eq 1 ]]; then
-    echo "==> Signing publish tree Mach-Os (keychain identity, hardened runtime + JIT entitlements)"
+    echo "==> Signing publish tree Mach-Os (keychain identity, hardened runtime, no JIT entitlements)"
   else
-    echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime + JIT entitlements)"
+    echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime, no JIT entitlements)"
   fi
 
   sign_publish_dir "$STAGE_DIR" "$ENTITLEMENTS"
@@ -215,9 +243,7 @@ elif [[ "$SKIP_SIGN" -eq 0 ]]; then
   BINARY="$VALIDATE_DIR/arcanum-osx-arm64/arcanum"
   codesign --verify --strict --verbose=4 "$BINARY"
   # Gatekeeper assessment for a Developer ID signed executable.
-  spctl --assess --type execute --verbose=4 "$BINARY" || {
-    echo "warning: spctl --assess returned non-zero; notarization was accepted — check local Gatekeeper policy" >&2
-  }
+  spctl --assess --type execute --verbose=4 "$BINARY"
 
   # Both checks above pass on a hardened-runtime binary that cannot start at all (a missing
   # JIT entitlement aborts CoreCLR before Main), so actually launch the signed artifact.

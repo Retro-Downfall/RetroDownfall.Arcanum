@@ -18,11 +18,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class SessionDivinationCommandTests
 {
-
     [Fact]
     public void Session_divine_calls_divination_endpoint_and_renders_results()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid entryId = Guid.NewGuid();
@@ -59,13 +57,11 @@ public sealed class SessionDivinationCommandTests
         Assert.NotNull(sent);
 
         Assert.Equal("race condition", sent.Query);
-
     }
 
     [Fact]
     public void Session_divine_passes_limit_campaign_and_status_options()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         SemanticSearchResult payload = new([], false, null);
@@ -93,13 +89,11 @@ public sealed class SessionDivinationCommandTests
         Assert.Equal(campaignId, sent.CampaignId);
 
         Assert.Equal("archived", sent.Status);
-
     }
 
     [Fact]
     public void Session_divine_rejects_invalid_campaign_guid()
     {
-
         RecordingHandler handler = new();
 
         CliTestResult result = RunCommand(handler, ["session", "divine", "hello", "--campaign", "not-a-guid"]);
@@ -107,13 +101,11 @@ public sealed class SessionDivinationCommandTests
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
     public void Session_divine_surfaces_api_failure()
     {
-
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<SemanticSearchResult>(
                 null,
@@ -125,7 +117,6 @@ public sealed class SessionDivinationCommandTests
         CliTestResult result = RunCommand(handler, ["session", "divine", "hello"]);
 
         Assert.Equal(1, result.ExitCode);
-
     }
 
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
@@ -133,7 +124,6 @@ public sealed class SessionDivinationCommandTests
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -148,8 +138,11 @@ public sealed class SessionDivinationCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        return CliTestHarness.Run(services, args);
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
 
+        return CliTestHarness.Run(services, args);
     }
 
     private static HttpResponseMessage CreateResponse<T>(
@@ -157,19 +150,16 @@ public sealed class SessionDivinationCommandTests
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo,
         HttpStatusCode status = HttpStatusCode.OK)
     {
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, typeInfo);
 
         return new HttpResponseMessage(status)
         {
             Content = new ByteArrayContent(json),
         };
-
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -180,33 +170,27 @@ public sealed class SessionDivinationCommandTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeHttpClientFactory(RecordingHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage>? responder = null) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-
             HttpRequestMessage snapshot = new(request.Method, request.RequestUri);
 
             if (request.Content is not null)
             {
-
                 byte[] body = request.Content.ReadAsByteArrayAsync(cancellationToken).GetAwaiter().GetResult();
 
                 snapshot.Content = new ByteArrayContent(body);
@@ -215,7 +199,6 @@ public sealed class SessionDivinationCommandTests
                 {
                     snapshot.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
                 }
-
             }
 
             Requests.Add(snapshot);
@@ -225,9 +208,6 @@ public sealed class SessionDivinationCommandTests
                 : responder(request);
 
             return Task.FromResult(response);
-
         }
-
     }
-
 }

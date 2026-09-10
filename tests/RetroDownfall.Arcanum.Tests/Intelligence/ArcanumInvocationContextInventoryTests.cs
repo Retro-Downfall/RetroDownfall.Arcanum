@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </remarks>
 public sealed class ArcanumInvocationContextInventoryTests
 {
-
     public static TheoryData<Type, string> RequiredSeams() => new()
     {
         { typeof(IArcanumIntelligenceProvider), nameof(IArcanumIntelligenceProvider.ExecutePromptAsync) },
@@ -30,7 +29,6 @@ public sealed class ArcanumInvocationContextInventoryTests
     [MemberData(nameof(RequiredSeams))]
     public void EverySeam_RequiresAnInvocationContextWithNoDefault(Type seam, string method)
     {
-
         MethodInfo[] overloads = [.. seam.GetMethods().Where(candidate => candidate.Name == method)];
 
         _ = Assert.Single(overloads);
@@ -41,14 +39,12 @@ public sealed class ArcanumInvocationContextInventoryTests
 
         Assert.False(parameter.IsOptional, $"{seam.Name}.{method} makes its invocation context optional.");
         Assert.False(parameter.HasDefaultValue);
-
     }
 
     [Theory]
     [MemberData(nameof(RequiredSeams))]
     public void EverySeamImplementation_KeepsTheContextRequired(Type seam, string method)
     {
-
         IEnumerable<Type> implementations = new[]
         {
             typeof(IArcanumIntelligenceProvider).Assembly,
@@ -61,12 +57,10 @@ public sealed class ArcanumInvocationContextInventoryTests
 
         foreach (Type implementation in implementations)
         {
-
             foreach (MethodInfo candidate in implementation
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(candidate => candidate.Name.EndsWith(method, StringComparison.Ordinal)))
             {
-
                 ParameterInfo? parameter = Array.Find(
                     candidate.GetParameters(),
                     p => p.ParameterType == typeof(ArcanumInvocationContext));
@@ -79,37 +73,27 @@ public sealed class ArcanumInvocationContextInventoryTests
                 Assert.False(
                     parameter.IsOptional,
                     $"{implementation.FullName}.{candidate.Name} makes its invocation context optional.");
-
             }
-
         }
-
     }
 
     [Fact]
     public void NoSeamExposesALegacyOverloadWithoutAContext()
     {
-
         foreach ((Type seam, string method) in RequiredSeams().Select(row => ((Type)row[0], (string)row[1])))
         {
-
             foreach (MethodInfo candidate in seam.GetMethods().Where(candidate => candidate.Name == method))
             {
-
                 Assert.Contains(
                     candidate.GetParameters(),
                     parameter => parameter.ParameterType == typeof(ArcanumInvocationContext));
-
             }
-
         }
-
     }
 
     [Fact]
     public void EveryProductionInferenceCaller_SelectsAnInvocationSurface()
     {
-
         string root = FindRepositoryRoot();
 
         List<string> unclassified = [];
@@ -124,7 +108,6 @@ public sealed class ArcanumInvocationContextInventoryTests
 
         foreach (string file in files)
         {
-
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
                 || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             {
@@ -135,10 +118,8 @@ public sealed class ArcanumInvocationContextInventoryTests
 
             foreach (string seam in InferenceSeams)
             {
-
                 foreach (string arguments in CallArguments(source, "." + seam + "("))
                 {
-
                     bool classified = arguments.Contains("ArcanumInvocationContext.None", StringComparison.Ordinal)
                         || arguments.Contains("ArcanumInvocationContexts.", StringComparison.Ordinal)
                         || arguments.Contains("invocationContext", StringComparison.Ordinal);
@@ -147,18 +128,14 @@ public sealed class ArcanumInvocationContextInventoryTests
                     {
                         unclassified.Add($"{Path.GetRelativePath(root, file)}: {seam}");
                     }
-
                 }
-
             }
-
         }
 
         Assert.True(
             unclassified.Count == 0,
             "These production inference calls do not select an invocation surface:\n"
             + string.Join("\n", unclassified));
-
     }
 
     private static readonly string[] InferenceProjects =
@@ -198,12 +175,10 @@ public sealed class ArcanumInvocationContextInventoryTests
     /// </remarks>
     private static IEnumerable<string> CallArguments(string source, string callee)
     {
-
         int index = 0;
 
         while ((index = source.IndexOf(callee, index, StringComparison.Ordinal)) >= 0)
         {
-
             int start = index + callee.Length;
 
             int depth = 1;
@@ -214,7 +189,6 @@ public sealed class ArcanumInvocationContextInventoryTests
 
             while (cursor < source.Length && depth > 0)
             {
-
                 char value = source[cursor];
 
                 if (inString)
@@ -245,7 +219,6 @@ public sealed class ArcanumInvocationContextInventoryTests
                 }
 
                 cursor++;
-
             }
 
             // A declaration, not a call: its parameter list names the type rather than passing a value.
@@ -258,36 +231,15 @@ public sealed class ArcanumInvocationContextInventoryTests
             }
 
             index = cursor;
-
         }
-
     }
 
-    private static string FindRepositoryRoot()
-    {
-
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-
-            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
-            {
-                return directory.FullName;
-            }
-
-            directory = directory.Parent;
-
-        }
-
-        throw new InvalidOperationException("Could not locate the repository root.");
-
-    }
+    private static string FindRepositoryRoot() =>
+        global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
 
     [Fact]
     public void TurnExecutionRequest_CarriesTheContextAsARequiredMember()
     {
-
         Type request = typeof(ITurnExecutionFacade).Assembly
             .GetType("RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.TurnExecutionRequest")!;
 
@@ -302,7 +254,5 @@ public sealed class ArcanumInvocationContextInventoryTests
         // Position matters only in that it precedes the response mode, so an argument list that
         // forgot it cannot silently bind the mode into the context slot.
         Assert.Equal(1, parameter.Position);
-
     }
-
 }

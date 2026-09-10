@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -22,7 +23,9 @@ internal sealed class UnseenServantService(
     IUnseenServantJobTracker jobTracker,
     IDaemonRunner daemonRunner,
     ILogger<UnseenServantService> logger,
-    IServiceScopeFactory scopeFactory) : BackgroundService
+    IServiceScopeFactory scopeFactory,
+    IGrimoireConnectionAdmissionGate workAdmission,
+    TimeProvider timeProvider) : BackgroundService
 {
     /// <summary>
     /// Startup jitter watermark, intentionally NOT persisted — regenerated fresh every process start
@@ -37,7 +40,11 @@ internal sealed class UnseenServantService(
 
     private readonly ConcurrentDictionary<Guid, Task> _activeJobTasks = new();
 
-    private readonly DateTimeOffset _startupUtc = DateTimeOffset.UtcNow;
+    private readonly object _dispatchGate = new();
+
+    private bool _dispatchClosed;
+
+    private readonly DateTimeOffset _startupUtc = timeProvider.GetUtcNow();
 
     /// <summary>
     /// Cleanup cadence for expired <c>IdempotencyKeys</c> rows. Piggybacks on this service's
@@ -52,11 +59,11 @@ internal sealed class UnseenServantService(
     {
         await Task.Yield();
 
-        await HydrateWatermarksAsync(stoppingToken).ConfigureAwait(false);
+        HydrationOutcome hydration = await HydrateWatermarksAsync(stoppingToken).ConfigureAwait(false);
 
         await CleanupExpiredIdempotencyKeysAsync(stoppingToken).ConfigureAwait(false);
 
-        using PeriodicTimer timer = new(TimeSpan.FromMinutes(1));
+        using PeriodicTimer timer = new(TimeSpan.FromMinutes(1), timeProvider);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -67,9 +74,19 @@ internal sealed class UnseenServantService(
                     break;
                 }
 
+                if (hydration == HydrationOutcome.DeferredForMaintenance)
+                {
+                    hydration = await HydrateWatermarksAsync(stoppingToken).ConfigureAwait(false);
+
+                    if (hydration == HydrationOutcome.DeferredForMaintenance)
+                    {
+                        continue;
+                    }
+                }
+
                 DispatchDueJobs(stoppingToken);
 
-                if (DateTimeOffset.UtcNow - _lastIdempotencyCleanupUtc >= IdempotencyCleanupInterval)
+                if (timeProvider.GetUtcNow() - _lastIdempotencyCleanupUtc >= IdempotencyCleanupInterval)
                 {
                     await CleanupExpiredIdempotencyKeysAsync(stoppingToken).ConfigureAwait(false);
                 }
@@ -87,12 +104,18 @@ internal sealed class UnseenServantService(
 
     private async Task CleanupExpiredIdempotencyKeysAsync(CancellationToken stoppingToken)
     {
+        stoppingToken.ThrowIfCancellationRequested();
 
-        _lastIdempotencyCleanupUtc = DateTimeOffset.UtcNow;
+        if (!workAdmission.TryAcquireWorkLease(GrimoireWorkKind.UnseenServant, out IGrimoireWorkLease? admitted))
+        {
+            return;
+        }
 
         try
         {
-            using IServiceScope scope = scopeFactory.CreateScope();
+            await using IGrimoireWorkLease lease = admitted!;
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             IIdempotencyStore store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
 
@@ -101,7 +124,7 @@ internal sealed class UnseenServantService(
             int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(
                 ArcanumRuntimeDefaults.SecurityIdempotencyTtlHours);
 
-            DateTimeOffset olderThan = DateTimeOffset.UtcNow.AddHours(-ttlHours);
+            DateTimeOffset olderThan = timeProvider.GetUtcNow().AddHours(-ttlHours);
 
             int removed = await store.DeleteExpiredAsync(olderThan, stoppingToken).ConfigureAwait(false);
 
@@ -115,19 +138,34 @@ internal sealed class UnseenServantService(
                     claimsRemoved);
             }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Idempotency cache sweep failed; will retry on the next scheduled cleanup.");
+
+            return;
         }
 
+        _lastIdempotencyCleanupUtc = timeProvider.GetUtcNow();
     }
 
-    private async Task HydrateWatermarksAsync(CancellationToken stoppingToken)
+    private async Task<HydrationOutcome> HydrateWatermarksAsync(CancellationToken stoppingToken)
     {
+        stoppingToken.ThrowIfCancellationRequested();
+
+        if (!workAdmission.TryAcquireWorkLease(GrimoireWorkKind.UnseenServant, out IGrimoireWorkLease? admitted))
+        {
+            return HydrationOutcome.DeferredForMaintenance;
+        }
+
+        await using IGrimoireWorkLease lease = admitted!;
 
         try
         {
-            using IServiceScope scope = scopeFactory.CreateScope();
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             IUnseenServantWatermarkStore store = scope.ServiceProvider.GetRequiredService<IUnseenServantWatermarkStore>();
 
@@ -137,24 +175,46 @@ internal sealed class UnseenServantService(
 
             await pacer.HydrateAsync(watermarks, stoppingToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to hydrate Unseen Servant watermarks from Grimoire; falling back to in-memory mode.");
+
+            return HydrationOutcome.Fallback;
         }
 
+        return HydrationOutcome.Hydrated;
     }
 
     private void DispatchDueJobs(CancellationToken stoppingToken)
+    {
+        lock (_dispatchGate)
+        {
+            if (_dispatchClosed || stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            DispatchDueJobsCore(stoppingToken);
+        }
+    }
+
+    private void DispatchDueJobsCore(CancellationToken stoppingToken)
     {
         IReadOnlyList<UnseenServantJob> jobs = optionsMonitor.CurrentValue.Daemon?.Jobs ?? [];
 
         int maxConcurrent = ArcanumSettingClamps.DaemonMaxConcurrentJobs(
             optionsMonitor.CurrentValue.Daemon?.MaxConcurrentJobs ?? new DaemonSettings().MaxConcurrentJobs);
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = timeProvider.GetUtcNow();
 
-        foreach (UnseenServantJob job in jobs)
+        foreach (UnseenServantJob configuredJob in jobs)
         {
+            UnseenServantJob job = configuredJob with { };
+
             if (!job.Enabled)
             {
                 continue;
@@ -210,7 +270,9 @@ internal sealed class UnseenServantService(
 
             Guid taskId = Guid.NewGuid();
 
-            Task jobTask = TrackJobTask(
+            string daemonId = UnseenServantDaemonIds.ForJobName(job.Name);
+
+            _ = TrackJobTask(
                 _activeJobTasks,
                 taskId,
                 () => Task.Run(
@@ -218,31 +280,17 @@ internal sealed class UnseenServantService(
                     {
                         try
                         {
-                            await RunJobAsync(job, key, stoppingToken).ConfigureAwait(false);
+                            await RunJobAsync(job, key, daemonId, stoppingToken).ConfigureAwait(false);
                         }
-                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        catch (Exception ex)
                         {
-
                             logger.LogError(ex, "Unseen Servant job {JobName} failed.", job.Name);
-
                         }
                         finally
                         {
                             _ = _activeJobTasks.TryRemove(taskId, out _);
                         }
-                    },
-                    stoppingToken));
-
-            if (jobTask.IsCanceled)
-            {
-
-                _ = _activeJobTasks.TryRemove(taskId, out _);
-
-                _ = _runningJobs.TryRemove(key, out _);
-
-                continue;
-
-            }
+                    }));
         }
     }
 
@@ -256,19 +304,40 @@ internal sealed class UnseenServantService(
         Guid taskId,
         Func<Task> startJob)
     {
-        TaskCompletionSource<Task> handle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Unwrap must bind to the real job before dispatch releases _dispatchGate. StopAsync takes
+        // that same gate before it snapshots this proxy, so the TCS has no arbitrary concurrent
+        // consumer to protect and an asynchronously queued bind can only delay a valid shutdown.
+        TaskCompletionSource<Task> handle = new();
 
-        activeJobTasks[taskId] = handle.Task.Unwrap();
+        Task publishedTask = handle.Task.Unwrap();
 
-        Task jobTask = startJob();
+        activeJobTasks[taskId] = publishedTask;
 
-        handle.SetResult(jobTask);
+        try
+        {
+            Task jobTask = startJob();
 
-        return jobTask;
+            handle.SetResult(jobTask);
+
+            return jobTask;
+        }
+        catch
+        {
+            handle.SetResult(Task.CompletedTask);
+
+            _ = activeJobTasks.TryRemove(new KeyValuePair<Guid, Task>(taskId, publishedTask));
+
+            throw;
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        lock (_dispatchGate)
+        {
+            _dispatchClosed = true;
+        }
+
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
 
         int drainSeconds = ArcanumSettingClamps.DaemonShutdownDrainTimeoutSeconds(
@@ -310,34 +379,23 @@ internal sealed class UnseenServantService(
         }
     }
 
-    private async Task RunJobAsync(UnseenServantJob job, string key, CancellationToken stoppingToken)
+    private async Task RunJobAsync(UnseenServantJob job, string key, string daemonId, CancellationToken stoppingToken)
     {
         try
         {
-            string daemonId = UnseenServantDaemonIds.ForJobName(job.Name);
-
-            Result<DaemonExecutionSummary> result = await daemonRunner
-                .RunScheduledAsync(daemonId, stoppingToken)
-                .ConfigureAwait(false);
-
-            if (result.IsSuccess)
+            while (true)
             {
-                jobTracker.RecordCompletion(job, success: true, resultSummary: "Success");
+                stoppingToken.ThrowIfCancellationRequested();
 
-                await PersistWatermarkAsync(job, key, stoppingToken).ConfigureAwait(false);
-            }
-            else if (result.Error.Code != "Daemon.Cancelled")
-            {
-                jobTracker.RecordCompletion(
-                    job,
-                    success: false,
-                    resultSummary: $"[{result.Error.Code}] {result.Error.Message}");
+                long observedGeneration = workAdmission.CurrentGeneration;
 
-                logger.LogWarning(
-                    "Unseen Servant job {JobName} failed: {Code} {Message}",
-                    job.Name,
-                    result.Error.Code,
-                    result.Error.Message);
+                if (await TryRunJobAsync(job, key, daemonId, stoppingToken).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                await workAdmission.WaitForNextOpenGenerationAsync(
+                    Math.Max(0, observedGeneration - 1), stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -350,24 +408,77 @@ internal sealed class UnseenServantService(
         }
     }
 
+    private async Task<bool> TryRunJobAsync(UnseenServantJob job, string key, string daemonId, CancellationToken stoppingToken)
+    {
+        stoppingToken.ThrowIfCancellationRequested();
+
+        if (!workAdmission.TryAcquireWorkLease(GrimoireWorkKind.UnseenServant, out IGrimoireWorkLease? admitted))
+        {
+            return false;
+        }
+
+        await using IGrimoireWorkLease lease = admitted!;
+
+        if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup))
+        {
+            return false;
+        }
+
+        await using IGrimoireExternalEffectGroup group = effectGroup!;
+
+        Result<DaemonExecutionSummary> result = await daemonRunner
+            .RunScheduledAsync(daemonId, stoppingToken)
+            .ConfigureAwait(false);
+
+        if (result.IsSuccess)
+        {
+            DaemonExecutionSummary summary = result.Value;
+
+            bool completed = summary.Status == DaemonJobStatus.Completed;
+
+            jobTracker.RecordCompletion(job, completed,
+                completed ? "Success" : $"{summary.Status}: {summary.ErrorMessage}");
+
+            await PersistWatermarkAsync(job, key, stoppingToken).ConfigureAwait(false);
+        }
+        else if (result.Error.Code != "Daemon.Cancelled")
+        {
+            jobTracker.RecordCompletion(job, success: false,
+                resultSummary: $"[{result.Error.Code}] {result.Error.Message}");
+
+            logger.LogWarning("Unseen Servant job {JobName} failed: {Code} {Message}",
+                job.Name, result.Error.Code, result.Error.Message);
+        }
+
+        return true;
+    }
+
     private async Task PersistWatermarkAsync(UnseenServantJob job, string key, CancellationToken stoppingToken)
     {
-
         try
         {
-            using IServiceScope scope = scopeFactory.CreateScope();
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             IUnseenServantWatermarkStore store = scope.ServiceProvider.GetRequiredService<IUnseenServantWatermarkStore>();
 
-            await store.SaveAsync(key, DateTimeOffset.UtcNow, pacer.GetEffectiveInterval(job), stoppingToken).ConfigureAwait(false);
+            await store.SaveLastRunAsync(key, timeProvider.GetUtcNow(), pacer.GetEffectiveInterval(job), stoppingToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to persist Unseen Servant watermark for job {JobName}.", job.Name);
         }
-
     }
 
+    private enum HydrationOutcome
+    {
+        Hydrated,
+        Fallback,
+        DeferredForMaintenance
+    }
 }
 
 /*

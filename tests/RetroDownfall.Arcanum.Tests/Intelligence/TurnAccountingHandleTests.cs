@@ -440,6 +440,152 @@ public sealed class TurnAccountingHandleTests
     }
 
     [Fact]
+    public async Task CompleteAsync_RetriesFailedReservationAndFreezesFirstDisposition()
+    {
+        RecordingTurnRunWriter writer = new();
+
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReconcileFailuresRemaining = 1,
+        };
+
+        TurnAccountingHandle handle = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "retry-reservation",
+            requestId: "retry-reservation",
+            cancellationToken: CancellationToken.None,
+            reservedUsdOverride: 5m)).Value;
+
+        handle.AddCost(2m);
+
+        await Assert.ThrowsAsync<IOException>(() => handle.CompleteAsync(
+            writer,
+            reservations,
+            InferenceRunStatus.Completed,
+            CancellationToken.None));
+
+        handle.AddCost(7m);
+
+        await handle.CompleteAsync(
+            writer,
+            reservations,
+            InferenceRunStatus.Failed,
+            CancellationToken.None);
+
+        Assert.Equal(2, reservations.ReconcileCalls);
+
+        Assert.Equal(2m, reservations.ReconciledUsd);
+
+        Assert.Equal(1, writer.CompleteCalls);
+
+        Assert.Equal(InferenceRunStatus.Completed, writer.CompletedStatus);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_DoesNotRepeatReservationWhenRunCompletionRetries()
+    {
+        RecordingTurnRunWriter writer = new()
+        {
+            CompleteFailuresRemaining = 1,
+        };
+
+        RecordingBudgetReservationService reservations = new();
+
+        TurnAccountingHandle handle = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "retry-run",
+            requestId: "retry-run",
+            cancellationToken: CancellationToken.None,
+            reservedUsdOverride: 5m)).Value;
+
+        handle.AddCost(3m);
+
+        await Assert.ThrowsAsync<IOException>(() => handle.CompleteAsync(
+            writer,
+            reservations,
+            InferenceRunStatus.Completed,
+            CancellationToken.None));
+
+        await handle.CompleteAsync(
+            writer,
+            reservations,
+            InferenceRunStatus.Failed,
+            CancellationToken.None);
+
+        Assert.Equal(1, reservations.ReconcileCalls);
+
+        Assert.Equal(3m, reservations.ReconciledUsd);
+
+        Assert.Equal(2, writer.CompleteCalls);
+
+        Assert.Equal(InferenceRunStatus.Completed, writer.CompletedStatus);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_SerializesConcurrentCallersAndKeepsFirstDisposition()
+    {
+        TaskCompletionSource reconciliationEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource allowReconciliation =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReconciliationEntered = reconciliationEntered,
+            AllowReconciliation = allowReconciliation,
+        };
+
+        TurnAccountingHandle handle = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "concurrent-completion",
+            requestId: "concurrent-completion",
+            cancellationToken: CancellationToken.None,
+            reservedUsdOverride: 5m)).Value;
+
+        handle.AddCost(2m);
+
+        Task first = handle.CompleteAsync(
+            writer,
+            reservations,
+            InferenceRunStatus.Completed,
+            CancellationToken.None);
+
+        await reconciliationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Task second = handle.CompleteAsync(
+            writer,
+            reservations,
+            InferenceRunStatus.Failed,
+            CancellationToken.None);
+
+        Assert.Equal(1, reservations.ReconcileCalls);
+        Assert.False(second.IsCompleted);
+
+        allowReconciliation.TrySetResult();
+
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(1, reservations.ReconcileCalls);
+        Assert.Equal(1, writer.CompleteCalls);
+        Assert.Equal(InferenceRunStatus.Completed, writer.CompletedStatus);
+    }
+
+    [Fact]
     public async Task BeginBatchAsync_SumsResolvedPricingAndPerLineBudgets()
     {
         RecordingTurnRunWriter writer = new();
@@ -541,9 +687,13 @@ public sealed class TurnAccountingHandleTests
 
         public InferenceRunStatus? CompletedStatus { get; private set; }
 
+        public int CompleteCalls { get; private set; }
+
         public Action? BeforeRecord { get; set; }
 
         public Exception? RecordException { get; init; }
+
+        public int CompleteFailuresRemaining { get; set; }
 
         public Task<Guid> StartRunAsync(
             InferenceRunStart start,
@@ -555,6 +705,15 @@ public sealed class TurnAccountingHandleTests
             InferenceRunStatus status,
             CancellationToken cancellationToken = default)
         {
+            CompleteCalls++;
+
+            if (CompleteFailuresRemaining > 0)
+            {
+                CompleteFailuresRemaining--;
+
+                return Task.FromException(new IOException("run completion failed"));
+            }
+
             CompletedStatus = status;
             return Task.CompletedTask;
         }
@@ -580,6 +739,8 @@ public sealed class TurnAccountingHandleTests
 
     private sealed class RecordingBudgetReservationService : IBudgetReservationService
     {
+        private int _reconcileCalls;
+
         public BudgetReservationRequest? LastRequest { get; private set; }
 
         public decimal? ReconciledUsd { get; private set; }
@@ -590,7 +751,15 @@ public sealed class TurnAccountingHandleTests
 
         public bool WasReleased { get; private set; }
 
+        public int ReconcileCalls => Volatile.Read(ref _reconcileCalls);
+
         public Exception? ReserveException { get; init; }
+
+        public int ReconcileFailuresRemaining { get; set; }
+
+        public TaskCompletionSource? ReconciliationEntered { get; init; }
+
+        public TaskCompletionSource? AllowReconciliation { get; init; }
 
         public Task<Result<BudgetReservation>> ReserveAsync(
             BudgetReservationRequest request,
@@ -614,13 +783,28 @@ public sealed class TurnAccountingHandleTests
                 DateTimeOffset.UtcNow)));
         }
 
-        public Task ReconcileAsync(
+        public async Task ReconcileAsync(
             Guid reservationId,
             decimal actualCostUsd,
             CancellationToken cancellationToken = default)
         {
+            _ = Interlocked.Increment(ref _reconcileCalls);
+
+            ReconciliationEntered?.TrySetResult();
+
+            if (AllowReconciliation is not null)
+            {
+                await AllowReconciliation.Task.WaitAsync(cancellationToken);
+            }
+
+            if (ReconcileFailuresRemaining > 0)
+            {
+                ReconcileFailuresRemaining--;
+
+                throw new IOException("reservation reconciliation failed");
+            }
+
             ReconciledUsd = actualCostUsd;
-            return Task.CompletedTask;
         }
 
         public Task<Result> AdjustAsync(

@@ -1,6 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -11,7 +10,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
 {
-
     public Task<Guid> StartRunAsync(InferenceRunStart start, CancellationToken cancellationToken = default)
     {
         Guid id = Guid.NewGuid();
@@ -36,7 +34,7 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
                 AddParameter(cmd, "@sessionId", start.SessionId is Guid sid ? sid.ToString("N") : DBNull.Value);
                 AddParameter(cmd, "@surface", start.Surface);
                 AddParameter(cmd, "@purpose", start.Purpose);
-                AddParameter(cmd, "@startedAt", start.StartedAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@startedAt", UtcInstantText.Format(start.StartedAt));
                 AddParameter(cmd, "@status", (int)InferenceRunStatus.Running);
                 AddParameter(cmd, "@claimId", start.IdempotencyClaimId is Guid cid ? cid.ToString("N") : DBNull.Value);
 
@@ -65,7 +63,7 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
 
                 AddParameter(cmd, "@id", runId.ToString("N"));
                 AddParameter(cmd, "@status", (int)status);
-                AddParameter(cmd, "@completedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@completedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -93,7 +91,7 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
                 AddParameter(cmd, "@id", runId.ToString("N"));
                 AddParameter(cmd, "@abandoned", (int)InferenceRunStatus.Abandoned);
                 AddParameter(cmd, "@running", (int)InferenceRunStatus.Running);
-                AddParameter(cmd, "@completedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@completedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
             },
@@ -127,14 +125,14 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
                 AddParameter(cmd, "@provider", operation.Provider);
                 AddParameter(cmd, "@model", operation.Model);
                 AddParameter(cmd, "@purpose", operation.Purpose);
-                AddParameter(cmd, "@startedAt", operation.StartedAt.ToString("o", CultureInfo.InvariantCulture));
-                AddParameter(cmd, "@completedAt", operation.CompletedAt.ToString("o", CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@startedAt", UtcInstantText.Format(operation.StartedAt));
+                AddParameter(cmd, "@completedAt", UtcInstantText.Format(operation.CompletedAt));
                 AddParameter(cmd, "@input", operation.InputTokens);
                 AddParameter(cmd, "@output", operation.OutputTokens);
                 AddParameter(cmd, "@reasoning", operation.ReasoningTokens);
                 AddParameter(cmd, "@cached", operation.CachedTokens);
                 AddParameter(cmd, "@pricing", operation.PricingSnapshotJson);
-                AddParameter(cmd, "@cost", operation.ActualCostUsd);
+                _ = ExactUsdText.AddParameter(cmd, "@cost", operation.ActualCostUsd);
                 AddParameter(cmd, "@status", (int)operation.Status);
                 AddParameter(cmd, "@providerRequestId", (object?)operation.ProviderRequestId ?? DBNull.Value);
 
@@ -164,5 +162,4 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
         p.Value = value;
         cmd.Parameters.Add(p);
     }
-
 }

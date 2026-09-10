@@ -40,7 +40,6 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// </remarks>
 public sealed class A2ADelegationCycleTests
 {
-
     private const string OriginNode = "origin-node-a";
 
     private const string DownstreamNode = "downstream-node-c";
@@ -59,7 +58,6 @@ public sealed class A2ADelegationCycleTests
     [Fact]
     public async Task ThreeHopCycle_IsRefusedAtTheRepeatedNode()
     {
-
         ArcanumSettings settings = EnabledSettings();
 
         // ── Hop 2 (this instance, the middle hop). An upstream agent delegates to us. ──────────────
@@ -90,13 +88,11 @@ public sealed class A2ADelegationCycleTests
         Assert.Null(cycled);
 
         Assert.Equal(TaskState.Rejected, finalState);
-
     }
 
     [Fact]
     public async Task LongChainWithoutARepeat_IsAcceptedRatherThanCappedByHopCount()
     {
-
         // Issue #55 forbids arbitrary depth ceilings: only a repeat is evidence of a loop, so a long
         // but acyclic chain must still be accepted.
         string[] longChain = [.. Enumerable.Range(0, 64).Select(static i => $"node-{i}")];
@@ -109,7 +105,6 @@ public sealed class A2ADelegationCycleTests
             ApprenticeRepository.DeserializeCheckpoint(spawned.CheckpointData)?.DelegationChain ?? [];
 
         Assert.Equal([.. longChain, ConclaveDelegationChain.NodeId], inherited);
-
     }
 
     /// <summary>Runs a real inbound Sending through the real handler and returns the Apprentice it minted.</summary>
@@ -118,13 +113,11 @@ public sealed class A2ADelegationCycleTests
         RecordingApprenticeRepository repository,
         IReadOnlyList<string> inboundChain)
     {
-
         (Apprentice? spawned, _) = await TryAcceptInboundSendingAsync(settings, repository, inboundChain);
 
         Assert.NotNull(spawned);
 
         return spawned!;
-
     }
 
     private static async Task<(Apprentice? Spawned, TaskState? FinalState)> TryAcceptInboundSendingAsync(
@@ -132,7 +125,6 @@ public sealed class A2ADelegationCycleTests
         RecordingApprenticeRepository repository,
         IReadOnlyList<string> inboundChain)
     {
-
         Channel<ApprenticeEvent> chronicle = Channel.CreateUnbounded<ApprenticeEvent>();
 
         StubApprenticeRuntime runtime = new(chronicle.Reader);
@@ -185,7 +177,6 @@ public sealed class A2ADelegationCycleTests
 
         await foreach (StreamResponse response in queue)
         {
-
             TaskStatus? status = response.PayloadCase switch
             {
                 StreamResponseCase.Task => response.Task?.Status,
@@ -195,15 +186,11 @@ public sealed class A2ADelegationCycleTests
 
             if (status is not null)
             {
-
                 finalState = status.State;
-
             }
-
         }
 
         return (repository.Added.LastOrDefault(), finalState);
-
     }
 
     /// <summary>
@@ -214,7 +201,6 @@ public sealed class A2ADelegationCycleTests
         Guid apprenticeId,
         IReadOnlyList<string> inheritedChain)
     {
-
         ChainRecordingA2AClient a2aClient = new();
 
         ServiceCollection services = new();
@@ -246,7 +232,6 @@ public sealed class A2ADelegationCycleTests
 
         try
         {
-
             JsonElement callParams = JsonSerializer.SerializeToElement(
                 new McpToolsCallParams
                 {
@@ -267,9 +252,7 @@ public sealed class A2ADelegationCycleTests
             using (ApprenticeToolInvocationAmbient.Begin(
                 new ApprenticeToolInvocationContext(apprenticeId, inheritedChain)))
             {
-
                 await transport.WriteRequestAsync(request);
-
             }
 
             McpInboundEnvelope envelope = await transport.InboundReader.ReadAsync();
@@ -279,32 +262,25 @@ public sealed class A2ADelegationCycleTests
             Assert.Null(envelope.Response!.Error);
 
             return a2aClient.ObservedChain;
-
         }
         finally
         {
-
             await lifetime.CancelAsync();
 
             try
             {
-
                 await serverTask;
-
             }
             catch (OperationCanceledException)
             {
             }
 
             await transport.DisposeAsync();
-
         }
-
     }
 
     private sealed class ChainRecordingA2AClient : IA2AClientService
     {
-
         public IReadOnlyList<string>? ObservedChain { get; private set; }
 
         public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
@@ -317,12 +293,10 @@ public sealed class A2ADelegationCycleTests
             A2ADispatchMode mode = A2ADispatchMode.Blocking,
             A2ASendingOptions? options = null)
         {
-
             ObservedChain = delegationChain;
 
             return Task.FromResult(
                 Result<A2ADispatchResult>.Success(new A2ADispatchResult("remote-task", "ok")));
-
         }
 
         public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
@@ -341,22 +315,17 @@ public sealed class A2ADelegationCycleTests
             string taskId,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
-
     }
 
     private sealed class RecordingApprenticeRepository : IApprenticeRepository
     {
-
         public List<Apprentice> Added { get; } = [];
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-
             Added.Add(apprentice);
 
             return Task.FromResult(apprentice);
-
         }
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -380,12 +349,10 @@ public sealed class A2ADelegationCycleTests
 
         public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
     }
 
     private sealed class StubApprenticeRuntime(ChannelReader<ApprenticeEvent> chronicle) : IApprenticeRuntime
     {
-
         public Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result<string>.Success("started"));
 
@@ -413,21 +380,15 @@ public sealed class A2ADelegationCycleTests
             Guid apprenticeId,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-
             await foreach (ApprenticeEvent @event in chronicle.ReadAllAsync(cancellationToken))
             {
-
                 yield return @event;
-
             }
-
         }
-
     }
 
     private sealed class StubSessionRepository : ISessionRepository
     {
-
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
             throw new NotSupportedException();
 
@@ -469,20 +430,16 @@ public sealed class A2ADelegationCycleTests
         public Task UpdateSessionAsync(Session session, CancellationToken ct) => Task.CompletedTask;
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) => Task.CompletedTask;
-
     }
 
     private sealed class StubPacer : IUnseenServantPacer
     {
-
-        public bool SetDynamicInterval(string jobName, int intervalMinutes) => true;
+        public Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default) => Task.FromResult(true);
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
 
         public Task HydrateAsync(
             IReadOnlyList<UnseenServantWatermark> watermarks,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
-
     }
-
 }

@@ -16,11 +16,12 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class WatchSseTransportTests
 {
-
     /// <summary>
     /// Hang guard for every await in this file, not a behavioural assertion: the transport is driven
     /// deterministically by <c>GatedStreamContent</c> / <c>ControlledDelay</c>, so these timeouts only
@@ -29,12 +30,10 @@ public sealed class WatchSseTransportTests
     /// </summary>
     private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
 
-
     [Fact]
 
     public async Task WatchSseAsync_authenticates_and_preserves_multiline_json()
     {
-
         const string RawJson = "{\"message\":\n\"hello\"}";
 
         RecordingHandler handler = new(
@@ -56,15 +55,12 @@ public sealed class WatchSseTransportTests
             frames,
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.Heartbeat, frame.Type);
 
                 Assert.Contains("keep-alive", frame.Diagnostic!, StringComparison.OrdinalIgnoreCase);
-
             },
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.Data, frame.Type);
 
                 Assert.Equal(RawJson, frame.RawJson);
@@ -72,15 +68,12 @@ public sealed class WatchSseTransportTests
                 Assert.Equal("hello", frame.Data!.Value.GetProperty("message").GetString());
 
                 Assert.DoesNotContain('\n', frame.Data.Value.GetRawText());
-
             },
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.Heartbeat, frame.Type);
 
                 Assert.Contains("live", frame.Diagnostic!, StringComparison.OrdinalIgnoreCase);
-
             },
             frame => Assert.Equal(WatchSseFrameType.Done, frame.Type));
 
@@ -88,9 +81,10 @@ public sealed class WatchSseTransportTests
 
         Assert.Equal("/api/events/logs", request.RequestUri!.AbsolutePath);
 
-        Assert.True(request.Headers.TryGetValues(ArcanumApiHeaders.ApiKey, out IEnumerable<string>? keys));
+        Assert.False(request.Headers.Contains(ArcanumApiHeaders.ApiKey));
 
-        Assert.Equal("test-key", Assert.Single(keys!));
+        Assert.Single(
+            request.Headers.GetValues(ArcanumApiHeaders.ProcessCapability));
 
         Assert.Contains(
             request.Headers.Accept,
@@ -98,14 +92,12 @@ public sealed class WatchSseTransportTests
                 value.MediaType,
                 "text/event-stream",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_rejects_an_absolute_uri_before_sending_authentication()
     {
-
         RecordingHandler handler = new(
             _ => Sse("data: [DONE]\n\n"));
 
@@ -118,14 +110,12 @@ public sealed class WatchSseTransportTests
                     CancellationToken.None)));
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_reports_malformed_json_and_continues_at_the_next_event()
     {
-
         RecordingHandler handler = new(
             _ => Sse(
                 "data: not-json\n\n"
@@ -141,7 +131,6 @@ public sealed class WatchSseTransportTests
             frames,
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.Error, frame.Type);
 
                 Assert.Equal("Api.InvalidResponse", frame.Error!.Value.Code);
@@ -151,25 +140,20 @@ public sealed class WatchSseTransportTests
                 Assert.True(frame.Recoverable);
 
                 Assert.False(frame.Retryable);
-
             },
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.Data, frame.Type);
 
                 Assert.Equal(7, frame.Data!.Value.GetProperty("sequence").GetInt32());
-
             },
             frame => Assert.Equal(WatchSseFrameType.Done, frame.Type));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_distinguishes_clean_eof_without_done()
     {
-
         RecordingHandler handler = new(
             _ => Sse("data: {\"sequence\":7}\n\n"));
 
@@ -183,22 +167,18 @@ public sealed class WatchSseTransportTests
             frame => Assert.Equal(WatchSseFrameType.Data, frame.Type),
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.UnexpectedEof, frame.Type);
 
                 Assert.Contains("disconnect", frame.Diagnostic!, StringComparison.OrdinalIgnoreCase);
 
                 Assert.True(frame.Retryable);
-
             });
-
     }
 
     [Fact]
 
     public async Task WatchSseParser_emits_nonfatal_idle_diagnostic_then_continues()
     {
-
         GatedTextReader reader = new();
 
         ControlledDelay delay = new();
@@ -234,14 +214,12 @@ public sealed class WatchSseTransportTests
         Assert.Equal(WatchSseFrameType.Done, frames.Current.Type);
 
         Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
-
     }
 
     [Fact]
 
     public async Task WatchSseParser_surfaces_keepalive_comments_without_emitting_data()
     {
-
         using StringReader reader = new(
             ": keep-alive\n\n"
             + ": heartbeat\n\n"
@@ -254,24 +232,20 @@ public sealed class WatchSseTransportTests
             frames,
             first =>
             {
-
                 Assert.Equal(WatchSseFrameType.Heartbeat, first.Type);
 
                 Assert.Null(first.Data);
 
                 Assert.Contains("waiting", first.Diagnostic!, StringComparison.OrdinalIgnoreCase);
-
             },
             second => Assert.Equal(WatchSseFrameType.Heartbeat, second.Type),
             done => Assert.Equal(WatchSseFrameType.Done, done.Type));
-
     }
 
     [Fact]
 
     public async Task WatchSseParser_accepts_done_at_eof_without_a_blank_line()
     {
-
         using StringReader reader = new("data: [DONE]");
 
         List<WatchSseFrame> frames = await CollectAsync(
@@ -280,14 +254,12 @@ public sealed class WatchSseTransportTests
         WatchSseFrame frame = Assert.Single(frames);
 
         Assert.Equal(WatchSseFrameType.Done, frame.Type);
-
     }
 
     [Fact]
 
     public async Task WatchSseParser_does_not_impose_a_client_only_payload_cap()
     {
-
         const int FormerClientLineLimit = 1024 * 1024;
 
         string content = new('x', FormerClientLineLimit + 1);
@@ -303,23 +275,19 @@ public sealed class WatchSseTransportTests
             frames,
             frame =>
             {
-
                 Assert.Equal(WatchSseFrameType.Data, frame.Type);
 
                 Assert.Equal(
                     content.Length,
                     frame.Data!.Value.GetProperty("message").GetString()!.Length);
-
             },
             frame => Assert.Equal(WatchSseFrameType.Done, frame.Type));
-
     }
 
     [Fact]
 
     public async Task WatchSseParser_does_not_hide_a_data_event_with_connected_metadata()
     {
-
         using StringReader reader = new(
             "data: {\"connected\":true,\"sequence\":10}\n\n"
             + "data: [DONE]\n\n");
@@ -331,20 +299,16 @@ public sealed class WatchSseTransportTests
             frames,
             frame => Assert.Equal(WatchSseFrameType.Data, frame.Type),
             frame => Assert.Equal(WatchSseFrameType.Done, frame.Type));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_does_not_echo_an_unstructured_http_error_body()
     {
-
         RecordingHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.BadGateway)
             {
-
                 Content = new StringContent("proxy-secret-stack-trace"),
-
             });
 
         ArcanumApiClient client = CreateClient(handler, "test-key");
@@ -361,7 +325,6 @@ public sealed class WatchSseTransportTests
         Assert.Contains("502", frame.Error.Value.Message, StringComparison.Ordinal);
 
         Assert.True(frame.Retryable);
-
     }
 
     [Theory]
@@ -388,7 +351,6 @@ public sealed class WatchSseTransportTests
         int statusCode,
         bool expectedRetryable)
     {
-
         RecordingHandler handler = new(
             _ => new HttpResponseMessage((HttpStatusCode)statusCode));
 
@@ -400,14 +362,12 @@ public sealed class WatchSseTransportTests
         Assert.Equal(WatchSseFrameType.Error, frame.Type);
 
         Assert.Equal(expectedRetryable, frame.Retryable);
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_marks_network_failures_retryable()
     {
-
         RecordingHandler handler = new(
             _ => throw new HttpRequestException("Connection refused."));
 
@@ -419,14 +379,12 @@ public sealed class WatchSseTransportTests
         Assert.Equal(WatchSseFrameType.Error, frame.Type);
 
         Assert.True(frame.Retryable);
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_does_not_retry_an_sse_connection_cap_denial()
     {
-
         Error capError = new(
             ErrorCodes.Api.TooManyConnections,
             "The server has reached the maximum number of concurrent SSE connections.");
@@ -438,9 +396,7 @@ public sealed class WatchSseTransportTests
         RecordingHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
             {
-
                 Content = new ByteArrayContent(json),
-
             });
 
         ArcanumApiClient client = CreateClient(handler, "test-key");
@@ -454,14 +410,12 @@ public sealed class WatchSseTransportTests
         Assert.Equal(capError, frame.Error);
 
         Assert.False(frame.Retryable);
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_reports_waiting_for_response_headers_without_timing_out()
     {
-
         GatedResponseHandler handler = new(Sse("data: [DONE]\n\n"));
 
         ControlledDelay delay = new();
@@ -495,22 +449,18 @@ public sealed class WatchSseTransportTests
         Assert.Equal(WatchSseFrameType.Done, frames.Current.Type);
 
         Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_reports_waiting_for_response_stream_without_timing_out()
     {
-
         GatedStreamContent content = new();
 
         RecordingHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = content,
-
             });
 
         ControlledDelay delay = new();
@@ -544,22 +494,18 @@ public sealed class WatchSseTransportTests
         Assert.Equal(WatchSseFrameType.Done, frames.Current.Type);
 
         Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_reports_waiting_for_error_details_without_timing_out()
     {
-
         GatedStreamContent content = new();
 
         RecordingHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
             {
-
                 Content = content,
-
             });
 
         ControlledDelay delay = new();
@@ -595,14 +541,12 @@ public sealed class WatchSseTransportTests
         Assert.True(frames.Current.Retryable);
 
         Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_fails_without_sending_when_api_key_is_missing()
     {
-
         RecordingHandler handler = new(_ => Sse("data: [DONE]\n\n"));
 
         ArcanumApiClient client = CreateClient(handler, apiKey: null);
@@ -619,14 +563,12 @@ public sealed class WatchSseTransportTests
         Assert.False(frame.Retryable);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_propagates_requested_cancellation()
     {
-
         BlockingHandler handler = new();
 
         ArcanumApiClient client = CreateClient(handler, "test-key");
@@ -645,14 +587,12 @@ public sealed class WatchSseTransportTests
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => move.WaitAsync(AsyncTestTimeout));
-
     }
 
     [Fact]
 
     public async Task WatchSseAsync_cancels_while_waiting_for_the_api_key()
     {
-
         RecordingHandler handler = new(
             _ => Sse("data: [DONE]\n\n"));
 
@@ -660,7 +600,9 @@ public sealed class WatchSseTransportTests
 
         ArcanumApiClient client = new(
             new FakeHttpClientFactory(handler),
-            secrets);
+            ArcanumApiCredentialLeaseTestFactory.Create(
+                secrets,
+                "test-key"));
 
         using CancellationTokenSource cancellation = new();
 
@@ -672,7 +614,6 @@ public sealed class WatchSseTransportTests
 
         try
         {
-
             move = frames.MoveNextAsync().AsTask();
 
             await secrets.Started.Task.WaitAsync(AsyncTestTimeout);
@@ -687,42 +628,32 @@ public sealed class WatchSseTransportTests
 
             _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => move);
-
         }
         finally
         {
-
             secrets.Release();
 
             if (move is not null)
             {
-
                 try
                 {
-
                     _ = await move.WaitAsync(AsyncTestTimeout);
-
                 }
                 catch (Exception)
                 {
-
                 }
-
             }
 
             await frames.DisposeAsync();
-
         }
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
 
     public async Task GetHealthReportAsync_accepts_valid_unhealthy_503_envelope()
     {
-
         HealthReportDto report = new(
             HealthStatus.Unhealthy,
             [new HealthComponentDto("Grimoire", HealthStatus.Unhealthy, "Unavailable")]);
@@ -734,9 +665,7 @@ public sealed class WatchSseTransportTests
         RecordingHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
             {
-
                 Content = new ByteArrayContent(json),
-
             });
 
         ArcanumApiClient client = CreateClient(handler, "test-key");
@@ -748,14 +677,12 @@ public sealed class WatchSseTransportTests
         Assert.Equal(HealthStatus.Unhealthy, result.Value.Status);
 
         Assert.Equal("/api/health", Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
-
     }
 
     [Fact]
 
     public async Task GetHealthReportAsync_preserves_a_structured_503_failure()
     {
-
         Error apiError = new("Health.Unavailable", "Health could not be evaluated.");
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
@@ -765,9 +692,7 @@ public sealed class WatchSseTransportTests
         RecordingHandler handler = new(
             _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
             {
-
                 Content = new ByteArrayContent(json),
-
             });
 
         ArcanumApiClient client = CreateClient(handler, "test-key");
@@ -778,7 +703,6 @@ public sealed class WatchSseTransportTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(apiError, result.Error);
-
     }
 
     [Theory]
@@ -790,7 +714,6 @@ public sealed class WatchSseTransportTests
     public async Task GetHealthWatchReportAsync_marks_structured_transient_status_retryable(
         int statusCode)
     {
-
         Error apiError = new(
             ErrorCodes.RateLimit.TooManyRequests,
             "Health observation is temporarily unavailable.");
@@ -802,9 +725,7 @@ public sealed class WatchSseTransportTests
         RecordingHandler handler = new(
             _ => new HttpResponseMessage((HttpStatusCode)statusCode)
             {
-
                 Content = new ByteArrayContent(json),
-
             });
 
         ArcanumApiClient client = CreateClient(handler, "test-key");
@@ -815,24 +736,19 @@ public sealed class WatchSseTransportTests
         Assert.Equal(apiError, observation.Report.Error);
 
         Assert.True(observation.Retryable);
-
     }
 
     private static async Task<List<WatchSseFrame>> CollectAsync(
         IAsyncEnumerable<WatchSseFrame> source)
     {
-
         List<WatchSseFrame> frames = [];
 
         await foreach (WatchSseFrame frame in source)
         {
-
             frames.Add(frame);
-
         }
 
         return frames;
-
     }
 
     private static ArcanumApiClient CreateClient(
@@ -840,34 +756,27 @@ public sealed class WatchSseTransportTests
         string? apiKey) =>
         new(
             new FakeHttpClientFactory(handler),
-            new FakeSecretStore(apiKey));
+            ArcanumApiCredentialLeaseTestFactory.Create(apiKey));
 
     private static HttpResponseMessage Sse(string body) =>
         new(HttpStatusCode.OK)
         {
-
             Content = new StringContent(body, Encoding.UTF8, "text/event-stream"),
-
         };
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
-
                 BaseAddress = new Uri("http://localhost:5001/"),
 
                 Timeout = Timeout.InfiniteTimeSpan,
-
             };
-
     }
 
     private sealed class FakeSecretStore(string? apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -883,40 +792,32 @@ public sealed class WatchSseTransportTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class RecordingHandler(
         Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             HttpRequestMessage recorded = new(request.Method, request.RequestUri);
 
             foreach ((string key, IEnumerable<string> values) in request.Headers)
             {
-
                 _ = recorded.Headers.TryAddWithoutValidation(key, values);
-
             }
 
             Requests.Add(recorded);
 
             return Task.FromResult(responder(request));
-
         }
-
     }
 
     private sealed class BlockingSecretStore : ISecretStore
     {
-
         private readonly TaskCompletionSource<string?> _release = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -927,11 +828,9 @@ public sealed class WatchSseTransportTests
 
         public async Task<string?> GetApiKeyAsync()
         {
-
             Started.TrySetResult();
 
             return await _release.Task.ConfigureAwait(false);
-
         }
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -939,7 +838,6 @@ public sealed class WatchSseTransportTests
 
         public async Task<SecretStoreReadResult> PeekApiKeyReadResultAsync()
         {
-
             Started.TrySetResult();
 
             string? apiKey = await _release.Task.ConfigureAwait(false);
@@ -947,7 +845,6 @@ public sealed class WatchSseTransportTests
             return apiKey is null
                 ? SecretStoreReadResult.Missing()
                 : SecretStoreReadResult.Ok(apiKey);
-
         }
 
         public Task SaveApiKeyAsync(string key) => Task.CompletedTask;
@@ -957,12 +854,10 @@ public sealed class WatchSseTransportTests
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
             Task.CompletedTask;
-
     }
 
     private sealed class GatedTextReader : TextReader
     {
-
         private readonly TaskCompletionSource<string> _content = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -980,7 +875,6 @@ public sealed class WatchSseTransportTests
         public override async ValueTask<string?> ReadLineAsync(
             CancellationToken cancellationToken)
         {
-
             ReadStarted.TrySetResult();
 
             _releasedContent ??= await _content.Task
@@ -990,14 +884,12 @@ public sealed class WatchSseTransportTests
             _lineReader ??= new StringReader(_releasedContent);
 
             return _lineReader.ReadLine();
-
         }
 
         public override async ValueTask<int> ReadAsync(
             Memory<char> buffer,
             CancellationToken cancellationToken = default)
         {
-
             ReadStarted.TrySetResult();
 
             _releasedContent ??= await _content.Task
@@ -1006,9 +898,7 @@ public sealed class WatchSseTransportTests
 
             if (_offset >= _releasedContent.Length)
             {
-
                 return 0;
-
             }
 
             int count = Math.Min(
@@ -1020,14 +910,11 @@ public sealed class WatchSseTransportTests
             _offset += count;
 
             return count;
-
         }
-
     }
 
     private sealed class BlockingHandler : HttpMessageHandler
     {
-
         public TaskCompletionSource Started { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1035,7 +922,6 @@ public sealed class WatchSseTransportTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Started.TrySetResult();
 
             await Task.Delay(
@@ -1045,15 +931,12 @@ public sealed class WatchSseTransportTests
 
             throw new InvalidOperationException(
                 "The infinite wait unexpectedly completed.");
-
         }
-
     }
 
     private sealed class GatedResponseHandler(
         HttpResponseMessage response) : HttpMessageHandler
     {
-
         private readonly TaskCompletionSource _release = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1066,7 +949,6 @@ public sealed class WatchSseTransportTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Started.TrySetResult();
 
             await _release.Task
@@ -1074,14 +956,11 @@ public sealed class WatchSseTransportTests
                 .ConfigureAwait(false);
 
             return response;
-
         }
-
     }
 
     private sealed class GatedStreamContent : HttpContent
     {
-
         private readonly TaskCompletionSource<Stream> _stream = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1100,27 +979,21 @@ public sealed class WatchSseTransportTests
         protected override Task<Stream> CreateContentReadStreamAsync(
             CancellationToken cancellationToken)
         {
-
             OpenStarted.TrySetResult();
 
             return _stream.Task.WaitAsync(cancellationToken);
-
         }
 
         protected override bool TryComputeLength(out long length)
         {
-
             length = 0;
 
             return false;
-
         }
-
     }
 
     private sealed class ControlledDelay
     {
-
         private readonly TaskCompletionSource _first = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1132,18 +1005,12 @@ public sealed class WatchSseTransportTests
             TimeSpan delay,
             CancellationToken cancellationToken)
         {
-
             if (Interlocked.Increment(ref _calls) == 1)
             {
-
                 return _first.Task.WaitAsync(cancellationToken);
-
             }
 
             return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-
         }
-
     }
-
 }

@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Api.Streaming;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -261,6 +262,7 @@ internal static partial class SpellExecutionEndpoints
                     .ConfigureAwait(false);
             })
         .WithName("Spell_ExecuteStream")
+        .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain)
         .AllowCovenantContext()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(3, ArcanumJsonContext.Default.SpellExecuteRequest));
 

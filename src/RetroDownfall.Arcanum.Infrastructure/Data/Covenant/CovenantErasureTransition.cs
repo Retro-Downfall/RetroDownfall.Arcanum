@@ -47,35 +47,69 @@ internal sealed class CovenantErasureTransition(
 
     public Task<Result<Guid>> ApplyCanonicalErasureAsync(
         CovenantExclusiveOperation operation,
-        CovenantV3MaintenanceCapability capability,
+        CovenantCanonicalDatasetTransition dataset,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
-        _canonical.ApplyAsync(operation, capability, cancellationToken);
+        _canonical.ApplyAsync(operation, dataset, authority, cancellationToken);
 
-    public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) =>
-        _storage.CloseHandlesAsync(cancellationToken);
+    public Task<Result> CloseHandlesAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.CloseHandlesAsync(authority, cancellationToken);
 
     public Task<Result> TruncateWalAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
-        _storage.TruncateWalAsync(capability, cancellationToken);
+        _storage.TruncateWalAsync(authority, cancellationToken);
 
-    public Task<Result> CompactAsync(
-        CovenantV3CompactionCapabilities capabilities,
+    public Task<Result<bool>> CompactAsync(
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
-        _storage.CompactAsync(capabilities, cancellationToken);
+        _storage.CompactAsync(authority, cancellationToken);
+
+    public Task<Result<CovenantDigest>> StageCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.StageCandidateAsync(authority, cancellationToken);
+
+    public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CancellationToken cancellationToken) =>
+        _storage.ProveStagedCandidateAsync(authority, stagingIdentity, cancellationToken);
+
+    public Task<Result> InstallCompactionReplacementAsync(
+        CovenantClosedPeriodAuthority authority,
+        CovenantDigest stagingIdentity,
+        CovenantDigest stagedContent,
+        CovenantDigest destinationIdentity,
+        CancellationToken cancellationToken) =>
+        _storage.InstallCompactionReplacementAsync(
+            authority,
+            stagingIdentity,
+            stagedContent,
+            destinationIdentity,
+            cancellationToken);
+
+    public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.ReadCanonicalIdentityAsync(authority, cancellationToken);
 
     public Task<Result> InitializeAcceleratorAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
-        _storage.InitializeAcceleratorAsync(capability, cancellationToken);
+        _storage.InitializeAcceleratorAsync(authority, cancellationToken);
 
-    public Task<Result> VerifySidecarAbsenceAsync(CancellationToken cancellationToken) =>
-        _storage.VerifySidecarAbsenceAsync(cancellationToken);
+    public Task<Result> VerifySidecarAbsenceAsync(
+        CovenantClosedPeriodAuthority authority,
+        CancellationToken cancellationToken) =>
+        _storage.VerifySidecarAbsenceAsync(authority, cancellationToken);
 
     public Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(
-        CovenantV3MaintenanceCapability capability,
+        CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken) =>
-        _storage.VerifyReopenAsync(capability, cancellationToken);
+        _storage.VerifyReopenAsync(authority, cancellationToken);
 
     public async Task<Result> PublishCommittedAsync(
         ICovenantExclusiveOperationLease lease,
@@ -116,7 +150,7 @@ internal sealed class CovenantErasureTransition(
         try
         {
 
-            CovenantCommittedCapabilityTransition capability = new(
+            CovenantCommittedCapabilityTransition authority = new(
                 ExpectedGeneration: availability.Generation,
                 Generation: checked(availability.Generation + 1),
                 FeatureEnabled: availability.FeatureEnabled,
@@ -156,7 +190,7 @@ internal sealed class CovenantErasureTransition(
                     candidate.Authority.RecoveryEnvelopeEpoch,
                     candidate.Authority.HostToolsState,
                     candidate.Authority.TransitionId,
-                    capability));
+                    authority));
 
         }
         catch (Exception failed) when (

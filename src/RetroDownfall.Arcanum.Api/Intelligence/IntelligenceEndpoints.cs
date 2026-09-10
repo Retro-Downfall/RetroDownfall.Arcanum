@@ -322,6 +322,7 @@ internal static class IntelligenceEndpoints
 
         })
         .WithName("PostIntelligencePingStream")
+        .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain)
         .AllowCovenantContext()
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);

@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
@@ -84,7 +85,15 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         long lengthBefore = new FileInfo(erased.DatabasePath).Length;
 
-        Result compacted = await erased.Health.CompactAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        // Closed before compacting, which this test did not used to have to do. The free-page read
+        // above reopens this fixture's handle, and that handle leaves a write-ahead log beside the
+        // database. The compaction used to drain before measuring, so it closed the handle its own
+        // caller had just opened; the drain is the gate's now and it ran when the closed period was
+        // entered, before this measurement existed. A suite that opens a handle inside a closed
+        // period owns closing it — the same reason the sweep at the end of this test already does.
+        await erased.CloseAsync();
+
+        Result compacted = await erased.Health.CompactAsync(erased.Authority, Token);
 
         Assert.True(compacted.IsSuccess, compacted.IsFailure ? compacted.Error.Message : null);
 
@@ -130,7 +139,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        Result compacted = await erased.Health.CompactAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result compacted = await erased.Health.CompactAsync(erased.Authority, Token);
 
         Assert.True(compacted.IsFailure);
 
@@ -164,7 +173,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.WriteWalFramesAsync(Token);
 
-        Result truncated = await erased.Health.TruncateWalAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation), Token);
+        Result truncated = await erased.Health.TruncateWalAsync(erased.Authority, Token);
 
         Assert.True(truncated.IsFailure);
 
@@ -262,7 +271,9 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         _ = await Scalar(survivor, "SELECT COUNT(*) FROM covenant_state;", Token);
 
-        Result closed = await erased.Health.CloseHandlesAsync(Token);
+        Result closed = await erased.Health.CloseHandlesAsync(
+            erased.Authority,
+            Token);
 
         Assert.True(closed.IsFailure);
 
@@ -293,7 +304,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         _ = await Scalar(survivor, "SELECT COUNT(*) FROM covenant_state;", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+        Result verified = await erased.Health.VerifySidecarAbsenceAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -307,13 +318,52 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
     }
 
+    /// <summary>
+    /// Sidecars nobody is holding are cleaned up rather than reported as a handle that never closed.
+    /// </summary>
+    /// <remarks>
+    /// SQLite removes a write-ahead log when the last connection to the database closes, and a
+    /// read-only connection has no authority to remove one — so a database whose last reader was
+    /// read-only keeps both sidecars with nothing at all holding it open. That is the opposite
+    /// condition to the one this proof exists to catch, and the drain cannot tell them apart: it
+    /// closes what it was shown, and here it was shown nothing because there is nothing left.
+    ///
+    /// <para>An erasure reads its own inventory through a read-only connection, so this is its own
+    /// ordinary trailing state rather than an exotic one. Before the phase authority moved out of the
+    /// database the erasure happened to write a checkpoint between the two steps, and that write's
+    /// close did the cleanup by accident; nothing does now, which is why the owner has to.</para>
+    /// </remarks>
+    [Fact]
+    public async Task Sidecars_left_by_a_read_only_last_close_are_settled_rather_than_refused()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.LeaveOrphanedSidecarsAsync(Token);
+
+        Assert.True(File.Exists(erased.DatabasePath + "-wal"));
+
+        Result closed = await erased.Health.CloseHandlesAsync(
+            erased.Authority,
+            Token);
+
+        Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
+
+        Assert.False(File.Exists(erased.DatabasePath + "-wal"));
+
+        Assert.False(File.Exists(erased.DatabasePath + "-shm"));
+
+    }
+
     [Fact]
     public async Task A_drained_installation_passes_the_close()
     {
 
         await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
 
-        Result closed = await erased.Health.CloseHandlesAsync(Token);
+        Result closed = await erased.Health.CloseHandlesAsync(
+            erased.Authority,
+            Token);
 
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
@@ -341,7 +391,11 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllTextAsync(erased.DatabasePath + suffix, "residue", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+        // The pure measurement, not the retried proof. The proof performs the last close SQLite is
+        // waiting for between attempts, which removes exactly the write-ahead log and index this
+        // plants - so going through it would be asserting that a checkpoint works rather than that
+        // each residual class has its own message and none of them names a path.
+        Result verified = erased.Health.RequireResidualAbsence(CovenantResidualArtifacts.Declared);
 
         Assert.True(verified.IsFailure);
 
@@ -369,7 +423,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllTextAsync(backup, "a copy of the database this erasure replaced", Token);
 
-        Result verified = await erased.Health.VerifySidecarAbsenceAsync(Token);
+        Result verified = await erased.Health.VerifySidecarAbsenceAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -402,7 +456,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         // Run it a second time on its own. The first reopen sat behind six other steps, and a handle
         // that only avoids a sidecar because an earlier step happened to leave none is not the handle
         // this acceptance asks for.
-        Result<CovenantVerifiedCandidateState> again = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> again = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(again.IsSuccess, again.IsFailure ? again.Error.Message : null);
 
@@ -670,7 +724,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteUncheckedAsync(corruption, Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure, caseName);
 
@@ -695,7 +749,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteUncheckedAsync(corruption, Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure, caseName);
 
@@ -725,7 +779,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -750,7 +804,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteUncheckedAsync(corruption, Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure, caseName);
 
@@ -777,7 +831,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsFailure);
 
@@ -808,7 +862,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsFailure);
 
@@ -835,7 +889,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -855,7 +909,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             "UPDATE capability_cleanup_state SET AppliedSessionSequence = 0 WHERE CapabilityFamilyCode = 1;",
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -883,7 +937,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             """,
             Token);
 
-        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification), Token);
+        Result<CovenantVerifiedCandidateState> reopened = await erased.Health.VerifyReopenAsync(erased.Authority, Token);
 
         Assert.True(reopened.IsFailure);
 
@@ -905,7 +959,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteAsync("DELETE FROM covenant_fts_config WHERE k = 'secure-delete';", Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsSuccess, initialized.IsFailure ? initialized.Error.Message : null);
 
@@ -931,7 +985,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.ExecuteAsync("DROP TABLE covenant_fts_data;", Token);
 
-        Result initialized = await erased.Health.InitializeAcceleratorAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization), Token);
+        Result initialized = await erased.Health.InitializeAcceleratorAsync(erased.Authority, Token);
 
         Assert.True(initialized.IsFailure);
 
@@ -959,6 +1013,47 @@ public sealed class CovenantLocalErasureStorageHealthTests
     }
 
     /// <summary>
+    /// Drives the whole fresh-file arm the way the coordinator drives it, and reports the first
+    /// refusal.
+    /// </summary>
+    /// <remarks>
+    /// A helper rather than a composed member on the subject, because there is no longer a composed
+    /// member: the three steps exist apart precisely so the journal can record what each one
+    /// established before the next one runs, and a production seam that ran them together would put
+    /// the install back on the far side of a publication the transition graph will not accept.
+    /// </remarks>
+    private static async Task<Result> StageProveAndInstallAsync(
+        ErasedGrimoire erased,
+        CancellationToken cancellationToken)
+    {
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, cancellationToken);
+
+        if (staged.IsFailure)
+        {
+
+            return staged.Error;
+
+        }
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            cancellationToken);
+
+        return proven.IsFailure
+            ? proven.Error
+            : await erased.Health.InstallCompactionReplacementAsync(
+                erased.Authority,
+                staged.Value,
+                proven.Value,
+                CovenantFileWitness.IdentityOf(erased.DatabasePath).Value,
+                cancellationToken);
+
+    }
+
+    /// <summary>
     /// The fresh-file arm, driven directly.
     /// </summary>
     /// <remarks>
@@ -975,22 +1070,380 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.DrainAsync(Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result replaced = await StageProveAndInstallAsync(erased, Token);
 
         Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Message : null);
 
         Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
 
+        // Asserted here, before anything else opens the database. sqlcipher_export writes a
+        // rollback-journalled file and the installation opens its Grimoire in write-ahead logging, so
+        // a replace that left the other mode behind would change how every later connection journals
+        // underneath a proof that had already been made.
+        //
+        // Journal mode is persisted in the database header, and every ordinary route into this
+        // fixture runs the connection initializer, whose read-write arm issues PRAGMA
+        // journal_mode=WAL against the file. So the read has to happen on a policy-free handle AND
+        // before any policy-applying handle has touched it; either alone measures the pragma the test
+        // itself caused, and passes whatever the replace did or did not restore.
+        Assert.Equal("wal", await erased.ReadInstalledJournalModeAsync(Token));
+
         await erased.ReopenAsync(Token);
 
         Assert.Equal(erased.CandidateGeneration, await erased.ReadDatasetGenerationAsync(Token));
 
-        // sqlcipher_export writes a rollback-journalled database, and the installation opens its
-        // Grimoire in write-ahead logging. A replace that left the other mode behind would change how
-        // every later connection journals, underneath a proof that had already been made.
-        Assert.Equal("wal", await erased.ScalarStringAsync("PRAGMA journal_mode;", Token));
-
         await erased.AssertFileIsExactlyItsPagesAsync(Token);
+
+    }
+
+    /// <summary>
+    /// An install that refuses without touching the destination keeps the candidate it could not
+    /// install, so a later attempt can finish the job.
+    /// </summary>
+    /// <remarks>
+    /// The failure this arranges is benign by construction: the atomic primitive cannot create its
+    /// own temporary file, so it never reaches the move and the original database is exactly where it
+    /// was. What made that failure fatal was the cleanup — the candidate went with it, and the
+    /// journal's replacement evidence names an identity the lifecycle graph will not let any later
+    /// run replace. A retryable refusal became an installation that could never be erased.
+    /// </remarks>
+    [Fact]
+    public async Task An_install_that_leaves_the_original_in_place_keeps_the_candidate_for_the_next_attempt()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+
+        byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
+
+        // A directory exactly where the atomic replace writes its own temporary file, so the create
+        // fails before the move and the destination is never touched.
+        string obstruction = CovenantResidualArtifacts.ReplacementStagingPath(erased.DatabasePath);
+
+        Directory.CreateDirectory(obstruction);
+
+        CovenantDigest destination = CovenantFileWitness.IdentityOf(erased.DatabasePath).Value;
+
+        Result refused = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+        // The point of the test: the candidate is still there, still the file the journal named.
+        Assert.True(
+            File.Exists(erased.Authority.ExportStagingDatabasePath),
+            "A refused install destroyed the candidate it did not install.");
+
+        Directory.Delete(obstruction, recursive: true);
+
+        Result installed = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(installed.IsSuccess, installed.IsFailure ? installed.Error.Message : null);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+    }
+
+    /// <summary>
+    /// A candidate the verification could not open is kept; one it opened and rejected is destroyed.
+    /// </summary>
+    /// <remarks>
+    /// The two arrive as the same failed result and acting on the wrong one is unrecoverable in
+    /// exactly one direction. A capability that would not issue says nothing about the candidate — and
+    /// once it is gone the journal names a staging identity the lifecycle graph will not let any later
+    /// run replace, so the transition can never finish. Keeping a candidate that turns out to be
+    /// worthless costs one sweep by the next transition's staging step; destroying one that was fine
+    /// costs the installation its ability to be erased.
+    ///
+    /// <para>The refusal is injected at the verification connection rather than by handing in a wrong
+    /// identity, because a wrong identity is refused by the guard <em>above</em> the examination and
+    /// would never reach the distinction under test at all.</para>
+    /// </remarks>
+    [Fact]
+    public async Task A_candidate_the_verification_could_not_open_is_kept_rather_than_destroyed()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(
+            Token,
+            decorate: inner => new ExportVerificationRefusingFactory(inner));
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        // The identity matches, so the guard above the examination passes and the examination itself
+        // is what refuses - at the opener, having looked at nothing.
+        Result<CovenantDigest> unexamined = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(unexamined.IsFailure);
+
+        Assert.True(
+            File.Exists(erased.Authority.ExportStagingDatabasePath),
+            "A candidate the verification could not open was destroyed.");
+
+        // Still the file the journal named, so the transition that recorded it can still finish.
+        Assert.True(
+            CovenantFileWitness.HasIdentity(
+                erased.Authority.ExportStagingDatabasePath,
+                staged.Value),
+            "The surviving candidate is no longer the file the journal recorded.");
+
+    }
+
+    /// <summary>A maintenance factory whose export-verification opener always refuses.</summary>
+    /// <remarks>
+    /// Refusing at the opener is the one way to reach the "nobody looked at it" arm: every other
+    /// producer of that answer is an exception from the engine, which a suite cannot arrange against a
+    /// real database without corrupting the very file whose survival is the assertion.
+    /// </remarks>
+    private sealed class ExportVerificationRefusingFactory(IGrimoireMaintenanceConnectionFactory inner)
+        : IGrimoireMaintenanceConnectionFactory
+    {
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<IGrimoireMaintenanceConnectionLease>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.MaintenanceFailed,
+                        "This suite refuses the export-verification capability.")));
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalWalTruncationAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalPostReplaceRestoreAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCompactionAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalAcceleratorInitializationAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalCandidateReopenAsync(capability, lane, cancellationToken);
+
+        public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+            IGrimoireMaintenanceConnectionCapability capability,
+            IGrimoireMaintenanceIoLane lane,
+            CancellationToken cancellationToken) =>
+            inner.OpenJournalInventorySnapshotAsync(capability, lane, cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Installing the same proven candidate twice reaches the same database, because the second
+    /// install recognises the first.
+    /// </summary>
+    /// <remarks>
+    /// This is the crash the whole content digest exists for. An install that completed and then
+    /// cleared its staging file, and an install that never started, leave a directory that looks
+    /// identical — so a resumed run that decided from the directory would either refuse a finished
+    /// replacement or install nothing and call it done. It decides from the destination's own contents
+    /// instead, and only a match may be called an install.
+    /// </remarks>
+    [Fact]
+    public async Task An_install_that_already_happened_is_recognised_rather_than_repeated()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+
+        CovenantDigest destination = CovenantFileWitness.IdentityOf(erased.DatabasePath).Value;
+
+        Result first = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+        byte[] installed = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
+
+        // The staging file is gone, exactly as a completed install leaves it. This is the resumed run.
+        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+        Result second = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : null);
+
+        // Identical bytes are not asserted: a successful install reopens the database to put
+        // write-ahead logging back, and that rewrites the header. What must hold is that the second
+        // install recognised the first rather than refusing or replacing again.
+        Assert.Equal(installed.Length, new FileInfo(erased.DatabasePath).Length);
+
+    }
+
+    /// <summary>
+    /// A candidate that is gone from a database that is not the one it proved is refused, not
+    /// installed and not called done.
+    /// </summary>
+    /// <remarks>
+    /// The other reading of the same directory. Nothing here can say whether the candidate was never
+    /// installed or was installed and then overwritten, and both answers change what an operator has
+    /// to do — so this refuses and says so, rather than picking the one that lets the ladder continue.
+    /// </remarks>
+    [Fact]
+    public async Task A_candidate_that_is_gone_from_a_database_it_never_reached_is_refused()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsSuccess, proven.IsFailure ? proven.Error.Message : null);
+
+        byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
+
+        File.Delete(erased.Authority.ExportStagingDatabasePath);
+
+        CovenantDigest destination = CovenantFileWitness.IdentityOf(erased.DatabasePath).Value;
+
+        Result refused = await erased.Health.InstallCompactionReplacementAsync(
+            erased.Authority,
+            staged.Value,
+            proven.Value,
+            destination,
+            Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, refused.Error.Code);
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+    }
+
+    /// <summary>
+    /// A candidate whose proof fails is destroyed, and the identity the journal recorded then names
+    /// nothing.
+    /// </summary>
+    /// <remarks>
+    /// It is a complete encrypted copy of the database an erasure is in the middle of removing, and
+    /// this transition has just established that it will never be installed — so keeping it would
+    /// leave exactly the second copy the erasure exists to prevent. What the journal keeps is its
+    /// identity, which is what makes the next run refuse rather than quietly prove a fresh candidate
+    /// under evidence written about the old one.
+    /// </remarks>
+    [Fact]
+    public async Task A_candidate_that_fails_its_proof_is_destroyed_rather_than_left_behind()
+    {
+
+        await using ErasedGrimoire erased = await ErasedGrimoire.CreateAsync(Token);
+
+        await erased.ExecuteAsync("DELETE FROM covenant_state WHERE StateKey = 1;", Token);
+
+        await erased.DrainAsync(Token);
+
+        Result<CovenantDigest> staged =
+            await erased.Health.StageCandidateAsync(erased.Authority, Token);
+
+        Assert.True(staged.IsSuccess, staged.IsFailure ? staged.Error.Message : null);
+
+        Result<CovenantDigest> proven = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(proven.IsFailure);
+
+        Assert.Contains("canonical singleton", proven.Error.Message, StringComparison.Ordinal);
+
+        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+        // And the identity it recorded now names nothing, so a second attempt refuses instead of
+        // proving whatever is at that path next.
+        Result second = await erased.Health.ProveStagedCandidateAsync(
+            erased.Authority,
+            staged.Value,
+            Token);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Contains("this transition recorded", second.Error.Message, StringComparison.Ordinal);
 
     }
 
@@ -1008,9 +1461,9 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        string staging = CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath);
+        string staging = erased.Authority.ExportStagingDatabasePath;
 
-        Result exported = await erased.Health.ExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport), Token);
+        Result exported = await erased.Health.ExportAsync(erased.Authority, Token);
 
         Assert.True(exported.IsSuccess, exported.IsFailure ? exported.Error.Message : null);
 
@@ -1022,7 +1475,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await File.WriteAllBytesAsync(staging, candidate, Token);
 
-        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification), Token);
+        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(erased.Authority, Token);
 
         Assert.True(verified.IsFailure);
 
@@ -1096,7 +1549,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         {
 
             exported = await erased.Health.ExportAsync(
-                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport),
+                erased.Authority,
                 cts.Token);
 
         });
@@ -1165,7 +1618,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         {
 
             initialized = await erased.Health.InitializeAcceleratorAsync(
-                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+                erased.Authority,
                 cts.Token);
 
         });
@@ -1190,21 +1643,34 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        // Something that is not a database, exactly where the export would write one.
-        await File.WriteAllTextAsync(
-            CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath),
-            "not a database",
-            Token);
+        // A directory exactly where the export would write its file. It has to be a directory rather
+        // than a file that is not a database: staging begins by clearing every file of its own class,
+        // so anything it could delete it would simply delete and then export over. What this leaves is
+        // an obstruction the step is not entitled to remove and cannot write through.
+        string obstruction = erased.Authority.ExportStagingDatabasePath;
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Directory.CreateDirectory(obstruction);
 
-        Assert.True(replaced.IsFailure);
+        try
+        {
 
-        Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+            Result replaced = await StageProveAndInstallAsync(erased, Token);
 
-        // The staging file it could not use is still this path's own litter, and a refusal that left
-        // it behind would fail the absence proof two steps later for a reason nothing had recorded.
-        Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+            Assert.True(replaced.IsFailure);
+
+            Assert.Equal(before, await File.ReadAllBytesAsync(erased.DatabasePath, Token));
+
+            // The class sweep is over files, so nothing it left behind is a survivor. The obstruction
+            // is the test's own and is removed as such.
+            Assert.Empty(CovenantResidualArtifacts.Survivors(erased.DatabasePath));
+
+        }
+        finally
+        {
+
+            Directory.Delete(obstruction, recursive: true);
+
+        }
 
     }
 
@@ -1231,7 +1697,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        Result replaced = await erased.Health.ExportAndReplaceAsync(CovenantV3MaintenanceTestAuthority.Compaction(), Token);
+        Result replaced = await StageProveAndInstallAsync(erased, Token);
 
         Assert.True(replaced.IsFailure);
 
@@ -1259,19 +1725,19 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         byte[] before = await File.ReadAllBytesAsync(erased.DatabasePath, Token);
 
-        string staging = CovenantResidualArtifacts.ExportStagingPath(erased.DatabasePath);
+        string staging = erased.Authority.ExportStagingDatabasePath;
 
-        Result exported = await erased.Health.ExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExport), Token);
+        Result exported = await erased.Health.ExportAsync(erased.Authority, Token);
 
         Assert.True(exported.IsSuccess, exported.IsFailure ? exported.Error.Message : null);
 
-        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification), Token);
+        Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(erased.Authority, Token);
 
         Assert.True(verified.IsSuccess, verified.IsFailure ? verified.Error.Message : null);
 
         File.Delete(staging);
 
-        Result replaced = await erased.Health.ReplaceAsync(verified.Value, CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionPostReplaceJournalRestore), Token);
+        Result replaced = await erased.Health.ReplaceAsync(verified.Value, erased.Authority, Token);
 
         Assert.True(replaced.IsFailure);
 
@@ -1290,7 +1756,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
         await erased.DrainAsync(Token);
 
         Result<CovenantVerifiedExport> verified = await erased.Health.VerifyExportAsync(
-            CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionExportVerification),
+            erased.Authority,
             Token);
 
         Assert.True(verified.IsFailure);
@@ -1315,7 +1781,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         await erased.DrainAsync(Token);
 
-        Result<CovenantCompactionMeasurement?> measured = await erased.Health.VacuumAsync(CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CompactionVacuum), Token);
+        Result<CovenantCompactionMeasurement?> measured = await erased.Health.VacuumAsync(erased.Authority, Token);
 
         Assert.True(measured.IsSuccess, measured.IsFailure ? measured.Error.Message : null);
 
@@ -1394,19 +1860,35 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         private readonly CovenantCanonicalErasureFixture _fixture;
 
+        private readonly CovenantClosedPeriodTestAuthority _period;
+
         private ErasedGrimoire(
             CovenantCanonicalErasureFixture fixture,
+            CovenantClosedPeriodTestAuthority period,
             CovenantLocalErasureStorageHealth health,
             Guid candidateGeneration)
         {
 
             _fixture = fixture;
 
+            _period = period;
+
             Health = health;
 
             CandidateGeneration = candidateGeneration;
 
         }
+
+        /// <summary>
+        /// The one closed period the erasure and every storage-health step of it run inside.
+        /// </summary>
+        /// <remarks>
+        /// One for the whole harness rather than one per step, and that is the production shape
+        /// rather than a convenience. The coordinator closes admission once and drives all seven
+        /// steps under that single closure; a period per step would re-close and re-open the gate
+        /// between phases, which is precisely the window an erasure exists to not have.
+        /// </remarks>
+        internal CovenantClosedPeriodAuthority Authority => _period.Authority;
 
         /// <summary>
         /// The concrete proof, because two of its members are the fresh-file arm the seam does not
@@ -1424,7 +1906,8 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         internal static async Task<ErasedGrimoire> CreateAsync(
             CancellationToken cancellationToken,
-            bool withAccelerator = true)
+            bool withAccelerator = true,
+            Func<IGrimoireMaintenanceConnectionFactory, IGrimoireMaintenanceConnectionFactory>? decorate = null)
         {
 
             CovenantCanonicalErasureFixture fixture =
@@ -1437,28 +1920,36 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
                 await SeedJunkAsync(fixture, cancellationToken);
 
-                CovenantV3MaintenanceTestConnectionFactory v3Connections = fixture.V3Connections();
+                // Preselected before admission closes: the read goes through the fixture's own
+                // handle, and that handle is what the gate's stage-two close is about to drain.
+                CovenantCanonicalDatasetTransition preselected =
+                    await fixture.PreselectAsync(cancellationToken);
+
+                CovenantClosedPeriodTestAuthority period = await fixture.ClosedPeriodAsync(decorate);
 
                 CovenantCanonicalErasureTransaction transaction = new(
-                    v3Connections,
                     CovenantSqliteConnectionInitializer.Instance,
-                    fixture.Drain,
                     TimeProvider.System);
 
                 Result<Guid> applied = await transaction.ApplyAsync(
                     CovenantExclusiveOperation.CovenantReset,
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CanonicalErasure),
+                    preselected,
+                    period.Authority,
                     cancellationToken);
 
                 Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
+                // The proof's paths and key come from the period rather than from a second pair built
+                // beside it, so the file it measures, enumerates and replaces is provably the file the
+                // gate authorized every open against.
                 return new ErasedGrimoire(
                     fixture,
+                    period,
                     new CovenantLocalErasureStorageHealth(
-                        v3Connections,
-                        v3Connections,
+                        new CovenantConnectionDrain(),
+                        period.Paths,
+                        period.Passphrase,
                         CovenantSqliteConnectionInitializer.Instance,
-                        fixture.Drain,
                         TimeProvider.System),
                     applied.Value);
 
@@ -1482,7 +1973,11 @@ public sealed class CovenantLocalErasureStorageHealthTests
             // Through the seam the coordinator holds, in the order its frozen phase machine calls it.
             ICovenantLocalErasureStorageHealth seam = Health;
 
-            Result closed = await Record("close-handles", seam.CloseHandlesAsync(cancellationToken));
+            Result closed = await Record(
+                "close-handles",
+                seam.CloseHandlesAsync(
+                    Authority,
+                    cancellationToken));
 
             if (closed.IsFailure)
             {
@@ -1494,7 +1989,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result truncated = await Record(
                 "truncate-wal",
                 seam.TruncateWalAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+                    Authority,
                     cancellationToken));
 
             if (truncated.IsFailure)
@@ -1504,9 +1999,9 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
             }
 
-            Result compacted = await Record(
+            Result<bool> compacted = await Record(
                 "compact",
-                seam.CompactAsync(CovenantV3MaintenanceTestAuthority.Compaction(), cancellationToken));
+                seam.CompactAsync(Authority, cancellationToken));
 
             if (compacted.IsFailure)
             {
@@ -1518,7 +2013,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result accelerator = await Record(
                 "initialize-accelerator",
                 seam.InitializeAcceleratorAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.AcceleratorInitialization),
+                    Authority,
                     cancellationToken));
 
             if (accelerator.IsFailure)
@@ -1531,7 +2026,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Result finalTruncate = await Record(
                 "truncate-wal",
                 seam.TruncateWalAsync(
-                    CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.WalTruncation),
+                    Authority,
                     cancellationToken));
 
             if (finalTruncate.IsFailure)
@@ -1543,7 +2038,7 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
             Result absent = await Record(
                 "verify-sidecar-absence",
-                seam.VerifySidecarAbsenceAsync(cancellationToken));
+                seam.VerifySidecarAbsenceAsync(Authority, cancellationToken));
 
             if (absent.IsFailure)
             {
@@ -1555,12 +2050,47 @@ public sealed class CovenantLocalErasureStorageHealthTests
             Steps.Add("verify-reopen");
 
             return await seam.VerifyReopenAsync(
-                CovenantV3MaintenanceTestAuthority.Mint(CovenantV3MaintenancePurpose.CandidateReopenVerification),
+                Authority,
                 cancellationToken);
 
         }
 
         /// <summary>Opens a handle nothing enrolled in the drain, and makes it hold the log open.</summary>
+        /// <summary>
+        /// Leaves a write-ahead log and wal-index behind with nothing holding the database open.
+        /// </summary>
+        /// <remarks>
+        /// Built by hand rather than by driving the erasure, because the point is the trailing state
+        /// itself: a read-write connection creates the log, a read-only one outlives it, and the
+        /// read-only close cannot remove what it has no write lock for.
+        /// </remarks>
+        internal async Task LeaveOrphanedSidecarsAsync(CancellationToken cancellationToken)
+        {
+
+            SqliteConnection writer = await _fixture.Connections().OpenAsync(cancellationToken);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                writer,
+                CovenantSqliteConnectionMode.ReadWrite,
+                cancellationToken);
+
+            _ = await Scalar(writer, "SELECT COUNT(*) FROM covenant_state;", cancellationToken);
+
+            SqliteConnection reader = await _fixture.Connections().OpenReadOnlyAsync(cancellationToken);
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                reader,
+                CovenantSqliteConnectionMode.ReadOnly,
+                cancellationToken);
+
+            _ = await Scalar(reader, "SELECT COUNT(*) FROM covenant_state;", cancellationToken);
+
+            await writer.DisposeAsync();
+
+            await reader.DisposeAsync();
+
+        }
+
         internal async Task<SqliteConnection> OpenUnenrolledReaderAsync(CancellationToken cancellationToken)
         {
 
@@ -1693,6 +2223,47 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         }
 
+        /// <summary>
+        /// Reads the journal mode the installed file actually carries, applying no policy to it.
+        /// </summary>
+        /// <remarks>
+        /// Journal mode is a persistent property of the database file, and every ordinary route into
+        /// this fixture runs the connection initializer, whose read-write arm sets it. So a test that
+        /// asked through one of those would set the value it then asserted, and would keep passing if
+        /// the step under test stopped restoring anything at all - which is exactly what happened.
+        /// </remarks>
+        internal async Task<string?> ReadInstalledJournalModeAsync(CancellationToken cancellationToken)
+        {
+
+            await using SqliteConnection bare = new(
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = DatabasePath,
+                    Pooling = false,
+                }.ToString());
+
+            await bare.OpenAsync(cancellationToken);
+
+            await using (SqliteCommand key = bare.CreateCommand())
+            {
+
+                // A pragma takes no parameters, so the key is quoted into the statement. It is this
+                // fixture's own generated passphrase rather than anything an installation holds.
+                key.CommandText =
+                    $"PRAGMA key = '{_period.Passphrase.Passphrase.Replace("'", "''", StringComparison.Ordinal)}';";
+
+                _ = await key.ExecuteNonQueryAsync(cancellationToken);
+
+            }
+
+            await using SqliteCommand read = bare.CreateCommand();
+
+            read.CommandText = "PRAGMA journal_mode;";
+
+            return (await read.ExecuteScalarAsync(cancellationToken))?.ToString();
+
+        }
+
         internal async Task<string?> ScalarStringAsync(string sql, CancellationToken cancellationToken)
         {
 
@@ -1728,7 +2299,17 @@ public sealed class CovenantLocalErasureStorageHealthTests
 
         }
 
-        public ValueTask DisposeAsync() => _fixture.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+
+            // The period first. It holds the process-wide maintenance lane, and releasing it after
+            // the fixture had already deleted the database underneath it would make the reopen its
+            // disposition performs a reopen of a file that is no longer there.
+            await _period.DisposeAsync();
+
+            await _fixture.DisposeAsync();
+
+        }
 
         /// <summary>
         /// Enough Covenant rows that emptying the family frees real pages, so the compaction under
@@ -1760,6 +2341,15 @@ public sealed class CovenantLocalErasureStorageHealthTests
         }
 
         private async Task<Result> Record(string step, Task<Result> work)
+        {
+
+            Steps.Add(step);
+
+            return await work;
+
+        }
+
+        private async Task<Result<T>> Record<T>(string step, Task<Result<T>> work)
         {
 
             Steps.Add(step);

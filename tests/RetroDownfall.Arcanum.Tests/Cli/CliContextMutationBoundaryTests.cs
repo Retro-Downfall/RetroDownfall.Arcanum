@@ -42,14 +42,12 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class CliContextMutationBoundaryTests
 {
-
     [Theory]
     [InlineData((byte)ArcanumClientMutationDisposition.Blocked)]
     [InlineData((byte)ArcanumClientMutationDisposition.Unsafe)]
     public async Task Refused_model_selection_retains_the_saved_context_and_reports_failure(
         byte dispositionValue)
     {
-
         ArcanumClientMutationDisposition disposition =
             (ArcanumClientMutationDisposition)dispositionValue;
 
@@ -78,7 +76,6 @@ public sealed class CliContextMutationBoundaryTests
                 : "safely",
             result.Error,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -87,7 +84,6 @@ public sealed class CliContextMutationBoundaryTests
     public async Task Refused_context_clear_retains_every_saved_value_and_reports_failure(
         byte dispositionValue)
     {
-
         ArcanumClientMutationDisposition disposition =
             (ArcanumClientMutationDisposition)dispositionValue;
 
@@ -117,13 +113,11 @@ public sealed class CliContextMutationBoundaryTests
         Assert.Equal(0, store.ExclusiveSaves);
 
         Assert.Equal(1, boundary.Calls);
-
     }
 
     [Fact]
     public async Task Completed_session_selection_uses_one_exclusive_context_write()
     {
-
         FakeContextStore store = new(
             CliContextDocument.Empty with { Model = "retained-model" });
 
@@ -144,14 +138,12 @@ public sealed class CliContextMutationBoundaryTests
         Assert.Equal(1, store.ExclusiveSaves);
 
         Assert.Equal(1, boundary.Calls);
-
     }
 
     private static ServiceCollection Services(
         FakeContextStore store,
         RecordingArcanumClientMutationBoundary boundary)
     {
-
         ServiceCollection services = new();
 
         CliApplicationFactory.ConfigureCliServices(
@@ -176,33 +168,28 @@ public sealed class CliContextMutationBoundaryTests
         services.AddSingleton(
             new ArcanumApiClient(
                 new FakeHttpClientFactory(new SessionHandler()),
-                new FakeSecretStore()));
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key")));
 
         services.RemoveAll<IArcanumClientMutationBoundary>();
 
         services.AddSingleton<IArcanumClientMutationBoundary>(boundary);
 
         return services;
-
     }
 
     private sealed class SessionHandler : HttpMessageHandler
     {
-
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (request.RequestUri!.AbsolutePath
                 != $"/api/sessions/{FakeResourceCatalog.SessionId:D}")
             {
-
                 throw new InvalidOperationException(
                     $"Unexpected request to {request.RequestUri.AbsolutePath}.");
-
             }
 
             ApiResponse<SessionDetailDto> envelope =
@@ -231,26 +218,21 @@ public sealed class CliContextMutationBoundaryTests
                         Encoding.UTF8,
                         "application/json"),
                 });
-
         }
-
     }
 
     private sealed class FakeHttpClientFactory(
         HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             new(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
-
     }
 
     private sealed class FakeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() =>
             Task.FromResult<string?>("test-key");
 
@@ -264,7 +246,6 @@ public sealed class CliContextMutationBoundaryTests
 
         public Task SaveGrimoireEncryptionSecretAsync(
             string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class FakeContextStore(
@@ -272,7 +253,6 @@ public sealed class CliContextMutationBoundaryTests
         ICliContextStore,
         ICliContextExclusiveWriter
     {
-
         private CliContextDocument _document = document;
 
         internal int ExclusiveSaves { get; private set; }
@@ -285,28 +265,22 @@ public sealed class CliContextMutationBoundaryTests
 
         public void Save(CliContextDocument value)
         {
-
             UnprotectedSaves++;
 
             _document = value;
-
         }
 
         void ICliContextExclusiveWriter.SaveUnderExclusive(
             CliContextDocument value)
         {
-
             ExclusiveSaves++;
 
             _document = value;
-
         }
-
     }
 
     private sealed class FakeResourceCatalog : ICliResourceCatalog
     {
-
         internal static Guid SessionId { get; } =
             Guid.Parse("24242424-2424-2424-2424-242424242424");
 
@@ -372,7 +346,5 @@ public sealed class CliContextMutationBoundaryTests
 
         private static InvalidOperationException Unused() =>
             new("This context-boundary test did not select that resource kind.");
-
     }
-
 }

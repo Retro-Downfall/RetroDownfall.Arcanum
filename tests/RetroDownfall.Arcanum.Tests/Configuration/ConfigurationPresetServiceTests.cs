@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 
+using RetroDownfall.Arcanum.Secrets.Security;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
@@ -99,12 +101,17 @@ public sealed class ConfigurationPresetServiceTests : IAsyncLifetime
 
         services.AddLogging();
 
+        services.AddSingleton<IOsCredentialStore, InMemoryOsCredentialStore>();
+
         services.AddArcanumConfigurationPresets();
 
         using ServiceProvider provider = services.BuildServiceProvider();
 
         IConfigurationPresetService service =
             provider.GetRequiredService<IConfigurationPresetService>();
+
+        Assert.IsType<InMemoryOsCredentialStore>(
+            provider.GetRequiredService<IOsCredentialStore>());
 
         Assert.IsType<ConfigurationPresetService>(service);
 

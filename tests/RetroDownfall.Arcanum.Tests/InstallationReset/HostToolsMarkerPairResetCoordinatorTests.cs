@@ -320,11 +320,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             InstallationResetActivePublication current = Publication();
 
-            InstallationResetActivePayloadV2 payload = current.Payload;
+            InstallationResetActivePayloadV3 payload = current.Payload;
 
             current = mutation switch
             {
-                0 => WithPayload(current, payload with { Version = 3 }),
+                0 => WithPayload(current, payload with { Version = 4 }),
                 1 => WithPayload(current, payload with { Scope = InstallationResetScope.Global }),
                 2 => WithPayload(current, payload with { Phase = InstallationResetPhase.DataResetComplete }),
                 3 => WithPayload(current, payload with { PointOfNoReturn = true }),
@@ -4608,8 +4608,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Digest(0x46),
                 acceptedAtUtc));
 
-        InstallationResetActivePayloadV2 payload =
-            InstallationResetActivePayloadV2.FromRecord(record);
+        InstallationResetActivePayloadV3 payload =
+            InstallationResetActivePayloadV3.FromRecord(record);
 
         InstallationResetActiveLocation location = new(
             "/active",
@@ -4728,7 +4728,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 PreviousEnvelopeDigest = claimPublication.EnvelopeDigest,
             },
             envelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(record),
+            InstallationResetActivePayloadV3.FromRecord(record),
             claimPublication.Anchor with
             {
                 Revision = claimPublication.Anchor.Revision + 1,
@@ -4763,7 +4763,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             publication.Location,
             publication.Envelope,
             publication.EnvelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(
+            InstallationResetActivePayloadV3.FromRecord(
                 publication.Payload.ToRecord() with
                 {
                     HostToolsMarkerPairReset = checkpoint,
@@ -4772,7 +4772,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
     private static InstallationResetActivePublication WithPayload(
         InstallationResetActivePublication publication,
-        InstallationResetActivePayloadV2 payload) =>
+        InstallationResetActivePayloadV3 payload) =>
         new(
             publication.Location,
             publication.Envelope,
@@ -4787,7 +4787,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             publication.Location,
             publication.Envelope,
             publication.EnvelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(
+            InstallationResetActivePayloadV3.FromRecord(
                 publication.Payload.ToRecord() with
                 {
                     FullInstallationResetRemediationClaim = claim,
@@ -4800,7 +4800,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             publication.Location,
             publication.Envelope,
             publication.EnvelopeDigest,
-            InstallationResetActivePayloadV2.FromRecord(
+            InstallationResetActivePayloadV3.FromRecord(
                 publication.Payload.ToRecord() with
                 {
                     HostToolsMarkerPairReset = null,
@@ -5141,7 +5141,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     current.Location,
                     envelope,
                     digest,
-                    InstallationResetActivePayloadV2.FromRecord(next),
+                    InstallationResetActivePayloadV3.FromRecord(next),
                     anchor);
 
                 if (CancelAfterAdvancePhase == next.HostToolsMarkerPairReset?.Phase)

@@ -48,6 +48,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -244,12 +245,9 @@ public static class ApiBootstrapper
     /// </summary>
     private static bool IsMetricsRequireApiKeyEffective(IConfiguration configuration)
     {
-
         if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration)))
         {
-
             return true;
-
         }
 
         string? configured =
@@ -257,13 +255,10 @@ public static class ApiBootstrapper
 
         if (string.IsNullOrEmpty(configured))
         {
-
             return true;
-
         }
 
         return !bool.TryParse(configured, out bool parsed) || parsed;
-
     }
 
     private static string[] ReadCorsAllowedOriginsFromConfiguration(IConfiguration configuration)
@@ -294,7 +289,6 @@ public static class ApiBootstrapper
 
     public static IServiceCollection AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)
     {
-
         services.AddExceptionHandler<ArcanumExceptionHandler>();
 
         services.AddProblemDetails();
@@ -315,6 +309,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<ApiKeyAuthenticator>();
 
+        services.AddSingleton<ArcanumProcessCapabilityService>();
+
         services.AddSingleton<ApiKeyEndpointFilter>();
 
         services.AddCors(options =>
@@ -332,11 +328,9 @@ public static class ApiBootstrapper
 
                     if (wildcard && listenAny)
                     {
-
                         origins = DefaultCorsAllowedOrigins;
 
                         wildcard = false;
-
                     }
 
                     if (wildcard)
@@ -420,6 +414,8 @@ public static class ApiBootstrapper
             static sp => sp.GetRequiredService<TelemetryService>());
 
         services.AddSingleton<PromptRenderer>();
+
+        services.AddSingleton<SessionTurnConcurrencyGate>();
 
         services.AddScoped<GrimoireTurnWriter>();
 
@@ -508,9 +504,7 @@ public static class ApiBootstrapper
     /// </summary>
     public static void UseArcanumExceptionHandler(this WebApplication app)
     {
-
         app.UseExceptionHandler();
-
     }
 
     /// <summary>
@@ -521,9 +515,7 @@ public static class ApiBootstrapper
     /// </summary>
     public static void UseArcanumResponseCompression(this WebApplication app)
     {
-
         app.UseResponseCompression();
-
     }
 
     /// <summary>
@@ -583,29 +575,23 @@ public static class ApiBootstrapper
     {
         app.Use(async (HttpContext context, Func<Task> next) =>
         {
-
             if (context.Request.Path.StartsWithSegments("/metrics"))
             {
-
                 await next().ConfigureAwait(false);
 
                 return;
-
             }
 
             bool completed = false;
 
             try
             {
-
                 await next().ConfigureAwait(false);
 
                 completed = true;
-
             }
             finally
             {
-
                 string routeLabel = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
                     ?? UnmatchedRouteMetricLabel;
 
@@ -618,9 +604,7 @@ public static class ApiBootstrapper
                     new KeyValuePair<string, object?>("endpoint", routeLabel),
                     new KeyValuePair<string, object?>("method", ResolveMethodMetricLabel(context.Request.Method)),
                     new KeyValuePair<string, object?>("status_code", statusCode.ToString(CultureInfo.InvariantCulture)));
-
             }
-
         });
     }
 
@@ -640,42 +624,46 @@ public static class ApiBootstrapper
     {
         app.Use(static async (HttpContext context, Func<Task> next) =>
         {
-
             if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)
             {
-
                 if (await HideRecoveryIneligibleAnonymousRouteAsync(context).ConfigureAwait(false))
                 {
+                    return;
+                }
+
+                if (!TryAdmitGrimoireRequest(context))
+                {
+                    _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
 
                     return;
-
                 }
 
                 if (context.GetEndpoint()?.Metadata
                         .GetMetadata<InstallationResetRecoveryBlockedRouteMetadata>() is not null
                     && await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
-                await next().ConfigureAwait(false);
+                await ContinueWithMaintenanceRefusalAsync(context, next).ConfigureAwait(false);
 
                 return;
-
             }
 
             ApiKeyAuthenticator authenticator = context.RequestServices.GetRequiredService<ApiKeyAuthenticator>();
 
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
+                if (!TryAdmitGrimoireRequest(context))
+                {
+                    _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
+
+                    return;
+                }
 
                 if (await ApplyInstallationResetRecoveryAdmissionAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
                 // Authentication stays first, so a wrong key plus a malformed context policy is a
@@ -683,34 +671,27 @@ public static class ApiBootstrapper
                 // reached a real route and that their header spelling was the only problem.
                 if (await ApplyCovenantPreBindingPolicyAsync(context).ConfigureAwait(false))
                 {
-
                     return;
-
                 }
 
-                await next().ConfigureAwait(false);
+                await ContinueWithMaintenanceRefusalAsync(context, next).ConfigureAwait(false);
 
                 return;
-
             }
 
             await ApiKeyAuthenticator.Unauthorized(context).ExecuteAsync(context).ConfigureAwait(false);
-
         });
     }
 
     private static async Task<bool> HideRecoveryIneligibleAnonymousRouteAsync(
         HttpContext context)
     {
-
         if (context.GetEndpoint()?.Metadata
                 .GetMetadata<InstallationResetRecoveryHiddenRouteMetadata>() is null
             || context.RequestServices.GetService<InstallationResetApiAdmission>()?
                 .ActiveRecovery is null)
         {
-
             return false;
-
         }
 
         context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -718,7 +699,113 @@ public static class ApiBootstrapper
         await context.Response.CompleteAsync().ConfigureAwait(false);
 
         return true;
+    }
 
+    /// <summary>
+    /// Runs the rest of the pipeline, answering a gate that closes under an admitted request.
+    /// </summary>
+    /// <remarks>
+    /// Admission refuses what arrives after a transition begins. This is the other half: a request
+    /// admitted a moment earlier is drained, and while it drains it can still reach SQLite and be
+    /// refused there. Answering it here rather than leaving it to the framework's exception middleware
+    /// is what keeps the two answers identical — that middleware registers its own cache-header clear
+    /// through <c>OnStarting</c> before any handler runs, and those callbacks run last-registered-first,
+    /// so a handler can never put back the exact <c>no-store, private</c> tuple #128 requires. It also
+    /// covers the surfaces admission deliberately does not gate: <c>/metrics</c> queries the database
+    /// on every scrape, and without this each scrape during a maintenance window would be a <c>500</c>
+    /// logged at Error with the request path.
+    ///
+    /// <para>The refusal is swallowed rather than rethrown once it is answered, and swallowed when the
+    /// response has already started too: a response whose first byte has left is finished by its own
+    /// writer, and rethrowing only hands the framework something to log at Error about a window that
+    /// was expected.</para>
+    /// </remarks>
+    private static async Task ContinueWithMaintenanceRefusalAsync(HttpContext context, Func<Task> next)
+    {
+        try
+        {
+            await next().ConfigureAwait(false);
+        }
+        catch (GrimoireMaintenanceUnavailableException)
+        {
+            _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Takes this request's Grimoire admission, reporting whether the pipeline may continue.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="false"/> only when the request must be refused; the caller writes the
+    /// refusal. It runs in both branches of the gate above, after whichever authentication that
+    /// branch performs and before every later decision, because the parent design's order is
+    /// authentication, then Grimoire admission, then installation-reset admission and Covenant
+    /// pre-binding, then the endpoint.
+    ///
+    /// <para><b>This method is deliberately synchronous, and that is load-bearing rather than
+    /// incidental.</b> Admitting a request records its ordinary lifetime in the gate's static
+    /// <c>AsyncLocal</c>, and that lifetime is what lets an already-admitted request keep opening its
+    /// connection once maintenance has begun closing — including the reset request that is promoted
+    /// out of its own drain. An <c>AsyncLocal</c> written inside an <c>async</c> method does not
+    /// survive that method's return, so taking the lease behind an <c>await</c> would discard the
+    /// lifetime before the pipeline ever reached the endpoint: every request would appear to have no
+    /// live lifetime, and the initiator of an erasure would be refused by its own transition. Taken
+    /// from the delegate's own frame, the write is carried forward across its later awaits.</para>
+    ///
+    /// <para>Selection is by path and never by API-key metadata. That is the whole of the exclusion
+    /// rule: <see cref="PathString.StartsWithSegments(PathString, StringComparison)"/> compares whole
+    /// segments, so an authenticated <c>/metrics</c> is outside both prefixes, <c>/apiary</c> is not
+    /// inside <c>/api</c>, and <c>/v10</c> is not inside <c>/v1</c> — while an anonymous or
+    /// peer-authenticated route that really is under <c>/api</c> stays protected.</para>
+    ///
+    /// <para>A request that matched no route this host mapped is left alone. It takes the anonymous
+    /// branch and is never authenticated, so refusing it would answer a maintenance <c>503</c> to a
+    /// caller who presented no key — telling them both that the prefix is real and that this
+    /// installation is mid-transition — in place of the <c>404</c> or <c>405</c> that costs nothing.
+    /// It also runs no endpoint, so there is no work for admission to prevent. The test is
+    /// <see cref="RouteEndpoint"/> rather than merely non-null, because routing answers a method
+    /// mismatch with an endpoint of its own that no <c>Map</c> call produced.</para>
+    ///
+    /// <para>The holder is resolved rather than the gate, and it is resolved <i>here</i> on purpose.
+    /// It is the first scoped service the request touches, so the container creates it first and
+    /// disposes it last — after the pooled context has gone back and after every response-completed
+    /// writer has run. Releasing the lease in a <c>finally</c> after <c>next()</c> would invert that
+    /// and leave those writers with no live lifetime.</para>
+    /// </remarks>
+    private static bool TryAdmitGrimoireRequest(HttpContext context)
+    {
+        if (context.GetEndpoint() is not RouteEndpoint endpoint
+            || endpoint.Metadata.GetMetadata<GrimoireAdmissionExemptRouteMetadata>() is not null)
+        {
+            return true;
+        }
+
+        if (!context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+            && !context.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (context.RequestServices.GetService<GrimoireRequestAdmissionScope>() is not { } admission)
+        {
+            // A host that maps these endpoints without the Arcanum infrastructure stack has no
+            // Grimoire, so there is no admission to take and nothing for a refusal to protect. The
+            // two stages below answer an absent service exactly this way. That the composed host does
+            // register it is a composition contract, held by its own test rather than by a throw here.
+            return true;
+        }
+
+        // The kind comes from the route's own marker rather than from its path, so a route that moves
+        // or is renamed carries its classification with it. Only the declared quiesceable class takes
+        // a revocable lease; every other streaming class, and every unmarked route, takes a finite one
+        // and is drained through completion. Finite is the safe default on purpose — forgetting the
+        // marker on a new streaming route makes a transition slow rather than cutting a response
+        // mid-frame, and the streaming-route inventory is what stops it staying forgotten.
+        return admission.TryAdmit(
+            endpoint.Metadata.GetMetadata<GrimoireStreamRouteMetadata>() is
+                { Class: GrimoireStreamClass.GrimoireQuiesceableStream }
+                ? GrimoireRequestKind.QuiesceableStream
+                : GrimoireRequestKind.Finite);
     }
 
     /// <summary>
@@ -728,13 +815,10 @@ public static class ApiBootstrapper
     private static async Task<bool> ApplyInstallationResetRecoveryAdmissionAsync(
         HttpContext context)
     {
-
         if (context.RequestServices.GetService<InstallationResetApiAdmission>()?
                 .ActiveRecovery is null)
         {
-
             return false;
-
         }
 
         InstallationResetRecoveryApiRouteMetadata? admitted = context.GetEndpoint()?.Metadata
@@ -746,9 +830,7 @@ public static class ApiBootstrapper
                 admitted.Method,
                 StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         const string Message =
@@ -760,7 +842,6 @@ public static class ApiBootstrapper
                 "/v1",
                 StringComparison.OrdinalIgnoreCase))
         {
-
             blocked = Results.Json(
                 new OpenAiErrorResponse(
                     new OpenAiErrorDetail(
@@ -770,11 +851,9 @@ public static class ApiBootstrapper
                         Code: "installation_reset_in_progress")),
                 ArcanumJsonContext.Default.OpenAiErrorResponse,
                 statusCode: StatusCodes.Status409Conflict);
-
         }
         else
         {
-
             blocked = Results.Json(
                 ApiResponse<string>.FromResult(
                     Result<string>.Failure(
@@ -782,13 +861,11 @@ public static class ApiBootstrapper
                     context.TraceIdentifier),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: StatusCodes.Status409Conflict);
-
         }
 
         await blocked.ExecuteAsync(context).ConfigureAwait(false);
 
         return true;
-
     }
 
     /// <summary>
@@ -810,7 +887,6 @@ public static class ApiBootstrapper
     /// </remarks>
     private static async Task<bool> ApplyCovenantPreBindingPolicyAsync(HttpContext context)
     {
-
         Endpoint? endpoint = context.GetEndpoint();
 
         bool allowsContext =
@@ -820,19 +896,16 @@ public static class ApiBootstrapper
 
         if (policy.IsFailure)
         {
-
             await CovenantAuthorityRefusal
                 .InvalidContextPolicy(context, policy.Error)
                 .ExecuteAsync(context)
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         if (policy.Value is CovenantContextPolicy.None && !allowsContext)
         {
-
             await CovenantAuthorityRefusal
                 .InvalidContextPolicy(
                     context,
@@ -843,28 +916,23 @@ public static class ApiBootstrapper
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         CovenantRequestFeatures.RecordContextPolicy(context, policy.Value);
 
         if (policy.Value is CovenantContextPolicy.None)
         {
-
             // Echoed so a client can confirm the policy the server actually applied rather than
             // assuming its header was understood. It is exposed through CORS for the same reason.
             context.Response.Headers[ArcanumApiHeaders.ContextPolicy] = "none";
-
         }
 
         if (endpoint?.Metadata.GetMetadata<CovenantAuthorityRequirementMetadata>() is not
             { } requirementMetadata)
         {
-
             IssueConditionalSensitivityPurgeAuthority(context, endpoint);
 
             return false;
-
         }
 
         IOperatorAuthorityContextIssuer? issuer =
@@ -872,19 +940,16 @@ public static class ApiBootstrapper
 
         if (issuer is null)
         {
-
             // A host composed without the Covenant authority stack cannot mint a context, and a
             // route that declared a requirement must not run without one. The filter refuses on the
             // absent feature; nothing here invents authority to fill the gap.
             return false;
-
         }
 
         Result<OperatorAuthorityContext> issued = issuer.Issue(requirementMetadata.Requirement);
 
         if (issued.IsFailure)
         {
-
             CovenantRequestFeatures.MarkProtectedResponse(context);
 
             await new CovenantUnavailableAuthorityResult(issued.Error)
@@ -892,7 +957,6 @@ public static class ApiBootstrapper
                 .ConfigureAwait(false);
 
             return true;
-
         }
 
         CovenantRequestFeatures.MarkProtectedResponse(context);
@@ -905,7 +969,6 @@ public static class ApiBootstrapper
                 issued.Value.AuthorityEpoch));
 
         return false;
-
     }
 
     /// <summary>
@@ -923,19 +986,14 @@ public static class ApiBootstrapper
     /// </remarks>
     private static void IssueConditionalSensitivityPurgeAuthority(HttpContext context, Endpoint? endpoint)
     {
-
         if (endpoint?.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>() is null)
         {
-
             return;
-
         }
 
         if (context.RequestServices.GetService<IOperatorAuthorityContextIssuer>() is not { } issuer)
         {
-
             return;
-
         }
 
         Result<OperatorAuthorityContext> issued =
@@ -943,9 +1001,7 @@ public static class ApiBootstrapper
 
         if (issued.IsFailure)
         {
-
             return;
-
         }
 
         CovenantRequestFeatures.MarkProtectedResponse(context);
@@ -956,15 +1012,12 @@ public static class ApiBootstrapper
                 issued.Value,
                 CovenantAuthorityRequirement.SensitivityRetentionPurge,
                 issued.Value.AuthorityEpoch));
-
     }
 
     private sealed class CovenantUnavailableAuthorityResult(Error error) : IResult
     {
-
         public async Task ExecuteAsync(HttpContext httpContext)
         {
-
             CovenantProtectedResponseHeaders.Apply(httpContext.Response);
 
             httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(error.Code);
@@ -980,9 +1033,7 @@ public static class ApiBootstrapper
                     ArcanumJsonContext.Default.ApiResponseBoolean,
                     httpContext.RequestAborted)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -1012,6 +1063,13 @@ public static class ApiBootstrapper
         app.UseArcanumApiKeyAuthentication();
 
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
+
+        RouteHandlerBuilder presence = app.MapArcanumPresenceEndpoint();
+
+        if (rateLimitEnabled)
+        {
+            presence.RequireRateLimiting(ArcanumRateLimiterPolicyName);
+        }
 
         RouteGroupBuilder openAiV1 = app
             .MapGroup("/v1")
@@ -1055,16 +1113,12 @@ public static class ApiBootstrapper
 
         if (IsMetricsRequireApiKeyEffective(app.Configuration))
         {
-
             metrics.RequireArcanumApiKey();
 
             if (rateLimitEnabled)
             {
-
                 metrics.RequireRateLimiting(ArcanumRateLimiterPolicyName);
-
             }
-
         }
 
         apiGroup.MapOpenApi();
@@ -1203,5 +1257,4 @@ public static class ApiBootstrapper
 
         apiGroup.MapDaemonEndpoints();
     }
-
 }

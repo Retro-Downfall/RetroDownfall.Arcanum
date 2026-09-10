@@ -8,11 +8,9 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class GrimoireSchemaTransitionResourceTests
 {
-
     [Fact]
     public void TryParse_decodes_a_core_transition_path()
     {
-
         Assert.True(GrimoireSchemaCatalog.TryParseTransitionResourcePath(
             "Transitions.V2.010_add_entries_campaign_id",
             out GrimoireSchemaTransitionResourcePath? path));
@@ -28,13 +26,11 @@ public sealed class GrimoireSchemaTransitionResourceTests
         Assert.Equal(10, path.Ordinal);
 
         Assert.Equal("add_entries_campaign_id", path.Name);
-
     }
 
     [Fact]
     public void TryParse_decodes_a_capability_transition_path()
     {
-
         Assert.True(GrimoireSchemaCatalog.TryParseTransitionResourcePath(
             "Capabilities.Covenant.Canonical.Transitions.V3.020_widen_validity",
             out GrimoireSchemaTransitionResourcePath? path));
@@ -50,7 +46,6 @@ public sealed class GrimoireSchemaTransitionResourceTests
         Assert.Equal(20, path.Ordinal);
 
         Assert.Equal("widen_validity", path.Name);
-
     }
 
     [Theory]
@@ -58,13 +53,11 @@ public sealed class GrimoireSchemaTransitionResourceTests
     [InlineData("Capabilities.Covenant.Canonical.Tables.covenant_entries")]
     public void TryParse_reports_an_object_path_as_not_a_transition(string relative)
     {
-
         Assert.False(GrimoireSchemaCatalog.TryParseTransitionResourcePath(
             relative,
             out GrimoireSchemaTransitionResourcePath? path));
 
         Assert.Null(path);
-
     }
 
     /// <summary>
@@ -80,15 +73,11 @@ public sealed class GrimoireSchemaTransitionResourceTests
     [InlineData("Capabilities.Covenant.Canonical.Transitions.V1.010_impossible")]
     public void TryParse_throws_on_a_malformed_transition_path(string relative)
     {
-
         _ = Assert.Throws<InvalidOperationException>(
             () =>
             {
-
                 _ = GrimoireSchemaCatalog.TryParseTransitionResourcePath(relative, out _);
-
             });
-
     }
 
     /// <summary>
@@ -107,12 +96,10 @@ public sealed class GrimoireSchemaTransitionResourceTests
     [Fact]
     public void The_shipped_catalog_declares_only_the_steps_its_tiers_have_taken()
     {
-
         Assert.All(
             GrimoireSchemaCatalog.TransitionStatements,
             static statement =>
             {
-
                 Assert.Contains(
                     (statement.TransactionTier, statement.ToVersion),
                     ((GrimoireSchemaTransactionTier Tier, int ToVersion)[])
@@ -122,10 +109,14 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.Core, 4),
                         (GrimoireSchemaTransactionTier.Core, 5),
                         (GrimoireSchemaTransactionTier.Core, 6),
+                        (GrimoireSchemaTransactionTier.Core, 7),
+                        (GrimoireSchemaTransactionTier.Core, 8),
+                        (GrimoireSchemaTransactionTier.Core, 9),
+                        (GrimoireSchemaTransactionTier.Core, 10),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 3),
+                        (GrimoireSchemaTransactionTier.CovenantCanonical, 4),
                     ]);
-
             });
 
         Assert.Equal(
@@ -210,6 +201,38 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "SessionAttachments_SessionId_norm_index",
                 "SessionAttachments_Id_norm_index",
                 "workspace_file_chunks_file_length",
+                "saga_extraction_watermarks_entry_sequence",
+                "assistant_entry_finalizations_through_entry_sequence",
+                "saga_extraction_watermarks_validate_insert",
+                "saga_extraction_watermarks_validate_update",
+                "sessions_total_cost_rename",
+                "sessions_total_cost_text",
+                "sessions_total_cost_copy",
+                "sessions_total_cost_legacy_drop",
+                "billable_operations_actual_cost_rename",
+                "billable_operations_actual_cost_text",
+                "billable_operations_actual_cost_copy",
+                "billable_operations_actual_cost_legacy_drop",
+                "budget_reservations_reserved_rename",
+                "budget_reservations_reconciled_rename",
+                "budget_reservations_reserved_text",
+                "budget_reservations_reconciled_text",
+                "budget_reservations_cost_copy",
+                "budget_reservations_reserved_legacy_drop",
+                "budget_reservations_reconciled_legacy_drop",
+                "cost_adjustments_amount_rename",
+                "cost_adjustments_amount_text",
+                "cost_adjustments_amount_copy",
+                "cost_adjustments_amount_legacy_drop",
+                "budget_alerts_spend_rename",
+                "budget_alerts_daily_limit_rename",
+                "budget_alerts_spend_text",
+                "budget_alerts_daily_limit_text",
+                "budget_alerts_cost_copy",
+                "budget_alerts_spend_legacy_drop",
+                "budget_alerts_daily_limit_legacy_drop",
+                "grimoire_utc_instant_columns",
+                "batch_accounting_recovery_claims",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",
@@ -263,25 +286,21 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "covenant_version_attachment_provenance_attachment_index",
                 "covenant_version_attachment_provenance_guard_delete",
                 "covenant_version_attachment_provenance_guard_update",
+                "covenant_utc_instant_columns",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
-
     }
 
     [Fact]
     public void No_head_object_is_loaded_from_a_transitions_folder()
     {
-
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.AllObjects)
         {
-
             Assert.False(
                 definition.ResourcePath.Contains(".Transitions.", StringComparison.Ordinal)
                     || definition.ResourcePath.StartsWith("Transitions.", StringComparison.Ordinal),
                 $"{definition.ResourcePath} was loaded as a head object from a transitions folder");
-
         }
-
     }
 
     /// <summary>
@@ -297,7 +316,6 @@ public sealed class GrimoireSchemaTransitionResourceTests
     [Fact]
     public void A_published_fingerprint_covers_head_objects_alone()
     {
-
         Assert.Equal(
             GrimoireSchemaCatalog.CoreSchemaFingerprint,
             GrimoireSchemaCatalog.ComputeSourceFingerprint(GrimoireSchemaCatalog.CoreObjects));
@@ -311,7 +329,5 @@ public sealed class GrimoireSchemaTransitionResourceTests
         Assert.Equal(
             GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
             GrimoireSchemaCatalog.ComputeRawSourceFingerprint(GrimoireSchemaCatalog.CovenantAcceleratorObjects));
-
     }
-
 }

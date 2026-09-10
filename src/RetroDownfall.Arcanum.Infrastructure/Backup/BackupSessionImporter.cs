@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -32,7 +33,6 @@ internal sealed record BackupSessionImportResult(
     BackupVerifyIssue[] Issues,
     BackupImportedSession[] Committed)
 {
-
     public static BackupSessionImportResult Failed(BackupVerifyIssue issue) =>
         new(0, 0, 0, 0, 0, [issue], []);
 
@@ -53,7 +53,6 @@ internal sealed record BackupSessionImportResult(
         IReadOnlyList<BackupImportedSession> committed,
         BackupVerifyIssue issue) =>
         new(sessions, entries, attachments, sessions, deduplicated, [issue], [.. committed]);
-
 }
 
 /// <summary>
@@ -85,7 +84,6 @@ internal sealed record BackupSessionImportResult(
 /// </remarks>
 internal static class BackupSessionImporter
 {
-
     /// <summary>
     /// Imports through the protected transfer store, one atomic compound lease per Session.
     /// </summary>
@@ -106,17 +104,14 @@ internal static class BackupSessionImporter
         IReadOnlyList<BackupSessionCampaignMapping> campaignMappings,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(services);
 
         if (!File.Exists(sourceDatabasePath) || sourceGrimoireSecret.Length == 0)
         {
-
             return BackupSessionImportResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_import_source_unavailable",
                     "The archive does not contain a readable Grimoire snapshot to import from."));
-
         }
 
         // Coverage first, over the whole selection, before the destination is opened for writing at
@@ -129,19 +124,15 @@ internal static class BackupSessionImporter
             .OpenAsync(sourceDatabasePath, sourceGrimoireSecret, readOnly: true, cancellationToken)
             .ConfigureAwait(false))
         {
-
             Result coverage = await BackupSessionImportPlanner
                 .ValidateCampaignCoverageAsync(preflight, sessionIds, campaignMappings, cancellationToken)
                 .ConfigureAwait(false);
 
             if (coverage.IsFailure)
             {
-
                 return BackupSessionImportResult.Failed(
                     new BackupVerifyIssue("backup.restore_import_refused", coverage.Error.Message));
-
             }
-
         }
 
         await using SqliteConnection destination = await BackupRestoreDatabaseWorker
@@ -164,7 +155,6 @@ internal static class BackupSessionImporter
 
         foreach (Guid sessionId in sessionIds)
         {
-
             Result<ImportedSessionCommitReceipt> imported = await ImportOneProtectedAsync(
                 services,
                 sourceDatabasePath,
@@ -178,7 +168,6 @@ internal static class BackupSessionImporter
 
             if (imported.IsFailure)
             {
-
                 BackupVerifyIssue refusal =
                     new("backup.restore_import_refused", imported.Error.Message);
 
@@ -196,7 +185,6 @@ internal static class BackupSessionImporter
                         deduplicated,
                         committed,
                         refusal);
-
             }
 
             sessions++;
@@ -208,7 +196,6 @@ internal static class BackupSessionImporter
             deduplicated += imported.Value.DeduplicatedBlobs;
 
             committed.Add(new BackupImportedSession(sessionId, imported.Value.DestinationSessionId));
-
         }
 
         return new BackupSessionImportResult(
@@ -219,7 +206,6 @@ internal static class BackupSessionImporter
             deduplicated,
             [],
             [.. committed]);
-
     }
 
     private static async Task<Result<ImportedSessionCommitReceipt>> ImportOneProtectedAsync(
@@ -233,7 +219,6 @@ internal static class BackupSessionImporter
         IReadOnlyList<BackupSessionCampaignMapping> campaignMappings,
         CancellationToken cancellationToken)
     {
-
         // One lease per Session, held from the first source read through the destination commit. The
         // graph the store validated and the graph it copied cannot be two different reads.
         await using ImportedSessionSourceLease sourceLease = ImportedSessionSourceLease.Adopt(
@@ -248,9 +233,7 @@ internal static class BackupSessionImporter
 
         if (request.IsFailure)
         {
-
             return request.Error;
-
         }
 
         ProtectedTransferScope scope = request.Value.CampaignMapping is { } mapping
@@ -269,9 +252,7 @@ internal static class BackupSessionImporter
 
         if (acquired.IsFailure)
         {
-
             return acquired.Error;
-
         }
 
         await using CovenantProtectedTransferLease transferLease = acquired.Value;
@@ -296,7 +277,6 @@ internal static class BackupSessionImporter
             : disposed.IsFailure
                 ? disposed.Error
                 : completion.Result;
-
     }
 
     public static async Task<BackupSessionImportResult> ImportAsync(
@@ -310,15 +290,12 @@ internal static class BackupSessionImporter
         CancellationToken cancellationToken,
         Action? beforeCommitForTests = null)
     {
-
         if (!File.Exists(sourceDatabasePath) || sourceGrimoireSecret.Length == 0)
         {
-
             return BackupSessionImportResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_import_source_unavailable",
                     "The archive does not contain a readable Grimoire snapshot to import from."));
-
         }
 
         await using SqliteConnection source = await BackupRestoreDatabaseWorker
@@ -333,38 +310,30 @@ internal static class BackupSessionImporter
                 .TableExistsAsync(source, "Sessions", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             return BackupSessionImportResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_import_source_unavailable",
                     "The archived Grimoire snapshot has no Sessions table."));
-
         }
 
         List<string> missing = [];
 
         foreach (Guid sessionId in sessionIds)
         {
-
             if (!await ArchivedSessionExistsAsync(source, sessionId, cancellationToken)
                     .ConfigureAwait(false))
             {
-
                 missing.Add(sessionId.ToString());
-
             }
-
         }
 
         if (missing.Count > 0)
         {
-
             return BackupSessionImportResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_import_session_absent",
                     "The archive does not contain every requested Session: "
                     + string.Join(", ", missing)));
-
         }
 
         await using SqliteTransaction transaction = (SqliteTransaction)await destination
@@ -401,10 +370,8 @@ internal static class BackupSessionImporter
 
         try
         {
-
             foreach (Guid sessionId in sessionIds)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 string original = sessionId.ToString();
@@ -425,11 +392,9 @@ internal static class BackupSessionImporter
                 if (await RowExistsAsync(destination, "Sessions", effective, cancellationToken, transaction)
                         .ConfigureAwait(false))
                 {
-
                     effective = Guid.NewGuid().ToString().ToUpperInvariant();
 
                     remapped++;
-
                 }
 
                 await CopySessionAsync(source, destination, transaction, original, effective, cancellationToken)
@@ -460,12 +425,10 @@ internal static class BackupSessionImporter
                 attachments += copied;
 
                 deduplicated += deduped;
-
             }
 
             foreach (PendingAttachmentCopy copy in copies)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(
@@ -480,17 +443,14 @@ internal static class BackupSessionImporter
                     FileAccess.Write,
                     FileShare.None))
                 {
-
                     written.Add(copy.Destination);
 
                     await using FileStream payload = File.OpenRead(copy.Source);
 
                     await payload.CopyToAsync(sink, cancellationToken).ConfigureAwait(false);
-
                 }
 
                 SecureFilePermissions.ApplyOwnerOnlyFile(copy.Destination);
-
             }
 
             beforeCommitForTests?.Invoke();
@@ -509,56 +469,41 @@ internal static class BackupSessionImporter
                 deduplicated,
                 [],
                 []);
-
         }
         catch (Exception exception) when (
             exception is SqliteException or IOException or UnauthorizedAccessException)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return BackupSessionImportResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_import_failed",
                     "The selected Sessions could not be imported; the destination is unchanged."));
-
         }
         finally
         {
-
             if (!committed)
             {
-
                 // Cancellation unwinds here too, and it is the one failure the catch above never
                 // sees: the transaction is rolled back by its own disposal, but the bytes are not.
                 Discard(written);
-
             }
-
         }
-
     }
 
     private static void Discard(List<string> written)
     {
-
         foreach (string destination in written)
         {
-
             try
             {
-
                 File.Delete(destination);
-
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)
             {
-
             }
-
         }
-
     }
 
     private static async Task CopySessionAsync(
@@ -569,7 +514,6 @@ internal static class BackupSessionImporter
         string effectiveId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand read = source.CreateCommand();
 
         // Normalised, for the reason the attachment read below states in full: this is the SOURCE
@@ -593,9 +537,7 @@ internal static class BackupSessionImporter
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return;
-
         }
 
         await using SqliteCommand write = destination.CreateCommand();
@@ -616,22 +558,24 @@ internal static class BackupSessionImporter
 
         _ = write.Parameters.AddWithValue("$status", Value(reader, 2));
 
-        _ = write.Parameters.AddWithValue("$createdAt", Value(reader, 3));
+        _ = UtcInstantSql.AddStoredParameter(write, "$createdAt", reader.GetString(3));
 
-        _ = write.Parameters.AddWithValue("$updatedAt", Value(reader, 4));
+        _ = UtcInstantSql.AddStoredParameter(write, "$updatedAt", reader.GetString(4));
 
         _ = write.Parameters.AddWithValue("$summary", Value(reader, 5));
 
-        _ = write.Parameters.AddWithValue("$lastSummarizedAt", Value(reader, 6));
+        _ = UtcInstantSql.AddStoredParameter(
+            write,
+            "$lastSummarizedAt",
+            reader.IsDBNull(6) ? DBNull.Value : reader.GetString(6));
 
         _ = write.Parameters.AddWithValue("$tokens", Value(reader, 7));
 
-        _ = write.Parameters.AddWithValue("$cost", Value(reader, 8));
+        _ = ExactUsdText.AddParameter(write, "$cost", ExactUsdText.Read(reader, 8));
 
         _ = write.Parameters.AddWithValue("$unsummarized", Value(reader, 9));
 
         _ = await write.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<long> CopyEntriesAsync(
@@ -642,21 +586,17 @@ internal static class BackupSessionImporter
         string effectiveSessionId,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(source, "Entries", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         List<object[]> rows = [];
 
         await using (SqliteCommand read = source.CreateCommand())
         {
-
             // Normalised for the same reason as the Session read above, and the same reason the
             // attachment read below states in full: the archive's spelling belongs to the installation
             // that wrote it. Bound exactly to the minority rendering, this matched no Entry of any
@@ -681,27 +621,23 @@ internal static class BackupSessionImporter
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 rows.Add(
                 [
                     Value(reader, 0),
                     Value(reader, 1),
                     Value(reader, 2),
-                    Value(reader, 3),
+                    UtcInstantText.Normalize(reader.GetString(3)),
                     Value(reader, 4),
                     Value(reader, 5),
                     Value(reader, 6),
                     Value(reader, 7),
                     Value(reader, 8),
                 ]);
-
             }
-
         }
 
         foreach (object[] row in rows)
         {
-
             await using SqliteCommand write = destination.CreateCommand();
 
             write.Transaction = transaction;
@@ -723,7 +659,7 @@ internal static class BackupSessionImporter
 
             _ = write.Parameters.AddWithValue("$model", row[2]);
 
-            _ = write.Parameters.AddWithValue("$createdAt", row[3]);
+            _ = UtcInstantSql.AddStoredParameter(write, "$createdAt", row[3]);
 
             _ = write.Parameters.AddWithValue("$sequence", row[4]);
 
@@ -736,11 +672,9 @@ internal static class BackupSessionImporter
             _ = write.Parameters.AddWithValue("$pinned", row[8]);
 
             _ = await write.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
 
         return rows.Count;
-
     }
 
     private static async Task<(long Copied, long Deduplicated)> CopyAttachmentsAsync(
@@ -755,21 +689,17 @@ internal static class BackupSessionImporter
         HashSet<string> claimed,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(source, "SessionAttachments", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             return (0, 0);
-
         }
 
         List<AttachmentRow> rows = [];
 
         await using (SqliteCommand read = source.CreateCommand())
         {
-
             // Normalised, and permanently so. An archive is a snapshot of a foreign installation at a
             // vintage this build does not control: one taken before the version-5 attachment backfill
             // holds "SessionId" in the minority spelling, one taken after holds the canonical form, and
@@ -799,20 +729,21 @@ internal static class BackupSessionImporter
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 object[] values = new object[22];
 
                 for (int index = 0; index < values.Length; index++)
                 {
-
                     values[index] = Value(reader, index);
-
                 }
 
+                values[11] = UtcInstantText.Normalize(reader.GetString(11));
+
+                values[18] = reader.IsDBNull(18)
+                    ? DBNull.Value
+                    : UtcInstantText.Normalize(reader.GetString(18));
+
                 rows.Add(new AttachmentRow(values));
-
             }
-
         }
 
         long copied = 0;
@@ -821,7 +752,6 @@ internal static class BackupSessionImporter
 
         foreach (AttachmentRow row in rows)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string attachmentId = Guid.NewGuid().ToString().ToUpperInvariant();
@@ -832,7 +762,6 @@ internal static class BackupSessionImporter
 
             if (relative.Length > 0)
             {
-
                 string sourceFile = ResolveContained(sourceAttachmentsRoot, relative);
 
                 effectiveRelative = ReplaceLeadingSegment(relative, originalSessionId, effectiveSessionId);
@@ -841,26 +770,20 @@ internal static class BackupSessionImporter
 
                 if (!File.Exists(sourceFile))
                 {
-
                     throw new IOException(
                         "An imported attachment row references bytes the archive does not carry.");
-
                 }
 
                 if (!claimed.Contains(destinationFile)
                     && File.Exists(destinationFile)
                     && SameContent(sourceFile, destinationFile))
                 {
-
                     deduplicated++;
-
                 }
                 else
                 {
-
                     if (claimed.Contains(destinationFile) || File.Exists(destinationFile))
                     {
-
                         // Lowercased here rather than left to attachmentId's own now-canonical
                         // spelling: this discriminator lands in a file name, not a stored identity,
                         // and is out of this task's scope to change.
@@ -871,7 +794,6 @@ internal static class BackupSessionImporter
                         destinationFile = ResolveContained(
                             destinationAttachmentsRoot,
                             effectiveRelative);
-
                     }
 
                     // Refused before a byte moves rather than discovered by a failing copy. The old
@@ -879,16 +801,12 @@ internal static class BackupSessionImporter
                     // import that had already deleted the live payload it collided with.
                     if (!claimed.Add(destinationFile) || File.Exists(destinationFile))
                     {
-
                         throw new IOException(
                             "An imported attachment has no free destination path to be written to.");
-
                     }
 
                     copies.Add(new PendingAttachmentCopy(sourceFile, destinationFile));
-
                 }
-
             }
 
             await using SqliteCommand write = destination.CreateCommand();
@@ -933,7 +851,7 @@ internal static class BackupSessionImporter
 
             _ = write.Parameters.AddWithValue("$kind", row.Values[10]);
 
-            _ = write.Parameters.AddWithValue("$createdAt", row.Values[11]);
+            _ = UtcInstantSql.AddStoredParameter(write, "$createdAt", row.Values[11]);
 
             _ = write.Parameters.AddWithValue(
                 "$sourceKind",
@@ -949,7 +867,7 @@ internal static class BackupSessionImporter
 
             _ = write.Parameters.AddWithValue("$sourceFileIdentity", row.Values[17]);
 
-            _ = write.Parameters.AddWithValue("$sourceLastWriteAt", row.Values[18]);
+            _ = UtcInstantSql.AddStoredParameter(write, "$sourceLastWriteAt", row.Values[18]);
 
             _ = write.Parameters.AddWithValue("$sourceByteLength", row.Values[19]);
 
@@ -974,11 +892,9 @@ internal static class BackupSessionImporter
             _ = await write.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             copied++;
-
         }
 
         return (copied, deduplicated);
-
     }
 
     /// <summary>
@@ -997,7 +913,6 @@ internal static class BackupSessionImporter
         string oldSegment,
         string newSegment)
     {
-
         string normalized = relative.Replace('\\', '/');
 
         int boundary = normalized.IndexOf('/');
@@ -1007,9 +922,7 @@ internal static class BackupSessionImporter
             || !Guid.TryParse(normalized[..boundary], out Guid current)
             || current != owner)
         {
-
             return normalized;
-
         }
 
         string replacement = Guid.TryParse(newSegment, out Guid replacementId)
@@ -1017,7 +930,6 @@ internal static class BackupSessionImporter
             : newSegment;
 
         return replacement + normalized[boundary..];
-
     }
 
     /// <summary>
@@ -1032,7 +944,6 @@ internal static class BackupSessionImporter
     /// </remarks>
     private static string DisambiguateLeaf(string relative, string discriminator)
     {
-
         int boundary = relative.LastIndexOf('/');
 
         string directory = boundary < 0 ? string.Empty : relative[..(boundary + 1)];
@@ -1042,12 +953,10 @@ internal static class BackupSessionImporter
         string extension = Path.GetExtension(leaf);
 
         return directory + leaf[..(leaf.Length - extension.Length)] + "-" + discriminator + extension;
-
     }
 
     private static string ResolveContained(string root, string relative)
     {
-
         string fullRoot = Path.GetFullPath(root);
 
         string candidate = Path.GetFullPath(
@@ -1056,15 +965,12 @@ internal static class BackupSessionImporter
         return candidate.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
             ? candidate
             : throw new IOException("An imported attachment path escapes the attachment root.");
-
     }
 
     private static bool SameContent(string left, string right)
     {
-
         try
         {
-
             using FileStream leftStream = File.OpenRead(left);
 
             using FileStream rightStream = File.OpenRead(right);
@@ -1072,16 +978,12 @@ internal static class BackupSessionImporter
             return leftStream.Length == rightStream.Length
                 && SHA256.HashData(leftStream).AsSpan()
                     .SequenceEqual(SHA256.HashData(rightStream));
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     private static async Task<bool> RowExistsAsync(
@@ -1091,14 +993,11 @@ internal static class BackupSessionImporter
         CancellationToken cancellationToken,
         SqliteTransaction? transaction = null)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(connection, table, cancellationToken, transaction)
                 .ConfigureAwait(false))
         {
-
             return false;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -1110,7 +1009,6 @@ internal static class BackupSessionImporter
         _ = command.Parameters.AddWithValue("$id", id);
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
-
     }
 
     /// <summary>
@@ -1134,7 +1032,6 @@ internal static class BackupSessionImporter
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = source.CreateCommand();
 
         command.CommandText =
@@ -1143,7 +1040,6 @@ internal static class BackupSessionImporter
         _ = command.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(sessionId));
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
-
     }
 
     /// <summary>Never returns null: an unset SqliteParameter binds as "value must be set" rather than NULL.</summary>
@@ -1153,5 +1049,4 @@ internal static class BackupSessionImporter
     private sealed record PendingAttachmentCopy(string Source, string Destination);
 
     private sealed record AttachmentRow(object[] Values);
-
 }

@@ -1,9 +1,5 @@
-using System.Data.Common;
-using System.Globalization;
-
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -22,7 +18,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// </summary>
 internal sealed class SessionEntryPersistence
 {
-
     private readonly ArcanumDbContext _db;
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections;
@@ -31,11 +26,9 @@ internal sealed class SessionEntryPersistence
         ArcanumDbContext db,
         IGrimoireOrdinaryConnectionFactory connections)
     {
-
         _db = db;
 
         _connections = connections ?? throw new ArgumentNullException(nameof(connections));
-
     }
 
     internal static Func<ToolInteractionReceipt, Exception?>?
@@ -57,9 +50,7 @@ internal sealed class SessionEntryPersistence
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-
         return SessionWriteLock.AcquireAsync(sessionId, cancellationToken);
-
     }
 
     public static Error? CheckEntryLimits(
@@ -68,16 +59,15 @@ internal sealed class SessionEntryPersistence
         SessionSettings? settings,
         params string?[] contents)
     {
-
         return GrimoireLimits.EnforceEntryLimits(currentEntryCount, entriesToAdd, settings, contents);
-
     }
 
     public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
-
-        return _db.Entries.CountAsync(e => e.SessionId == sessionId, cancellationToken);
-
+        return ReadInt32Async(
+            "SELECT COUNT(*) FROM \"Entries\" WHERE \"SessionId\" = $sessionId;",
+            command => BindSessionId(command, sessionId),
+            cancellationToken);
     }
 
     /// <summary>
@@ -85,42 +75,27 @@ internal sealed class SessionEntryPersistence
     /// <paramref name="sessionId"/> and returns the first. Callers assign them in append order.
     /// Correct because every entry insert holds the per-session write lock, and the unique
     /// <c>(SessionId, Sequence)</c> index turns any escape into a write failure rather than a
-    /// silently reordered transcript. Pending inserts already tracked on this context are included
-    /// so several batches inside one transaction cannot collide.
+    /// silently reordered transcript. Entry inserts use direct SQLite on this same connection and
+    /// transaction, so the persisted maximum includes every earlier batch in the transaction.
     /// </summary>
     public async Task<long> ReserveSequenceRangeAsync(
         Guid sessionId,
         int count,
         CancellationToken cancellationToken = default)
     {
-
         if (count < 1)
         {
-
             throw new ArgumentOutOfRangeException(nameof(count), count, "At least one sequence value is required.");
-
         }
 
-        long persistedMax = await SqliteBusyRetry
-            .ExecuteAsync(
-                () => _db.Entries
-                    .Where(e => e.SessionId == sessionId)
-                    .MaxAsync(e => (long?)e.Sequence, cancellationToken),
-                cancellationToken)
-            .ConfigureAwait(false)
-            ?? 0L;
+        long persistedMax = await SqliteBusyRetry.ExecuteAsync(
+            () => ReadInt64Async(
+                "SELECT COALESCE(MAX(\"Sequence\"), 0) FROM \"Entries\" WHERE \"SessionId\" = $sessionId;",
+                command => BindSessionId(command, sessionId),
+                cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
-        long pendingMax = _db.ChangeTracker
-            .Entries<Entry>()
-            .Where(tracked =>
-                tracked.State is EntityState.Added
-                && tracked.Entity.SessionId == sessionId)
-            .Select(tracked => tracked.Entity.Sequence)
-            .DefaultIfEmpty(0L)
-            .Max();
-
-        return Math.Max(persistedMax, pendingMax) + 1L;
-
+        return persistedMax + 1L;
     }
 
     public Task BumpSessionUpdatedAtAsync(
@@ -128,22 +103,74 @@ internal sealed class SessionEntryPersistence
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default)
     {
-
         return SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(s => s.Id == sessionId)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(x => x.UpdatedAt, updatedAt),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                "UPDATE \"Sessions\" SET \"UpdatedAt\" = $updatedAt WHERE \"Id\" = $sessionId;",
+                command =>
+                {
+                    BindSessionId(command, sessionId);
+                    GrimoireEntitySql.AddParameter(
+                        command,
+                        "$updatedAt",
+                        GrimoireEntitySql.Format(updatedAt));
+                },
+                cancellationToken),
             cancellationToken);
-
     }
 
-    public Task SaveChangesWithRetryAsync(CancellationToken cancellationToken = default)
+    public Task InsertEntryAsync(
+        Entry entry,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(entry);
 
-        return EfSaveChangesRetry.ExecuteAsync(_db, cancellationToken);
+        return InsertEntriesAsync([entry], cancellationToken);
+    }
 
+    public async Task InsertEntriesAsync(
+        IReadOnlyList<Entry> entries,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        for (int index = 0; index < entries.Count; index++)
+        {
+            if (entries[index] is null)
+            {
+                throw new ArgumentException(
+                    $"Entry batch element {index} is null.",
+                    nameof(entries));
+            }
+        }
+
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            INSERT INTO "Entries"
+                ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
+                 "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
+            VALUES
+                ($id, $sessionId, $role, $content, $model, $createdAt,
+                 $sequence, $toolCallId, $toolName, $toolArguments, $isPinned);
+            """,
+            cancellationToken).ConfigureAwait(false);
+        BindEntry(command, entries[0]);
+
+        foreach (Entry entry in entries)
+        {
+            SetEntryParameterValues(command, entry);
+
+            await SqliteBusyRetry.ExecuteAsync(
+                async () => _ = await command
+                    .ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false),
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public Task IncrementUnsummarizedEntryCountIfKnownAsync(
@@ -151,22 +178,25 @@ internal sealed class SessionEntryPersistence
         int delta,
         CancellationToken cancellationToken = default)
     {
-
         if (delta <= 0)
         {
-
             return Task.CompletedTask;
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(s => s.Id == sessionId && s.UnsummarizedEntryCount >= 0)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(x => x.UnsummarizedEntryCount, x => x.UnsummarizedEntryCount + delta),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                UPDATE "Sessions"
+                SET "UnsummarizedEntryCount" = "UnsummarizedEntryCount" + $delta
+                WHERE "Id" = $sessionId AND "UnsummarizedEntryCount" >= 0;
+                """,
+                command =>
+                {
+                    BindSessionId(command, sessionId);
+                    GrimoireEntitySql.AddParameter(command, "$delta", delta);
+                },
+                cancellationToken),
             cancellationToken);
-
     }
 
     public Task DecrementUnsummarizedEntryCountIfKnownAsync(
@@ -174,22 +204,25 @@ internal sealed class SessionEntryPersistence
         int delta,
         CancellationToken cancellationToken = default)
     {
-
         if (delta <= 0)
         {
-
             return Task.CompletedTask;
-
         }
 
         return SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(s => s.Id == sessionId && s.UnsummarizedEntryCount > 0)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(x => x.UnsummarizedEntryCount, x => x.UnsummarizedEntryCount - delta),
-                    cancellationToken),
+            () => ExecuteNonQueryAsync(
+                """
+                UPDATE "Sessions"
+                SET "UnsummarizedEntryCount" = "UnsummarizedEntryCount" - $delta
+                WHERE "Id" = $sessionId AND "UnsummarizedEntryCount" > 0;
+                """,
+                command =>
+                {
+                    BindSessionId(command, sessionId);
+                    GrimoireEntitySql.AddParameter(command, "$delta", delta);
+                },
+                cancellationToken),
             cancellationToken);
-
     }
 
     internal async Task<MandatoryToolInteractionProbeResult>
@@ -197,16 +230,13 @@ internal sealed class SessionEntryPersistence
             MandatoryToolInteractionProbe probe,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(probe);
 
         if (!HasValidProbe(probe))
         {
-
             return new MandatoryToolInteractionProbeResult(
                 MandatoryToolInteractionProbeOutcome.Mismatched,
                 Result: null);
-
         }
 
         using IDisposable writeLock = await AcquireWriteLockAsync(
@@ -216,7 +246,6 @@ internal sealed class SessionEntryPersistence
         return await ReadProbeFreshAsync(
             probe,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     internal async Task<MandatoryToolInteractionPreflightResult>
@@ -225,17 +254,14 @@ internal sealed class SessionEntryPersistence
             SessionSettings? settings,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(interaction);
 
         if (!HasValidDeterministicIdentity(interaction)
             || !HasValidPayload(interaction))
         {
-
             return new MandatoryToolInteractionPreflightResult(
                 MandatoryToolInteractionPreflightOutcome.Mismatched,
                 Result: null);
-
         }
 
         Entry expectedCall = BuildCallEntry(interaction);
@@ -253,41 +279,32 @@ internal sealed class SessionEntryPersistence
 
         if (existing.Classification == ReceiptReadbackClassification.Matching)
         {
-
             return new MandatoryToolInteractionPreflightResult(
                 MandatoryToolInteractionPreflightOutcome.Replayed,
                 interaction.Result);
-
         }
 
         if (existing.Classification is
             ReceiptReadbackClassification.PartialOrMismatched
             or ReceiptReadbackClassification.Unreadable)
         {
-
             return new MandatoryToolInteractionPreflightResult(
                 existing.Classification
                     == ReceiptReadbackClassification.Unreadable
                         ? MandatoryToolInteractionPreflightOutcome.Unavailable
                         : MandatoryToolInteractionPreflightOutcome.Mismatched,
                 Result: null);
-
         }
 
-        bool sessionExists = await _db.Sessions
-            .AsNoTracking()
-            .AnyAsync(
-                session => session.Id == interaction.SessionId,
-                cancellationToken)
-            .ConfigureAwait(false);
+        bool sessionExists = await SessionExistsAsync(
+            interaction.SessionId,
+            cancellationToken).ConfigureAwait(false);
 
         if (!sessionExists)
         {
-
             return new MandatoryToolInteractionPreflightResult(
                 MandatoryToolInteractionPreflightOutcome.Rejected,
                 Result: null);
-
         }
 
         int entryCount = await GetEntryCountAsync(
@@ -306,7 +323,6 @@ internal sealed class SessionEntryPersistence
                 ? MandatoryToolInteractionPreflightOutcome.Admitted
                 : MandatoryToolInteractionPreflightOutcome.Rejected,
             Result: null);
-
     }
 
     internal async Task<MandatoryToolInteractionAppendResult> AppendMandatoryToolInteractionAsync(
@@ -314,30 +330,24 @@ internal sealed class SessionEntryPersistence
         SessionSettings? settings,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(interaction);
 
         try
         {
-
             return await AppendMandatoryToolInteractionCoreAsync(
                 interaction,
                 settings,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException cancellation)
             when (!cancellation.Data.Contains(
                 nameof(MandatoryToolInteractionAppendOutcome)))
         {
-
             cancellation.Data[nameof(MandatoryToolInteractionAppendOutcome)] =
                 await ClassifyCancellationAsync(interaction).ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     private async Task<MandatoryToolInteractionAppendResult> AppendMandatoryToolInteractionCoreAsync(
@@ -345,15 +355,12 @@ internal sealed class SessionEntryPersistence
         SessionSettings? settings,
         CancellationToken cancellationToken)
     {
-
         if (!HasValidDeterministicIdentity(interaction)
             || !HasValidPayload(interaction))
         {
-
             return Result(
                 MandatoryToolInteractionAppendOutcome.Failed,
                 interaction.Receipt);
-
         }
 
         Entry expectedCall = BuildCallEntry(interaction);
@@ -395,7 +402,6 @@ internal sealed class SessionEntryPersistence
 
         try
         {
-
             transaction = await SqliteBusyRetry.ExecuteAsync(
                 () => _db.Database.BeginTransactionAsync(cancellationToken),
                 cancellationToken).ConfigureAwait(false);
@@ -403,36 +409,27 @@ internal sealed class SessionEntryPersistence
             if (AfterMandatoryTransactionBeganForTests?.Invoke(interaction.Receipt)
                 is Exception transactionInjected)
             {
-
                 throw transactionInjected;
-
             }
 
             if (AfterMandatoryTransactionBeganAsyncForTests is not null)
             {
-
                 await AfterMandatoryTransactionBeganAsyncForTests(
                     interaction.Receipt,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
-            bool sessionExists = await _db.Sessions
-                .AsNoTracking()
-                .AnyAsync(
-                    session => session.Id == interaction.SessionId,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            bool sessionExists = await SessionExistsAsync(
+                interaction.SessionId,
+                cancellationToken).ConfigureAwait(false);
 
             if (!sessionExists)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Result(
                     MandatoryToolInteractionAppendOutcome.Failed,
                     interaction.Receipt);
-
             }
 
             int entryCount = await GetEntryCountAsync(
@@ -448,13 +445,11 @@ internal sealed class SessionEntryPersistence
 
             if (limitError is not null)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Result(
                     MandatoryToolInteractionAppendOutcome.Failed,
                     interaction.Receipt);
-
             }
 
             // The call and its result share one CreatedAt, so the sequence is what keeps the result
@@ -468,16 +463,14 @@ internal sealed class SessionEntryPersistence
 
             expectedResult.Sequence = firstSequence + 1L;
 
-            _db.Entries.Add(expectedCall);
-
-            _db.Entries.Add(expectedResult);
+            await InsertEntriesAsync(
+                [expectedCall, expectedResult],
+                cancellationToken).ConfigureAwait(false);
 
             await BumpSessionUpdatedAtAsync(
                 interaction.SessionId,
                 interaction.CreatedAt,
                 cancellationToken).ConfigureAwait(false);
-
-            await SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
 
             await IncrementUnsummarizedEntryCountIfKnownAsync(
                 interaction.SessionId,
@@ -490,19 +483,15 @@ internal sealed class SessionEntryPersistence
 
             if (AfterMandatoryCommitForTests?.Invoke(interaction.Receipt) is Exception injected)
             {
-
                 throw injected;
-
             }
 
             return Result(
                 MandatoryToolInteractionAppendOutcome.NewlyCommitted,
                 interaction.Receipt);
-
         }
         catch (OperationCanceledException cancellation)
         {
-
             using CancellationTokenSource classificationDeadline =
                 new(TimeSpan.FromSeconds(30));
 
@@ -512,24 +501,18 @@ internal sealed class SessionEntryPersistence
                 transaction,
                 classificationDeadline.Token).ConfigureAwait(false);
 
-            DetachReceiptEntries(interaction.Receipt);
-
             ReceiptReadback readback;
 
             try
             {
-
                 readback = await ReadReceiptFreshAsync(
                     expectedCall,
                     expectedResult,
                     classificationDeadline.Token).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (classificationDeadline.IsCancellationRequested)
             {
-
                 readback = new ReceiptReadback(ReceiptReadbackClassification.Unreadable);
-
             }
 
             cancellation.Data[nameof(MandatoryToolInteractionAppendOutcome)] =
@@ -538,11 +521,9 @@ internal sealed class SessionEntryPersistence
                     definitiveNoCommit: !transactionBegan || rolledBack);
 
             throw;
-
         }
         catch (Exception exception) when (IsExpectedPersistenceFailure(exception))
         {
-
             using CancellationTokenSource classificationDeadline =
                 new(TimeSpan.FromSeconds(30));
 
@@ -550,24 +531,18 @@ internal sealed class SessionEntryPersistence
                 transaction,
                 classificationDeadline.Token).ConfigureAwait(false);
 
-            DetachReceiptEntries(interaction.Receipt);
-
             ReceiptReadback readback;
 
             try
             {
-
                 readback = await ReadReceiptFreshAsync(
                     expectedCall,
                     expectedResult,
                     classificationDeadline.Token).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (classificationDeadline.IsCancellationRequested)
             {
-
                 readback = new ReceiptReadback(ReceiptReadbackClassification.Unreadable);
-
             }
 
             return readback.Classification switch
@@ -582,32 +557,23 @@ internal sealed class SessionEntryPersistence
                     MandatoryToolInteractionAppendOutcome.Ambiguous,
                     interaction.Receipt),
             };
-
         }
         finally
         {
-
             if (transaction is not null)
             {
-
                 await transaction.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private async Task<MandatoryToolInteractionAppendOutcome> ClassifyCancellationAsync(
         MandatoryToolInteraction interaction)
     {
-
         if (!HasValidDeterministicIdentity(interaction)
             || !HasValidPayload(interaction))
         {
-
             return MandatoryToolInteractionAppendOutcome.Ambiguous;
-
         }
 
         TimeSpan timeout = MandatoryCancellationClassificationTimeoutForTests
@@ -617,7 +583,6 @@ internal sealed class SessionEntryPersistence
 
         try
         {
-
             BeforeMandatoryCancellationClassificationLockForTests?.Invoke(
                 interaction.Receipt);
 
@@ -636,15 +601,11 @@ internal sealed class SessionEntryPersistence
             return ClassifyCancellationReadback(
                 readback,
                 definitiveNoCommit: true);
-
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
-
             return MandatoryToolInteractionAppendOutcome.Ambiguous;
-
         }
-
     }
 
     private static MandatoryToolInteractionAppendOutcome ClassifyCancellationReadback(
@@ -663,22 +624,17 @@ internal sealed class SessionEntryPersistence
         MandatoryToolInteractionProbe probe,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                 () => ReadProbeOnFreshConnectionAsync(
                     probe,
                     cancellationToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -686,13 +642,10 @@ internal sealed class SessionEntryPersistence
                 or FormatException
                 or IOException)
         {
-
             return new MandatoryToolInteractionProbeResult(
                 MandatoryToolInteractionProbeOutcome.Unavailable,
                 Result: null);
-
         }
-
     }
 
     private async Task<MandatoryToolInteractionProbeResult>
@@ -700,7 +653,6 @@ internal sealed class SessionEntryPersistence
             MandatoryToolInteractionProbe probe,
             CancellationToken cancellationToken)
     {
-
         Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
             .OpenFreshAsync(
                 GrimoireOrdinaryFreshConnectionKind.ReadOnly,
@@ -709,11 +661,9 @@ internal sealed class SessionEntryPersistence
 
         if (acquired.IsFailure)
         {
-
             return new MandatoryToolInteractionProbeResult(
                 MandatoryToolInteractionProbeOutcome.Unavailable,
                 Result: null);
-
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -732,23 +682,21 @@ internal sealed class SessionEntryPersistence
 
         _ = command.Parameters.AddWithValue(
             "$callId",
-            probe.Receipt.CallEntryId);
+            Format(probe.Receipt.CallEntryId));
 
         _ = command.Parameters.AddWithValue(
             "$resultId",
-            probe.Receipt.ResultEntryId);
+            Format(probe.Receipt.ResultEntryId));
 
         List<EntryLogicalPayload> rows = [];
 
-        await using DbDataReader reader = await command
+        await using SqliteDataReader reader = await command
             .ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(ReadLogicalPayload(reader));
-
         }
 
         await GrimoireScopedConsumerTestSeam.PauseAsync(
@@ -765,11 +713,9 @@ internal sealed class SessionEntryPersistence
 
         if (call is null && result is null)
         {
-
             return new MandatoryToolInteractionProbeResult(
                 MandatoryToolInteractionProbeOutcome.NotFound,
                 Result: null);
-
         }
 
         Entry expectedCall = BuildCallEntry(probe);
@@ -779,17 +725,14 @@ internal sealed class SessionEntryPersistence
             && call.Matches(expectedCall)
             && result.TryExtractResult(probe, out string? serializedResult))
         {
-
             return new MandatoryToolInteractionProbeResult(
                 MandatoryToolInteractionProbeOutcome.Replayed,
                 serializedResult);
-
         }
 
         return new MandatoryToolInteractionProbeResult(
             MandatoryToolInteractionProbeOutcome.Mismatched,
             Result: null);
-
     }
 
     private async Task<ReceiptReadback> ReadReceiptFreshAsync(
@@ -797,23 +740,18 @@ internal sealed class SessionEntryPersistence
         Entry expectedResult,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             return await SqliteBusyRetry.ExecuteAsync(
                 () => ReadReceiptOnFreshConnectionAsync(
                     expectedCall,
                     expectedResult,
                     cancellationToken),
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -821,11 +759,8 @@ internal sealed class SessionEntryPersistence
                 or FormatException
                 or IOException)
         {
-
             return new ReceiptReadback(ReceiptReadbackClassification.Unreadable);
-
         }
-
     }
 
     private async Task<ReceiptReadback> ReadReceiptOnFreshConnectionAsync(
@@ -833,7 +768,6 @@ internal sealed class SessionEntryPersistence
         Entry expectedResult,
         CancellationToken cancellationToken)
     {
-
         Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
             .OpenFreshAsync(
                 GrimoireOrdinaryFreshConnectionKind.ReadOnly,
@@ -842,9 +776,7 @@ internal sealed class SessionEntryPersistence
 
         if (acquired.IsFailure)
         {
-
             return new ReceiptReadback(ReceiptReadbackClassification.Unreadable);
-
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -861,32 +793,30 @@ internal sealed class SessionEntryPersistence
             WHERE "Id" = $callId OR "Id" = $resultId;
             """;
 
-        _ = command.Parameters.AddWithValue("$callId", expectedCall.Id);
+        _ = command.Parameters.AddWithValue("$callId", Format(expectedCall.Id));
 
-        _ = command.Parameters.AddWithValue("$resultId", expectedResult.Id);
+        _ = command.Parameters.AddWithValue("$resultId", Format(expectedResult.Id));
 
         List<EntryLogicalPayload> rows = [];
 
-        await using DbDataReader reader = await command
+        await using SqliteDataReader reader = await command
             .ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(
                 new EntryLogicalPayload(
-                    Id: reader.GetGuid(0),
-                    SessionId: reader.GetGuid(1),
+                    Id: GrimoireEntitySql.ReadGuid(reader, 0),
+                    SessionId: GrimoireEntitySql.ReadGuid(reader, 1),
                     Role: (MessageRole)reader.GetInt32(2),
                     Content: reader.GetString(3),
                     ModelUsed: reader.GetString(4),
-                    CreatedAt: ReadDateTimeOffset(reader, 5),
-                    ToolCallId: ReadNullableString(reader, 6),
-                    ToolName: ReadNullableString(reader, 7),
-                    ToolArguments: ReadNullableString(reader, 8),
+                    CreatedAt: GrimoireEntitySql.ReadDateTimeOffset(reader, 5),
+                    ToolCallId: GrimoireEntitySql.ReadNullableString(reader, 6),
+                    ToolName: GrimoireEntitySql.ReadNullableString(reader, 7),
+                    ToolArguments: GrimoireEntitySql.ReadNullableString(reader, 8),
                     IsPinned: reader.GetBoolean(9)));
-
         }
 
         await GrimoireScopedConsumerTestSeam.PauseAsync(
@@ -901,9 +831,7 @@ internal sealed class SessionEntryPersistence
 
         if (call is null && result is null)
         {
-
             return new ReceiptReadback(ReceiptReadbackClassification.None);
-
         }
 
         if (call is not null
@@ -911,51 +839,26 @@ internal sealed class SessionEntryPersistence
             && call.Matches(expectedCall)
             && result.Matches(expectedResult))
         {
-
             return new ReceiptReadback(ReceiptReadbackClassification.Matching);
-
         }
 
         return new ReceiptReadback(ReceiptReadbackClassification.PartialOrMismatched);
-
-    }
-
-    private void DetachReceiptEntries(ToolInteractionReceipt receipt)
-    {
-
-        foreach (EntityEntry<Entry> tracked in _db.ChangeTracker
-            .Entries<Entry>()
-            .Where(entry =>
-                entry.Entity.Id == receipt.CallEntryId
-                || entry.Entity.Id == receipt.ResultEntryId)
-            .ToArray())
-        {
-
-            tracked.State = EntityState.Detached;
-
-        }
-
     }
 
     private static async Task<bool> TryRollbackAsync(
         IDbContextTransaction? transaction,
         CancellationToken cleanupToken)
     {
-
         if (transaction is null)
         {
-
             return true;
-
         }
 
         try
         {
-
             await transaction.RollbackAsync(cleanupToken).ConfigureAwait(false);
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -963,12 +866,99 @@ internal sealed class SessionEntryPersistence
                 or ObjectDisposedException
                 or OperationCanceledException)
         {
-
             return false;
-
         }
-
     }
+
+    private async Task<bool> SessionExistsAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken) =>
+        await ReadInt32Async(
+            "SELECT EXISTS(SELECT 1 FROM \"Sessions\" WHERE \"Id\" = $sessionId);",
+            command => BindSessionId(command, sessionId),
+            cancellationToken).ConfigureAwait(false) != 0;
+
+    private async Task ExecuteNonQueryAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> ReadInt32Async(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        object? value = await ReadScalarAsync(commandText, bind, cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private async Task<long> ReadInt64Async(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        object? value = await ReadScalarAsync(commandText, bind, cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private async Task<object?> ReadScalarAsync(
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            commandText,
+            cancellationToken).ConfigureAwait(false);
+        bind(command);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void BindEntry(SqliteCommand command, Entry entry)
+    {
+        GrimoireEntitySql.AddParameter(command, "$id", Format(entry.Id));
+        GrimoireEntitySql.AddParameter(command, "$sessionId", Format(entry.SessionId));
+        GrimoireEntitySql.AddParameter(command, "$role", (int)entry.Role);
+        GrimoireEntitySql.AddParameter(command, "$content", entry.Content);
+        GrimoireEntitySql.AddParameter(command, "$model", entry.ModelUsed);
+        GrimoireEntitySql.AddParameter(command, "$createdAt", GrimoireEntitySql.Format(entry.CreatedAt));
+        GrimoireEntitySql.AddParameter(command, "$sequence", entry.Sequence);
+        GrimoireEntitySql.AddParameter(command, "$toolCallId", entry.ToolCallId);
+        GrimoireEntitySql.AddParameter(command, "$toolName", entry.ToolName);
+        GrimoireEntitySql.AddParameter(command, "$toolArguments", entry.ToolArguments);
+        GrimoireEntitySql.AddParameter(command, "$isPinned", entry.IsPinned);
+    }
+
+    private static void SetEntryParameterValues(SqliteCommand command, Entry entry)
+    {
+        command.Parameters["$id"].Value = Format(entry.Id);
+        command.Parameters["$sessionId"].Value = Format(entry.SessionId);
+        command.Parameters["$role"].Value = (int)entry.Role;
+        command.Parameters["$content"].Value = entry.Content;
+        command.Parameters["$model"].Value = entry.ModelUsed;
+        command.Parameters["$createdAt"].Value = GrimoireEntitySql.Format(entry.CreatedAt);
+        command.Parameters["$sequence"].Value = entry.Sequence;
+        command.Parameters["$toolCallId"].Value = entry.ToolCallId ?? (object)DBNull.Value;
+        command.Parameters["$toolName"].Value = entry.ToolName ?? (object)DBNull.Value;
+        command.Parameters["$toolArguments"].Value = entry.ToolArguments ?? (object)DBNull.Value;
+        command.Parameters["$isPinned"].Value = entry.IsPinned;
+    }
+
+    private static void BindSessionId(SqliteCommand command, Guid sessionId) =>
+        GrimoireEntitySql.AddParameter(command, "$sessionId", Format(sessionId));
+
+    private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 
     private static Entry BuildCallEntry(MandatoryToolInteraction interaction) =>
         new()
@@ -1046,7 +1036,6 @@ internal sealed class SessionEntryPersistence
 
     private static bool IsExpectedPersistenceFailure(Exception exception) =>
         exception is SqliteException
-            or DbUpdateException
             or InvalidOperationException
             or IOException;
 
@@ -1055,37 +1044,18 @@ internal sealed class SessionEntryPersistence
         ToolInteractionReceipt receipt) =>
         new(outcome, receipt);
 
-    private static DateTimeOffset ReadDateTimeOffset(DbDataReader reader, int ordinal)
-    {
-
-        object value = reader.GetValue(ordinal);
-
-        return value is DateTimeOffset timestamp
-            ? timestamp
-            : DateTimeOffset.Parse(
-                Convert.ToString(value, CultureInfo.InvariantCulture)!,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind);
-
-    }
-
-    private static string? ReadNullableString(DbDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal)
-            ? null
-            : reader.GetString(ordinal);
-
     private static EntryLogicalPayload ReadLogicalPayload(
-        DbDataReader reader) =>
+        SqliteDataReader reader) =>
         new(
-            Id: reader.GetGuid(0),
-            SessionId: reader.GetGuid(1),
+            Id: GrimoireEntitySql.ReadGuid(reader, 0),
+            SessionId: GrimoireEntitySql.ReadGuid(reader, 1),
             Role: (MessageRole)reader.GetInt32(2),
             Content: reader.GetString(3),
             ModelUsed: reader.GetString(4),
-            CreatedAt: ReadDateTimeOffset(reader, 5),
-            ToolCallId: ReadNullableString(reader, 6),
-            ToolName: ReadNullableString(reader, 7),
-            ToolArguments: ReadNullableString(reader, 8),
+            CreatedAt: GrimoireEntitySql.ReadDateTimeOffset(reader, 5),
+            ToolCallId: GrimoireEntitySql.ReadNullableString(reader, 6),
+            ToolName: GrimoireEntitySql.ReadNullableString(reader, 7),
+            ToolArguments: GrimoireEntitySql.ReadNullableString(reader, 8),
             IsPinned: reader.GetBoolean(9));
 
     private enum ReceiptReadbackClassification
@@ -1111,7 +1081,6 @@ internal sealed class SessionEntryPersistence
         string? ToolArguments,
         bool IsPinned)
     {
-
         internal bool Matches(Entry expected) =>
             Id == expected.Id
             && SessionId == expected.SessionId
@@ -1128,7 +1097,6 @@ internal sealed class SessionEntryPersistence
             MandatoryToolInteractionProbe probe,
             out string? result)
         {
-
             const string prefix = "[ToolResult: ";
 
             result = null;
@@ -1148,17 +1116,12 @@ internal sealed class SessionEntryPersistence
                 || !Content.StartsWith(prefix, StringComparison.Ordinal)
                 || !Content.EndsWith(']'))
             {
-
                 return false;
-
             }
 
             result = Content[prefix.Length..^1];
 
             return true;
-
         }
-
     }
-
 }

@@ -39,12 +39,122 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
     }
 
+    /// <summary>Opens the closed period's connection for the one transaction that empties the Covenant family.</summary>
     [GrimoireConnectionAcquisitionRoute]
-    public async Task<Result<IGrimoireMaintenanceConnectionLease>>
-        OpenJournalCanonicalErasureAsync(
-            IGrimoireMaintenanceConnectionCapability capability,
-            IGrimoireMaintenanceIoLane lane,
-            CancellationToken cancellationToken)
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.CanonicalErasure,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for a checked write-ahead-log truncation and the sidecar settle before it.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.WalTruncation,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the ordinary read-write handle that puts write-ahead logging back after a replace.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalPostReplaceRestoreAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for vacuuming and exporting.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCompactionAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.Compaction,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for proving an exported candidate before the destination is touched.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalExportVerificationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for preparing the empty search accelerator a fresh install would have.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAcceleratorInitializationAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.AcceleratorInitialization,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for the immutable read that verifies the candidate without writing a sidecar.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCandidateReopenAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.ReopenVerification,
+            lane,
+            cancellationToken);
+
+    /// <summary>Opens the closed period's connection for the bounded read-only snapshot every closed-period inventory page comes from.</summary>
+    [GrimoireConnectionAcquisitionRoute]
+    public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken) =>
+        OpenJournalAsync(
+            capability,
+            CovenantMaintenanceConnectionPurpose.InventorySnapshot,
+            lane,
+            cancellationToken);
+
+    /// <summary>
+    /// The one physical open every journal-era maintenance purpose goes through.
+    /// </summary>
+    /// <remarks>
+    /// One body behind narrow per-purpose methods rather than one method taking a purpose, because
+    /// the acquisition inventory catalogues an open by the member that performs it: a single shared
+    /// entry point would collapse seven distinguishable routes into one line a reviewer cannot tell
+    /// apart, and the whole value of that inventory is that each acquisition is nameable.
+    ///
+    /// <para>Nothing here is chosen by the caller. The path and the mode come off the capability the
+    /// gate issued for this exact purpose, and the initializer mode and the immutable form of the
+    /// data source are decided from the purpose here - so a caller holding a read-only capability
+    /// cannot ask for an exclusive maintenance connection by passing different arguments.</para>
+    /// </remarks>
+    [GrimoireConnectionAcquisitionRoute]
+    private async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalAsync(
+        IGrimoireMaintenanceConnectionCapability capability,
+        CovenantMaintenanceConnectionPurpose purpose,
+        IGrimoireMaintenanceIoLane lane,
+        CancellationToken cancellationToken)
     {
 
         ArgumentNullException.ThrowIfNull(capability);
@@ -54,16 +164,14 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         Result<IGrimoireTrackedMaintenanceHandle> consumed = capability.Consume(
             lane.Owner,
             lane.Generation,
-            ArcanumPaths.GrimoireDatabaseFile,
-            CovenantMaintenanceConnectionMode.ReadWrite,
-            CovenantMaintenanceConnectionPurpose.CanonicalErasure,
+            purpose,
             lane);
 
         if (consumed.IsFailure)
         {
 
             return Refused(
-                "The journal maintenance capability does not authorize this canonical Grimoire open.");
+                "The journal maintenance capability does not authorize this Grimoire open.");
 
         }
 
@@ -91,13 +199,17 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
             SqliteConnectionStringBuilder builder = new()
             {
-                DataSource = ArcanumPaths.GrimoireDatabaseFile,
+                DataSource = purpose is CovenantMaintenanceConnectionPurpose.ReopenVerification
+                    ? $"file:{capability.CanonicalPath}?immutable=1"
+                    : capability.CanonicalPath,
 
                 Password = _passphraseSource.Passphrase,
 
                 Pooling = false,
 
-                Mode = SqliteOpenMode.ReadWriteCreate,
+                Mode = capability.Mode is CovenantMaintenanceConnectionMode.ReadOnly
+                    ? SqliteOpenMode.ReadOnly
+                    : SqliteOpenMode.ReadWriteCreate,
             };
 
             connection = new SqliteConnection(builder.ToString());
@@ -154,7 +266,7 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
             await _initializer.InitializeAsync(
                     connection,
-                    CovenantSqliteConnectionMode.ExclusiveMaintenance,
+                    InitializerModeOf(purpose),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -180,10 +292,36 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
         }
 
-        return Result<IGrimoireMaintenanceConnectionLease>.Success(
-            new Lease(connection, handle));
+        return Result<IGrimoireMaintenanceConnectionLease>.Success(new Lease(connection, handle));
 
     }
+
+    /// <summary>
+    /// How the shared initializer must configure the connection each purpose opens.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the capability's read-only or read-write mode because they answer different
+    /// questions. The mode is what the provider is allowed to do with the file; this is what the
+    /// engine has to be configured for, and an exclusive maintenance connection is a read-write one
+    /// that additionally refuses to share the database with anybody.
+    /// </remarks>
+    private static CovenantSqliteConnectionMode InitializerModeOf(
+        CovenantMaintenanceConnectionPurpose purpose) =>
+        purpose switch
+        {
+
+            CovenantMaintenanceConnectionPurpose.IntegrityVerification
+                or CovenantMaintenanceConnectionPurpose.ReopenVerification
+                or CovenantMaintenanceConnectionPurpose.InventorySnapshot =>
+                CovenantSqliteConnectionMode.ReadOnly,
+
+            CovenantMaintenanceConnectionPurpose.SidecarProof
+                or CovenantMaintenanceConnectionPurpose.PostReplaceJournalRestore =>
+                CovenantSqliteConnectionMode.ReadWrite,
+
+            _ => CovenantSqliteConnectionMode.ExclusiveMaintenance,
+
+        };
 
     private static async ValueTask CloseAndDisposeAsync(SqliteConnection connection)
     {
