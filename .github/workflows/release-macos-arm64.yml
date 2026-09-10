@@ -44,8 +44,6 @@ jobs:
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
-      CERT_PATH: ${{ runner.temp }}/developer-id.p12
-      KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
 
     steps:
       - name: Checkout
@@ -168,6 +166,8 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          CERT_PATH: ${{ runner.temp }}/developer-id.p12
+          KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
           KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -222,6 +222,7 @@ jobs:
       - name: Require the certificate to be the identity the release names
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
         run: |
           set -euo pipefail
           FOUND="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
@@ -349,6 +350,9 @@ jobs:
 
       - name: Cleanup keychain
         if: always()
+        env:
+          CERT_PATH: ${{ runner.temp }}/developer-id.p12
+          KEYCHAIN_PATH: ${{ runner.temp }}/arcanum-signing.keychain-db
         run: |
           set -euo pipefail
           if [[ -e "$CERT_PATH" ]]; then
