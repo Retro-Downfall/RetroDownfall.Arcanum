@@ -304,7 +304,10 @@ internal sealed class UnseenServantService(
         Guid taskId,
         Func<Task> startJob)
     {
-        TaskCompletionSource<Task> handle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Unwrap must bind to the real job before dispatch releases _dispatchGate. StopAsync takes
+        // that same gate before it snapshots this proxy, so the TCS has no arbitrary concurrent
+        // consumer to protect and an asynchronously queued bind can only delay a valid shutdown.
+        TaskCompletionSource<Task> handle = new();
 
         Task publishedTask = handle.Task.Unwrap();
 

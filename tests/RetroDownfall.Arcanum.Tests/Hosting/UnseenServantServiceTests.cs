@@ -6,6 +6,54 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 public sealed class UnseenServantServiceTests
 {
     [Fact]
+    public async Task TrackJobTask_binds_the_published_handle_before_dispatch_returns()
+    {
+        ConcurrentExclusiveSchedulerPair scheduler = new(
+            TaskScheduler.Default,
+            maxConcurrencyLevel: 1);
+
+        Task probe = Task.Factory.StartNew(
+            () =>
+            {
+                ConcurrentDictionary<Guid, Task> activeJobTasks = new();
+
+                Guid taskId = Guid.NewGuid();
+
+                Task? published = null;
+
+                Task jobTask = UnseenServantService.TrackJobTask(
+                    activeJobTasks,
+                    taskId,
+                    () =>
+                    {
+                        published = activeJobTasks[taskId];
+
+                        return Task.CompletedTask;
+                    });
+
+                Assert.True(jobTask.IsCompletedSuccessfully);
+
+                Assert.NotNull(published);
+
+                Assert.True(published.IsCompletedSuccessfully);
+            },
+            CancellationToken.None,
+            TaskCreationOptions.None,
+            scheduler.ExclusiveScheduler);
+
+        try
+        {
+            await probe.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            scheduler.Complete();
+
+            await scheduler.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
     public void TrackJobTask_does_not_resurrect_an_entry_the_job_body_already_removed()
     {
         ConcurrentDictionary<Guid, Task> activeJobTasks = new();
