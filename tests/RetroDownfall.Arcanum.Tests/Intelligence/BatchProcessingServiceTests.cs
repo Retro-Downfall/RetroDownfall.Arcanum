@@ -249,7 +249,7 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
 
         ServiceCollection services = new();
 
-        services.AddSingleton(_db!);
+        services.AddScoped(_ => _fixture.CreateContext(_dbPath));
 
         services.AddScoped<IBatchRepository>(sp => new DispatchRecordingBatchRepository(
             new BatchRepository(sp.GetRequiredService<ArcanumDbContext>()),
@@ -1540,14 +1540,16 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     {
         ServiceCollection services = new();
 
-        services.AddSingleton(_db!);
+        services.AddScoped(_ => _fixture.CreateContext(_dbPath));
 
         services.AddScoped<IBatchRepository, BatchRepository>();
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 
-        services.AddScoped<IBatchAccountingRecoveryStore>(_ =>
-            accountingRecoveryStore ?? new BatchAccountingRecoveryStore(_db!, TimeProvider.System));
+        services.AddScoped<IBatchAccountingRecoveryStore>(sp =>
+            accountingRecoveryStore ?? new BatchAccountingRecoveryStore(
+                sp.GetRequiredService<ArcanumDbContext>(),
+                TimeProvider.System));
 
         services.AddSingleton(_blobStore);
 
