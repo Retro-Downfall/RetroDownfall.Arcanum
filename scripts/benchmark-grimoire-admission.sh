@@ -8,21 +8,22 @@ invalid()
     exit 2
 }
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 2
-project="$repo_root/tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj"
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 2
 temp_root=''
 temp_parent=''
 temp_root_identity=''
 child_pid=''
 watchdog_pid=''
 
+# Invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2317
 cleanup()
 {
     [ -n "$temp_root" ] && [ -n "$temp_parent" ] && [ -n "$temp_root_identity" ] || return 0
     [ ! -L "$temp_root" ] || return 0
 
     # Cleanup authority is the original physical directory, never a mutable TMPDIR alias.
-    cleanup__canonical_temp=$(CDPATH= cd -- "$temp_root" 2>/dev/null && pwd -P) || return 0
+    cleanup__canonical_temp=$(CDPATH='' cd -- "$temp_root" 2>/dev/null && pwd -P) || return 0
     [ "$cleanup__canonical_temp" = "$temp_root" ] || return 0
     [ "${temp_root%/*}" = "$temp_parent" ] || return 0
 
@@ -35,6 +36,8 @@ cleanup()
     esac
 }
 
+# Invoked indirectly by the INT and TERM traps.
+# shellcheck disable=SC2317
 cancel()
 {
     trap - INT TERM
@@ -55,11 +58,11 @@ trap cancel INT TERM
 create_workspace()
 {
     # NuGet must see the same physical root for the top-level project and its references.
-    temp_parent=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P) || exit 2
+    temp_parent=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P) || exit 2
     create_workspace__created=$(mktemp -d "$temp_parent/arcanum-grimoire-admission-script.XXXXXX") || exit 2
     create_workspace__identity=$(/usr/bin/stat -f '%d:%i' "$create_workspace__created" 2>/dev/null) || exit 2
     [ ! -L "$create_workspace__created" ] || exit 2
-    create_workspace__canonical=$(CDPATH= cd -- "$create_workspace__created" && pwd -P) || exit 2
+    create_workspace__canonical=$(CDPATH='' cd -- "$create_workspace__created" && pwd -P) || exit 2
     [ "$create_workspace__canonical" = "$create_workspace__created" ] || exit 2
     [ "${create_workspace__canonical%/*}" = "$temp_parent" ] || exit 2
     case "${create_workspace__canonical##*/}" in
@@ -131,7 +134,7 @@ machine_inputs()
     [ -n "$machine_inputs__cpu" ] || return 2
     dotnet --info > "$temp_root/dotnet-info.txt" || return 2
     shasum -a 256 "$temp_root/dotnet-info.txt" > "$temp_root/dotnet-info.sha256" || return 2
-    read -r machine_inputs__toolchain machine_inputs__ignored < "$temp_root/dotnet-info.sha256" || return 2
+    read -r machine_inputs__toolchain _ < "$temp_root/dotnet-info.sha256" || return 2
     require_digest "$machine_inputs__toolchain" || return 2
 }
 
@@ -234,7 +237,7 @@ require_instrument_bytes()
     require_instrument_bytes__baseline=$2
     require_instrument_bytes__candidate=$3
     require_instrument_bytes__catalog="$temp_root/catalog-$require_instrument_bytes__harness.txt"
-    while IFS="$(printf '\t')" read -r require_instrument_bytes__requirement require_instrument_bytes__path
+    while IFS="$(printf '\t')" read -r _ require_instrument_bytes__path
     do
         case "$require_instrument_bytes__path" in
             src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionGate.cs|src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionEpoch.cs)

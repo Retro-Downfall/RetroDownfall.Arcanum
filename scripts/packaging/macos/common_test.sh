@@ -242,6 +242,8 @@ NOTARY_PATH_CAPTURE="$WORK/notary.path"
 touch "$NOTARY_TEST_KEYCHAIN"
 export NOTARY_STDIN_CAPTURE NOTARY_ENV_CAPTURE NOTARY_PATH_CAPTURE
 
+# This subshell intentionally owns a fresh credential environment for the sourced packaging code.
+# shellcheck disable=SC2030
 (
   export TMPDIR="$WORK"
   export APPLE_APP_SPECIFIC_PASSWORD="notary-password-sentinel"
@@ -329,6 +331,8 @@ KEYCHAIN_ATTEMPTS="$WORK/transient-keychain-attempts"
 mkdir -p "$KEYCHAIN_ROOT"
 touch "$KEYCHAIN_PATH_UNDER_TEST"
 
+# Each command substitution intentionally owns a fresh stub environment; no mutation escapes it.
+# shellcheck disable=SC2030,SC2031
 output="$( (
   export STUB_SECURITY_MODE=transient
   export STUB_SECURITY_KEYCHAIN="$KEYCHAIN_PATH_UNDER_TEST"
@@ -356,6 +360,8 @@ KEYCHAIN_ATTEMPTS="$WORK/stuck-keychain-attempts"
 mkdir -p "$KEYCHAIN_ROOT"
 touch "$KEYCHAIN_PATH_UNDER_TEST"
 
+# Each command substitution intentionally owns a fresh stub environment; no mutation escapes it.
+# shellcheck disable=SC2030,SC2031
 output="$( (
   export STUB_SECURITY_MODE=always-fail
   export STUB_SECURITY_KEYCHAIN="$KEYCHAIN_PATH_UNDER_TEST"

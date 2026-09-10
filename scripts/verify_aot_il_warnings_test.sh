@@ -277,6 +277,8 @@ run_gate_for_rid() {
   local cli_log="$3"
   local smoke_log="$4"
 
+  # The helper deliberately gives each gate run an isolated stub environment.
+  # shellcheck disable=SC2030
   (
     export PATH="$STUB_BIN:$PATH"
     export STUB_PUBLISH_AOT="$publish_aot"
@@ -334,6 +336,8 @@ fi
 # The outer RID loop intentionally disables errexit so it can report every matrix leg. A failed
 # append must therefore be checked explicitly: otherwise the complete per-leg logs pass their ILC
 # checks while the combined warning log stays empty and the warning scan reports a false green.
+# The command substitution deliberately owns its complete failing-tool environment.
+# shellcheck disable=SC2030,SC2031
 OUTPUT="$(
   export PATH="$FAILING_CAT_BIN:$STUB_BIN:$PATH"
   export STUB_PUBLISH_AOT=true
@@ -355,6 +359,8 @@ else
   pass "a failed combined-log append fails closed"
 fi
 
+# The command substitution deliberately owns its complete failing-tool environment.
+# shellcheck disable=SC2031
 OUTPUT="$(
   export PATH="$FAILING_RM_BIN:$STUB_BIN:$PATH"
   export STUB_PUBLISH_AOT=true
