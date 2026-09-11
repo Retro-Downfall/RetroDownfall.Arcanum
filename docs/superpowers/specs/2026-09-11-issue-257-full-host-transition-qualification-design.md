@@ -1,6 +1,6 @@
 # Issue #257: Full-Host Grimoire Transition Proof and Qualification
 
-**Status:** Proposed — approach approved in chat on 2026-09-11; written specification awaiting review.
+**Status:** Approved in chat on 2026-09-11.
 
 **Parent:** GitHub issue #239, "A Grimoire connection is enrolled in the Covenant drain only as a side effect."
 
