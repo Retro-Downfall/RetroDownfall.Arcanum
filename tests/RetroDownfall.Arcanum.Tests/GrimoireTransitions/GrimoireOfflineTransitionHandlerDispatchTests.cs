@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -79,6 +80,44 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         Assert.Equal(
             LongRunningOperationState.Completed,
             Assert.Single(store.Operations, row => row.Id == seeded.Id).State);
+    }
+
+    [Fact]
+    public async Task A_self_settling_launch_gap_preserves_the_handlers_exact_terminal_winner()
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore store = new(time);
+
+        (LongRunningOperation seeded, CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner adopted) =
+            await AdoptableAsync(store);
+
+        SelfSettlingRecoveryHandler handler = new(store, seeded.Kind, seeded.CheckpointVersion);
+
+        using Held held = Hold("self-settling");
+
+        Result resumed = await CovenantOfflineTransitionLaunchGapResumption.ResumeBeforeReadinessAsync(
+            Dispatch(store, time, new RecordingLeaseAdoption(store), handler),
+            held.Lock,
+            held.Root,
+            adopted,
+            Token);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        LongRunningOperation winner = Assert.IsType<LongRunningOperation>(handler.Winner);
+
+        LongRunningOperation durable = Assert.Single(store.Operations, row => row.Id == seeded.Id);
+
+        Assert.Same(winner, durable);
+
+        Assert.Equal(seeded.Revision + 2, durable.Revision);
+
+        Assert.Equal(LongRunningOperationState.Completed, durable.State);
+
+        Assert.Null(durable.LeaseOwner);
+
+        Assert.NotNull(durable.CompletedAt);
     }
 
     [Theory]
@@ -285,6 +324,11 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
         foreach (ILongRunningOperationRecoveryHandler handler in handlers)
         {
             services.AddSingleton(handler);
+
+            if (handler is IAuthenticatedCovenantErasureRecoveryHandler selfSettling)
+            {
+                services.AddSingleton(selfSettling);
+            }
         }
 
         services.AddScoped(sp => new LongRunningOperationReconciler(
@@ -304,6 +348,43 @@ public sealed class GrimoireOfflineTransitionHandlerDispatchTests : IAsyncLifeti
     private sealed record Held(ArcanumMaintenanceLock Lock, string Root) : IDisposable
     {
         public void Dispose() => Lock.Dispose();
+    }
+
+    private sealed class SelfSettlingRecoveryHandler(
+        FakeLongRunningOperationStore store,
+        string kind,
+        int supportedCheckpointVersion) : IAuthenticatedCovenantErasureRecoveryHandler
+    {
+        public string Kind => kind;
+
+        public int SupportedCheckpointVersion => supportedCheckpointVersion;
+
+        internal LongRunningOperation? Winner { get; private set; }
+
+        public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
+            LongRunningOperation operation,
+            CancellationToken cancellationToken)
+        {
+            bool settled = await store.TryTransitionAsync(
+                operation.Id,
+                operation.Revision,
+                operation.LeaseOwner,
+                LongRunningOperationState.Completed,
+                DateTimeOffset.UnixEpoch.AddHours(1),
+                cancellationToken: cancellationToken);
+
+            Assert.True(settled);
+
+            Winner = Assert.Single(store.Operations, row => row.Id == operation.Id);
+
+            return LongRunningOperationRecoveryResult.Completed();
+        }
+
+        public Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
+            LongRunningOperation operation,
+            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("This handler is only the launch-gap test double.");
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -710,9 +711,9 @@ public sealed class CovenantArchitectureBoundaryTests
             services,
             ServiceLifetime.Scoped);
 
-        AssertSingleRecoveryHandler<CovenantLaunchGapMutationRecoveryHandler>(services);
+        AssertSingleOwnerBoundRecoveryHandler<CovenantLaunchGapMutationRecoveryHandler>(services);
 
-        AssertSingleRecoveryHandler<CovenantLaunchGapFactoryResetRecoveryHandler>(services);
+        AssertSingleOwnerBoundRecoveryHandler<CovenantLaunchGapFactoryResetRecoveryHandler>(services);
 
         Assert.DoesNotContain(
             services,
@@ -820,9 +821,9 @@ public sealed class CovenantArchitectureBoundaryTests
 
         AssertSingleRecoveryHandler<DataRetentionRecoveryHandler>(builder.Services);
 
-        AssertSingleRecoveryHandler<DataRetentionMutationRecoveryHandler>(builder.Services);
+        AssertSingleOwnerBoundRecoveryHandler<DataRetentionMutationRecoveryHandler>(builder.Services);
 
-        AssertSingleRecoveryHandler<DataRetentionFactoryResetRecoveryHandler>(builder.Services);
+        AssertSingleOwnerBoundRecoveryHandler<DataRetentionFactoryResetRecoveryHandler>(builder.Services);
 
         await AssertCompleteCovenantGraphAsync(builder.Services, isHost: true);
     }
@@ -892,6 +893,65 @@ public sealed class CovenantArchitectureBoundaryTests
                 && candidate.ImplementationType == typeof(THandler));
 
         Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+    }
+
+    private static void AssertSingleOwnerBoundRecoveryHandler<THandler>(
+        IServiceCollection services)
+    {
+        ServiceDescriptor concreteDescriptor = Assert.Single(
+            services,
+            static candidate => candidate.ServiceType == typeof(THandler));
+
+        Assert.Equal(ServiceLifetime.Scoped, concreteDescriptor.Lifetime);
+
+        Assert.Equal(typeof(THandler), concreteDescriptor.ImplementationType);
+
+        object concrete = RuntimeHelpers.GetUninitializedObject(typeof(THandler));
+
+        OwnerBoundAliasProbeProvider probe = new(typeof(THandler), concrete);
+
+        object normal = Assert.Single(InvokeOwnerBoundAliases(
+            services,
+            typeof(ILongRunningOperationRecoveryHandler),
+            probe));
+
+        object authenticated = Assert.Single(InvokeOwnerBoundAliases(
+            services,
+            typeof(IAuthenticatedCovenantErasureRecoveryHandler),
+            probe));
+
+        Assert.Same(concrete, normal);
+
+        Assert.Same(concrete, authenticated);
+    }
+
+    private static object[] InvokeOwnerBoundAliases(
+        IServiceCollection services,
+        Type serviceType,
+        IServiceProvider probe) =>
+        services
+            .Where(descriptor => descriptor.ServiceType == serviceType
+                && descriptor.Lifetime == ServiceLifetime.Scoped
+                && descriptor.ImplementationFactory is not null)
+            .Select(descriptor =>
+            {
+                try
+                {
+                    return descriptor.ImplementationFactory!(probe);
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+            })
+            .OfType<object>()
+            .ToArray();
+
+    private sealed class OwnerBoundAliasProbeProvider(Type handlerType, object handler)
+        : IServiceProvider
+    {
+        public object? GetService(Type serviceType) =>
+            serviceType == handlerType ? handler : null;
     }
 
     private static async Task AssertCompleteCovenantGraphAsync(

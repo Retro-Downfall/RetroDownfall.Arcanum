@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -23,6 +25,12 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// </remarks>
 public sealed class RecoveryHandlerCoverageTests
 {
+    private static readonly Type[] SelfSettlingHandlers =
+    [
+        typeof(DataRetentionMutationRecoveryHandler),
+        typeof(DataRetentionFactoryResetRecoveryHandler),
+    ];
+
     /// <summary>
     /// Kind → the type that owns its recovery. Deliberately spelled out: adding a kind to
     /// <see cref="LongRunningOperationKinds"/> without deciding who recovers it should fail here,
@@ -60,13 +68,14 @@ public sealed class RecoveryHandlerCoverageTests
         // AddArcanumApiServices composes Infrastructure itself; this is the serve host's real graph.
         _ = services.AddArcanumApiServices(configuration);
 
-        return
-        [
-            .. services
-                .Where(static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
-                .Select(static descriptor => descriptor.ImplementationType)
-                .OfType<Type>(),
-        ];
+        Type[] direct = services
+            .Where(static descriptor =>
+                descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
+            .Select(static descriptor => descriptor.ImplementationType)
+            .OfType<Type>()
+            .ToArray();
+
+        return [.. direct, .. SelfSettlingHandlers];
     }
 
     /// <summary>
@@ -126,6 +135,40 @@ public sealed class RecoveryHandlerCoverageTests
         Assert.Empty(DuplicateHandlerRegistrations(services));
     }
 
+    [Fact]
+    public void Owner_bound_handlers_are_one_scoped_instance_aliased_to_both_contracts()
+    {
+        ServiceCollection services = RealServices();
+
+        Assert.Empty(OwnerBoundAliasFailures(services));
+    }
+
+    [Fact]
+    public void A_missing_authenticated_alias_is_rejected()
+    {
+        ServiceCollection services = RealServices();
+
+        services.RemoveAll<IAuthenticatedCovenantErasureRecoveryHandler>();
+
+        Assert.NotEmpty(OwnerBoundAliasFailures(services));
+    }
+
+    [Fact]
+    public void A_separate_authenticated_handler_instance_is_rejected()
+    {
+        ServiceCollection services = RealServices();
+
+        services.RemoveAll<IAuthenticatedCovenantErasureRecoveryHandler>();
+
+        services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+            ActivatorUtilities.CreateInstance<DataRetentionMutationRecoveryHandler>(sp));
+
+        services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+            ActivatorUtilities.CreateInstance<DataRetentionFactoryResetRecoveryHandler>(sp));
+
+        Assert.NotEmpty(OwnerBoundAliasFailures(services));
+    }
+
     /// <summary>
     /// <see cref="ServiceDescriptor.ImplementationType"/> is null for a factory registration, so
     /// grouping by that property — as a naive duplicate guard would — drops it from the inventory
@@ -147,5 +190,90 @@ public sealed class RecoveryHandlerCoverageTests
             static _ => throw new NotSupportedException("This probe registration is never resolved."));
 
         Assert.NotEmpty(DuplicateHandlerRegistrations(services));
+    }
+
+    private static ServiceCollection RealServices()
+    {
+        ServiceCollection services = [];
+
+        _ = services.AddArcanumApiServices(new ConfigurationBuilder().Build());
+
+        return services;
+    }
+
+    private static string[] OwnerBoundAliasFailures(ServiceCollection services)
+    {
+        List<string> failures = [];
+
+        foreach (Type handlerType in SelfSettlingHandlers)
+        {
+            ServiceDescriptor[] concrete = services
+                .Where(descriptor => descriptor.ServiceType == handlerType)
+                .ToArray();
+
+            if (concrete.Length != 1
+                || concrete[0].Lifetime != ServiceLifetime.Scoped
+                || concrete[0].ImplementationType != handlerType)
+            {
+                failures.Add($"{handlerType.Name} must have exactly one scoped concrete descriptor.");
+            }
+        }
+
+        foreach (Type handlerType in SelfSettlingHandlers)
+        {
+            object concrete = RuntimeHelpers.GetUninitializedObject(handlerType);
+
+            AliasProbeProvider probe = new(handlerType, concrete);
+
+            object[] normalMatches = InvokeAliases(
+                services,
+                typeof(ILongRunningOperationRecoveryHandler),
+                probe);
+
+            object[] authenticatedMatches = InvokeAliases(
+                services,
+                typeof(IAuthenticatedCovenantErasureRecoveryHandler),
+                probe);
+
+            if (normalMatches.Length != 1 || !ReferenceEquals(concrete, normalMatches[0]))
+            {
+                failures.Add($"{handlerType.Name} has no exact normal-handler alias.");
+            }
+
+            if (authenticatedMatches.Length != 1
+                || !ReferenceEquals(concrete, authenticatedMatches[0]))
+            {
+                failures.Add($"{handlerType.Name} has no exact authenticated-handler alias.");
+            }
+        }
+
+        return failures.ToArray();
+    }
+
+    private static object[] InvokeAliases(
+        ServiceCollection services,
+        Type serviceType,
+        IServiceProvider probe) =>
+        services
+            .Where(descriptor => descriptor.ServiceType == serviceType
+                && descriptor.Lifetime == ServiceLifetime.Scoped
+                && descriptor.ImplementationFactory is not null)
+            .Select(descriptor =>
+            {
+                try
+                {
+                    return descriptor.ImplementationFactory!(probe);
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+            })
+            .OfType<object>()
+            .ToArray();
+
+    private sealed class AliasProbeProvider(Type handlerType, object handler) : IServiceProvider
+    {
+        public object? GetService(Type serviceType) => serviceType == handlerType ? handler : null;
     }
 }

@@ -600,6 +600,31 @@ internal sealed partial class DataRetentionService
         }
     }
 
+    internal Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAuthenticatedAsync(
+        LongRunningOperation operation,
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        ArgumentNullException.ThrowIfNull(admission);
+
+        return string.Equals(operation.Kind, LongRunningOperationKinds.DataRetentionFactoryReset,
+                   StringComparison.Ordinal)
+               && operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.RestartIdempotently
+               && operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
+               && operation.CheckpointPayload is not null
+               && string.Equals(
+                   operation.CheckpointReference,
+                   CovenantResetCheckpointInitiator.CheckpointReference(
+                       operation.Kind,
+                       operation.Id),
+                   StringComparison.Ordinal)
+            ? RecoverCovenantFactoryErasureAsync(operation, admission, cancellationToken)
+            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired));
+    }
+
     /// <summary>
     /// Reconciles a version-1 healthy-catalog factory erasure.
     /// </summary>
@@ -611,6 +636,16 @@ internal sealed partial class DataRetentionService
     /// </remarks>
     private async Task<LongRunningOperationRecoveryResult> RecoverCovenantFactoryErasureAsync(
         LongRunningOperation operation,
+        CancellationToken cancellationToken) =>
+        await RecoverCovenantFactoryErasureAsync(
+            operation,
+            authenticatedAdmission: null,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<LongRunningOperationRecoveryResult> RecoverCovenantFactoryErasureAsync(
+        LongRunningOperation operation,
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission?
+            authenticatedAdmission,
         CancellationToken cancellationToken)
     {
         if (operation.CheckpointPayload is null)
@@ -655,22 +690,32 @@ internal sealed partial class DataRetentionService
             // the row's revision and the authenticated journal has bound itself to the exact revision
             // the launch produced. A second recovery starting beside this one is kept off by the
             // process-local claim the coordinator takes rather than by a heartbeat.
-            recovered = await _covenantErasureCoordinator.RunAsync(
-                operation,
-                state.Value,
-                operation.LeaseOwner,
-                async continuationToken =>
-                {
-                    Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
-                        operation.Id,
-                        operation.LeaseOwner,
-                        continuationToken).ConfigureAwait(false);
+            Func<CancellationToken, Task<Result>> continuation = async continuationToken =>
+            {
+                Result<DataRetentionApplyResult> continued = await ContinueFactoryResetAsync(
+                    operation.Id,
+                    operation.LeaseOwner,
+                    continuationToken).ConfigureAwait(false);
 
-                    return continued.IsSuccess
-                        ? Result.Success()
-                        : Result.Failure(continued.Error);
-                },
-                cancellationToken).ConfigureAwait(false);
+                return continued.IsSuccess
+                    ? Result.Success()
+                    : Result.Failure(continued.Error);
+            };
+
+            recovered = authenticatedAdmission is null
+                ? await _covenantErasureCoordinator.RunAsync(
+                    operation,
+                    state.Value,
+                    operation.LeaseOwner,
+                    continuation,
+                    cancellationToken).ConfigureAwait(false)
+                : await _covenantErasureCoordinator.RunAuthenticatedAsync(
+                    operation,
+                    state.Value,
+                    operation.LeaseOwner,
+                    continuation,
+                    authenticatedAdmission,
+                    cancellationToken).ConfigureAwait(false);
         }
         catch (DataRetentionLeaseLostException ex)
         {

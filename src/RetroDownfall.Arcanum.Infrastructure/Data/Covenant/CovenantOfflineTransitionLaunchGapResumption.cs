@@ -30,6 +30,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantOfflineTransitionLaunchGapResumption
 {
+    internal static LongRunningRecoveryOwnerEvidence Evidence(
+        CovenantExclusiveRecoveryOwner owner,
+        LongRunningOperationRecoveryFingerprint expectedOperation) =>
+        new AdoptedLaunchOwnerEvidence(owner, expectedOperation);
+
     /// <summary>
     /// Resumes the adopted owner, or reports that nothing was adopted.
     /// </summary>
@@ -61,7 +66,7 @@ internal static class CovenantOfflineTransitionLaunchGapResumption
             .DispatchAsync(
                 heldInstallationLock,
                 guardedDirectory,
-                new AdoptedLaunchOwnerEvidence(owner.Owner, owner.ExpectedOperation),
+                Evidence(owner.Owner, owner.ExpectedOperation),
                 cancellationToken)
             .ConfigureAwait(false);
 

@@ -357,12 +357,16 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<LongRunningOperationStore>());
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
         services.AddScoped<CovenantLaunchGapRecovery>();
-        services.AddScoped<
-            ILongRunningOperationRecoveryHandler,
-            CovenantLaunchGapMutationRecoveryHandler>();
-        services.AddScoped<
-            ILongRunningOperationRecoveryHandler,
-            CovenantLaunchGapFactoryResetRecoveryHandler>();
+        services.AddScoped<CovenantLaunchGapMutationRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
+            sp.GetRequiredService<CovenantLaunchGapMutationRecoveryHandler>());
+        services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+            sp.GetRequiredService<CovenantLaunchGapMutationRecoveryHandler>());
+        services.AddScoped<CovenantLaunchGapFactoryResetRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
+            sp.GetRequiredService<CovenantLaunchGapFactoryResetRecoveryHandler>());
+        services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+            sp.GetRequiredService<CovenantLaunchGapFactoryResetRecoveryHandler>());
         services.AddScoped(static sp => new LongRunningOperationReconciler(
             sp.GetRequiredService<ILongRunningOperationStore>(),
             sp.GetServices<ILongRunningOperationRecoveryHandler>(),
@@ -1263,9 +1267,21 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionRecoveryHandler>();
 
-        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionMutationRecoveryHandler>();
+        services.AddScoped<DataRetentionMutationRecoveryHandler>();
 
-        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionFactoryResetRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
+            sp.GetRequiredService<DataRetentionMutationRecoveryHandler>());
+
+        services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+            sp.GetRequiredService<DataRetentionMutationRecoveryHandler>());
+
+        services.AddScoped<DataRetentionFactoryResetRecoveryHandler>();
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
+            sp.GetRequiredService<DataRetentionFactoryResetRecoveryHandler>());
+
+        services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+            sp.GetRequiredService<DataRetentionFactoryResetRecoveryHandler>());
 
         // One host-only producer of a Covenant erasure's effect digest, and one seam that makes
         // exclusive-gate acquisition unreachable before the InventoryPrepared checkpoint commits.

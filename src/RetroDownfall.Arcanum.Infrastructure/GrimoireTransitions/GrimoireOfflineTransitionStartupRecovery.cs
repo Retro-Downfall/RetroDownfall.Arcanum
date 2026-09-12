@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -58,6 +59,26 @@ internal interface IGrimoireOfflineTransitionHandlerDispatch
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Exact owner authority derived from one authenticated active transition journal.
+/// </summary>
+/// <remarks>
+/// Distinguished from launch-gap evidence because only this shape proves a prior process had already
+/// closed both admission gates. Dispatch may therefore reconstruct the retained closed authorities
+/// before adopting the durable row. A launch-gap recovery has no such journal, so it adopts before
+/// closure; both paths still call the same owner-bound self-settling V4/V2 handler and map its proved
+/// durable outcome without a second generic settlement compare-exchange.
+/// </remarks>
+internal sealed class AuthenticatedJournalRecoveryOwnerEvidence(
+    CovenantExclusiveRecoveryOwner owner,
+    LongRunningOperationRecoveryFingerprint expectedOperation,
+    GrimoireOfflineTransitionRecoveryEvidence journal)
+    : LongRunningRecoveryOwnerEvidence(owner, expectedOperation)
+{
+    internal GrimoireOfflineTransitionRecoveryEvidence Journal { get; } =
+        journal ?? throw new ArgumentNullException(nameof(journal));
+}
+
 /// <summary>The production dispatch, over one scope per resumed operation.</summary>
 internal sealed class GrimoireOfflineTransitionHandlerDispatch(
     IServiceScopeFactory scopeFactory,
@@ -93,6 +114,64 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
         await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
         LongRunningOperationRecoveryFingerprint expected = ownerEvidence.ExpectedOperation;
+
+        if (ownerEvidence is AuthenticatedJournalRecoveryOwnerEvidence authenticated)
+        {
+            CovenantErasureCoordinator coordinator = scope.ServiceProvider
+                .GetRequiredService<CovenantErasureCoordinator>();
+
+            ILongRunningOperationMaintenanceLeaseAdoption authenticatedAdoption =
+                scope.ServiceProvider.GetRequiredService<
+                    ILongRunningOperationMaintenanceLeaseAdoption>();
+
+            string authenticatedOwnerId =
+                $"transition-recovery-{Environment.ProcessId}-{Guid.NewGuid():N}";
+
+            DateTimeOffset authenticatedNow = _timeProvider.GetUtcNow();
+
+            Result<CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission>
+                prepared = await coordinator.PrepareAuthenticatedRecoveryAsync(
+                    heldInstallationLock,
+                    guardedDirectory,
+                    authenticated,
+                    authenticatedAdoption,
+                    authenticatedOwnerId,
+                    authenticatedNow,
+                    authenticatedNow.Add(RecoveryLease),
+                    cancellationToken).ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+                return Result<LongRunningOperationSettlementOutcome>.Failure(
+                    GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
+            }
+
+            await using CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission
+                admission = prepared.Value;
+
+            IAuthenticatedCovenantErasureRecoveryHandler[] handlers = [.. scope.ServiceProvider
+                .GetServices<IAuthenticatedCovenantErasureRecoveryHandler>()
+                .Where(candidate =>
+                    string.Equals(candidate.Kind, admission.AdoptedOperation.Kind,
+                        StringComparison.Ordinal)
+                    && candidate.SupportedCheckpointVersion
+                        == admission.AdoptedOperation.CheckpointVersion)
+                .Take(2)];
+
+            if (handlers.Length != 1)
+            {
+                return Result<LongRunningOperationSettlementOutcome>.Failure(
+                    GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
+            }
+
+            LongRunningOperationRecoveryResult result = await handlers[0]
+                .RecoverAuthenticatedAsync(
+                    admission.AdoptedOperation,
+                    admission,
+                    cancellationToken).ConfigureAwait(false);
+
+            return MapSelfSettled(result);
+        }
 
         LongRunningOperation? candidate = await scope.ServiceProvider
             .GetRequiredService<ILongRunningOperationStore>()
@@ -137,6 +216,28 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
                 GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
         }
 
+        IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling = [.. scope.ServiceProvider
+            .GetServices<IAuthenticatedCovenantErasureRecoveryHandler>()
+            .Where(handler =>
+                string.Equals(handler.Kind, adopted.Operation.Kind, StringComparison.Ordinal)
+                && handler.SupportedCheckpointVersion == adopted.Operation.CheckpointVersion)
+            .Take(2)];
+
+        if (selfSettling.Length > 1)
+        {
+            return Result<LongRunningOperationSettlementOutcome>.Failure(
+                GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
+        }
+
+        if (selfSettling.Length == 1)
+        {
+            LongRunningOperationRecoveryResult result = await selfSettling[0]
+                .RecoverAsync(adopted.Operation, cancellationToken)
+                .ConfigureAwait(false);
+
+            return MapSelfSettled(result);
+        }
+
         LongRunningOperationSettlementOutcome settled = await scope.ServiceProvider
             .GetRequiredService<LongRunningOperationReconciler>()
             .SettleExactlyAsync(
@@ -147,6 +248,30 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
             .ConfigureAwait(false);
 
         return Result<LongRunningOperationSettlementOutcome>.Success(settled);
+    }
+
+    private static Result<LongRunningOperationSettlementOutcome> MapSelfSettled(
+        LongRunningOperationRecoveryResult result)
+    {
+        if (result.State == LongRunningOperationState.Completed && result.ErrorCode is null)
+        {
+            return LongRunningOperationSettlementOutcome.Completed;
+        }
+
+        if (result.State == LongRunningOperationState.Failed
+            && !string.IsNullOrWhiteSpace(result.ErrorCode))
+        {
+            return LongRunningOperationSettlementOutcome.Failed;
+        }
+
+        if (result.State == LongRunningOperationState.ReconciliationRequired
+            && !string.IsNullOrWhiteSpace(result.ErrorCode))
+        {
+            return LongRunningOperationSettlementOutcome.RequiresAttention;
+        }
+
+        return Result<LongRunningOperationSettlementOutcome>.Failure(
+            GrimoireOfflineTransitionStartupRecovery.Refusal().Error);
     }
 }
 
@@ -298,9 +423,10 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
         return Result<LongRunningRecoveryOwnerEvidence>.Success(
-            new AuthenticatedJournalOwnerEvidence(
+            new AuthenticatedJournalRecoveryOwnerEvidence(
                 handoff.Value.Owner,
-                handoff.Value.ExpectedOperation));
+                handoff.Value.ExpectedOperation,
+                journal));
     }
 
     /// <summary>
@@ -315,8 +441,4 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "The authenticated offline Grimoire transition could not be recovered before bootstrap.");
 
-    private sealed class AuthenticatedJournalOwnerEvidence(
-        CovenantExclusiveRecoveryOwner owner,
-        LongRunningOperationRecoveryFingerprint expectedOperation)
-        : LongRunningRecoveryOwnerEvidence(owner, expectedOperation);
 }

@@ -344,6 +344,70 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Authenticated_resume_requires_the_exact_current_journal_and_never_rebegins()
+    {
+        GrimoireOfflineTransitionPhaseAuthority authority = Authority();
+
+        LongRunningOperation row = LaunchRow();
+
+        GrimoireOfflineTransitionPhaseSession opened =
+            Value(await authority.OpenOrResumeAsync(row, CancellationToken.None));
+
+        GrimoireOfflineTransitionRecoveryEvidence stale = Evidence(opened);
+
+        Assert.True((await opened.EnterClosingAsync(CancellationToken.None)).IsSuccess);
+
+        Result<GrimoireOfflineTransitionPhaseSession> refused = await authority
+            .ResumeAuthenticatedAsync(row, stale, CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(2UL, opened.Current.Raw.Envelope.Revision);
+
+        GrimoireOfflineTransitionPhaseSession resumed = Value(
+            await authority.ResumeAuthenticatedAsync(
+                row,
+                Evidence(opened),
+                CancellationToken.None));
+
+        Assert.Equal(GrimoireOfflineTransitionState.Closing, resumed.State);
+
+        Assert.Equal(opened.Current.Raw.EnvelopeDigest, resumed.Current.Raw.EnvelopeDigest);
+    }
+
+    [Fact]
+    public async Task Authenticated_resume_with_no_journal_refuses_without_beginning_one()
+    {
+        GrimoireOfflineTransitionPhaseAuthority authority = Authority();
+
+        LongRunningOperation row = LaunchRow();
+
+        GrimoireOfflineTransitionRecoveryEvidence impossible = new(
+            GrimoireOfflineTransitionLaunch.JournalBinding(
+                Value(GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                    row.CheckpointVersion,
+                    row.CheckpointPayload!)),
+                slotEpoch: 1,
+                payloadVersion: 1,
+                expectedDatabaseOperationRevision: row.Revision,
+                parentReceiptBindingDigest: null).Value,
+            SlotEpoch: 1,
+            Revision: 1,
+            EnvelopeDigest: Digest(0x7f));
+
+        Result<GrimoireOfflineTransitionPhaseSession> refused = await authority
+            .ResumeAuthenticatedAsync(row, impossible, CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.False(File.Exists(
+            new GrimoireOfflineTransitionJournalFileStore()
+                .ResolveLocation(_guarded)
+                .Value
+                .JournalPath));
+    }
+
     /// <summary>
     /// A journal describing a different launch is refused rather than adopted.
     /// </summary>
@@ -455,6 +519,14 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
             PublicSummary: "Covenant reset",
             TerminalErrorCode: null,
             Revision: 4);
+
+    private static GrimoireOfflineTransitionRecoveryEvidence Evidence(
+        GrimoireOfflineTransitionPhaseSession session) =>
+        new(
+            session.Binding,
+            session.Current.Raw.Envelope.SlotEpoch,
+            session.Current.Raw.Envelope.Revision,
+            session.Current.Raw.EnvelopeDigest);
 
     private sealed class HeldLockAccessor(ArcanumMaintenanceLock held, string guarded)
         : IInstallationResetMaintenanceLockAccessor

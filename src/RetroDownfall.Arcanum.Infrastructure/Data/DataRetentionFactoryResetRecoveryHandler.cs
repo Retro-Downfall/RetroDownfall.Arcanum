@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed class DataRetentionFactoryResetRecoveryHandler(
-    DataRetentionService service) : ILongRunningOperationRecoveryHandler
+    DataRetentionService service) : IAuthenticatedCovenantErasureRecoveryHandler
 {
 
     public string Kind => LongRunningOperationKinds.DataRetentionFactoryReset;
@@ -15,5 +15,11 @@ internal sealed class DataRetentionFactoryResetRecoveryHandler(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
         service.RecoverFactoryResetAsync(operation, cancellationToken);
+
+    public Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
+        LongRunningOperation operation,
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+        CancellationToken cancellationToken) =>
+        service.RecoverFactoryResetAuthenticatedAsync(operation, admission, cancellationToken);
 
 }

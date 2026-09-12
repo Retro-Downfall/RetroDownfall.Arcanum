@@ -37,6 +37,11 @@ internal interface IGrimoireOfflineTransitionPhaseAuthority
         LongRunningOperation operation,
         CancellationToken cancellationToken);
 
+    Task<Result<GrimoireOfflineTransitionPhaseSession>> ResumeAuthenticatedAsync(
+        LongRunningOperation operation,
+        GrimoireOfflineTransitionRecoveryEvidence expected,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -145,6 +150,54 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
         return await ResumeAsync(borrowed.Value, launch.Value, recovered.Value, cancellationToken)
             .ConfigureAwait(false);
 
+    }
+
+    /// <summary>
+    /// Resumes only the exact journal startup already authenticated; it can never begin or sweep one.
+    /// </summary>
+    public async Task<Result<GrimoireOfflineTransitionPhaseSession>> ResumeAuthenticatedAsync(
+        LongRunningOperation operation,
+        GrimoireOfflineTransitionRecoveryEvidence expected,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        ArgumentNullException.ThrowIfNull(expected);
+
+        Result<ArcanumMaintenanceLock> borrowed = _maintenanceLocks.BorrowHeldLock(_guardedDirectory);
+
+        if (borrowed.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionPhaseSession>.Failure(borrowed.Error);
+        }
+
+        Result<GrimoireOfflineTransitionLaunchBinding> launch = LaunchOf(operation);
+
+        if (launch.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionPhaseSession>.Failure(launch.Error);
+        }
+
+        Result<GrimoireOfflineTransitionTypedRecoveryState> recovered = await _lifecycle
+            .RecoverAsync(borrowed.Value, _guardedDirectory, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recovered.IsFailure
+            || recovered.Value.Outcome != GrimoireOfflineTransitionTypedRecoveryOutcome.Authenticated
+            || recovered.Value.Publication is not { } publication
+            || publication.Payload.Binding != expected.Binding
+            || publication.Raw.Envelope.SlotEpoch != expected.SlotEpoch
+            || publication.Raw.Envelope.Revision != expected.Revision
+            || publication.Raw.EnvelopeDigest != expected.EnvelopeDigest
+            || !NamesLaunch(publication.Payload, launch.Value))
+        {
+            return recovered.IsFailure
+                ? Result<GrimoireOfflineTransitionPhaseSession>.Failure(recovered.Error)
+                : Unresumable();
+        }
+
+        return await ResumeAsync(borrowed.Value, launch.Value, recovered.Value, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

@@ -1726,6 +1726,54 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         await closed.Value.DisposeAsync();
     }
 
+    [Fact]
+    public async Task The_exact_closed_owner_retains_its_completed_request_and_work_drain()
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = Owner(61);
+
+        IGrimoireClosingOwner first = Begin(gate, owner);
+
+        Assert.True((await gate.DrainRequestAndWorkAsync(
+            first,
+            CancellationToken.None)).IsSuccess);
+
+        Result<IGrimoireExclusiveClosedLease> firstClosed = await gate
+            .CloseConnectionAdmissionAsync(first, CancellationToken.None);
+
+        Assert.True(firstClosed.IsSuccess, firstClosed.Error.Message);
+
+        long retainedGeneration = gate.CurrentGeneration;
+
+        Assert.True((await firstClosed.Value.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.KeepClosed,
+            CancellationToken.None)).IsSuccess);
+
+        await firstClosed.Value.DisposeAsync();
+
+        await first.DisposeAsync();
+
+        await using IGrimoireClosingOwner resumed = Begin(gate, owner);
+
+        Result retainedDrain = await gate.DrainRequestAndWorkAsync(
+            resumed,
+            CancellationToken.None);
+
+        Assert.True(retainedDrain.IsSuccess, retainedDrain.Error.Message);
+
+        Result<IGrimoireExclusiveClosedLease> resumedClosed = await gate
+            .CloseConnectionAdmissionAsync(resumed, CancellationToken.None);
+
+        Assert.True(resumedClosed.IsSuccess, resumedClosed.Error.Message);
+
+        Assert.Equal(retainedGeneration, gate.CurrentGeneration);
+
+        Assert.Equal(retainedGeneration, resumedClosed.Value.Generation);
+
+        await resumedClosed.Value.DisposeAsync();
+    }
+
     /// <summary>
     /// The stage-one drain and the physical-open wait are different waits with different deadlines.
     /// </summary>

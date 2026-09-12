@@ -483,6 +483,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         lock (_sync)
         {
+            if (OwnsClosingToken(token)
+                && _state == GateState.Closed
+                && token.Closure.StageOneDrained
+                && _requestLeases.Count == 0
+                && _workLeases.Count == 0)
+            {
+                return Result.Success();
+            }
+
             if (!OwnsClosingToken(token) || _state != GateState.Closing)
             {
                 return LifecycleConflict(

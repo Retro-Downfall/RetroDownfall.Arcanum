@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using System.Runtime.CompilerServices;
+
 using System.Text;
 
 using Microsoft.Data.Sqlite;
@@ -11,6 +13,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using Microsoft.Extensions.Options;
+
+using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -3502,6 +3506,96 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 "*",
                 SearchOption.AllDirectories),
             path => path.Contains(".arcanum-cleanup-", StringComparison.Ordinal));
+
+    }
+
+    [SkippableTheory]
+    [InlineData("kind")]
+    [InlineData("policy")]
+    [InlineData("reference")]
+    public async Task Authenticated_factory_guard_refuses_instead_of_claiming_a_failed_settlement(
+        string mismatch)
+    {
+
+        RequireSqlCipher();
+
+        DataRetentionFactoryResetRecoveryHandler handler = new(CreateService());
+
+        CovenantExclusiveRecoveryOwner owner = new(
+            Guid.NewGuid(),
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+            new CovenantDigest(Convert.FromHexString(new string('d', 64))));
+
+        LongRunningOperation valid = CovenantAdoptedOwnerTestIssuer.BuildLaunch(owner);
+
+        LongRunningOperation operation = mismatch switch
+        {
+            "kind" => valid with { Kind = LongRunningOperationKinds.DataRetentionMutation },
+            "policy" => valid with
+            {
+                RecoveryPolicy = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            },
+            "reference" => valid with { CheckpointReference = "not-the-launch-reference" },
+            _ => throw new ArgumentOutOfRangeException(nameof(mismatch)),
+        };
+
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission =
+            (CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission)
+            RuntimeHelpers.GetUninitializedObject(
+                typeof(CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission));
+
+        LongRunningOperationRecoveryResult result = await handler.RecoverAuthenticatedAsync(
+            operation,
+            admission,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
+
+    }
+
+    [SkippableTheory]
+    [InlineData("policy")]
+    [InlineData("reference")]
+    public async Task Authenticated_mutation_guard_refuses_before_coordinator_effects(
+        string mismatch)
+    {
+
+        RequireSqlCipher();
+
+        DataRetentionMutationRecoveryHandler handler = new(CreateService());
+
+        CovenantExclusiveRecoveryOwner owner = new(
+            Guid.NewGuid(),
+            CovenantExclusiveOperation.CovenantReset,
+            new CovenantDigest(Convert.FromHexString(new string('e', 64))));
+
+        LongRunningOperation valid = CovenantAdoptedOwnerTestIssuer.BuildLaunch(owner);
+
+        LongRunningOperation operation = mismatch switch
+        {
+            "policy" => valid with
+            {
+                RecoveryPolicy = LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            },
+            "reference" => valid with { CheckpointReference = "not-the-launch-reference" },
+            _ => throw new ArgumentOutOfRangeException(nameof(mismatch)),
+        };
+
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission =
+            (CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission)
+            RuntimeHelpers.GetUninitializedObject(
+                typeof(CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission));
+
+        LongRunningOperationRecoveryResult result = await handler.RecoverAuthenticatedAsync(
+            operation,
+            admission,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
 
     }
 

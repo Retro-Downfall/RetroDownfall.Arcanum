@@ -6814,6 +6814,29 @@ internal sealed partial class DataRetentionService(
             : LongRunningOperationRecoveryResult.Completed();
     }
 
+    internal Task<LongRunningOperationRecoveryResult> RecoverMutationAuthenticatedAsync(
+        LongRunningOperation operation,
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        ArgumentNullException.ThrowIfNull(admission);
+
+        return string.Equals(operation.Kind, LongRunningOperationKinds.DataRetentionMutation,
+                   StringComparison.Ordinal)
+               && operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+               && operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
+               && operation.CheckpointPayload is not null
+               && string.Equals(
+                   operation.CheckpointReference,
+                   "retention-mutation:" + operation.Id.ToString("N"),
+                   StringComparison.Ordinal)
+            ? RecoverCovenantResetMutationAsync(operation, admission, cancellationToken)
+            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired));
+    }
+
     /// <summary>
     /// Reconciles a version-3 data-retention mutation.
     /// </summary>
@@ -6831,6 +6854,16 @@ internal sealed partial class DataRetentionService(
     /// </remarks>
     private async Task<LongRunningOperationRecoveryResult> RecoverCovenantResetMutationAsync(
         LongRunningOperation operation,
+        CancellationToken cancellationToken) =>
+        await RecoverCovenantResetMutationAsync(
+            operation,
+            authenticatedAdmission: null,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<LongRunningOperationRecoveryResult> RecoverCovenantResetMutationAsync(
+        LongRunningOperation operation,
+        CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission?
+            authenticatedAdmission,
         CancellationToken cancellationToken)
     {
         // The same projection the erasure coordinator resumes from, so the handler and the coordinator
@@ -6880,11 +6913,18 @@ internal sealed partial class DataRetentionService(
             // exact revision the launch produced. What the renewal was guarding - a second recovery
             // starting beside this one - is guarded by the process-local claim the coordinator takes
             // and by the journal's one active slot per profile.
-            recovered = await _covenantErasureCoordinator.RunAsync(
-                operation,
-                state.Value,
-                operation.LeaseOwner,
-                cancellationToken).ConfigureAwait(false);
+            recovered = authenticatedAdmission is null
+                ? await _covenantErasureCoordinator.RunAsync(
+                    operation,
+                    state.Value,
+                    operation.LeaseOwner,
+                    cancellationToken).ConfigureAwait(false)
+                : await _covenantErasureCoordinator.RunAuthenticatedAsync(
+                    operation,
+                    state.Value,
+                    operation.LeaseOwner,
+                    authenticatedAdmission,
+                    cancellationToken).ConfigureAwait(false);
         }
         catch (DataRetentionLeaseLostException ex)
         {

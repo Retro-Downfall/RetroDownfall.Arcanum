@@ -129,6 +129,12 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
         CancellationToken cancellationToken) =>
         _authority.OpenOrResumeAsync(operation, cancellationToken);
 
+    public Task<Result<GrimoireOfflineTransitionPhaseSession>> ResumeAuthenticatedAsync(
+        LongRunningOperation operation,
+        GrimoireOfflineTransitionRecoveryEvidence expected,
+        CancellationToken cancellationToken) =>
+        _authority.ResumeAuthenticatedAsync(operation, expected, cancellationToken);
+
     /// <summary>
     /// Drives this authority's journal to the phase a resumed run is meant to pick up from.
     /// </summary>
