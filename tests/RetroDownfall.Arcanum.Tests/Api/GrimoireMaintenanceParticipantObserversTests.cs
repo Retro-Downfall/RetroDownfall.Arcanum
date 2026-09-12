@@ -6,9 +6,17 @@ using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Core.Weave;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+
+using Microsoft.Extensions.AI;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -17,6 +25,101 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Trait("Category", "Integration")]
 public sealed class GrimoireMaintenanceParticipantObserversTests
 {
+    [Fact]
+    public async Task Mutation_forwarders_preserve_returns_and_count_only_completed_successes()
+    {
+        OrdinaryMutationObservations observations = new();
+
+        SessionAttachmentIndexRequest[] pending =
+        [
+            new(Guid.NewGuid(), Guid.NewGuid(), Attempt: 7),
+        ];
+
+        Guid billableId = Guid.NewGuid();
+
+        var index = new ObservingSessionAttachmentIndexWriter(
+            new ControlledIndexWriter(() => Task.FromResult(pending)), observations);
+
+        var accounting = new ObservingTurnRunWriter(
+            new ControlledTurnRunWriter(() => Task.FromResult(billableId)), observations);
+
+        var watermarks = new ObservingUnseenServantWatermarkStore(
+            new ControlledWatermarkStore(() => Task.CompletedTask), observations);
+
+        Assert.Same(pending, await index.ReconcileAndFindPendingAsync(64, 8, CancellationToken.None));
+
+        Assert.Equal(billableId, await accounting.RecordBillableOperationAsync(Billable(), CancellationToken.None));
+
+        await watermarks.SaveAsync("observer", DateTimeOffset.UnixEpoch, 5, CancellationToken.None);
+
+        Assert.Equal(
+            new OrdinaryMutationCounters(
+                Invocations: 3,
+                Successes: 3,
+                IndexWrites: 0,
+                IndexAttempts: 0,
+                Billing: 1,
+                Failures: 0,
+                Watermarks: 1,
+                Reconciliations: 1),
+            observations.Snapshot);
+    }
+
+    [Fact]
+    public async Task Mutation_forwarders_preserve_exception_and_cancellation_without_recording_success()
+    {
+        OrdinaryMutationObservations observations = new();
+
+        using CancellationTokenSource cancellation = new();
+
+        cancellation.Cancel();
+
+        OperationCanceledException cancelled = new(cancellation.Token);
+
+        InvalidOperationException billingFailure = new("billing failed");
+
+        InvalidOperationException watermarkFailure = new("watermark failed");
+
+        var index = new ObservingSessionAttachmentIndexWriter(
+            new ControlledIndexWriter(() => Task.FromException<SessionAttachmentIndexRequest[]>(cancelled)),
+            observations);
+
+        var accounting = new ObservingTurnRunWriter(
+            new ControlledTurnRunWriter(() => Task.FromException<Guid>(billingFailure)), observations);
+
+        var watermarks = new ObservingUnseenServantWatermarkStore(
+            new ControlledWatermarkStore(() => Task.FromException(watermarkFailure)), observations);
+
+        OperationCanceledException observedCancellation = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            index.ReconcileAndFindPendingAsync(64, 8, cancellation.Token));
+
+        InvalidOperationException observedBilling = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            accounting.RecordBillableOperationAsync(Billable(), CancellationToken.None));
+
+        InvalidOperationException observedWatermark = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            watermarks.SaveAsync("observer", DateTimeOffset.UnixEpoch, 5, CancellationToken.None));
+
+        Assert.Same(cancelled, observedCancellation);
+
+        Assert.Equal(cancellation.Token, observedCancellation.CancellationToken);
+
+        Assert.Same(billingFailure, observedBilling);
+
+        Assert.Same(watermarkFailure, observedWatermark);
+
+        Assert.Equal(
+            new OrdinaryMutationCounters(
+                Invocations: 3,
+                Successes: 0,
+                IndexWrites: 0,
+                IndexAttempts: 0,
+                Billing: 0,
+                Failures: 0,
+                Watermarks: 0,
+                Reconciliations: 0),
+            observations.Snapshot);
+    }
+
     [Fact]
     public async Task Initial_worker_scope_waits_for_actual_async_disposal_before_participant_seed()
     {
@@ -65,6 +168,126 @@ public sealed class GrimoireMaintenanceParticipantObserversTests
         internal MaintenanceCheckpoint Checkpoint { get; } = new();
 
         public async ValueTask DisposeAsync() => await Checkpoint.PauseAsync(CancellationToken.None);
+    }
+
+    private static BillableOperationRecord Billable() => new(
+        Guid.NewGuid(),
+        BillableOperationType.Embedding,
+        "test",
+        "test",
+        "observer",
+        DateTimeOffset.UnixEpoch,
+        DateTimeOffset.UnixEpoch,
+        0,
+        0,
+        0,
+        0,
+        "{}",
+        0m,
+        BillableOperationStatus.Completed,
+        null);
+
+    private sealed class ControlledIndexWriter(
+        Func<Task<SessionAttachmentIndexRequest[]>> reconcile) : ISessionAttachmentIndexWriter
+    {
+        public Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
+            int expectedDimensions,
+            int maxAttachments,
+            CancellationToken cancellationToken) => reconcile();
+
+        public Task SetPendingAsync(
+            SessionAttachmentRecord attachment,
+            int attempt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task MarkWithoutIndexAsync(
+            Guid attachmentId,
+            string contentSha256,
+            SessionAttachmentIndexStatus status,
+            int attempt,
+            string? failureReason,
+            DateTimeOffset? extractedAt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<SessionAttachmentIndexCheckpoint> BeginReplaceAsync(
+            SessionAttachmentRecord attachment,
+            int expectedDimensions,
+            string pipelineFingerprint,
+            DateTimeOffset extractedAt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task AppendReplaceBatchAsync(
+            SessionAttachmentRecord attachment,
+            string generationId,
+            IReadOnlyList<SessionAttachmentTextChunk> chunks,
+            IReadOnlyList<Embedding<float>> embeddings,
+            int expectedDimensions,
+            DateTimeOffset extractedAt,
+            DateTimeOffset indexedAt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task CompleteReplaceAsync(
+            SessionAttachmentRecord attachment,
+            string generationId,
+            int expectedChunkCount,
+            DateTimeOffset extractedAt,
+            DateTimeOffset indexedAt,
+            int attempt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class ControlledTurnRunWriter(
+        Func<Task<Guid>> bill) : ITurnRunWriter
+    {
+        public Task<Guid> StartRunAsync(
+            InferenceRunStart start,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task CompleteRunAsync(
+            Guid runId,
+            InferenceRunStatus status,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<bool> TryAbandonRunAsync(
+            Guid runId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Guid> RecordBillableOperationAsync(
+            BillableOperationRecord operation,
+            CancellationToken cancellationToken = default) => bill();
+    }
+
+    private sealed class ControlledWatermarkStore(
+        Func<Task> save) : IUnseenServantWatermarkStore
+    {
+        public Task<UnseenServantWatermark?> GetAsync(
+            string jobKey,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task SaveAsync(
+            string jobKey,
+            DateTimeOffset lastRunAt,
+            int effectiveIntervalMinutes,
+            CancellationToken cancellationToken = default) => save();
+
+        public Task SaveLastRunAsync(
+            string jobKey,
+            DateTimeOffset lastRunAt,
+            int initialIntervalMinutes,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task SaveIntervalAsync(
+            string jobKey,
+            DateTimeOffset initialLastRunAt,
+            int effectiveIntervalMinutes,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<UnseenServantWatermark>> GetAllAsync(
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task DeleteAsync(
+            string jobKey,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     [Fact]

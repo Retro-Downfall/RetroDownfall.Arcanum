@@ -24,6 +24,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using Microsoft.Extensions.Logging;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -31,6 +33,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Api.Security;
 
@@ -61,6 +65,145 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Trait("Category", "Integration")]
 public sealed class GrimoireMaintenanceAdmissionHarnessTests
 {
+    [SkippableFact]
+    public async Task Production_attachment_index_writer_is_the_same_scoped_repository_for_processor_and_reconciliation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        await using AsyncServiceScope first = factory.Services.CreateAsyncScope();
+
+        SessionAttachmentIndexRepository repository = first.ServiceProvider
+            .GetRequiredService<SessionAttachmentIndexRepository>();
+
+        Assert.Same(repository, first.ServiceProvider.GetRequiredService<ISessionAttachmentIndexWriter>());
+
+        Assert.Same(repository, first.ServiceProvider.GetRequiredService<ISessionAttachmentIndexMaintenance>());
+
+        Assert.NotNull(first.ServiceProvider.GetRequiredService<SessionAttachmentIndexProcessor>());
+
+        await using AsyncServiceScope second = factory.Services.CreateAsyncScope();
+
+        Assert.NotSame(
+            repository,
+            second.ServiceProvider.GetRequiredService<ISessionAttachmentIndexWriter>());
+    }
+
+    [SkippableFact]
+    public async Task Ordinary_mutation_observers_count_persisted_attempt_failure_billing_and_watermark_writes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using GrimoireMaintenanceAdmissionHarness harness = await GrimoireMaintenanceAdmissionHarness.StartAsync();
+
+        OrdinaryMutationCounters before = harness.OrdinaryMutations.Snapshot;
+
+        await using AsyncServiceScope scope = harness.Factory.Services.CreateAsyncScope();
+
+        ISessionAttachmentIndexWriter writer = scope.ServiceProvider
+            .GetRequiredService<ISessionAttachmentIndexWriter>();
+
+        SessionAttachmentIndexRepository repository = scope.ServiceProvider
+            .GetRequiredService<SessionAttachmentIndexRepository>();
+
+        await writer.SetPendingAsync(harness.IndexingAttachmentB, attempt: 37, CancellationToken.None);
+
+        SessionAttachmentIndexProcessor processor = scope.ServiceProvider
+            .GetRequiredService<SessionAttachmentIndexProcessor>();
+
+        await processor.MarkFailedAsync(
+            new SessionAttachmentIndexRequest(harness.IndexingAttachmentB.Id, harness.SessionId, Attempt: 37),
+            "positive-control failure",
+            CancellationToken.None);
+
+        ITurnRunWriter accounting = scope.ServiceProvider.GetRequiredService<ITurnRunWriter>();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid runId = await accounting.StartRunAsync(
+            new InferenceRunStart("task-6-observer-control", harness.SessionId, "test", "observer", null, now));
+
+        Guid billableId = await accounting.RecordBillableOperationAsync(new BillableOperationRecord(
+            runId,
+            BillableOperationType.Embedding,
+            "test",
+            "test",
+            "observer",
+            now,
+            now,
+            1,
+            2,
+            3,
+            4,
+            "{}",
+            0.01m,
+            BillableOperationStatus.Completed,
+            "task-6-observer-control"));
+
+        IUnseenServantWatermarkStore watermarks = scope.ServiceProvider
+            .GetRequiredService<IUnseenServantWatermarkStore>();
+
+        await watermarks.SaveAsync("task-6-observer-control", now, 17, CancellationToken.None);
+
+        SessionAttachmentIndexState state = Assert.IsType<SessionAttachmentIndexState>(
+            await repository.GetStateAsync(harness.IndexingAttachmentB.Id, CancellationToken.None));
+
+        Assert.Equal(37, state.AttemptCount);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
+
+        Assert.Equal("positive-control failure", state.FailureReason);
+
+        Assert.NotEqual(Guid.Empty, billableId);
+
+        UnseenServantWatermark watermark = Assert.IsType<UnseenServantWatermark>(
+            await watermarks.GetAsync("task-6-observer-control", CancellationToken.None));
+
+        Assert.Equal(17, watermark.EffectiveIntervalMinutes);
+
+        OrdinaryMutationCounters after = harness.OrdinaryMutations.Snapshot;
+
+        Assert.Equal(before.Invocations + 5, after.Invocations);
+
+        Assert.Equal(before.Successes + 5, after.Successes);
+
+        Assert.Equal(before.IndexWrites + 2, after.IndexWrites);
+
+        Assert.Equal(before.IndexAttempts + 1, after.IndexAttempts);
+
+        Assert.Equal(before.Failures + 1, after.Failures);
+
+        Assert.Equal(before.Billing + 1, after.Billing);
+
+        Assert.Equal(before.Watermarks + 1, after.Watermarks);
+    }
+
+    [SkippableFact]
+    public async Task Hosted_reconciliation_routes_through_the_forwarding_index_writer()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using GrimoireMaintenanceAdmissionHarness harness = await GrimoireMaintenanceAdmissionHarness.StartAsync();
+
+        OrdinaryMutationCounters before = harness.OrdinaryMutations.Snapshot;
+
+        EmbeddingSettings embeddings = harness.Factory.Services
+            .GetRequiredService<IOptionsMonitor<ArcanumSettings>>()
+            .CurrentValue
+            .ResolveEmbeddings();
+
+        SessionAttachmentIndexDisposition disposition = await harness.Indexing.ReconcileAndEnqueueAsync(
+            embeddings,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, disposition);
+
+        Assert.True(harness.OrdinaryMutations.Snapshot.Reconciliations >= before.Reconciliations + 1);
+    }
+
     [Theory]
     [InlineData("data: extra\n\ndata: [DONE]\n\n")]
     [InlineData("data: [DONE]\n\ndata: extra\n\n")]

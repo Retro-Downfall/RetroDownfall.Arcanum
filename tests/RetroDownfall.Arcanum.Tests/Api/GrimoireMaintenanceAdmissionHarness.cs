@@ -106,7 +106,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Stats = new PausingStatsConnectionInterceptor(StatsProbe);
 
-        Factory.AdditionalDbContextInterceptors = [Stats, EfOpen, OrdinaryMutations];
+        Factory.AdditionalDbContextInterceptors = [Stats, EfOpen];
 
         SseProbes =
         [
@@ -198,6 +198,25 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.AddSingleton<ISecretStore>(sp => new ProfileFileEncryptionSecretStore(seededSecrets, sp.GetRequiredService<OsKeychainSecretStore>()));
 
             services.AddScoped<MaintenanceScopeSentinel>();
+
+            services.RemoveAll<ISessionAttachmentIndexWriter>();
+
+            services.AddScoped<ISessionAttachmentIndexWriter>(sp => new ObservingSessionAttachmentIndexWriter(
+                sp.GetRequiredService<SessionAttachmentIndexRepository>(), OrdinaryMutations));
+
+            services.RemoveAll<ITurnRunWriter>();
+
+            services.AddScoped<TurnRunWriter>();
+
+            services.AddScoped<ITurnRunWriter>(sp => new ObservingTurnRunWriter(
+                sp.GetRequiredService<TurnRunWriter>(), OrdinaryMutations));
+
+            services.RemoveAll<IUnseenServantWatermarkStore>();
+
+            services.AddScoped<UnseenServantWatermarkStore>();
+
+            services.AddScoped<IUnseenServantWatermarkStore>(sp => new ObservingUnseenServantWatermarkStore(
+                sp.GetRequiredService<UnseenServantWatermarkStore>(), OrdinaryMutations));
 
             services.AddSingleton<CovenantConnectionDrain>();
 
@@ -350,7 +369,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal PausingEfOpenInterceptor EfOpen { get; } = new();
 
-    internal OrdinaryMutationCounterInterceptor OrdinaryMutations { get; } = new();
+    internal OrdinaryMutationObservations OrdinaryMutations { get; } = new();
 
     internal PausingOrdinaryConnectionFactoryTestSeam RawOpen { get; } = new();
 

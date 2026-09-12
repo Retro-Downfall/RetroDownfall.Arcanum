@@ -63,9 +63,57 @@ internal sealed record SessionAttachmentIndexedChunk(
     DateTimeOffset IndexedAt,
     string? RetrievalScope);
 
+internal interface ISessionAttachmentIndexWriter
+{
+    Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
+        int expectedDimensions,
+        int maxAttachments,
+        CancellationToken cancellationToken);
+
+    Task SetPendingAsync(
+        SessionAttachmentRecord attachment,
+        int attempt,
+        CancellationToken cancellationToken);
+
+    Task MarkWithoutIndexAsync(
+        Guid attachmentId,
+        string contentSha256,
+        SessionAttachmentIndexStatus status,
+        int attempt,
+        string? failureReason,
+        DateTimeOffset? extractedAt,
+        CancellationToken cancellationToken);
+
+    Task<SessionAttachmentIndexCheckpoint> BeginReplaceAsync(
+        SessionAttachmentRecord attachment,
+        int expectedDimensions,
+        string pipelineFingerprint,
+        DateTimeOffset extractedAt,
+        CancellationToken cancellationToken);
+
+    Task AppendReplaceBatchAsync(
+        SessionAttachmentRecord attachment,
+        string generationId,
+        IReadOnlyList<SessionAttachmentTextChunk> chunks,
+        IReadOnlyList<Embedding<float>> embeddings,
+        int expectedDimensions,
+        DateTimeOffset extractedAt,
+        DateTimeOffset indexedAt,
+        CancellationToken cancellationToken);
+
+    Task CompleteReplaceAsync(
+        SessionAttachmentRecord attachment,
+        string generationId,
+        int expectedChunkCount,
+        DateTimeOffset extractedAt,
+        DateTimeOffset indexedAt,
+        int attempt,
+        CancellationToken cancellationToken);
+}
+
 internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability) : ISessionAttachmentIndexMaintenance
+    WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter, ISessionAttachmentIndexMaintenance
 {
     public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
         int expectedDimensions,

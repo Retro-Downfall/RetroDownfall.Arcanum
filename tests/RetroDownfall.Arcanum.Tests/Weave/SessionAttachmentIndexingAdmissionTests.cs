@@ -1626,6 +1626,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         services.AddSingleton(_index!);
 
+        services.AddSingleton<ISessionAttachmentIndexWriter>(_index!);
+
         services.AddSingleton(weave);
 
         services.AddSingleton<ISessionAttachmentStore>(_attachments!);

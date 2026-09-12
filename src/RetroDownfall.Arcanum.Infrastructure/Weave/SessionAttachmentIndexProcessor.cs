@@ -42,7 +42,7 @@ internal sealed class SessionAttachmentIndexProcessor(
     IOptionsMonitor<ArcanumSettings> options,
     IWeaveService weave,
     ISessionAttachmentStore attachments,
-    SessionAttachmentIndexRepository index,
+    ISessionAttachmentIndexWriter index,
     ILogger<SessionAttachmentIndexProcessor> logger)
 {
 

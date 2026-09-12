@@ -156,6 +156,13 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         AssertOutcomeLaunch(entryPoint, operation.CheckpointVersion, operation.CheckpointPayload!, terminal, requestedOperationId);
 
+        AssertOutcomeLaunchRejectsBindingMismatch(
+            entryPoint,
+            operation.CheckpointVersion,
+            operation.CheckpointPayload!,
+            terminal,
+            requestedOperationId);
+
         Assert.Equal(originalGeneration + 1, harness.Admission.CurrentGeneration);
 
         Assert.Equal(originalGeneration + 1, grimoire.Generation);
@@ -514,40 +521,115 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         RecordedMaintenancePublication publication,
         Guid requestedOperationId)
     {
-        Assert.Equal(publication.Raw.Envelope.OperationId, publication.Payload.Binding.OperationId);
-
-        Assert.Null(publication.Payload.Binding.ParentReceiptBindingDigest);
-
-        if (entryPoint is GrimoireTransitionEntryPoint.DirectCovenantReset)
+        try
         {
-            Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, checkpointVersion);
-
-            var decoded = CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(checkpointPayload);
-
-            Assert.True(decoded.IsSuccess, $"{entryPoint}: {decoded.Error.Message}");
-
-            Assert.Equal(publication.Payload.Binding.OperationId, decoded.Value.OperationId);
-
-            Assert.Equal(CovenantExclusiveOperation.CovenantReset, decoded.Value.Operation);
-
-            Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, decoded.Value.Version);
+            AssertOutcomeLaunchCore(
+                entryPoint,
+                checkpointVersion,
+                checkpointPayload,
+                publication,
+                requestedOperationId);
         }
-        else
+        catch (Xunit.Sdk.XunitException failure)
         {
-            Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, checkpointVersion);
-
-            var decoded = CovenantRecoveryCheckpointCodec.DecodeDataRetentionFactoryTransitionLaunch(checkpointPayload);
-
-            Assert.True(decoded.IsSuccess, $"{entryPoint}: {decoded.Error.Message}");
-
-            Assert.Equal(publication.Payload.Binding.OperationId, decoded.Value.OperationId);
-
-            Assert.Equal(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, decoded.Value.Operation);
-
-            Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, decoded.Value.Version);
-
-            Assert.NotEqual(requestedOperationId, decoded.Value.OperationId);
+            throw new Xunit.Sdk.XunitException($"{entryPoint}: {failure.Message}");
         }
+    }
+
+    private static void AssertOutcomeLaunchCore(
+        GrimoireTransitionEntryPoint entryPoint,
+        int checkpointVersion,
+        ReadOnlySpan<byte> checkpointPayload,
+        RecordedMaintenancePublication publication,
+        Guid requestedOperationId)
+    {
+        GrimoireOfflineTransitionBinding authenticated = publication.Payload.Binding;
+
+        Assert.Equal(publication.Raw.Envelope.OperationId, authenticated.OperationId);
+
+        Assert.Null(authenticated.ParentReceiptBindingDigest);
+
+        int expectedVersion = entryPoint is GrimoireTransitionEntryPoint.DirectCovenantReset
+            ? CovenantOfflineTransitionLaunchV4.CurrentVersion
+            : DataRetentionFactoryTransitionLaunchV2.CurrentVersion;
+
+        Assert.Equal(expectedVersion, checkpointVersion);
+
+        Result<GrimoireOfflineTransitionLaunchBinding> projected =
+            GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(checkpointVersion, checkpointPayload);
+
+        Assert.True(projected.IsSuccess, projected.Error.Message);
+
+        GrimoireOfflineTransitionLaunchBinding launch = projected.Value;
+
+        Assert.Equal(authenticated.OperationId, launch.OperationId);
+
+        Assert.Equal(authenticated.Kind, launch.Kind);
+
+        Assert.Equal(ExpectedOperation(entryPoint), launch.Operation);
+
+        Assert.Equal(authenticated.EffectDigest, launch.EffectDigest);
+
+        Assert.Equal(authenticated.SourceDatasetGeneration, launch.SourceDatasetGeneration);
+
+        Assert.Equal(authenticated.TargetDatasetGeneration, launch.TargetDatasetGeneration);
+
+        Assert.Equal(authenticated.SourceEpochs, launch.SourceEpochs);
+
+        Assert.Equal(authenticated.TargetEpochs, launch.TargetEpochs);
+
+        Assert.Equal(authenticated.DatabaseOperationLaunchBindingDigest, launch.Digest);
+
+        Assert.True(authenticated.ExpectedDatabaseOperationRevision <= long.MaxValue);
+
+        Assert.True(authenticated.ExpectedDatabaseOperationRevision > checked((ulong)launch.StartingRevision));
+
+        Result<GrimoireOfflineTransitionBinding> rebound = GrimoireOfflineTransitionLaunch.JournalBinding(
+            launch,
+            authenticated.SlotEpoch,
+            authenticated.PayloadVersion,
+            checked((long)authenticated.ExpectedDatabaseOperationRevision),
+            parentReceiptBindingDigest: null);
+
+        Assert.True(rebound.IsSuccess, rebound.Error.Message);
+
+        Assert.Equal(authenticated, rebound.Value);
+
+        if (entryPoint is GrimoireTransitionEntryPoint.StandaloneFactoryReset)
+        {
+            Assert.NotEqual(requestedOperationId, launch.OperationId);
+        }
+    }
+
+    private static void AssertOutcomeLaunchRejectsBindingMismatch(
+        GrimoireTransitionEntryPoint entryPoint,
+        int checkpointVersion,
+        ReadOnlySpan<byte> checkpointPayload,
+        RecordedMaintenancePublication publication,
+        Guid requestedOperationId)
+    {
+        GrimoireOfflineTransitionBinding mismatchedBinding = publication.Payload.Binding with
+        {
+            TargetDatasetGeneration = Guid.Empty,
+        };
+
+        IGrimoireOfflineTransitionPayload mismatchedPayload = publication.Payload switch
+        {
+            CovenantResetOfflineTransitionPayloadV1 reset => reset with { Binding = mismatchedBinding },
+
+            HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory => factory with { Binding = mismatchedBinding },
+
+            _ => throw new Xunit.Sdk.XunitException($"{entryPoint}: unsupported outcome payload type."),
+        };
+
+        RecordedMaintenancePublication mismatched = publication with { Payload = mismatchedPayload };
+
+        byte[] retainedCheckpointPayload = checkpointPayload.ToArray();
+
+        Xunit.Sdk.XunitException failure = Assert.Throws<Xunit.Sdk.XunitException>(() =>
+            AssertOutcomeLaunch(entryPoint, checkpointVersion, retainedCheckpointPayload, mismatched, requestedOperationId));
+
+        Assert.Contains(entryPoint.ToString(), failure.Message, StringComparison.Ordinal);
     }
 
     private static CovenantExclusiveOperation ExpectedOperation(GrimoireTransitionEntryPoint entryPoint) =>

@@ -1038,6 +1038,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
+        services.AddScoped<ISessionAttachmentIndexWriter>(
+            static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
         services.AddScoped<ISessionAttachmentIndexMaintenance>(
             static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
         services.AddScoped<SessionAttachmentIndexProcessor>();

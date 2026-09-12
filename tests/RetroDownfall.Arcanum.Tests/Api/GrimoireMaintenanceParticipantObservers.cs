@@ -896,13 +896,23 @@ internal sealed class PausingStatsConnectionInterceptor(PostAdmissionEndpointPro
 }
 
 internal readonly record struct OrdinaryMutationCounters(
+    long Invocations,
+    long Successes,
+    long IndexWrites,
     long IndexAttempts,
     long Billing,
     long Failures,
-    long Watermarks);
+    long Watermarks,
+    long Reconciliations);
 
-internal sealed class OrdinaryMutationCounterInterceptor : DbCommandInterceptor
+internal sealed class OrdinaryMutationObservations
 {
+
+    private long _invocations;
+
+    private long _successes;
+
+    private long _indexWrites;
 
     private long _indexAttempts;
 
@@ -912,105 +922,329 @@ internal sealed class OrdinaryMutationCounterInterceptor : DbCommandInterceptor
 
     private long _watermarks;
 
+    private long _reconciliations;
+
     internal OrdinaryMutationCounters Snapshot => new(
+        Interlocked.Read(ref _invocations),
+        Interlocked.Read(ref _successes),
+        Interlocked.Read(ref _indexWrites),
         Interlocked.Read(ref _indexAttempts),
         Interlocked.Read(ref _billing),
         Interlocked.Read(ref _failures),
-        Interlocked.Read(ref _watermarks));
+        Interlocked.Read(ref _watermarks),
+        Interlocked.Read(ref _reconciliations));
 
-    public override InterceptionResult<DbDataReader> ReaderExecuting(
-        DbCommand command,
-        CommandEventData eventData,
-        InterceptionResult<DbDataReader> result)
+    internal void Invoked() => Interlocked.Increment(ref _invocations);
+
+    internal void Succeeded() => Interlocked.Increment(ref _successes);
+
+    internal void IndexWriteSucceeded() => Interlocked.Increment(ref _indexWrites);
+
+    internal void IndexAttemptSucceeded() => Interlocked.Increment(ref _indexAttempts);
+
+    internal void BillingSucceeded() => Interlocked.Increment(ref _billing);
+
+    internal void FailureSucceeded() => Interlocked.Increment(ref _failures);
+
+    internal void WatermarkSucceeded() => Interlocked.Increment(ref _watermarks);
+
+    internal void ReconciliationSucceeded() => Interlocked.Increment(ref _reconciliations);
+
+}
+
+internal sealed class ObservingSessionAttachmentIndexWriter(
+    ISessionAttachmentIndexWriter inner,
+    OrdinaryMutationObservations observations) : ISessionAttachmentIndexWriter
+{
+    public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
+        int expectedDimensions,
+        int maxAttachments,
+        CancellationToken cancellationToken)
     {
+        observations.Invoked();
 
-        Observe(command);
+        SessionAttachmentIndexRequest[] pending = await inner.ReconcileAndFindPendingAsync(
+            expectedDimensions,
+            maxAttachments,
+            cancellationToken).ConfigureAwait(false);
 
-        return result;
+        observations.Succeeded();
+
+        observations.ReconciliationSucceeded();
+
+        return pending;
+    }
+
+    public async Task SetPendingAsync(
+        SessionAttachmentRecord attachment,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        observations.Invoked();
+
+        await inner.SetPendingAsync(attachment, attempt, cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.IndexWriteSucceeded();
+
+        observations.IndexAttemptSucceeded();
 
     }
 
-    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
-        DbCommand command,
-        CommandEventData eventData,
-        InterceptionResult<DbDataReader> result,
+    public async Task MarkWithoutIndexAsync(
+        Guid attachmentId,
+        string contentSha256,
+        SessionAttachmentIndexStatus status,
+        int attempt,
+        string? failureReason,
+        DateTimeOffset? extractedAt,
+        CancellationToken cancellationToken)
+    {
+        observations.Invoked();
+
+        await inner.MarkWithoutIndexAsync(
+            attachmentId,
+            contentSha256,
+            status,
+            attempt,
+            failureReason,
+            extractedAt,
+            cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.IndexWriteSucceeded();
+
+        if (status == SessionAttachmentIndexStatus.Failed)
+        {
+
+            observations.FailureSucceeded();
+
+        }
+    }
+
+    public async Task<SessionAttachmentIndexCheckpoint> BeginReplaceAsync(
+        SessionAttachmentRecord attachment,
+        int expectedDimensions,
+        string pipelineFingerprint,
+        DateTimeOffset extractedAt,
+        CancellationToken cancellationToken)
+    {
+        observations.Invoked();
+
+        SessionAttachmentIndexCheckpoint checkpoint = await inner.BeginReplaceAsync(
+            attachment,
+            expectedDimensions,
+            pipelineFingerprint,
+            extractedAt,
+            cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.IndexWriteSucceeded();
+
+        return checkpoint;
+    }
+
+    public async Task AppendReplaceBatchAsync(
+        SessionAttachmentRecord attachment,
+        string generationId,
+        IReadOnlyList<SessionAttachmentTextChunk> chunks,
+        IReadOnlyList<Embedding<float>> embeddings,
+        int expectedDimensions,
+        DateTimeOffset extractedAt,
+        DateTimeOffset indexedAt,
+        CancellationToken cancellationToken)
+    {
+        observations.Invoked();
+
+        await inner.AppendReplaceBatchAsync(
+            attachment,
+            generationId,
+            chunks,
+            embeddings,
+            expectedDimensions,
+            extractedAt,
+            indexedAt,
+            cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.IndexWriteSucceeded();
+    }
+
+    public async Task CompleteReplaceAsync(
+        SessionAttachmentRecord attachment,
+        string generationId,
+        int expectedChunkCount,
+        DateTimeOffset extractedAt,
+        DateTimeOffset indexedAt,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        observations.Invoked();
+
+        await inner.CompleteReplaceAsync(
+            attachment,
+            generationId,
+            expectedChunkCount,
+            extractedAt,
+            indexedAt,
+            attempt,
+            cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.IndexWriteSucceeded();
+    }
+}
+
+internal sealed class ObservingTurnRunWriter(
+    ITurnRunWriter inner,
+    OrdinaryMutationObservations observations) : ITurnRunWriter
+{
+    public async Task<Guid> StartRunAsync(
+        InferenceRunStart start,
         CancellationToken cancellationToken = default)
     {
+        observations.Invoked();
 
-        Observe(command);
+        Guid runId = await inner.StartRunAsync(start, cancellationToken).ConfigureAwait(false);
 
-        return ValueTask.FromResult(result);
+        observations.Succeeded();
 
+        return runId;
     }
 
-    public override InterceptionResult<int> NonQueryExecuting(
-        DbCommand command,
-        CommandEventData eventData,
-        InterceptionResult<int> result)
-    {
-
-        Observe(command);
-
-        return result;
-
-    }
-
-    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
-        DbCommand command,
-        CommandEventData eventData,
-        InterceptionResult<int> result,
+    public async Task CompleteRunAsync(
+        Guid runId,
+        InferenceRunStatus status,
         CancellationToken cancellationToken = default)
     {
+        observations.Invoked();
 
-        Observe(command);
+        await inner.CompleteRunAsync(runId, status, cancellationToken).ConfigureAwait(false);
 
-        return ValueTask.FromResult(result);
+        observations.Succeeded();
 
+        if (status == InferenceRunStatus.Failed)
+        {
+
+            observations.FailureSucceeded();
+
+        }
     }
 
-    private void Observe(DbCommand command)
+    public async Task<bool> TryAbandonRunAsync(
+        Guid runId,
+        CancellationToken cancellationToken = default)
     {
+        observations.Invoked();
 
-        string sql = command.CommandText;
+        bool abandoned = await inner.TryAbandonRunAsync(runId, cancellationToken).ConfigureAwait(false);
 
-        if (!sql.Contains("INSERT", StringComparison.OrdinalIgnoreCase)
-            && !sql.Contains("UPDATE", StringComparison.OrdinalIgnoreCase)
-            && !sql.Contains("DELETE", StringComparison.OrdinalIgnoreCase))
+        observations.Succeeded();
+
+        return abandoned;
+    }
+
+    public async Task<Guid> RecordBillableOperationAsync(
+        BillableOperationRecord operation,
+        CancellationToken cancellationToken = default)
+    {
+        observations.Invoked();
+
+        Guid operationId = await inner.RecordBillableOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.BillingSucceeded();
+
+        if (operation.Status == BillableOperationStatus.Failed)
         {
 
-            return;
+            observations.FailureSucceeded();
 
         }
 
-        if (sql.Contains("session_attachment_index_state", StringComparison.OrdinalIgnoreCase))
-        {
+        return operationId;
+    }
+}
 
-            Interlocked.Increment(ref _indexAttempts);
+internal sealed class ObservingUnseenServantWatermarkStore(
+    IUnseenServantWatermarkStore inner,
+    OrdinaryMutationObservations observations) : IUnseenServantWatermarkStore
+{
+    public Task<UnseenServantWatermark?> GetAsync(
+        string jobKey,
+        CancellationToken cancellationToken = default) =>
+        inner.GetAsync(jobKey, cancellationToken);
 
-        }
+    public async Task SaveAsync(
+        string jobKey,
+        DateTimeOffset lastRunAt,
+        int effectiveIntervalMinutes,
+        CancellationToken cancellationToken = default)
+    {
+        observations.Invoked();
 
-        if (sql.Contains("BillableOperations", StringComparison.OrdinalIgnoreCase))
-        {
+        await inner.SaveAsync(jobKey, lastRunAt, effectiveIntervalMinutes, cancellationToken).ConfigureAwait(false);
 
-            Interlocked.Increment(ref _billing);
+        observations.Succeeded();
 
-        }
+        observations.WatermarkSucceeded();
+    }
 
-        if (sql.Contains("FailureCode", StringComparison.OrdinalIgnoreCase)
-            || sql.Contains("LastFailure", StringComparison.OrdinalIgnoreCase))
-        {
+    public async Task SaveLastRunAsync(
+        string jobKey,
+        DateTimeOffset lastRunAt,
+        int initialIntervalMinutes,
+        CancellationToken cancellationToken = default)
+    {
+        observations.Invoked();
 
-            Interlocked.Increment(ref _failures);
+        await inner.SaveLastRunAsync(jobKey, lastRunAt, initialIntervalMinutes, cancellationToken).ConfigureAwait(false);
 
-        }
+        observations.Succeeded();
 
-        if (sql.Contains("UnseenServantWatermarks", StringComparison.OrdinalIgnoreCase))
-        {
+        observations.WatermarkSucceeded();
+    }
 
-            Interlocked.Increment(ref _watermarks);
+    public async Task SaveIntervalAsync(
+        string jobKey,
+        DateTimeOffset initialLastRunAt,
+        int effectiveIntervalMinutes,
+        CancellationToken cancellationToken = default)
+    {
+        observations.Invoked();
 
-        }
+        await inner.SaveIntervalAsync(
+            jobKey,
+            initialLastRunAt,
+            effectiveIntervalMinutes,
+            cancellationToken).ConfigureAwait(false);
 
+        observations.Succeeded();
+
+        observations.WatermarkSucceeded();
+    }
+
+    public Task<IReadOnlyList<UnseenServantWatermark>> GetAllAsync(
+        CancellationToken cancellationToken = default) =>
+        inner.GetAllAsync(cancellationToken);
+
+    public async Task DeleteAsync(
+        string jobKey,
+        CancellationToken cancellationToken = default)
+    {
+        observations.Invoked();
+
+        await inner.DeleteAsync(jobKey, cancellationToken).ConfigureAwait(false);
+
+        observations.Succeeded();
+
+        observations.WatermarkSucceeded();
     }
 
 }

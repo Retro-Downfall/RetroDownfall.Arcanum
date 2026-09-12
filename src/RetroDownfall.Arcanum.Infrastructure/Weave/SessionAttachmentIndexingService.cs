@@ -643,8 +643,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
-        SessionAttachmentIndexRepository repository = scope.ServiceProvider
-            .GetRequiredService<SessionAttachmentIndexRepository>();
+        ISessionAttachmentIndexWriter repository = scope.ServiceProvider
+            .GetRequiredService<ISessionAttachmentIndexWriter>();
 
         int dimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
 
