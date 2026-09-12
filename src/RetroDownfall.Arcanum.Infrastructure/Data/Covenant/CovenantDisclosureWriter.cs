@@ -103,13 +103,17 @@ internal sealed class CovenantDisclosureWriter :
 
                 Result opened = await OpenVerifiedAsync(
                     admissionEpoch,
-                    openAdmission: false,
                     cancellationToken).ConfigureAwait(false);
 
                 if (opened.IsFailure)
                 {
 
-                    FailClosed(admissionEpoch);
+                    // Prepared readiness may be exercised before maintenance releases ordinary
+                    // admission. That refusal has no receipt or effect and must remain retryable.
+                    if (opened.Error.Code != ErrorCodes.Grimoire.MaintenanceUnavailable)
+                    {
+                        FailClosed(admissionEpoch);
+                    }
 
                     return Result<CovenantDisclosureReceipt>.Failure(opened.Error);
 
@@ -203,13 +207,6 @@ internal sealed class CovenantDisclosureWriter :
 
             }
 
-            if (_accepting && !_pendingClose && CoreConnection is not null)
-            {
-
-                return Result.Success();
-
-            }
-
             reopenEpoch = _closeRequestEpoch;
 
         }
@@ -229,13 +226,6 @@ internal sealed class CovenantDisclosureWriter :
 
                 }
 
-                if (_accepting && !_pendingClose && CoreConnection is not null)
-                {
-
-                    return Result.Success();
-
-                }
-
             }
 
             // A cancelled quiesce can leave the prior generation's handle behind while still
@@ -252,19 +242,49 @@ internal sealed class CovenantDisclosureWriter :
 
             }
 
-            Result opened = await OpenVerifiedAsync(
-                reopenEpoch,
-                openAdmission: true,
-                cancellationToken).ConfigureAwait(false);
+            CovenantAvailabilitySnapshot published = _availability.Current;
 
-            if (opened.IsFailure)
+            if (published.Canonical != CovenantCapabilityState.Healthy
+                || published.DatasetGeneration is not { } dataset
+                || dataset == Guid.Empty)
             {
 
                 FailClosed(reopenEpoch);
 
+                return Result.Failure(new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "The Covenant disclosure writer has no healthy published dataset."));
+
             }
 
-            return opened;
+            lock (_state)
+            {
+
+                if (_disposed || reopenEpoch != _closeRequestEpoch)
+                {
+
+                    return Result.Failure(AdmissionClosed());
+
+                }
+
+                if (!ReferenceEquals(_availability.Current, published))
+                {
+
+                    return Result.Failure(new Error(
+                        ErrorCodes.Covenant.StaleSnapshot,
+                        "Covenant availability changed while the disclosure writer prepared."));
+
+                }
+
+                // No ordinary connection can be opened until both dispositions and authenticated
+                // retirement finish. AcknowledgeAsync verifies its fresh handle before any receipt.
+                _pendingClose = false;
+
+                _accepting = true;
+
+            }
+
+            return Result.Success();
 
         }
         finally
@@ -322,7 +342,6 @@ internal sealed class CovenantDisclosureWriter :
 
     private async Task<Result> OpenVerifiedAsync(
         long expectedCloseEpoch,
-        bool openAdmission,
         CancellationToken cancellationToken)
     {
 
@@ -404,7 +423,7 @@ internal sealed class CovenantDisclosureWriter :
 
                 }
 
-                if (!openAdmission && !CanAccept())
+                if (!CanAccept())
                 {
 
                     return Result.Failure(AdmissionClosed());
@@ -412,15 +431,6 @@ internal sealed class CovenantDisclosureWriter :
                 }
 
                 _connectionLease = candidateLease;
-
-                if (openAdmission)
-                {
-
-                    _pendingClose = false;
-
-                    _accepting = true;
-
-                }
 
                 adopted = true;
 

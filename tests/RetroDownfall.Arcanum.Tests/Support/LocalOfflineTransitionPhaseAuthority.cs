@@ -99,7 +99,9 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
 
         _authority = new GrimoireOfflineTransitionPhaseAuthority(
             new GrimoireOfflineTransitionLifecycleStore(
-                new GrimoireOfflineTransitionJournalStore(credentials),
+                new GrimoireOfflineTransitionJournalStore(credentials,
+                    new GrimoireOfflineTransitionJournalFileStore(afterStep: step => AfterJournalStep?.Invoke(step)),
+                    new GrimoireOfflineTransitionJournalAnchorStore(credentials, afterStep: step => AfterJournalStep?.Invoke(step))),
                 GrimoireOfflineTransitionHandlerRegistry.Production),
             new HeldLockAccessor(_lock, Guarded),
             new FixedInstallationIdentity(),
@@ -119,6 +121,8 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
 
     /// <summary>The guarded root this authority's journal lives beside.</summary>
     internal string Guarded { get; }
+
+    internal Action<string>? AfterJournalStep { get; set; }
 
     public Task<Result<GrimoireOfflineTransitionPhaseSession>> OpenOrResumeAsync(
         LongRunningOperation operation,

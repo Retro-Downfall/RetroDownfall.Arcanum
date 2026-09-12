@@ -10,7 +10,218 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
+using RetroDownfall.Arcanum.Secrets.Security;
+
 namespace RetroDownfall.Arcanum.Tests.Api;
+
+internal sealed record RecordedMaintenancePublication(
+    GrimoireOfflineTransitionJournalPublication Raw,
+    IGrimoireOfflineTransitionPayload Payload,
+    int AcceptedGrimoireDispositions,
+    Guid? PublishedDatasetGeneration,
+    bool MaintenanceLaneClosed);
+
+internal sealed class MaintenanceJournalObservations
+{
+    private readonly ConcurrentQueue<RecordedMaintenancePublication> _publications = new();
+
+    private readonly ConcurrentQueue<string> _steps = new();
+
+    internal IReadOnlyList<RecordedMaintenancePublication> Publications => _publications.ToArray();
+
+    internal IReadOnlyList<string> Steps => _steps.ToArray();
+
+    internal Action<string>? AfterStep { get; set; }
+
+    internal CovenantVerifiedCandidateState? VerifiedCandidate { get; set; }
+
+    internal bool PublishedExactCandidate { get; set; }
+
+    internal byte[]? InitialJournalKeyFingerprint { get; set; }
+
+    internal List<int> DispositionsAtRetirementSteps { get; } = [];
+
+    internal void Record(RecordedMaintenancePublication publication) => _publications.Enqueue(publication);
+
+    internal void RecordStep(string step)
+    {
+        _steps.Enqueue(step);
+
+        AfterStep?.Invoke(step);
+    }
+}
+
+// Successful publications are copied after the real authenticated write/readback. These callbacks
+// observe the production file/credential protocol and never mint a disposition or open a connection.
+internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJournalStore
+{
+    private readonly GrimoireOfflineTransitionJournalStore _inner;
+
+    private readonly GrimoireMaintenanceAdmissionObserver _admission;
+
+    private readonly CovenantRuntimeGenerationProvider _runtime;
+
+    private readonly MaintenanceJournalObservations _observations;
+
+    private readonly IOsCredentialStore _credentials;
+
+    internal ObservingMaintenanceJournal(IOsCredentialStore credentials, GrimoireMaintenanceAdmissionObserver admission,
+        CovenantRuntimeGenerationProvider runtime, MaintenanceJournalObservations observations)
+    {
+        _admission = admission;
+
+        _runtime = runtime;
+
+        _observations = observations;
+
+        _credentials = credentials;
+
+        _inner = new GrimoireOfflineTransitionJournalStore(credentials,
+            new GrimoireOfflineTransitionJournalFileStore(afterStep: RecordStep),
+            new GrimoireOfflineTransitionJournalAnchorStore(credentials, afterStep: RecordStep),
+            afterStep: RecordStep);
+    }
+
+    private void RecordStep(string step)
+    {
+        _observations.DispositionsAtRetirementSteps.Add(_admission.ClosedLeases.Sum(lease => lease.Dispositions.Count));
+
+        _observations.RecordStep(step);
+    }
+
+    public async Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginAsync(ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory, Guid installationId, Guid operationId, GrimoireOfflineTransitionKind kind,
+        byte payloadVersion, ReadOnlyMemory<byte> payloadBytes, CancellationToken cancellationToken) =>
+        await ObserveAsync(await _inner.BeginAsync(heldInstallationLock, guardedDirectory, installationId, operationId, kind,
+            payloadVersion, payloadBytes, cancellationToken), cancellationToken);
+
+    public async Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginBoundAsync(ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory, Guid installationId, Guid operationId, GrimoireOfflineTransitionKind kind,
+        byte payloadVersion, GrimoireOfflineTransitionJournalPayloadFactory payloadFactory, CancellationToken cancellationToken) =>
+        await ObserveAsync(await _inner.BeginBoundAsync(heldInstallationLock, guardedDirectory, installationId, operationId, kind,
+            payloadVersion, payloadFactory, cancellationToken), cancellationToken);
+
+    public async Task<Result<GrimoireOfflineTransitionJournalPublication>> AdvanceAsync(ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionJournalPublication current, ReadOnlyMemory<byte> payloadBytes, CancellationToken cancellationToken) =>
+        await ObserveAsync(await _inner.AdvanceAsync(heldInstallationLock, current, payloadBytes, cancellationToken), cancellationToken);
+
+    public Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory, CancellationToken cancellationToken) =>
+        _inner.RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken);
+
+    public Task<Result> RetireAsync(ArcanumMaintenanceLock heldInstallationLock,
+        GrimoireOfflineTransitionJournalPublication terminal, CancellationToken cancellationToken) =>
+        _inner.RetireAsync(heldInstallationLock, terminal, cancellationToken);
+
+    private async Task<Result<GrimoireOfflineTransitionJournalPublication>> ObserveAsync(Result<GrimoireOfflineTransitionJournalPublication> result,
+        CancellationToken cancellationToken)
+    {
+        if (result.IsSuccess)
+        {
+            GrimoireOfflineTransitionJournalPublication publication = result.Value;
+
+            IGrimoireOfflineTransitionPayload payload = GrimoireOfflineTransitionHandlerRegistry.Production.DecodeAuthenticated(
+                publication.Envelope.Kind, publication.Envelope.PayloadVersion, publication.PayloadBytes,
+                publication.Envelope.OperationId, publication.Envelope.SlotEpoch).Value.Payload;
+
+            _observations.InitialJournalKeyFingerprint ??= JournalKeyFingerprint(_credentials, publication.Location.ProfileNamespace);
+
+            bool laneClosed = _admission.LastMaintenanceLane is { } lane
+                && (await lane.RevalidateDurableOwnerAsync((_, _, _) => ValueTask.FromResult(true), cancellationToken)).IsFailure;
+
+            _observations.Record(new(publication with { PayloadBytes = publication.PayloadBytes.ToArray() }, payload,
+                _admission.ClosedLeases.Sum(lease => lease.Dispositions.Count), _runtime.Current.Availability.DatasetGeneration, laneClosed));
+        }
+
+        return result;
+    }
+
+    internal static byte[] JournalKeyFingerprint(IOsCredentialStore credentials, BackupRestoreProfileNamespace profile)
+    {
+        using var key = new GrimoireOfflineTransitionJournalKeyProvider(credentials).OpenExisting(profile).Value;
+
+        Assert.True(key.TryTakeKey(out byte[]? bytes));
+
+        try
+        {
+            return System.Security.Cryptography.SHA256.HashData(bytes);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+}
+
+// A forwarding adapter over the actual scoped storage owner. The observation occurs only after
+// immutable verification returns and before the exact candidate is passed to real publication.
+internal sealed class ObservingMaintenanceTransition(CovenantErasureTransition inner,
+    CovenantRuntimeGenerationProvider runtime, MaintenanceJournalObservations observations) : ICovenantErasureTransition
+{
+    public Task<Result<Guid>> ApplyCanonicalErasureAsync(CovenantExclusiveOperation operation,
+        CovenantCanonicalDatasetTransition dataset, CovenantClosedPeriodAuthority authority, CancellationToken token) =>
+        inner.ApplyCanonicalErasureAsync(operation, dataset, authority, token);
+
+    public Task<Result> CloseHandlesAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.CloseHandlesAsync(authority, token);
+
+    public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.TruncateWalAsync(authority, token);
+
+    public Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.CompactAsync(authority, token);
+
+    public Task<Result<CovenantDigest>> StageCandidateAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.StageCandidateAsync(authority, token);
+
+    public Task<Result<CovenantDigest>> ProveStagedCandidateAsync(CovenantClosedPeriodAuthority authority, CovenantDigest identity, CancellationToken token) => inner.ProveStagedCandidateAsync(authority, identity, token);
+
+    public Task<Result> InstallCompactionReplacementAsync(CovenantClosedPeriodAuthority authority, CovenantDigest identity, CovenantDigest content, CovenantDigest destination, CancellationToken token) => inner.InstallCompactionReplacementAsync(authority, identity, content, destination, token);
+
+    public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.ReadCanonicalIdentityAsync(authority, token);
+
+    public Task<Result> InitializeAcceleratorAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.InitializeAcceleratorAsync(authority, token);
+
+    public Task<Result> VerifySidecarAbsenceAsync(CovenantClosedPeriodAuthority authority, CancellationToken token) => inner.VerifySidecarAbsenceAsync(authority, token);
+
+    public async Task<Result<CovenantVerifiedCandidateState>> VerifyReopenAsync(CovenantClosedPeriodAuthority authority, CancellationToken token)
+    {
+        var before = runtime.Current;
+
+        var result = await inner.VerifyReopenAsync(authority, token);
+
+        if (result.IsSuccess)
+        {
+            Assert.Same(before, runtime.Current);
+
+            observations.VerifiedCandidate = result.Value;
+
+            observations.RecordStep("transition:verified");
+        }
+
+        return result;
+    }
+
+    public async Task<Result> PublishCommittedAsync(ICovenantExclusiveOperationLease lease, CovenantVerifiedCandidateState candidate, CancellationToken token)
+    {
+        observations.PublishedExactCandidate = ReferenceEquals(observations.VerifiedCandidate, candidate);
+
+        var result = await inner.PublishCommittedAsync(lease, candidate, token);
+
+        if (result.IsSuccess)
+        {
+            observations.RecordStep("transition:published");
+        }
+
+        return result;
+    }
+}
 
 internal sealed class MaintenanceAdoptionObservation
 {

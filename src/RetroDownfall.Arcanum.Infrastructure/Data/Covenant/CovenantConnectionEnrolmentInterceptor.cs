@@ -4,6 +4,8 @@ using System.Runtime.CompilerServices;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -211,6 +213,8 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
         Release(connection, closePhysicalConnection: true);
 
+        LogFailure(eventData);
+
         base.ConnectionFailed(connection, eventData);
 
     }
@@ -223,8 +227,31 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
 
         await ReleaseAsync(connection, closePhysicalConnection: true).ConfigureAwait(false);
 
+        LogFailure(eventData);
+
         await base.ConnectionFailedAsync(connection, eventData, cancellationToken)
             .ConfigureAwait(false);
+
+    }
+
+    private static void LogFailure(ConnectionErrorEventData eventData)
+    {
+
+        ILogger? logger = eventData.Context?.GetService<ILoggerFactory>()
+            .CreateLogger<CovenantConnectionEnrolmentInterceptor>();
+
+        if (eventData.Exception is GrimoireMaintenanceUnavailableException)
+        {
+
+            logger?.LogDebug("An ordinary Grimoire connection was deferred for maintenance.");
+
+        }
+        else
+        {
+
+            logger?.LogError("An ordinary Grimoire connection failed to open safely.");
+
+        }
 
     }
 

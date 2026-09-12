@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -35,13 +36,26 @@ internal static class ArcanumDbContextOptionsConfigurator
 
         ConfigureProvider(optionsBuilder, passphraseSource);
 
-        _ = optionsBuilder.AddInterceptors(
+        _ = ConfigureServingEnrolment(optionsBuilder, lifecycle, drain, initializer);
+
+    }
+
+    /// <summary>
+    /// Pairs serving admission with sanitized failure diagnostics. EF's generic ConnectionError
+    /// includes catalog paths but omits the exception needed to distinguish maintenance refusal.
+    /// The enrolment interceptor replaces that event without hiding genuine connection failures.
+    /// </summary>
+    internal static DbContextOptionsBuilder ConfigureServingEnrolment(
+        DbContextOptionsBuilder optionsBuilder,
+        IGrimoireOrdinaryConnectionLifecycle lifecycle,
+        ICovenantConnectionDrain drain,
+        ICovenantSqliteConnectionInitializer initializer) =>
+        optionsBuilder.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.ConnectionError))
+            .AddInterceptors(
             new CovenantConnectionEnrolmentInterceptor(
                 lifecycle,
                 drain,
                 initializer));
-
-    }
 
     /// <summary>
     /// Configures the manual/design-time fallback that has no serving host or maintenance owner.

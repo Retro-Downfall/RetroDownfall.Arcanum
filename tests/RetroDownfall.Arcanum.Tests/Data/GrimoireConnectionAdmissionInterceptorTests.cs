@@ -3,6 +3,7 @@ using System.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -18,8 +19,10 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireConnectionAdmissionInterceptorTests
 {
 
-    [Fact]
-    public async Task Closed_admission_refuses_before_the_provider_open()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Closed_admission_refuses_before_the_provider_open(bool asynchronous)
     {
 
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
@@ -30,16 +33,36 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         await using TrackingSqliteConnection connection = new(ConnectionString);
 
-        await using ProbeDbContext context = CreateContext(connection, gate, drain);
+        DiagnosticCapture capture = new();
 
-        _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(
-            () => context.Database.OpenConnectionAsync());
+        using ILoggerFactory logging = LoggerFactory.Create(builder => builder
+            .SetMinimumLevel(LogLevel.Warning)
+            .AddFilter(typeof(CovenantConnectionEnrolmentInterceptor).FullName, LogLevel.Debug)
+            .AddProvider(capture));
+
+        await using ProbeDbContext context = CreateContext(connection, gate, drain, loggerFactory: logging);
+
+        if (asynchronous)
+        {
+
+            _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(
+                () => context.Database.OpenConnectionAsync());
+
+        }
+        else
+        {
+
+            _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(context.Database.OpenConnection);
+
+        }
 
         Assert.Equal(0, connection.ProviderOpenCount);
 
         Assert.Equal(0, drain.RegisterCount);
 
         Assert.Equal(0, drain.DisposeCount);
+
+        AssertSanitizedDiagnostic(capture, maintenance: true);
 
     }
 
@@ -121,6 +144,13 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         RecordingConnectionInitializer initializer = new();
 
+        DiagnosticCapture capture = new();
+
+        using ILoggerFactory logging = LoggerFactory.Create(builder => builder
+            .SetMinimumLevel(LogLevel.Warning)
+            .AddFilter(typeof(CovenantConnectionEnrolmentInterceptor).FullName, LogLevel.Debug)
+            .AddProvider(capture));
+
         await using (connection.ConfigureAwait(false))
         {
 
@@ -128,7 +158,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
                 connection,
                 gate,
                 drain,
-                initializer);
+                initializer,
+                logging);
 
             Task opening = asynchronous
                 ? context.Database.OpenConnectionAsync()
@@ -169,6 +200,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             Assert.Equal(1, drain.ExactPoolClearCount);
 
             Assert.Equal(["close", "clear"], releaseOrder);
+
+            AssertSanitizedDiagnostic(capture, maintenance: true);
 
             Result<IGrimoireExclusiveClosedLease> closed = await closingAdmission;
 
@@ -951,19 +984,27 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
         SqliteConnection connection,
         IGrimoireConnectionAdmissionGate gate,
         ICovenantConnectionDrain drain,
-        ICovenantSqliteConnectionInitializer? initializer = null)
+        ICovenantSqliteConnectionInitializer? initializer = null,
+        ILoggerFactory? loggerFactory = null)
     {
 
-        DbContextOptions<ProbeDbContext> options = new DbContextOptionsBuilder<ProbeDbContext>()
-            .UseSqlite(connection, contextOwnsConnection: true)
-            .AddInterceptors(
-                new CovenantConnectionEnrolmentInterceptor(
-                    new GrimoireOrdinaryConnectionLifecycle(gate, drain),
-                    drain,
-                    initializer ?? NoOpConnectionInitializer.Instance))
-            .Options;
+        DbContextOptionsBuilder<ProbeDbContext> builder = new DbContextOptionsBuilder<ProbeDbContext>()
+            .UseSqlite(connection, contextOwnsConnection: true);
 
-        return new ProbeDbContext(options);
+        ArcanumDbContextOptionsConfigurator.ConfigureServingEnrolment(
+            builder,
+            new GrimoireOrdinaryConnectionLifecycle(gate, drain),
+            drain,
+            initializer ?? NoOpConnectionInitializer.Instance);
+
+        if (loggerFactory is not null)
+        {
+
+            builder.UseLoggerFactory(loggerFactory);
+
+        }
+
+        return new ProbeDbContext(builder.Options);
 
     }
 
@@ -978,11 +1019,19 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
         TrackingSqliteConnection connection = new(ConnectionString);
 
+        DiagnosticCapture capture = new();
+
+        using ILoggerFactory logging = LoggerFactory.Create(builder => builder
+            .SetMinimumLevel(LogLevel.Warning)
+            .AddFilter(typeof(CovenantConnectionEnrolmentInterceptor).FullName, LogLevel.Debug)
+            .AddProvider(capture));
+
         ProbeDbContext context = CreateContext(
             connection,
             gate,
             drain,
-            new ThrowingConnectionInitializer());
+            new ThrowingConnectionInitializer(),
+            logging);
 
         try
         {
@@ -1012,6 +1061,8 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
 
             Assert.Equal(0, drain.ActiveCount);
 
+            AssertSanitizedDiagnostic(capture, maintenance: false);
+
             await using IGrimoireExclusiveClosedLease closed = await CloseAdmissionAsync(
                 gate,
                 ownerSeed);
@@ -1023,6 +1074,46 @@ public sealed class GrimoireConnectionAdmissionInterceptorTests
             await context.DisposeAsync();
 
             await connection.DisposeAsync();
+
+        }
+
+    }
+
+    private static void AssertSanitizedDiagnostic(DiagnosticCapture capture, bool maintenance)
+    {
+
+        var entry = Assert.Single(capture.Entries);
+
+        Assert.Equal(typeof(CovenantConnectionEnrolmentInterceptor).FullName, entry.Category);
+
+        Assert.Equal(maintenance ? LogLevel.Debug : LogLevel.Error, entry.Level);
+
+        Assert.Equal(maintenance
+            ? "An ordinary Grimoire connection was deferred for maintenance."
+            : "An ordinary Grimoire connection failed to open safely.", entry.Message);
+
+        Assert.Null(entry.Exception);
+
+    }
+
+    private sealed class DiagnosticCapture : ILoggerProvider
+    {
+
+        internal System.Collections.Concurrent.ConcurrentQueue<(string Category, LogLevel Level, string Message, Exception? Exception)> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new CaptureLogger(categoryName, this);
+
+        public void Dispose() { }
+
+        private sealed class CaptureLogger(string category, DiagnosticCapture capture) : ILogger
+        {
+
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel level) => true;
+
+            public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+                capture.Entries.Enqueue((category, level, formatter(state, exception), exception));
 
         }
 

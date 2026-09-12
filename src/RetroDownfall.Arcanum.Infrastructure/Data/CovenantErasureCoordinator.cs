@@ -719,6 +719,8 @@ internal sealed class CovenantErasureCoordinator(
 
         private int _spent;
 
+        private bool _ioClosed;
+
         /// <summary>The closed authority every purpose-bound capability is issued from.</summary>
         internal IGrimoireExclusiveClosedLease Closed => closed;
 
@@ -737,6 +739,26 @@ internal sealed class CovenantErasureCoordinator(
         /// <summary>The drain whose pool clear follows every ledger close.</summary>
         internal ICovenantConnectionDrain Drain => drain;
 
+        internal async Task CloseIoAsync()
+        {
+
+            if (_ioClosed)
+            {
+
+                return;
+
+            }
+
+            // Each ledger window already physically closes and clears its handle. Revoke the
+            // remaining capabilities before the journal is allowed to attest LaneClosed.
+            await ledger.DisposeAsync().ConfigureAwait(false);
+
+            await lane.DisposeAsync().ConfigureAwait(false);
+
+            _ioClosed = true;
+
+        }
+
         internal async Task<Result> ReleaseAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
@@ -749,9 +771,7 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
-            await ledger.DisposeAsync().ConfigureAwait(false);
-
-            await lane.DisposeAsync().ConfigureAwait(false);
+            await CloseIoAsync().ConfigureAwait(false);
 
             Result completed = await closed
                 .CompleteAsync(disposition, cancellationToken)
@@ -1976,41 +1996,7 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        // Ordinary admission reopens here, before anything ordinary is asked to come back. The warm
-        // writer opens an ordinary connection, and an ordinary connection is exactly what a closed
-        // Grimoire refuses - so a writer restarted inside the closed period cannot succeed, and its
-        // refusal would be reported instead of whatever the erasure actually did.
-        //
-        // Reopening now is safe and is not the same decision as the Covenant disposition below. The
-        // storage proof has passed and the runtime authority is published, so there is nothing left
-        // that a shut database is protecting; what a failed writer restart still costs is the
-        // Covenant scope, which stays closed on its own terms.
-        if (closure is not null)
-        {
-
-            Result reopened = await closure.ReleaseAsync(
-                CovenantExclusiveLeaseDisposition.CommitAndReopen,
-                publicationAndWriter.Token).ConfigureAwait(false);
-
-            if (reopened.IsFailure)
-            {
-
-                return await CloseAsync(
-                    operation,
-                    state,
-                    ownerId,
-                    lease,
-                    CovenantExclusiveLeaseDisposition.KeepClosed,
-                    progress,
-                    reopened.Error.Code,
-                    phases,
-                    closure).ConfigureAwait(false);
-
-            }
-
-        }
-
-        // The warm writer may only come back against the authority that was just published. A restart
+        // Ready-but-cold restoration opens no ordinary handle while Grimoire is closed. A restart
         // failure lands here, before the one disposition, so it selects KeepClosed rather than
         // reversing an erasure the storage proof already earned.
         Result writer = await RunLifecycleAsync(
@@ -2079,20 +2065,6 @@ internal sealed class CovenantErasureCoordinator(
             error.Code);
 
         using CancellationTokenSource restoration = new(WriterRestorationBound, _timeProvider);
-
-        // Ordinary admission reopens before the writer is asked to come back, for the same reason it
-        // does on the committed path: the writer opens an ordinary connection and a closed Grimoire
-        // refuses one. Nothing here has been touched - this is the pre-effect abort - so there is
-        // nothing a shut database would be protecting, and leaving it shut would replace the reason
-        // this erasure stopped with the refusal that hid it.
-        if (closure is not null)
-        {
-
-            _ = await closure.ReleaseAsync(
-                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
-                restoration.Token).ConfigureAwait(false);
-
-        }
 
         Result restored;
 
@@ -2928,6 +2900,16 @@ internal sealed class CovenantErasureCoordinator(
         if (suffix.Value is ReconciliationSuffix.Parked)
         {
 
+            if (disposition is not CovenantExclusiveLeaseDisposition.KeepClosed
+                && blockingErrorCode is null)
+            {
+
+                // A refused terminal reconciliation turned a successful disposition into attention.
+                // Record its fixed failure while the exact ledger permit is still available.
+                blockingErrorCode = ErrorCodes.Covenant.MaintenanceFailed;
+
+            }
+
             disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
 
             if (phases is null || string.IsNullOrWhiteSpace(blockingErrorCode))
@@ -2959,30 +2941,12 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        // The Grimoire's closure is spent first, and on the same answer. The two gates are separate
-        // closures over one installation, and a run that reopened either while keeping the other shut
-        // would leave an operator with an installation that is neither open nor closed. This one goes
-        // first because it is the outer of the two: ordinary admission has to be reopenable before
-        // the Covenant scope that closed it lets go.
+        // No maintenance capability may survive the Covenant disposition. The enclosing Grimoire
+        // closure remains live until authenticated retirement has proved the transition finished.
         if (closure is not null)
         {
 
-            Result reopened = await closure
-                .ReleaseAsync(GrimoireDispositionFor(disposition), lifecycle.Token)
-                .ConfigureAwait(false);
-
-            if (reopened.IsFailure)
-            {
-
-                _logger.LogError(
-                    "A Covenant erasure could not spend its {Disposition} disposition on the Grimoire "
-                    + "closure ({ErrorCode}); admission stays closed.",
-                    disposition,
-                    reopened.Error.Code);
-
-                return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
-
-            }
+            await closure.CloseIoAsync().ConfigureAwait(false);
 
         }
 
@@ -3021,8 +2985,8 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
-        // The disposition is spent, so the journal may say so and then retire. Retirement is last on
-        // purpose: everything before it is recoverable from the journal, and nothing after it is.
+        // The Covenant disposition is spent, so the journal may say so and then retire. Ordinary
+        // admission remains closed across the complete authenticated retirement protocol.
         if (phases is not null && suffix.Value is ReconciliationSuffix.Retirable)
         {
 
@@ -3036,6 +3000,28 @@ internal sealed class CovenantErasureCoordinator(
                     + "offline transition journal ({ErrorCode}); the journal stays adoptable.",
                     disposition,
                     retired.Error.Code);
+
+                return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
+
+            }
+
+        }
+
+        if (closure is not null)
+        {
+
+            Result reopened = await closure
+                .ReleaseAsync(GrimoireDispositionFor(disposition), lifecycle.Token)
+                .ConfigureAwait(false);
+
+            if (reopened.IsFailure)
+            {
+
+                _logger.LogError(
+                    "A Covenant erasure could not spend its {Disposition} disposition on the Grimoire "
+                    + "closure ({ErrorCode}); admission stays closed.",
+                    disposition,
+                    reopened.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
 
@@ -3203,6 +3189,13 @@ internal sealed class CovenantErasureCoordinator(
 
         if (step < GrimoireOfflineTransitionReconciliationStep.LaneClosed)
         {
+
+            if (closure is not null)
+            {
+
+                await closure.CloseIoAsync().ConfigureAwait(false);
+
+            }
 
             Result lane = await phases.RecordLaneClosedAsync(cancellationToken).ConfigureAwait(false);
 

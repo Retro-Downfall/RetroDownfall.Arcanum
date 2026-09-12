@@ -222,17 +222,12 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                 // weak lifecycle entry following one physical connection across pooled reopens.
                 services.AddDbContextPool<ArcanumDbContext>(
                     (sp, options) =>
-                        options
-                            .UseSqlite(connectionString)
-                            .UseModel(ArcanumDbContextModel.Instance)
-                            .AddInterceptors(
-                            [
-                                new CovenantConnectionEnrolmentInterceptor(
-                                    sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
-                                    sp.GetRequiredService<ICovenantConnectionDrain>(),
-                                    sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),
-                                .. AdditionalDbContextInterceptors,
-                            ]),
+                        ArcanumDbContextOptionsConfigurator.ConfigureServingEnrolment(
+                            options.UseSqlite(connectionString).UseModel(ArcanumDbContextModel.Instance),
+                            sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                            sp.GetRequiredService<ICovenantConnectionDrain>(),
+                            sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())
+                            .AddInterceptors(AdditionalDbContextInterceptors),
                     poolSize: 32);
             }
             else

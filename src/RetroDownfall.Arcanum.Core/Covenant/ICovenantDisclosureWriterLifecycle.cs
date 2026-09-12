@@ -38,14 +38,19 @@ public interface ICovenantDisclosureWriterLifecycle
     ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// Acquires a warm writer lease against the authority currently published by the runtime.
+    /// Restores serialized ready-but-cold admission against the healthy published runtime authority.
     /// </summary>
     /// <remarks>
     /// Always called while the exclusive gate is still held. Before the first destructive effect it
-    /// restores the old warm writer so rollback can safely reopen admission. After immutable proof it
+    /// restores readiness under the old authority so rollback can safely reopen admission. After immutable proof it
     /// follows authority publication; failure there selects
     /// <see cref="CovenantExclusiveLeaseDisposition.KeepClosed"/> rather than reversing an erasure
     /// that is already proven.
+    /// No ordinary connection is opened here: database reconciliation, maintenance-I/O closure,
+    /// Covenant disposition and authenticated journal retirement precede final Grimoire reopening.
+    /// The first acknowledgement opens a fresh ordinary handle and verifies its exact dataset and
+    /// runtime snapshot before committing any receipt or permitting egress. An earlier maintenance
+    /// refusal has no effect and does not permanently revoke this prepared readiness.
     /// </remarks>
     ValueTask<Result> ReopenAsync(CancellationToken cancellationToken);
 

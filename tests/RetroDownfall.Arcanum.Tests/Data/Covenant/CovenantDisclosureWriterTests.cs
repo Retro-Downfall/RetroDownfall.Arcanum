@@ -168,11 +168,15 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
-        SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
-
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
-        Assert.Same(warm, Assert.Single(harness.FreshConnections.Opened));
+        Assert.Empty(harness.FreshConnections.Opened);
+
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
+
+        Assert.True((await harness.AcknowledgeAsync(1)).IsSuccess);
+
+        SqliteConnection warm = Assert.Single(harness.FreshConnections.Opened);
 
         Assert.Equal(ConnectionState.Open, warm.State);
 
@@ -212,6 +216,12 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await reopen).IsSuccess);
 
+        Assert.Single(harness.FreshConnections.Opened);
+
+        Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
+
+        Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
+
         SqliteConnection fresh = Assert.Single(
             harness.FreshConnections.Opened,
             connection => !ReferenceEquals(connection, oldWarm));
@@ -222,22 +232,21 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
 
-        Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
-
     }
 
     [Fact]
-    public async Task Quiesce_requested_during_reopen_closes_the_candidate_and_keeps_admission_closed()
+    public async Task Quiesce_requested_during_the_first_lazy_open_closes_the_candidate_and_keeps_admission_closed()
     {
 
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
+        Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
+
         harness.FreshConnections.BlockNextOpen();
 
-        Task<Result> reopen = Task.Run(
-            async () => await harness.Subject.ReopenAsync(Token).ConfigureAwait(false));
+        Task<Result<CovenantDisclosureReceipt>> reopen = Task.Run(() => harness.AcknowledgeAsync(1));
 
         await harness.FreshConnections.OpenBlocked;
 
@@ -249,7 +258,7 @@ public sealed class CovenantDisclosureWriterTests
 
         harness.FreshConnections.AllowOpen();
 
-        Result reopened = await reopen;
+        Result<CovenantDisclosureReceipt> reopened = await reopen;
 
         Assert.True(reopened.IsFailure);
 
@@ -266,17 +275,18 @@ public sealed class CovenantDisclosureWriterTests
     }
 
     [Fact]
-    public async Task Dispose_requested_during_reopen_closes_the_candidate_and_keeps_admission_closed()
+    public async Task Dispose_requested_during_the_first_lazy_open_closes_the_candidate_and_keeps_admission_closed()
     {
 
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
 
+        Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
+
         harness.FreshConnections.BlockNextOpen();
 
-        Task<Result> reopen = Task.Run(
-            async () => await harness.Subject.ReopenAsync(Token).ConfigureAwait(false));
+        Task<Result<CovenantDisclosureReceipt>> reopen = Task.Run(() => harness.AcknowledgeAsync(1));
 
         await harness.FreshConnections.OpenBlocked;
 
@@ -288,7 +298,7 @@ public sealed class CovenantDisclosureWriterTests
 
         harness.FreshConnections.AllowOpen();
 
-        Result reopened = await reopen;
+        Result<CovenantDisclosureReceipt> reopened = await reopen;
 
         Assert.True(reopened.IsFailure);
 
@@ -402,6 +412,59 @@ public sealed class CovenantDisclosureWriterTests
 
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cold_readiness_refuses_unhealthy_or_empty_authority_without_opening(bool empty)
+    {
+
+        await using WriterHarness harness = await WriterHarness.CreateAsync();
+
+        Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
+
+        harness.Availability!.Publish(empty ? CovenantCapabilityState.Healthy : CovenantCapabilityState.Unavailable,
+            empty ? Guid.Empty : harness.DatasetGeneration);
+
+        var restored = await harness.Subject.ReopenAsync(Token);
+
+        Assert.True(restored.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, restored.Error.Code);
+
+        Assert.Empty(harness.FreshConnections.Opened);
+
+        Assert.True((await harness.AcknowledgeAsync(1)).IsFailure);
+
+    }
+
+    [Fact]
+    public async Task Maintenance_refusal_of_prepared_cold_readiness_remains_retryable_without_a_receipt()
+    {
+
+        await using WriterHarness harness = await WriterHarness.CreateAsync(new CovenantDisclosureTransactionWriter(BootId));
+
+        Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
+
+        Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
+
+        harness.FreshConnections.RefuseNextOpen(ErrorCodes.Grimoire.MaintenanceUnavailable);
+
+        var deferred = await harness.AcknowledgeAsync(1);
+
+        Assert.True(deferred.IsFailure);
+
+        Assert.Equal(ErrorCodes.Grimoire.MaintenanceUnavailable, deferred.Error.Code);
+
+        Assert.Empty(harness.FreshConnections.Opened);
+
+        var admitted = await harness.AcknowledgeAsync(1);
+
+        Assert.True(admitted.IsSuccess);
+
+        Assert.Equal(1, await CountReceiptsAsync(Assert.Single(harness.FreshConnections.Opened)));
+
+    }
+
     [Fact]
     public async Task An_ordinary_open_failure_keeps_the_writer_closed_without_a_lease()
     {
@@ -438,13 +501,13 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
+        Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
+
         SqliteConnection fresh = Assert.Single(
             harness.FreshConnections.Opened,
             connection => !ReferenceEquals(connection, oldWarm));
 
         Assert.Equal(ConnectionState.Closed, oldWarm.State);
-
-        Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
 
         Assert.Equal(2, await CountReceiptsAsync(fresh));
 
@@ -488,9 +551,9 @@ public sealed class CovenantDisclosureWriterTests
 
         Assert.True((await harness.Subject.ReopenAsync(Token)).IsSuccess);
 
-        SqliteConnection fresh = harness.FreshConnections.Opened[^1];
-
         Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
+
+        SqliteConnection fresh = harness.FreshConnections.Opened[^1];
 
         Assert.Equal(applied.Value, await ReadDatasetGenerationAsync(fresh));
 

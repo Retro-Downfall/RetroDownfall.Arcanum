@@ -209,6 +209,8 @@ internal sealed class RecordingFreshOrdinaryConnectionFactory : IGrimoireOrdinar
 
     private int _refuseNextOpen;
 
+    private string _refusalCode = ErrorCodes.Covenant.Unavailable;
+
     private TaskCompletionSource? _openBlocked;
 
     private TaskCompletionSource? _allowOpen;
@@ -264,7 +266,14 @@ internal sealed class RecordingFreshOrdinaryConnectionFactory : IGrimoireOrdinar
         (_allowOpen ?? throw new InvalidOperationException("No ordinary open is blocked."))
             .TrySetResult();
 
-    internal void RefuseNextOpen() => Volatile.Write(ref _refuseNextOpen, 1);
+    internal void RefuseNextOpen(string code = ErrorCodes.Covenant.Unavailable)
+    {
+
+        _refusalCode = code;
+
+        Volatile.Write(ref _refuseNextOpen, 1);
+
+    }
 
     internal void BlockNextRelease()
     {
@@ -305,7 +314,7 @@ internal sealed class RecordingFreshOrdinaryConnectionFactory : IGrimoireOrdinar
 
             return Result<IGrimoireOrdinaryConnectionLease>.Failure(
                 new Error(
-                    ErrorCodes.Covenant.Unavailable,
+                    _refusalCode,
                     "The test ordinary connection factory refused the open."));
 
         }

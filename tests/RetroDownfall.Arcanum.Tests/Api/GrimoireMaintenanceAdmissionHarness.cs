@@ -52,6 +52,8 @@ using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -141,6 +143,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Factory.SettingsOverride = settings => settings with
         {
+            Host = settings.Host with { AuditLog = settings.Host.AuditLog with { Enabled = true } },
+
             Features = settings.Features with { AttachmentRetrieval = true },
 
             Integrations = settings.Integrations with
@@ -165,6 +169,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.RemoveAll<ILoggerFactory>();
 
             services.AddSingleton<ILoggerFactory>(_ => new LoggerFactory([HostLogs]));
+
+            services.AddScoped<ICovenantErasureTransition>(sp => new ObservingMaintenanceTransition(
+                sp.GetRequiredService<CovenantErasureTransition>(), sp.GetRequiredService<CovenantRuntimeGenerationProvider>(), Journal));
 
             // Preserve the factory's seeded API/Grimoire secret path while retaining blob keys
             // through the real file-secret implementation over this profile's fake OS store.
@@ -193,6 +200,13 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.AddSingleton<IGrimoireOrdinaryConnectionFactoryTestSeam>(RawOpen);
 
             services.AddSingleton(Operations);
+
+            services.RemoveAll<IGrimoireOfflineTransitionJournalStore>();
+
+            services.AddSingleton<IGrimoireOfflineTransitionJournalStore>(sp => new ObservingMaintenanceJournal(
+                _profile.CredentialStore,
+                (GrimoireMaintenanceAdmissionObserver)sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(), Journal));
 
             services.RemoveAll<ILongRunningOperationStore>();
 
@@ -296,6 +310,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     internal PausingOrdinaryConnectionFactoryTestSeam RawOpen { get; } = new();
 
     internal MaintenanceOperationObservations Operations { get; } = new();
+
+    internal MaintenanceJournalObservations Journal { get; } = new();
 
     internal MaintenanceHostLogCapture HostLogs { get; } = new();
 
@@ -579,7 +595,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     internal async Task<MaintenanceSseResponse> OpenChatAsync()
     {
         OpenAiChatRequest payload = new("mistral:latest",
-            [new OpenAiChatMessage("user", OpenAiMessageContent.FromText("Give one controlled answer."))], Stream: true);
+            [new OpenAiChatMessage("user", OpenAiMessageContent.FromText("Give one controlled answer."))], Stream: true,
+            StreamOptions: new OpenAiStreamOptions(IncludeUsage: true));
 
         using HttpRequestMessage request = CreateObservedRequest(HttpMethod.Post, "/v1/chat/completions");
 
@@ -635,6 +652,10 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             if (_client is not null)
             {
+                Admission.StageOne.AfterCompletion.Release();
+
+                Admission.StageTwo.AfterCompletion.Release();
+
                 Blobs.Checkpoint.Release();
 
                 Chat.Checkpoint.Release();

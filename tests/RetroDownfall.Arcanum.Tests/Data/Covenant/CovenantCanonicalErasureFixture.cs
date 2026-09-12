@@ -814,11 +814,11 @@ internal sealed class CovenantCanonicalErasureFixture : IAsyncDisposable
                 $revision, $content, $sensitivityDigest, NULL, NULL, NULL, $labelDigest, $created);
             """;
 
-        _ = command.Parameters.AddWithValue("$label", label.LabelId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$label", label.LabelId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$kind", (long)label.ArtifactKind);
 
-        _ = command.Parameters.AddWithValue("$artifact", label.ArtifactId.ToString("D"));
+        _ = command.Parameters.AddWithValue("$artifact", label.ArtifactId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$sensitivity", (long)label.Sensitivity);
 

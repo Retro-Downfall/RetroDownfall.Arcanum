@@ -784,6 +784,10 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.False(await harness.AdmissionIsOpenAsync());
 
+        Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
+
+        Assert.True(File.Exists(harness.Phases.JournalPath));
+
     }
 
     [Fact]
@@ -849,6 +853,107 @@ public sealed class CovenantErasureCoordinatorTests
 
         // The journal is retained rather than retired, which is what keeps the operation adoptable.
         Assert.True(File.Exists(harness.Phases.JournalPath));
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Commit_and_proven_rollback_hold_Grimoire_until_after_retirement(bool rollback)
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Inventory.Fails = rollback;
+
+        int dispositionChecks = 0;
+
+        int retirementChecks = 0;
+
+        harness.Gate.OnDispositionAttempt = () =>
+        {
+
+            Assert.False(harness.Admission.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out var work));
+
+            Assert.Null(work);
+
+            Assert.Equal(System.Data.ConnectionState.Closed, harness.Ledger.Connection.State);
+
+            Assert.True(File.Exists(harness.Phases.JournalPath));
+
+            dispositionChecks++;
+
+        };
+
+        harness.Phases.AfterJournalStep = step =>
+        {
+
+            if (step is "file:retiring-moved" or "file:retiring-unlinked" or "file:absence-proved")
+            {
+
+                Assert.False(harness.Admission.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out var work));
+
+                Assert.Null(work);
+
+                retirementChecks++;
+
+            }
+
+        };
+
+        var result = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(rollback ? CovenantExclusiveLeaseDisposition.RollbackAndReopen : CovenantExclusiveLeaseDisposition.CommitAndReopen, result.Value.Disposition);
+
+        Assert.Equal(1, dispositionChecks);
+
+        Assert.Equal(3, retirementChecks);
+
+        Assert.False(File.Exists(harness.Phases.JournalPath));
+
+        Assert.True(await harness.GrimoireAdmissionIsOpenAsync());
+
+        Assert.True(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    [Fact]
+    public async Task Retirement_failure_keeps_Grimoire_closed_after_the_Covenant_disposition()
+    {
+
+        CoordinatorHarness harness = new();
+
+        bool interrupted = false;
+
+        harness.Phases.AfterJournalStep = step =>
+        {
+
+            if (step == "anchor:closed-readback")
+            {
+
+                interrupted = true;
+
+                throw new IOException("controlled retirement interruption");
+
+            }
+
+        };
+
+        await Assert.ThrowsAsync<IOException>(() => harness.RunAsync(CovenantResetPhase.InventoryPrepared));
+
+        Assert.True(interrupted);
+
+        Assert.Equal(1, harness.Gate.DispositionAttempts);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, harness.Gate.LastDisposition);
+
+        Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
+
+        Assert.True(File.Exists(harness.Phases.JournalPath));
+
+        Assert.Equal(LongRunningOperationState.Completed, (await harness.Store.GetAsync(OperationId))!.State);
 
     }
 
@@ -1099,6 +1204,10 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
+
+        Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
+
+        Assert.True(File.Exists(harness.Phases.JournalPath));
 
     }
 

@@ -33,7 +33,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "RenewLeaseAsync(5)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadReceiptOnFreshConnectionAsync(3)"),
-        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(3)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
     ];

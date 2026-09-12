@@ -1677,14 +1677,17 @@ public sealed class CovenantErasureSameProcessTests
     }
 
     [SkippableFact]
-    public async Task Reopened_verified_recovery_reacquires_an_already_reopened_gate_after_finalizer_failure()
+    public async Task Failed_terminal_reconciliation_keeps_Grimoire_closed_with_authenticated_attention()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteStoreFaults faults = new(RouteStoreFault.FailAllCompletedTransitions);
 
-        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(storeFaults: faults);
+        RouteOperationWriteObserver operationWrites = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            storeFaults: faults, operationWrites: operationWrites);
 
         DataRetentionPlan confirmed = await harness.PlanResetAsync();
 
@@ -1692,7 +1695,9 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(reset.IsFailure);
 
-        LongRunningOperation parked = await harness.ReadResetOperationAsync();
+        // The committed observation was captured inside the coordinator's permitted ledger window.
+        // Reading the ordinary store here would cross the closure this test is required to prove.
+        LongRunningOperation parked = operationWrites.LastSuccessfulWrite;
 
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
 
@@ -1712,20 +1717,73 @@ public sealed class CovenantErasureSameProcessTests
         // later phase here would be asserting that the row still answers a question it no longer owns.
         Assert.Equal(CovenantResetPhase.InventoryPrepared, checkpoint.Value.Phase);
 
-        // The refusal is lifted before recovery runs. A row the store will never terminalize is a
-        // transition that is genuinely not over, and recovery reporting completion for one would be
-        // announcing an answer nothing durable carries. What this test is about is the pass after the
-        // finalizer failed: the gate it finds is already reopened, and it has to adopt that rather
-        // than treat it as somebody else's scope.
-        faults.DisarmCompletedTransitionFailures();
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, parked.TerminalErrorCode);
 
-        LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync();
+        Assert.Null(parked.CompletedAt);
 
-        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+        Assert.Equal(1, operationWrites.AccessesAfterAttentionWrite);
 
-        LongRunningOperation finished = await harness.ReadResetOperationAsync();
+        Result<CovenantInstallationReadLease> covenantRead = await harness.RouteGate
+            .AcquireInstallationReadAsync(CancellationToken.None);
 
-        Assert.Equal(LongRunningOperationState.Completed, finished.State);
+        Assert.True(covenantRead.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, covenantRead.Error.Code);
+
+        IGrimoireConnectionAdmissionGate gate = harness.Services.GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
+        Assert.False(gate.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out var work));
+
+        Assert.Null(work);
+
+        Assert.False(gate.TryAcquireRequestLease(GrimoireRequestKind.Finite, out var request));
+
+        Assert.Null(request);
+
+        using SqliteConnection refused = new();
+
+        Assert.Throws<GrimoireMaintenanceUnavailableException>(() => gate.AcquireOrdinaryOpen(refused));
+
+        GrimoireOfflineTransitionPhaseSession journal = await harness.ReadAuthenticatedTransitionAsync(parked);
+
+        Assert.Equal(GrimoireOfflineTransitionState.KeepClosed, journal.State);
+
+        Assert.Equal(GrimoireOfflineTransitionHandlerOutcome.KeepClosed, journal.Outcome);
+
+        Assert.Equal(parked.Id, journal.Current.Payload.Binding.OperationId);
+
+        Result<CovenantOfflineTransitionLaunchV4> decoded = CovenantRecoveryCheckpointCodec
+            .DecodeCovenantOfflineTransitionLaunch(parked.CheckpointPayload!);
+
+        Assert.True(decoded.IsSuccess, decoded.Error.Message);
+
+        Result<GrimoireOfflineTransitionLaunchBinding> launch =
+            GrimoireOfflineTransitionLaunch.FromLaunch(decoded.Value);
+
+        Assert.True(launch.IsSuccess, launch.Error.Message);
+
+        Assert.Equal(launch.Value.Digest,
+            journal.Current.Payload.Binding.DatabaseOperationLaunchBindingDigest);
+
+        Assert.Equal(checked((ulong)decoded.Value.StartingRevision + 1),
+            journal.Current.Payload.Binding.ExpectedDatabaseOperationRevision);
+
+        Assert.Equal(GrimoireOfflineTransitionKind.CovenantReset, journal.Current.Payload.Binding.Kind);
+
+        Assert.Null(journal.Current.Payload.Binding.ParentReceiptBindingDigest);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired,
+            journal.Current.Payload.Lifecycle.Blocker!.ErrorCode);
+
+        Assert.Equal(GrimoireOfflineTransitionState.DatabaseReconciliationPending,
+            journal.Current.Payload.Lifecycle.Blocker!.ResumeState);
+
+        Assert.Equal(GrimoireOfflineTransitionReconciliationStep.CandidateVerified,
+            journal.Current.Payload.Lifecycle.ReconciliationEvidence!.Step);
+
+        Assert.Null(journal.Current.Payload.Lifecycle.ReconciliationEvidence.DatabaseTerminalWinnerDigest);
+
+        // Restart/adoption convergence of this retained suffix is qualified separately in Task 7.
 
     }
 
@@ -3113,7 +3171,7 @@ public sealed class CovenantErasureSameProcessTests
     /// change to what a reset leaves behind has to be made here once, deliberately, rather than
     /// showing up as a crash-matrix failure nobody can place.</para>
     /// </remarks>
-    private static readonly CovenantRouteState ErasedRoute = new(0, 1, 0);
+    private static readonly CovenantRouteState ErasedRoute = new(0, 0, 0);
 
     private sealed record CovenantRouteState(
         long CovenantRows,

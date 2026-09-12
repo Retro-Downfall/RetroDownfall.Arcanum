@@ -926,6 +926,8 @@ internal sealed class GrimoireLeaseObservation<TKind>(
 
     internal bool Acquired { get; } = acquired;
 
+    internal IAsyncDisposable? Lease { get; set; }
+
     internal CancellationToken MaintenanceRevocation { get; } = maintenanceRevocation;
 
     internal int Disposals => Volatile.Read(ref _disposals);
@@ -979,6 +981,10 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     internal IReadOnlyList<GrimoireOwnerObservation> ClosedLeases => _closedLeases.ToArray();
 
+    internal IGrimoireExclusiveClosedLease? LastClosedLease { get; private set; }
+
+    internal IGrimoireMaintenanceIoLane? LastMaintenanceLane { get; private set; }
+
     public long CurrentGeneration => inner.CurrentGeneration;
 
     internal IGrimoireRequestLease InnerRequest(IGrimoireRequestLease lease) =>
@@ -1001,6 +1007,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         lease = actual is null ? null : new ObservedRequest(actual, observation);
 
+        observation.Lease = lease;
+
         if (lease is not null)
         {
             _requests[lease] = actual!;
@@ -1020,6 +1028,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         lease = actual is null ? null : new ObservedWork(actual, observation, _effects);
 
+        observation.Lease = lease;
+
         if (lease is not null)
         {
             _work[lease] = actual!;
@@ -1036,7 +1046,11 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         _tickets.Enqueue(observation);
 
-        return new ObservedTicket(actual, observation);
+        IGrimoireConnectionOpenTicket ticket = new ObservedTicket(actual, observation);
+
+        observation.Ticket = ticket;
+
+        return ticket;
     }
 
     public Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
@@ -1083,6 +1097,11 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         finally
         {
             StageOne.Complete();
+
+            if (StageOne.HoldAfterCompletion)
+            {
+                await StageOne.AfterCompletion.PauseAsync(cancellationToken);
+            }
         }
     }
 
@@ -1090,11 +1109,13 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         IGrimoireClosingOwner closingOwner,
         CancellationToken cancellationToken)
     {
+        ValueTask<Result<IGrimoireExclusiveClosedLease>> closing = inner.CloseConnectionAdmissionAsync(InnerOwner(closingOwner), cancellationToken);
+
         StageTwo.Enter();
 
         try
         {
-            Result<IGrimoireExclusiveClosedLease> result = await inner.CloseConnectionAdmissionAsync(InnerOwner(closingOwner), cancellationToken);
+            Result<IGrimoireExclusiveClosedLease> result = await closing;
 
             if (result.IsFailure)
             {
@@ -1105,11 +1126,18 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
             _closedLeases.Enqueue(observation);
 
-            return Result<IGrimoireExclusiveClosedLease>.Success(new ObservedClosedLease(result.Value, observation));
+            LastClosedLease = new ObservedClosedLease(result.Value, observation, lane => LastMaintenanceLane = lane);
+
+            return Result<IGrimoireExclusiveClosedLease>.Success(LastClosedLease);
         }
         finally
         {
             StageTwo.Complete();
+
+            if (StageTwo.HoldAfterCompletion)
+            {
+                await StageTwo.AfterCompletion.PauseAsync(cancellationToken);
+            }
         }
     }
 
@@ -1145,7 +1173,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         }
     }
 
-    private sealed class ObservedClosedLease(IGrimoireExclusiveClosedLease actual, GrimoireOwnerObservation observation) : IGrimoireExclusiveClosedLease
+    private sealed class ObservedClosedLease(IGrimoireExclusiveClosedLease actual, GrimoireOwnerObservation observation,
+        Action<IGrimoireMaintenanceIoLane> observeLane) : IGrimoireExclusiveClosedLease
     {
         public CovenantExclusiveRecoveryOwner Owner => actual.Owner;
 
@@ -1161,9 +1190,19 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
             CovenantMaintenanceConnectionPurpose purpose, IGrimoireMaintenanceIoLane lane) =>
             actual.IssueMaintenanceConnectionCapability(purpose, lane);
 
-        public ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
+        public async ValueTask<Result<IGrimoireMaintenanceIoLane>> AcquireMaintenanceIoLaneAsync(
             Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>> revalidateDurableOwnerAsync,
-            CancellationToken cancellationToken) => actual.AcquireMaintenanceIoLaneAsync(revalidateDurableOwnerAsync, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            var result = await actual.AcquireMaintenanceIoLaneAsync(revalidateDurableOwnerAsync, cancellationToken);
+
+            if (result.IsSuccess)
+            {
+                observeLane(result.Value);
+            }
+
+            return result;
+        }
 
         public async ValueTask<Result> CompleteAsync(CovenantExclusiveLeaseDisposition disposition, CancellationToken cancellationToken)
         {
@@ -1346,6 +1385,8 @@ internal sealed class GrimoireTicketObservation(DbConnection connection, long ge
 
     internal string? Terminal { get; private set; }
 
+    internal IGrimoireConnectionOpenTicket? Ticket { get; set; }
+
     internal void Disposed() => Interlocked.Increment(ref _disposals);
 
     internal void Terminated(string terminal)
@@ -1367,6 +1408,10 @@ internal sealed class MaintenanceStageObservation
     internal int EnteredCount => Volatile.Read(ref _enteredCount);
 
     internal int CompletedCount => Volatile.Read(ref _completedCount);
+
+    internal bool HoldAfterCompletion { get; set; }
+
+    internal MaintenanceCheckpoint AfterCompletion { get; } = new();
 
     internal Task WaitUntilEnteredAsync() => _entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
