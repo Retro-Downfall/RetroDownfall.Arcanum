@@ -4,9 +4,13 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using Microsoft.Extensions.Options;
 
+using Microsoft.Extensions.Logging;
+
 using System.Net.Http.Json;
 
 using System.Net;
+
+using System.Runtime.CompilerServices;
 
 using RetroDownfall.Arcanum.Core.Conclave;
 
@@ -71,6 +75,8 @@ internal enum GrimoireTransitionEntryPoint : byte
 
 internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 {
+    private static readonly ConditionalWeakTable<RestartableArcanumProfileFixture, ParticipantSeedRegistration> ParticipantSeeds = new();
+
     private readonly RestartableArcanumProfileFixture _profile;
 
     private readonly bool _ownsProfile;
@@ -83,11 +89,11 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     private int _disposed;
 
-    private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture? profile, MaintenanceAdoptionObservation? adoption)
+    private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture profile, bool ownsProfile, MaintenanceAdoptionObservation? adoption)
     {
-        _profile = profile ?? new RestartableArcanumProfileFixture();
+        _profile = profile;
 
-        _ownsProfile = profile is null;
+        _ownsProfile = ownsProfile;
 
         Adoption = adoption ?? new MaintenanceAdoptionObservation();
 
@@ -97,7 +103,41 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Factory.AdditionalDbContextInterceptors = [Stats, EfOpen];
 
-        Factory.BeforeEndpoint = StatsProbe.InvokeAsync;
+        SseProbes =
+        [
+            new("/api/events/daemon"),
+
+            new("/api/events/mcp"),
+
+            new("/api/events/logs"),
+
+            new(() => $"/api/sessions/{SessionId}/stream"),
+
+            new(() => $"/api/apprentices/{ApprenticeId}/chronicle"),
+        ];
+
+        EndpointProbes =
+        [
+            StatsProbe,
+
+            new("/v1/models"),
+
+            .. SseProbes,
+
+            new("/v1/chat/completions"),
+
+            new(() => $"/api/sessions/{SessionId}/attachments/{DownloadAttachment.Id}/content"),
+        ];
+
+        // All probe instances exist before the host. Dynamic paths resolve only after seeding
+        // (or retained-identity restoration) and always match one exact concrete route.
+        Factory.BeforeEndpoint = (context, next) =>
+        {
+            PostAdmissionEndpointProbe? selected = EndpointProbes.SingleOrDefault(probe =>
+                context.Request.Headers[PostAdmissionEndpointProbe.Header] == probe.RequestId);
+
+            return selected is null ? next(context) : selected.InvokeAsync(context, next);
+        };
 
         Factory.SettingsOverride = settings => settings with
         {
@@ -120,6 +160,12 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Factory.ServiceOverrides = services =>
         {
+            // The production Serilog factory does not forward added providers. Match the existing
+            // host-test logging pattern so every normal ILogger category reaches this capture.
+            services.RemoveAll<ILoggerFactory>();
+
+            services.AddSingleton<ILoggerFactory>(_ => new LoggerFactory([HostLogs]));
+
             // Preserve the factory's seeded API/Grimoire secret path while retaining blob keys
             // through the real file-secret implementation over this profile's fake OS store.
             ISecretStore seededSecrets = (ISecretStore)services.Single(descriptor => descriptor.ServiceType == typeof(ISecretStore)).ImplementationInstance!;
@@ -208,12 +254,40 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.AddSingleton<ObservingIndexingLogger>();
 
             services.AddSingleton<Microsoft.Extensions.Logging.ILogger<SessionAttachmentIndexingService>>(sp => sp.GetRequiredService<ObservingIndexingLogger>());
+
+            services.AddSingleton<ObservingWorkerScopeFactory>();
+
+            // Preserve the production worker and every hosted-service/queue alias. Only its
+            // injected scope factory observes construction and completed disposal independently.
+            services.RemoveAll<SessionAttachmentIndexingService>();
+
+            services.AddSingleton(sp => new SessionAttachmentIndexingService(
+                sp.GetRequiredService<ObservingWorkerScopeFactory>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SessionAttachmentIndexingService>>()));
         };
     }
 
     internal ArcanumWebApplicationFactory Factory { get; }
 
     internal PostAdmissionEndpointProbe StatsProbe { get; } = new("/api/grimoire/stats");
+
+    internal IReadOnlyList<PostAdmissionEndpointProbe> EndpointProbes { get; }
+
+    internal IReadOnlyList<PostAdmissionEndpointProbe> SseProbes { get; }
+
+    internal PostAdmissionEndpointProbe ProbeForPath(string path) => EndpointProbes.Single(probe => probe.Path == path);
+
+    internal HttpRequestMessage CreateObservedRequest(HttpMethod method, string path)
+    {
+        HttpRequestMessage request = new(method, path);
+
+        request.Headers.Add(PostAdmissionEndpointProbe.Header, ProbeForPath(path).RequestId);
+
+        return request;
+    }
 
     internal PausingStatsConnectionInterceptor Stats { get; }
 
@@ -222,6 +296,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     internal PausingOrdinaryConnectionFactoryTestSeam RawOpen { get; } = new();
 
     internal MaintenanceOperationObservations Operations { get; } = new();
+
+    internal MaintenanceHostLogCapture HostLogs { get; } = new();
 
     internal MaintenanceAdoptionObservation Adoption { get; }
 
@@ -232,6 +308,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     internal Guid SessionId { get; private set; }
 
     internal Guid ApprenticeId { get; private set; }
+
+    internal Guid EntryId { get; private set; }
 
     internal GrimoireMaintenanceAdmissionObserver Admission => (GrimoireMaintenanceAdmissionObserver)Factory.Services.GetRequiredService<IGrimoireConnectionAdmissionGate>();
 
@@ -247,6 +325,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal ObservingIndexingLogger IndexingLogs => Factory.Services.GetRequiredService<ObservingIndexingLogger>();
 
+    internal ObservingWorkerScopeFactory WorkerScopes => Factory.Services.GetRequiredService<ObservingWorkerScopeFactory>();
+
     internal SessionAttachmentIndexingService Indexing => (SessionAttachmentIndexingService)Factory.Services.GetRequiredService<ISessionAttachmentIndexQueue>();
 
     internal SessionAttachmentRecord DownloadAttachment { get; private set; } = null!;
@@ -257,11 +337,45 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal byte[] DownloadBytes { get; } = "controlled-download-prefix-and-complete-encrypted-payload"u8.ToArray();
 
-    internal static async Task<GrimoireMaintenanceAdmissionHarness> StartAsync(
+    internal static Task<GrimoireMaintenanceAdmissionHarness> StartAsync(
         RestartableArcanumProfileFixture? profile = null,
         MaintenanceAdoptionObservation? adoption = null)
     {
-        GrimoireMaintenanceAdmissionHarness harness = new(profile, adoption);
+        bool ownsProfile = profile is null;
+
+        profile ??= new RestartableArcanumProfileFixture();
+
+        ParticipantSeedRegistration registration = ParticipantSeeds.GetValue(profile, static _ => new());
+
+        if (!registration.TryClaim())
+        {
+            throw new InvalidOperationException("This profile's participant seed is one-shot. Use StartRecoveryAsync to reopen its retained identities.");
+        }
+
+        return StartHostAsync(profile, ownsProfile, registration, seedParticipants: true, adoption);
+    }
+
+    internal static Task<GrimoireMaintenanceAdmissionHarness> StartRecoveryAsync(
+        RestartableArcanumProfileFixture profile,
+        MaintenanceAdoptionObservation? adoption = null)
+    {
+        if (!ParticipantSeeds.TryGetValue(profile, out ParticipantSeedRegistration? registration)
+            || registration.Seed is null)
+        {
+            throw new InvalidOperationException("Recovery requires this profile's completed first-host participant seed.");
+        }
+
+        return StartHostAsync(profile, ownsProfile: false, registration, seedParticipants: false, adoption);
+    }
+
+    private static async Task<GrimoireMaintenanceAdmissionHarness> StartHostAsync(
+        RestartableArcanumProfileFixture profile,
+        bool ownsProfile,
+        ParticipantSeedRegistration registration,
+        bool seedParticipants,
+        MaintenanceAdoptionObservation? adoption)
+    {
+        GrimoireMaintenanceAdmissionHarness harness = new(profile, ownsProfile, adoption);
 
         try
         {
@@ -273,7 +387,31 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             harness._client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, ArcanumWebApplicationFactory.TestApiKey);
 
-            await harness.SeedAsync();
+            if (seedParticipants)
+            {
+                await harness.SeedAsync();
+
+                registration.Seed = new(harness.SessionId, harness.ApprenticeId, harness.EntryId,
+                    harness.DownloadAttachment, harness.IndexingAttachmentA, harness.IndexingAttachmentB);
+            }
+            else
+            {
+                ParticipantSeed seed = registration.Seed!;
+
+                harness.SessionId = seed.SessionId;
+
+                harness.ApprenticeId = seed.ApprenticeId;
+
+                harness.EntryId = seed.EntryId;
+
+                harness.DownloadAttachment = seed.Download;
+
+                harness.IndexingAttachmentA = seed.IndexingA;
+
+                harness.IndexingAttachmentB = seed.IndexingB;
+
+                harness.Blobs.DownloadPath = Path.GetFullPath(Path.Combine(ArcanumPaths.AttachmentsDirectory, seed.Download.RelativePath));
+            }
 
             return harness;
         }
@@ -295,9 +433,11 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         SessionId = session.Id;
 
+        EntryId = Guid.NewGuid();
+
         var entry = await sessions.AddEntryAsync(SessionId, new Entry
         {
-            Id = Guid.NewGuid(),
+            Id = EntryId,
 
             SessionId = SessionId,
 
@@ -414,7 +554,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal async Task<MaintenanceSseResponse> OpenSseAsync(string path)
     {
-        HttpResponseMessage response = await Client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, _shutdown.Token).WaitAsync(TimeSpan.FromSeconds(10));
+        using HttpRequestMessage request = CreateObservedRequest(HttpMethod.Get, path);
+
+        HttpResponseMessage response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, _shutdown.Token).WaitAsync(TimeSpan.FromSeconds(10));
 
         try
         {
@@ -439,10 +581,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         OpenAiChatRequest payload = new("mistral:latest",
             [new OpenAiChatMessage("user", OpenAiMessageContent.FromText("Give one controlled answer."))], Stream: true);
 
-        using HttpRequestMessage request = new(HttpMethod.Post, "/v1/chat/completions")
-        {
-            Content = JsonContent.Create(payload, ArcanumJsonContext.Default.OpenAiChatRequest),
-        };
+        using HttpRequestMessage request = CreateObservedRequest(HttpMethod.Post, "/v1/chat/completions");
+
+        request.Content = JsonContent.Create(payload, ArcanumJsonContext.Default.OpenAiChatRequest);
 
         HttpResponseMessage response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, _shutdown.Token).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -525,6 +666,18 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             }
         }
     }
+
+    private sealed record ParticipantSeed(Guid SessionId, Guid ApprenticeId, Guid EntryId,
+        SessionAttachmentRecord Download, SessionAttachmentRecord IndexingA, SessionAttachmentRecord IndexingB);
+
+    private sealed class ParticipantSeedRegistration
+    {
+        private int _claimed;
+
+        internal ParticipantSeed? Seed { get; set; }
+
+        internal bool TryClaim() => Interlocked.CompareExchange(ref _claimed, 1, 0) == 0;
+    }
 }
 
 internal sealed class MaintenanceSseResponse(HttpResponseMessage response, Stream stream) : IAsyncDisposable
@@ -564,6 +717,30 @@ internal sealed class MaintenanceSseResponse(HttpResponseMessage response, Strea
             {
                 count++;
             }
+        }
+
+        return count;
+    }
+
+    internal async Task<int> ReadRevocationTerminalToEndAsync()
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+        int count = 0;
+
+        while (await ReadFrameAsync(timeout.Token) is { } frame)
+        {
+            if (frame != "data: [DONE]" || count != 0)
+            {
+                throw new InvalidDataException("The revoked SSE response emitted an additional complete frame.");
+            }
+
+            count++;
+        }
+
+        if (count != 1)
+        {
+            throw new InvalidDataException("The revoked SSE response ended without its complete terminal frame.");
         }
 
         return count;

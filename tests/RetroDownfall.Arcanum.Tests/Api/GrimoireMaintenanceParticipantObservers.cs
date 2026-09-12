@@ -315,9 +315,118 @@ internal sealed class ControlledWeaveService(WeaveService inner) : IWeaveService
         inner.ChunkAsync(text, cancellationToken);
 }
 
-internal sealed class ObservingIndexingLogger : Microsoft.Extensions.Logging.ILogger<SessionAttachmentIndexingService>
+// Only the real indexing worker receives this factory; inspection/request scopes remain separate.
+internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
+{
+    private readonly ConcurrentQueue<WorkerScopeObservation> _scopes = new();
+
+    internal IReadOnlyList<WorkerScopeObservation> Scopes => _scopes.ToArray();
+
+    public IServiceScope CreateScope()
+    {
+        IServiceScope scope = inner.CreateScope();
+
+        WorkerScopeObservation observation = new();
+
+        _scopes.Enqueue(observation);
+
+        return new ObservedScope(scope, observation);
+    }
+
+    private sealed class ObservedScope(IServiceScope innerScope, WorkerScopeObservation observation) : IServiceScope, IAsyncDisposable
+    {
+        public IServiceProvider ServiceProvider => innerScope.ServiceProvider;
+
+        public void Dispose()
+        {
+            innerScope.Dispose();
+
+            observation.Disposed();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (innerScope is IAsyncDisposable asynchronous)
+            {
+                await asynchronous.DisposeAsync();
+            }
+            else
+            {
+                innerScope.Dispose();
+            }
+
+            observation.Disposed();
+        }
+    }
+}
+
+internal sealed class WorkerScopeObservation
+{
+    private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private int _disposals;
+
+    internal int Disposals => Volatile.Read(ref _disposals);
+
+    internal Task WaitUntilDisposedAsync() => _disposed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+    internal void Disposed()
+    {
+        Interlocked.Increment(ref _disposals);
+
+        _disposed.TrySetResult();
+    }
+}
+
+internal sealed record MaintenanceHostLog(string Category, Microsoft.Extensions.Logging.LogLevel Level, string Message, string? Template, Exception? Exception);
+
+internal sealed class MaintenanceHostLogCapture : Microsoft.Extensions.Logging.ILoggerProvider
+{
+    private readonly ConcurrentQueue<MaintenanceHostLog> _entries = new();
+
+    internal IReadOnlyList<MaintenanceHostLog> Entries => _entries.ToArray();
+
+    // These exact framework warnings describe the existing temporary-profile key storage and
+    // TestServer's absent body-size feature. Retain them; permit no application warning or error.
+    internal IReadOnlyList<MaintenanceHostLog> Unexpected => Entries.Where(entry =>
+        entry.Level != Microsoft.Extensions.Logging.LogLevel.Warning
+        || entry.Exception is not null
+        || !((entry.Category == "Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager"
+                && entry.Template == "No XML encryptor configured. Key {KeyId:B} may be persisted to storage in unencrypted form.")
+            || (entry.Category == "Microsoft.AspNetCore.Routing.EndpointRoutingMiddleware"
+                && entry.Template == "A request body size limit could not be applied. This server does not support the IHttpMaxRequestBodySizeFeature."))).ToArray();
+
+    public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => new CaptureLogger(categoryName, _entries);
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class CaptureLogger(string category, ConcurrentQueue<MaintenanceHostLog> entries) : Microsoft.Extensions.Logging.ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel level) => level >= Microsoft.Extensions.Logging.LogLevel.Warning;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel level, Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(level))
+            {
+                string? template = (state as IEnumerable<KeyValuePair<string, object?>>)?
+                    .FirstOrDefault(pair => pair.Key == "{OriginalFormat}").Value as string;
+
+                entries.Enqueue(new(category, level, formatter(state, exception), template, exception));
+            }
+        }
+    }
+}
+
+internal sealed class ObservingIndexingLogger(Microsoft.Extensions.Logging.ILoggerFactory factory) : Microsoft.Extensions.Logging.ILogger<SessionAttachmentIndexingService>
 {
     private readonly TestCapturingLogger<SessionAttachmentIndexingService> _inner = new();
+
+    private readonly Microsoft.Extensions.Logging.ILogger _forward = factory.CreateLogger(typeof(SessionAttachmentIndexingService).FullName!);
 
     private readonly TaskCompletionSource _deferred = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -337,6 +446,8 @@ internal sealed class ObservingIndexingLogger : Microsoft.Extensions.Logging.ILo
         TState state, Exception? exception, Func<TState, Exception?, string> formatter)
     {
         _inner.Log(logLevel, eventId, state, exception, formatter);
+
+        _forward.Log(logLevel, eventId, state, exception, formatter);
 
         string message = formatter(state, exception);
 
@@ -394,7 +505,12 @@ internal sealed class ControlledChatClientFactory : IChatClientFactory
 
             Interlocked.Increment(ref owner._bufferedCalls);
 
-            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "Controlled conversation")));
+            string content = options?.ResponseFormat is ChatResponseFormatJson
+                ? System.Text.Json.JsonSerializer.Serialize(new LexiconEntityExtractionResponse([]),
+                    RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.LexiconEntityExtractionResponse)
+                : "Controlled conversation";
+
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, content)));
         }
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
@@ -656,8 +772,14 @@ internal sealed class MaintenanceScopeSentinel : IDisposable, IAsyncDisposable
 
 // Installed only through the factory's endpoint hook: append-only startup middleware was
 // proven unreachable behind the real endpoint middleware by the focused placement RED.
-internal sealed class PostAdmissionEndpointProbe(string path)
+internal sealed class PostAdmissionEndpointProbe(Func<string> path)
 {
+    internal PostAdmissionEndpointProbe(string path) : this(() => path)
+    {
+    }
+
+    internal string Path => path();
+
     private int _invocations;
 
     private int _executing;
@@ -689,7 +811,7 @@ internal sealed class PostAdmissionEndpointProbe(string path)
 
     internal async Task InvokeAsync(HttpContext context, RequestDelegate next)
     {
-        if (context.Request.Path == path && context.Request.Headers[Header] == RequestId)
+        if (context.Request.Path == Path && context.Request.Headers[Header] == RequestId)
         {
             Admission = context.RequestServices.GetRequiredService<GrimoireRequestAdmissionScope>();
 
@@ -699,7 +821,7 @@ internal sealed class PostAdmissionEndpointProbe(string path)
 
             Scope = context.RequestServices.GetRequiredService<MaintenanceScopeSentinel>();
 
-            if (path == "/api/grimoire/stats")
+            if (Path == "/api/grimoire/stats")
             {
                 Context = context.RequestServices.GetRequiredService<ArcanumDbContext>();
 
@@ -1140,7 +1262,7 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
             if (effect is not null)
             {
-                GrimoireEffectObservation effectObservation = new();
+                GrimoireEffectObservation effectObservation = new(actual.Kind);
 
                 effects.Enqueue(effectObservation);
 
@@ -1169,8 +1291,10 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
     }
 }
 
-internal sealed class GrimoireEffectObservation
+internal sealed class GrimoireEffectObservation(GrimoireWorkKind kind)
 {
+    internal GrimoireWorkKind Kind { get; } = kind;
+
     private int _disposals;
 
     private int _terminal;

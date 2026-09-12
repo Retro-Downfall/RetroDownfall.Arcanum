@@ -4,6 +4,12 @@ using System.Net;
 
 using System.Net.Http.Json;
 
+using System.Text.Json;
+
+using RetroDownfall.Arcanum.Core.Events;
+
+using RetroDownfall.Arcanum.Core.Mcp;
+
 using Microsoft.EntityFrameworkCore;
 
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -15,6 +21,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
+
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -53,6 +61,235 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Trait("Category", "Integration")]
 public sealed class GrimoireMaintenanceAdmissionHarnessTests
 {
+    [Theory]
+    [InlineData("data: extra\n\ndata: [DONE]\n\n")]
+    [InlineData("data: [DONE]\n\ndata: extra\n\n")]
+    [InlineData("data: [DONE]\n\ndata: [DONE]\n\n")]
+    [InlineData("data: unfinished")]
+    [InlineData("data: [DONE]\n\ndata: unfinished")]
+    public async Task Sse_reader_rejects_extra_or_incomplete_frames_after_revocation(string wire)
+    {
+        using HttpResponseMessage response = new(HttpStatusCode.OK);
+
+        await using MaintenanceSseResponse reader = new(response, new MemoryStream(System.Text.Encoding.UTF8.GetBytes(wire)));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => reader.ReadRevocationTerminalToEndAsync());
+    }
+
+    [Fact]
+    public async Task Sse_reader_requires_one_complete_terminal_and_observes_EOF()
+    {
+        using HttpResponseMessage response = new(HttpStatusCode.OK);
+
+        await using MaintenanceSseResponse reader = new(response, new MemoryStream("data: [DONE]\n\n"u8.ToArray()));
+
+        Assert.Equal(1, await reader.ReadRevocationTerminalToEndAsync());
+
+        Assert.Equal(["data: [DONE]"], reader.Frames);
+    }
+
+    [SkippableFact]
+    public async Task Host_log_capture_records_warning_and_error_from_real_categories_and_the_worker_logger()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using GrimoireMaintenanceAdmissionHarness harness = await GrimoireMaintenanceAdmissionHarness.StartAsync();
+
+        AssertQuietHost(harness);
+
+        ILogger logger = harness.Factory.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger(typeof(CovenantErasureCoordinator).FullName!);
+
+        logger.LogWarning("controlled-capture-warning");
+
+        logger.LogError("controlled-capture-error");
+
+        harness.IndexingLogs.LogWarning("controlled-worker-warning");
+
+        harness.IndexingLogs.LogError("controlled-worker-error");
+
+        Assert.Collection(harness.HostLogs.Unexpected,
+            entry => Assert.Equal((typeof(CovenantErasureCoordinator).FullName, LogLevel.Warning, "controlled-capture-warning"), (entry.Category, entry.Level, entry.Message)),
+            entry => Assert.Equal((typeof(CovenantErasureCoordinator).FullName, LogLevel.Error, "controlled-capture-error"), (entry.Category, entry.Level, entry.Message)),
+            entry => Assert.Equal((typeof(SessionAttachmentIndexingService).FullName, LogLevel.Warning, "controlled-worker-warning"), (entry.Category, entry.Level, entry.Message)),
+            entry => Assert.Equal((typeof(SessionAttachmentIndexingService).FullName, LogLevel.Error, "controlled-worker-error"), (entry.Category, entry.Level, entry.Message)));
+    }
+
+    private static void AssertQuietHost(GrimoireMaintenanceAdmissionHarness harness) =>
+        Assert.Empty(harness.HostLogs.Unexpected);
+
+    [SkippableFact]
+    public async Task Composed_endpoint_probes_observe_models_and_refused_routes_without_executing_or_creating_scopes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using GrimoireMaintenanceAdmissionHarness harness = await GrimoireMaintenanceAdmissionHarness.StartAsync();
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+
+        using HttpRequestMessage unauthorized = harness.CreateObservedRequest(HttpMethod.Get, "/v1/models");
+
+        unauthorized.Headers.Add(ArcanumApiHeaders.ApiKey, "wrong-key");
+
+        using HttpResponseMessage denied = await harness.Client.SendAsync(unauthorized, timeout.Token);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+
+        Assert.Empty(harness.Admission.RequestAttempts);
+
+        Assert.All(harness.EndpointProbes, probe => Assert.Null(probe.Scope));
+
+        using HttpRequestMessage models = harness.CreateObservedRequest(HttpMethod.Get, "/v1/models");
+
+        using HttpResponseMessage response = await harness.Client.SendAsync(models, timeout.Token);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        PostAdmissionEndpointProbe modelProbe = harness.ProbeForPath("/v1/models");
+
+        Assert.Equal(1, modelProbe.Invocations);
+
+        Assert.NotNull(modelProbe.ObservedLease);
+
+        await modelProbe.Scope!.WaitUntilDisposedAsync();
+
+        await Assert.Single(harness.Admission.RequestAttempts).WaitUntilDisposedAsync();
+
+        CovenantExclusiveRecoveryOwner owner = new(Guid.NewGuid(), CovenantExclusiveOperation.CovenantReset,
+            new CovenantDigest(Enumerable.Repeat((byte)3, 32).ToArray()));
+
+        await using IGrimoireClosingOwner closing = harness.Admission.BeginOrResumeExclusive(owner).Value;
+
+        foreach (PostAdmissionEndpointProbe probe in harness.EndpointProbes)
+        {
+            using HttpRequestMessage refusedRequest = harness.CreateObservedRequest(
+                probe.Path == "/v1/chat/completions" ? HttpMethod.Post : HttpMethod.Get, probe.Path);
+
+            using HttpResponseMessage refused = await harness.Client.SendAsync(refusedRequest, timeout.Token);
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, refused.StatusCode);
+
+            Assert.Equal(ReferenceEquals(probe, modelProbe) ? 1 : 0, probe.Invocations);
+
+            if (!ReferenceEquals(probe, modelProbe))
+            {
+                Assert.Null(probe.Scope);
+
+                Assert.Null(probe.ObservedLease);
+            }
+        }
+
+        Assert.Equal(harness.EndpointProbes.Count, harness.Admission.RequestAttempts.Count(attempt => !attempt.Acquired));
+
+        AssertQuietHost(harness);
+    }
+
+    [SkippableFact]
+    public async Task Recovery_host_preserves_original_participants_without_reseeding_rows_blobs_or_effects()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        Guid sessionId;
+
+        Guid apprenticeId;
+
+        Guid entryId;
+
+        Guid[] attachmentIds;
+
+        string[] beforeRows;
+
+        string[] beforeBlobs;
+
+        await using (GrimoireMaintenanceAdmissionHarness first = await GrimoireMaintenanceAdmissionHarness.StartAsync(profile))
+        {
+            sessionId = first.SessionId;
+
+            apprenticeId = first.ApprenticeId;
+
+            entryId = first.EntryId;
+
+            attachmentIds = [first.DownloadAttachment.Id, first.IndexingAttachmentA.Id, first.IndexingAttachmentB.Id];
+
+            // This ordinary-open restart baseline must not race legitimate recovery of pending
+            // indexing work. Settle the original A/B through the real worker, without reseeding.
+            first.Weave.Checkpoint.Release();
+
+            Assert.True(first.Indexing.TryEnqueue(new(first.IndexingAttachmentA.Id, first.SessionId, Attempt: 0)));
+
+            Assert.True(first.Indexing.TryEnqueue(new(first.IndexingAttachmentB.Id, first.SessionId, Attempt: 0)));
+
+            await first.Weave.WaitUntilSecondCallAsync();
+
+            foreach (WorkerScopeObservation observed in first.WorkerScopes.Scopes)
+            {
+                await observed.WaitUntilDisposedAsync();
+            }
+
+            await using (AsyncServiceScope verification = first.Factory.Services.CreateAsyncScope())
+            {
+                SessionAttachmentIndexRepository index = verification.ServiceProvider.GetRequiredService<SessionAttachmentIndexRepository>();
+
+                Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await index.GetStateAsync(first.IndexingAttachmentA.Id, CancellationToken.None)).Status);
+
+                Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await index.GetStateAsync(first.IndexingAttachmentB.Id, CancellationToken.None)).Status);
+            }
+
+            beforeRows = await ParticipantRowsAsync(first);
+
+            beforeBlobs = Directory.GetFiles(ArcanumPaths.AttachmentsDirectory, "*", SearchOption.AllDirectories).Order().ToArray();
+        }
+
+        await using GrimoireMaintenanceAdmissionHarness recovered = await GrimoireMaintenanceAdmissionHarness.StartRecoveryAsync(profile);
+
+        Assert.Equal(sessionId, recovered.SessionId);
+
+        Assert.Equal(apprenticeId, recovered.ApprenticeId);
+
+        Assert.Equal(entryId, recovered.EntryId);
+
+        Assert.Equal(attachmentIds, new[] { recovered.DownloadAttachment.Id, recovered.IndexingAttachmentA.Id, recovered.IndexingAttachmentB.Id });
+
+        Assert.Equal(beforeRows, await ParticipantRowsAsync(recovered));
+
+        Assert.Equal(beforeBlobs, Directory.GetFiles(ArcanumPaths.AttachmentsDirectory, "*", SearchOption.AllDirectories).Order().ToArray());
+
+        // Ordinary startup performs the real health probe. It is not participant seeding.
+        // Retained-closed recovery scenarios must instead require no ordinary effects at all.
+        Assert.Equal(GrimoireWorkKind.ProviderHealthProbe, Assert.Single(recovered.Admission.Effects).Kind);
+
+        Assert.Equal(0, recovered.Chat.Calls);
+
+        Assert.Equal(0, recovered.Weave.Calls);
+
+        Assert.Empty(recovered.Operations.Checkpoints);
+
+        Assert.Empty(recovered.Operations.Transitions);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => GrimoireMaintenanceAdmissionHarness.StartAsync(profile));
+
+        AssertQuietHost(recovered);
+    }
+
+    private static async Task<string[]> ParticipantRowsAsync(GrimoireMaintenanceAdmissionHarness harness)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+        await using AsyncServiceScope scope = harness.Factory.Services.CreateAsyncScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        return await db.Database.SqlQueryRaw<string>("""
+            SELECT 'session:' || Id AS Value FROM Sessions
+            UNION ALL SELECT 'entry:' || Id AS Value FROM Entries
+            UNION ALL SELECT 'apprentice:' || Id AS Value FROM Apprentices
+            UNION ALL SELECT 'attachment:' || Id AS Value FROM SessionAttachments
+            ORDER BY Value
+            """).ToArrayAsync(timeout.Token);
+    }
+
     [SkippableFact]
     public async Task Borrowed_hosts_decrypt_the_original_blob_using_the_shared_reset_visible_file_credential()
     {
@@ -72,7 +309,7 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
                 ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.FileEncryptionKeyAccount).Status);
         }
 
-        await using GrimoireMaintenanceAdmissionHarness second = await GrimoireMaintenanceAdmissionHarness.StartAsync(profile);
+        await using GrimoireMaintenanceAdmissionHarness second = await GrimoireMaintenanceAdmissionHarness.StartRecoveryAsync(profile);
 
         Assert.Same(profile.CredentialStore, second.Factory.Services.GetRequiredService<IOsCredentialStore>());
 
@@ -81,12 +318,14 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await using AsyncServiceScope scope = second.Factory.Services.CreateAsyncScope();
 
+        second.Blobs.Checkpoint.Release();
+
         ReadOnlyMemory<byte> recovered = await scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>()
-            .ReadBytesAsync(original, CancellationToken.None);
+            .ReadBytesAsync(original, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal("controlled-download-prefix-and-complete-encrypted-payload"u8.ToArray(), recovered.ToArray());
 
-        Assert.Equal(0, second.Blobs.WrappedReads);
+        Assert.Equal(1, second.Blobs.WrappedReads);
     }
 
     [SkippableFact]
@@ -126,7 +365,7 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await harness.DisposeAsync();
 
-        await using GrimoireMaintenanceAdmissionHarness restarted = await GrimoireMaintenanceAdmissionHarness.StartAsync(profile);
+        await using GrimoireMaintenanceAdmissionHarness restarted = await GrimoireMaintenanceAdmissionHarness.StartRecoveryAsync(profile);
 
         using HttpResponseMessage response = await restarted.Client.GetAsync("/api/grimoire/stats", timeout.Token);
 
@@ -134,7 +373,7 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         Assert.True(body?.IsSuccess);
 
-        Assert.Equal(2, body!.Data!.SessionCount);
+        Assert.Equal(1, body!.Data!.SessionCount);
     }
 
     [SkippableFact]
@@ -213,6 +452,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         Assert.Equal(HttpStatusCode.OK, later.StatusCode);
 
         Assert.Equal(1, harness.Stats.Callbacks);
+
+        AssertQuietHost(harness);
     }
 
     [SkippableTheory]
@@ -270,6 +511,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
             Assert.Null(payload.CampaignId);
         }
+
+        AssertQuietHost(harness);
     }
 
     [SkippableTheory]
@@ -593,6 +836,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await harness.Weave.Checkpoint.WaitUntilReachedAsync();
 
+        Assert.Single(harness.WorkerScopes.Scopes, scope => scope.Disposals == 0);
+
         Assert.Equal(1, harness.Weave.Calls);
 
         Assert.Equal(0, harness.Blobs.WrappedReads);
@@ -612,25 +857,80 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await using IGrimoireExclusiveClosedLease closed = (await harness.Admission.CloseConnectionAdmissionAsync(closing, CancellationToken.None)).Value;
 
-        harness.IndexingLogs.ExpectDeferred(requestB.AttachmentId);
+        Assert.All(harness.WorkerScopes.Scopes, observed => Assert.Equal(1, observed.Disposals));
 
-        Assert.True(harness.Indexing.TryEnqueue(requestB));
+        int beforeScopes = harness.WorkerScopes.Scopes.Count;
 
-        await harness.IndexingLogs.WaitUntilDeferredAsync();
+        int beforeEffects = harness.Admission.Effects.Count;
 
-        Assert.Equal(requestB, Assert.Single(harness.Indexing.DeferredRequests));
+        // The gate issues a permit for this exact scoped ledger connection. Reads during closed
+        // admission use the production connection initializer and tracked physical-close protocol.
+        await using (AsyncServiceScope inspection = harness.Factory.Services.CreateAsyncScope())
+        {
+            ICovenantClosedPeriodLedgerConnection ledger = inspection.ServiceProvider.GetRequiredService<ICovenantClosedPeriodLedgerConnection>();
 
-        Assert.Equal(1, harness.Weave.Calls);
+            await using IGrimoireMaintenanceIoLane lane = (await closed.AcquireMaintenanceIoLaneAsync(
+                (actualOwner, generation, _) => ValueTask.FromResult(actualOwner == closed.Owner && generation == closed.Generation),
+                CancellationToken.None)).Value;
 
-        Assert.Equal(1, harness.Weave.Completed);
+            await using IGrimoireScopedConnectionPermit permit = closed.AcquireScopedConnectionPermit(ledger.Connection).Value;
 
-        Assert.Equal(0, harness.Weave.Cancellations);
+            await using IGrimoireTrackedMaintenanceHandle handle = permit.AcquireOpen(
+                ledger.Connection, closed.Owner, closed.Generation, lane).Value;
+
+            Assert.True(handle.ReportOpenStarted().IsSuccess);
+
+            try
+            {
+                await ledger.OpenAsync(CancellationToken.None);
+
+                string[] baseline = await IndexingSnapshotAsync(ledger.Connection, requestB.AttachmentId);
+
+                harness.IndexingLogs.ExpectDeferred(requestB.AttachmentId);
+
+                Assert.True(harness.Indexing.TryEnqueue(requestB));
+
+                await harness.IndexingLogs.WaitUntilDeferredAsync();
+
+                Assert.Equal(requestB, Assert.Single(harness.Indexing.DeferredRequests));
+
+                Assert.Equal(beforeScopes, harness.WorkerScopes.Scopes.Count);
+
+                Assert.All(harness.WorkerScopes.Scopes, observed => Assert.Equal(1, observed.Disposals));
+
+                Assert.Equal(beforeEffects, harness.Admission.Effects.Count);
+
+                Assert.Equal(baseline, await IndexingSnapshotAsync(ledger.Connection, requestB.AttachmentId));
+
+                Assert.Equal(1, harness.Weave.Calls);
+
+                Assert.Equal(1, harness.Weave.Completed);
+
+                Assert.Equal(0, harness.Weave.Cancellations);
+            }
+            finally
+            {
+                await ledger.Connection.CloseAsync();
+
+                Assert.True(harness.Drain.ClearExactPoolAfterClose((Microsoft.Data.Sqlite.SqliteConnection)ledger.Connection).IsSuccess);
+
+                Assert.True(handle.ReportPhysicallyClosed().IsSuccess);
+            }
+        }
 
         Assert.True((await closed.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)).IsSuccess);
 
         await harness.Weave.WaitUntilSecondCallAsync();
 
         await harness.Admission.WorkAttempts.Last(attempt => attempt.Kind == GrimoireWorkKind.SessionAttachmentIndexing && attempt.Acquired).WaitUntilDisposedAsync();
+
+        Assert.True(harness.WorkerScopes.Scopes.Count > beforeScopes);
+
+        WorkerScopeObservation resumedScope = harness.WorkerScopes.Scopes[beforeScopes];
+
+        await resumedScope.WaitUntilDisposedAsync();
+
+        Assert.Equal(1, resumedScope.Disposals);
 
         await using AsyncServiceScope scope = harness.Factory.Services.CreateAsyncScope();
 
@@ -659,6 +959,59 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         Assert.Equal(2, harness.Weave.Calls);
 
         Assert.Equal(0, harness.Blobs.WrappedReads);
+
+        AssertQuietHost(harness);
+    }
+
+    private static async Task<string[]> IndexingSnapshotAsync(DbConnection connection, Guid attachmentId)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+        List<string> rows = [];
+
+        foreach (string table in new[] { "SessionAttachments", "session_attachment_index_state", "session_attachment_chunks" })
+        {
+            await using DbCommand command = connection.CreateCommand();
+
+            string key = table == "SessionAttachments" ? "Id" : "AttachmentId";
+
+            command.CommandText = $"SELECT * FROM {table} WHERE {key} = @id ORDER BY 1";
+
+            DbParameter parameter = command.CreateParameter();
+
+            parameter.ParameterName = "@id";
+
+            parameter.Value = attachmentId.ToString().ToUpperInvariant();
+
+            command.Parameters.Add(parameter);
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(timeout.Token);
+
+            int count = 0;
+
+            while (await reader.ReadAsync(timeout.Token))
+            {
+                string[] values = Enumerable.Range(0, reader.FieldCount).Select(index =>
+                {
+                    if (reader.IsDBNull(index))
+                    {
+                        return "null";
+                    }
+
+                    string value = Convert.ToString(reader.GetValue(index), System.Globalization.CultureInfo.InvariantCulture)!;
+
+                    return $"{reader.GetName(index)}:{value.Length}:{value}";
+                }).ToArray();
+
+                rows.Add($"{table}:{string.Join('|', values)}");
+
+                count++;
+            }
+
+            rows.Add($"{table}:count:{count}");
+        }
+
+        return rows.ToArray();
     }
 
     [SkippableFact]
@@ -708,9 +1061,13 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await harness.Chat.WaitUntilDisposedAsync();
 
+        await harness.ProbeForPath("/v1/chat/completions").Scope!.WaitUntilDisposedAsync();
+
         Assert.Equal(1, harness.Chat.Completed);
 
         Assert.Equal(1, harness.Chat.Disposals);
+
+        AssertQuietHost(harness);
     }
 
     [SkippableFact]
@@ -724,8 +1081,11 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(20));
 
-        using HttpResponseMessage response = await harness.Client.GetAsync(
-            $"/api/sessions/{harness.SessionId}/attachments/{harness.DownloadAttachment.Id}/content",
+        string path = $"/api/sessions/{harness.SessionId}/attachments/{harness.DownloadAttachment.Id}/content";
+
+        using HttpRequestMessage request = harness.CreateObservedRequest(HttpMethod.Get, path);
+
+        using HttpResponseMessage response = await harness.Client.SendAsync(request,
             HttpCompletionOption.ResponseHeadersRead, cancellation.Token);
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(cancellation.Token);
@@ -765,7 +1125,11 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await harness.Blobs.WaitUntilDisposedAsync();
 
+        await harness.ProbeForPath(path).Scope!.WaitUntilDisposedAsync();
+
         await Assert.Single(harness.Admission.RequestAttempts).WaitUntilDisposedAsync();
+
+        AssertQuietHost(harness);
     }
 
     [SkippableFact]
@@ -785,15 +1149,85 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await using MaintenanceSseResponse chronicle = await harness.OpenSseAsync($"/api/apprentices/{harness.ApprenticeId}/chronicle");
 
-        Assert.Contains("controlled-daemon", await daemon.ReadDataFrameAsync());
+        string daemonFrame = "data: " + JsonSerializer.Serialize(new DaemonEvent(DateTimeOffset.UnixEpoch,
+            Guid.Parse("25700000-0000-0000-0000-000000000001"), "controlled-daemon", "controlled-spell", DaemonEventType.Started),
+            ArcanumJsonContext.Default.DaemonEvent);
 
-        Assert.Contains("controlled-mcp", await mcp.ReadDataFrameAsync());
+        string mcpFrame = "data: " + JsonSerializer.Serialize(new McpServerEvent(DateTimeOffset.UnixEpoch)
+            { ServerName = "controlled-mcp", State = McpServerState.Running }, ArcanumJsonContext.Default.McpServerEvent);
 
-        Assert.Contains("controlled-log", await logs.ReadDataFrameAsync());
+        string logFrame = "data: " + JsonSerializer.Serialize(new RetroDownfall.Arcanum.Core.Logging.LogEntry(
+            257, DateTimeOffset.UnixEpoch, RetroDownfall.Arcanum.Core.Logging.LogLevel.Information,
+            "MaintenanceTests", "controlled-log", null, null, null, []), ArcanumJsonContext.Default.LogEntry);
 
-        Assert.Contains("controlled-entry", await session.ReadDataFrameAsync());
+        Assert.Equal(daemonFrame, await daemon.ReadDataFrameAsync());
 
-        Assert.Contains("controlled-plan", await chronicle.ReadDataFrameAsync());
+        Assert.Equal(mcpFrame, await mcp.ReadDataFrameAsync());
+
+        Assert.Equal(logFrame, await logs.ReadDataFrameAsync());
+
+        string entryFrame = await session.ReadDataFrameAsync();
+
+        var entry = JsonSerializer.Deserialize(entryFrame[6..], ArcanumJsonContext.Default.EntryDto);
+
+        Assert.NotNull(entry);
+
+        Assert.Equal(harness.EntryId, entry.Id);
+
+        Assert.Equal(harness.SessionId, entry.SessionId);
+
+        Assert.Equal("controlled-entry", entry.Content);
+
+        Assert.Equal("user", entry.Role);
+
+        Assert.Null(entry.ToolCallId);
+
+        Assert.Null(entry.ToolName);
+
+        Assert.False(entry.IsPinned);
+
+        // Consume the real replay/live sentinel before revocation so it cannot be mistaken
+        // for a newly started data frame after the gate has revoked this request.
+        Assert.Equal("data: {\"type\":\"live\"}", await session.ReadDataFrameAsync());
+
+        string chronicleFrame = await chronicle.ReadDataFrameAsync();
+
+        using JsonDocument plan = JsonDocument.Parse(chronicleFrame[6..]);
+
+        Assert.Equal(new[] { "type", "apprenticeId", "timestamp", "plan" }, plan.RootElement.EnumerateObject().Select(property => property.Name));
+
+        Assert.Equal("planGenerated", plan.RootElement.GetProperty("type").GetString());
+
+        Assert.Equal(harness.ApprenticeId, plan.RootElement.GetProperty("apprenticeId").GetGuid());
+
+        Assert.True(plan.RootElement.GetProperty("timestamp").TryGetDateTimeOffset(out _));
+
+        JsonElement stepElement = Assert.Single(plan.RootElement.GetProperty("plan").EnumerateArray());
+
+        var step = stepElement.Deserialize(ArcanumJsonContext.Default.PlanStep);
+
+        Assert.NotNull(step);
+
+        Assert.Equal(1, step.Index);
+
+        Assert.Equal("controlled-plan", step.Description);
+
+        PostAdmissionEndpointProbe[] probes = harness.SseProbes.ToArray();
+
+        Assert.Equal(5, probes.Length);
+
+        Assert.All(probes, probe =>
+        {
+            Assert.Equal(1, probe.Invocations);
+
+            Assert.NotNull(probe.Scope);
+
+            Assert.NotNull(probe.ObservedLease);
+
+            Assert.True(probe.IsExecuting);
+        });
+
+        Assert.Equal(5, probes.Select(probe => probe.Scope).Distinct().Count());
 
         await harness.Events.Daemon.Checkpoint.WaitUntilReachedAsync();
 
@@ -822,8 +1256,18 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         foreach (MaintenanceSseResponse response in new[] { daemon, mcp, logs, session, chronicle })
         {
-            Assert.Equal(1, await response.ReadTerminalCountToEndAsync());
+            Assert.Equal(1, await response.ReadRevocationTerminalToEndAsync());
         }
+
+        Assert.Equal(new[] { daemonFrame, "data: [DONE]" }, daemon.Frames);
+
+        Assert.Equal(new[] { mcpFrame, "data: [DONE]" }, mcp.Frames);
+
+        Assert.Equal(new[] { ": connected", logFrame, "data: [DONE]" }, logs.Frames);
+
+        Assert.Equal(new[] { entryFrame, "data: {\"type\":\"live\"}", "data: [DONE]" }, session.Frames);
+
+        Assert.Equal(new[] { chronicleFrame, "data: [DONE]" }, chronicle.Frames);
 
         Assert.True((await draining.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
 
@@ -840,6 +1284,15 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         Assert.Equal(5, harness.Admission.RequestAttempts.Count);
 
         Assert.All(harness.Admission.RequestAttempts, attempt => Assert.Equal(1, attempt.Disposals));
+
+        foreach (PostAdmissionEndpointProbe probe in probes)
+        {
+            await probe.Scope!.WaitUntilDisposedAsync();
+
+            Assert.False(probe.IsExecuting);
+        }
+
+        AssertQuietHost(harness);
     }
 
     [SkippableTheory]
