@@ -2445,6 +2445,126 @@ public sealed class CovenantErasureSameProcessTests
         await AssertBothAdmissionsClosedAsync(harness);
     }
 
+    [SkippableTheory]
+    [InlineData("resume")]
+    [InlineData("quiesce")]
+    public async Task Authenticated_pre_session_failure_preserves_the_exact_row_and_journal_keep_closed(
+        string failureStage)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        OneShotPhaseFault fault = new(
+            CovenantResetPhase.CanonicalApplied,
+            CovenantErasureFaultBoundary.AfterPhaseBegin);
+
+        RouteOperationWriteObserver operationWrites = new();
+
+        AuthenticatedPreSessionFailure preSessionFailure = new();
+
+        GrimoireClosureReconstructionFailure closureFailure = new();
+
+        RecoveryGrimoireDispositionObservations grimoireDispositions = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            operationWrites: operationWrites,
+            faultSeam: fault.RaiseAsync,
+            serviceOverrides: services =>
+            {
+                ServiceDescriptor phaseAuthority = Assert.Single(
+                    services,
+                    static descriptor => descriptor.ServiceType
+                        == typeof(IGrimoireOfflineTransitionPhaseAuthority));
+
+                services.RemoveAll<IGrimoireOfflineTransitionPhaseAuthority>();
+
+                services.AddScoped<IGrimoireOfflineTransitionPhaseAuthority>(provider =>
+                    new FailingAuthenticatedPhaseAuthority(
+                        (IGrimoireOfflineTransitionPhaseAuthority)phaseAuthority
+                            .ImplementationFactory!(provider),
+                        preSessionFailure));
+
+                services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                services.AddSingleton<ICovenantDisclosureWriterLifecycle>(provider =>
+                    new FailingAuthenticatedDisclosureWriterLifecycle(
+                        provider.GetRequiredService<CovenantDisclosureWriter>(),
+                        preSessionFailure));
+
+                services.RemoveAll<IGrimoireConnectionAdmissionGate>();
+
+                services.AddSingleton<IGrimoireConnectionAdmissionGate>(provider =>
+                    new FailingClosureReconstructionAdmissionGate(
+                        provider.GetRequiredService<GrimoireConnectionAdmissionGate>(),
+                        closureFailure,
+                        grimoireDispositions));
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Assert.True((await harness.ApplyResetAsync(confirmed.PlanId)).IsFailure);
+
+        LongRunningOperation parked = operationWrites.LastSuccessfulWrite;
+
+        grimoireDispositions.Reset();
+
+        PreparedAuthenticatedRecovery prepared = await harness.PrepareAuthenticatedResetAsync(parked);
+
+        await using CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission
+            admission = prepared.Admission;
+
+        GrimoireOfflineTransitionRecoveryEvidence journalBefore = await harness
+            .ReadAuthenticatedJournalEvidenceAsync(prepared.Operation);
+
+        preSessionFailure.FailNext(failureStage);
+
+        Result<CovenantErasureCompletion> result = await prepared.Coordinator
+            .RunAuthenticatedAsync(
+                prepared.Operation,
+                prepared.Checkpoint,
+                prepared.OwnerId,
+                prepared.Admission,
+                CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(1, preSessionFailure.Failures);
+
+        Assert.Same(parked, operationWrites.LastSuccessfulWrite);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+
+        Assert.Equal(
+            [CovenantExclusiveLeaseDisposition.KeepClosed],
+            harness.RouteGate.SuccessfulRecoveryDispositions);
+
+        Assert.Equal(
+            [CovenantExclusiveLeaseDisposition.KeepClosed],
+            grimoireDispositions.Successful);
+
+        GrimoireOfflineTransitionRecoveryEvidence journalAfter = await harness
+            .ReadAuthenticatedJournalEvidenceAsync(prepared.Operation);
+
+        Assert.Equal(journalBefore, journalAfter);
+
+        await AssertBothAdmissionsClosedAsync(harness);
+
+        PreparedAuthenticatedRecovery retry = await harness.PrepareAuthenticatedResetAsync(
+            prepared.Operation);
+
+        await using CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission
+            retryAdmission = retry.Admission;
+
+        Assert.True(retry.Admission.TryConsume(
+            retry.Coordinator,
+            harness.Services.GetRequiredService<ICovenantClosedPeriodLedgerConnection>()));
+
+        await retry.Admission.KeepClosedAfterConsumptionAsync();
+    }
+
     [SkippableFact]
     public async Task Authenticated_pool_clear_failure_refuses_before_adoption_or_handler()
     {
@@ -3472,6 +3592,22 @@ public sealed class CovenantErasureSameProcessTests
             return await Services
                 .GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()
                 .DispatchAsync(held.Value, LogsRoot, evidence, CancellationToken.None);
+        }
+
+        internal async Task<GrimoireOfflineTransitionRecoveryEvidence>
+            ReadAuthenticatedJournalEvidenceAsync(LongRunningOperation current)
+        {
+            Result<ArcanumMaintenanceLock> held = Services
+                .GetRequiredService<IInstallationResetMaintenanceLockAccessor>()
+                .BorrowHeldLock(LogsRoot);
+
+            Assert.True(held.IsSuccess, held.Error.Message);
+
+            AuthenticatedJournalRecoveryOwnerEvidence evidence = await ReadAuthenticatedEvidenceAsync(
+                current,
+                held.Value);
+
+            return evidence.Journal;
         }
 
         private async Task<AuthenticatedJournalRecoveryOwnerEvidence>
@@ -5396,7 +5532,8 @@ public sealed class CovenantErasureSameProcessTests
 
     private sealed class FailingClosureReconstructionAdmissionGate(
         IGrimoireConnectionAdmissionGate inner,
-        GrimoireClosureReconstructionFailure failure) : IGrimoireConnectionAdmissionGate
+        GrimoireClosureReconstructionFailure failure,
+        RecoveryGrimoireDispositionObservations? dispositions = null) : IGrimoireConnectionAdmissionGate
     {
         public long CurrentGeneration => inner.CurrentGeneration;
 
@@ -5437,7 +5574,7 @@ public sealed class CovenantErasureSameProcessTests
 
             return closed.IsSuccess
                 ? Result<IGrimoireExclusiveClosedLease>.Success(
-                    new FailingLaneClosedLease(closed.Value, failure))
+                    new FailingLaneClosedLease(closed.Value, failure, dispositions))
                 : closed;
         }
 
@@ -5472,7 +5609,8 @@ public sealed class CovenantErasureSameProcessTests
 
         private sealed class FailingLaneClosedLease(
             IGrimoireExclusiveClosedLease inner,
-            GrimoireClosureReconstructionFailure failure) : IGrimoireExclusiveClosedLease
+            GrimoireClosureReconstructionFailure failure,
+            RecoveryGrimoireDispositionObservations? dispositions) : IGrimoireExclusiveClosedLease
         {
             public CovenantExclusiveRecoveryOwner Owner => inner.Owner;
 
@@ -5501,13 +5639,149 @@ public sealed class CovenantErasureSameProcessTests
                         revalidateDurableOwnerAsync,
                         cancellationToken);
 
-            public ValueTask<Result> CompleteAsync(
+            public async ValueTask<Result> CompleteAsync(
                 CovenantExclusiveLeaseDisposition disposition,
-                CancellationToken cancellationToken) =>
-                inner.CompleteAsync(disposition, cancellationToken);
+                CancellationToken cancellationToken)
+            {
+
+                Result completed = await inner.CompleteAsync(disposition, cancellationToken);
+
+                if (completed.IsSuccess)
+                {
+
+                    dispositions?.Record(disposition);
+
+                }
+
+                return completed;
+
+            }
 
             public ValueTask DisposeAsync() => inner.DisposeAsync();
         }
+    }
+
+    private sealed class AuthenticatedPreSessionFailure
+    {
+
+        private string? _stage;
+
+        private int _failures;
+
+        internal int Failures => Volatile.Read(ref _failures);
+
+        internal void FailNext(string stage) => Interlocked.Exchange(ref _stage, stage);
+
+        internal bool Take(string stage)
+        {
+
+            if (!string.Equals(
+                    Interlocked.CompareExchange(ref _stage, null, stage),
+                    stage,
+                    StringComparison.Ordinal))
+            {
+
+                return false;
+
+            }
+
+            Interlocked.Increment(ref _failures);
+
+            return true;
+
+        }
+
+        internal static Error InjectedFailure() => new(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            "Injected authenticated pre-session recovery failure.");
+
+    }
+
+    private sealed class FailingAuthenticatedPhaseAuthority(
+        IGrimoireOfflineTransitionPhaseAuthority inner,
+        AuthenticatedPreSessionFailure failure) : IGrimoireOfflineTransitionPhaseAuthority
+    {
+
+        public Task<Result<GrimoireOfflineTransitionPhaseSession>> OpenOrResumeAsync(
+            LongRunningOperation operation,
+            CancellationToken cancellationToken) =>
+            inner.OpenOrResumeAsync(operation, cancellationToken);
+
+        public Task<Result<GrimoireOfflineTransitionPhaseSession>> ResumeAuthenticatedAsync(
+            LongRunningOperation operation,
+            GrimoireOfflineTransitionRecoveryEvidence expected,
+            CancellationToken cancellationToken) =>
+            failure.Take("resume")
+                ? Task.FromResult(Result<GrimoireOfflineTransitionPhaseSession>.Failure(
+                    AuthenticatedPreSessionFailure.InjectedFailure()))
+                : inner.ResumeAuthenticatedAsync(operation, expected, cancellationToken);
+
+    }
+
+    private sealed class FailingAuthenticatedDisclosureWriterLifecycle(
+        ICovenantDisclosureWriterLifecycle inner,
+        AuthenticatedPreSessionFailure failure) : ICovenantDisclosureWriterLifecycle
+    {
+
+        public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
+            failure.Take("quiesce")
+                ? ValueTask.FromResult(Result.Failure(
+                    AuthenticatedPreSessionFailure.InjectedFailure()))
+                : inner.QuiesceAsync(cancellationToken);
+
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
+            inner.ReopenAsync(cancellationToken);
+
+    }
+
+    private sealed class RecoveryGrimoireDispositionObservations
+    {
+
+        private readonly object _sync = new();
+
+        private readonly List<CovenantExclusiveLeaseDisposition> _successful = [];
+
+        internal CovenantExclusiveLeaseDisposition[] Successful
+        {
+
+            get
+            {
+
+                lock (_sync)
+                {
+
+                    return [.. _successful];
+
+                }
+
+            }
+
+        }
+
+        internal void Record(CovenantExclusiveLeaseDisposition disposition)
+        {
+
+            lock (_sync)
+            {
+
+                _successful.Add(disposition);
+
+            }
+
+        }
+
+        internal void Reset()
+        {
+
+            lock (_sync)
+            {
+
+                _successful.Clear();
+
+            }
+
+        }
+
     }
 
     private sealed record SameProcessBefore(

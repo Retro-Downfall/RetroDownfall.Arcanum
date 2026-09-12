@@ -51,6 +51,14 @@ In progress. This report records the authenticated nonterminal-recovery slice. T
    - disposing the resumed Covenant lease before admission-owned cleanup made the claimed-operation row RED with expected `[KeepClosed]`, actual `[]`, proving the released registration rejects the required disposition.
    All four mutations were restored.
 
+### Review fix: pre-session authenticated refusal
+
+1. Fresh review found that authenticated recovery arrived with real retained closures but still used launch-seeded `InventoryPrepared` progress until its phase session was reconstructed. Quiesce refusal or exact-journal resume refusal therefore reached ordinary `AbortBeforeErasureAsync`, reopened the writer, inferred a no-effect rollback, and treated the active journal as `NoJournal`.
+2. Focused RED: both injected `quiesce` and `resume` rows made `RunAuthenticatedAsync` report success through `RollbackAndReopen` instead of refusing recovery.
+3. The recovery-only pre-session unwind now bypasses ordinary abort and `CloseAsync`. It spends exactly one accepted `KeepClosed` on the retained Grimoire and Covenant authorities, preserves the adopted nonterminal operation and byte-identical journal evidence, never calls writer reopen, and returns attention/refusal. The ordinary fresh-run proven-no-effect rollback is unchanged.
+4. Restored GREEN: 2/2 rows prove no successful operation write, identical journal binding/slot/revision/digest, one successful `KeepClosed` per authority with zero commit/rollback, request/work/open/Covenant-read refusal, and a subsequent authenticated admission for the same operation.
+5. Mutation: forcing the recovery rows back through ordinary `AbortBeforeErasureAsync` made both rows RED again at the expected refusal assertion. The mutation was restored.
+
 ### Exact V4/V2 handler guards
 
 1. Focused V2 RED: a wrong checkpoint reference fell through to coordinator recovery and normalized to `Covenant.MaintenanceFailed` instead of refusing at the authenticated handler guard.
@@ -80,6 +88,9 @@ In progress. This report records the authenticated nonterminal-recovery slice. T
 - Final exact 32-row same-process phase-boundary theory: 32/32 passed in 1m02s.
 - Final CLI launch-gap, CLI graph, and full-host composition: 3/3 passed.
 - Final Arcanum test-project build: succeeded, 0 warnings, 0 errors.
+- Review-fix focused pre-session refusal: 2/2 passed after a fresh build.
+- Review-fix broad authenticated/gate/self-settlement/DI selection: 122/122 passed in 1m18s.
+- Review-fix exact 32-row same-process phase-boundary theory: 32/32 passed in 1m02s.
 
 These are slice checkpoints, not final Task 7 verification. All remaining Task 7 suites remain mandatory before final completion.
 

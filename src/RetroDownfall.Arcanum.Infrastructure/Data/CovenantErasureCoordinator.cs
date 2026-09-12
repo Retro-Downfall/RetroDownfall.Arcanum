@@ -1935,10 +1935,10 @@ internal sealed class CovenantErasureCoordinator(
 
         CovenantClosedPeriodAuthority? maintenance = null;
 
-        // Opened after the quiesce rather than before it. A quiesce that fails has closed nothing and
-        // touched nothing, and the lifecycle graph offers a published journal no way back out that
-        // does not claim admission was closed - so a transition that never closed anything would have
-        // to park an installation it had done nothing to. Nothing durable happens before this point.
+        // Opened after the quiesce rather than before it. A fresh run whose quiesce fails has closed
+        // nothing and touched nothing. Authenticated recovery is different: it arrived with both real
+        // gates already closed and a prior process's active journal, so failure before reconstruction
+        // must retain those authorities without inventing a no-journal rollback.
         GrimoireOfflineTransitionPhaseSession? phases = null;
 
         // Resolved from the journal once it is open, and never from the checkpoint. The journal is
@@ -2091,7 +2091,7 @@ internal sealed class CovenantErasureCoordinator(
             if (quiesced.IsFailure)
             {
 
-                return await AbortBeforeErasureAsync(
+                return await AbortBeforeErasureOrRetainAuthenticatedAsync(
                     operation,
                     state,
                     ownerId,
@@ -2099,6 +2099,8 @@ internal sealed class CovenantErasureCoordinator(
                     progress,
                     phases,
                     closure,
+                    stranded,
+                    authenticatedEvidence is not null,
                     quiesced.Error).ConfigureAwait(false);
 
             }
@@ -2131,7 +2133,7 @@ internal sealed class CovenantErasureCoordinator(
                 if (inventory.IsFailure)
                 {
 
-                    return await AbortBeforeErasureAsync(
+                    return await AbortBeforeErasureOrRetainAuthenticatedAsync(
                         operation,
                         state,
                         ownerId,
@@ -2139,6 +2141,8 @@ internal sealed class CovenantErasureCoordinator(
                         progress,
                         phases,
                         closure,
+                        stranded,
+                        authenticatedEvidence is not null,
                         inventory.Error).ConfigureAwait(false);
 
                 }
@@ -2348,7 +2352,7 @@ internal sealed class CovenantErasureCoordinator(
                     failed.Error.Code,
                         phases,
                         closure).ConfigureAwait(false)
-                : await AbortBeforeErasureAsync(
+                : await AbortBeforeErasureOrRetainAuthenticatedAsync(
                     operation,
                     state,
                     ownerId,
@@ -2356,6 +2360,8 @@ internal sealed class CovenantErasureCoordinator(
                     progress,
                     phases,
                     closure,
+                    stranded,
+                    authenticatedEvidence is not null,
                     failed.Error).ConfigureAwait(false);
 
         }
@@ -2375,7 +2381,7 @@ internal sealed class CovenantErasureCoordinator(
                     interrupted.Code,
                         phases,
                         closure).ConfigureAwait(false)
-                : await AbortBeforeErasureAsync(
+                : await AbortBeforeErasureOrRetainAuthenticatedAsync(
                     operation,
                     state,
                     ownerId,
@@ -2383,6 +2389,8 @@ internal sealed class CovenantErasureCoordinator(
                     progress,
                     phases,
                     closure,
+                    stranded,
+                    authenticatedEvidence is not null,
                     interrupted).ConfigureAwait(false);
 
         }
@@ -2408,7 +2416,7 @@ internal sealed class CovenantErasureCoordinator(
                     interrupted.Code,
                         phases,
                         closure).ConfigureAwait(false)
-                : await AbortBeforeErasureAsync(
+                : await AbortBeforeErasureOrRetainAuthenticatedAsync(
                     operation,
                     state,
                     ownerId,
@@ -2416,6 +2424,8 @@ internal sealed class CovenantErasureCoordinator(
                     progress,
                     phases,
                     closure,
+                    stranded,
+                    authenticatedEvidence is not null,
                     interrupted).ConfigureAwait(false);
 
         }
@@ -2567,6 +2577,100 @@ internal sealed class CovenantErasureCoordinator(
             blockingErrorCode: null,
             phases,
             closure).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Retains a prior process's exact authorities when authenticated recovery cannot reconstruct its
+    /// phase session; otherwise applies the ordinary proven-no-effect abort contract.
+    /// </summary>
+    private async Task<Result<CovenantErasureCompletion>>
+        AbortBeforeErasureOrRetainAuthenticatedAsync(
+            LongRunningOperation operation,
+            CovenantErasureCheckpointState checkpoint,
+            string ownerId,
+            CovenantExclusiveLease lease,
+            CovenantErasureProgress progress,
+            GrimoireOfflineTransitionPhaseSession? phases,
+            CovenantGrimoireClosure? closure,
+            GrimoireClosureSlot stranded,
+            bool authenticatedRecovery,
+            Error error)
+    {
+
+        if (!authenticatedRecovery || phases is not null || closure is null)
+        {
+
+            return await AbortBeforeErasureAsync(
+                operation,
+                checkpoint,
+                ownerId,
+                lease,
+                progress,
+                phases,
+                closure,
+                error).ConfigureAwait(false);
+
+        }
+
+        _logger.LogWarning(
+            "Authenticated Covenant recovery could not reconstruct its phase session for durable "
+            + "operation {OperationId} with {ErrorCode}; the adopted row and journal remain unchanged "
+            + "and both gates stay closed.",
+            operation.Id,
+            error.Code);
+
+        using CancellationTokenSource retention = new(DispositionBound, _timeProvider);
+
+        Result grimoire;
+
+        try
+        {
+
+            grimoire = await closure
+                .ReleaseAsync(
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    retention.Token)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            grimoire = Result.Failure(MaintenanceFailure());
+
+        }
+        finally
+        {
+
+            // ReleaseAsync is one-shot even when its physical cleanup fails. Keeping the slot would
+            // only issue a misleading second success from the run-level finally.
+            stranded.Closure = null;
+
+        }
+
+        Result covenant;
+
+        try
+        {
+
+            covenant = await lease
+                .CompleteAsync(
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    retention.Token)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            covenant = Result.Failure(MaintenanceFailure());
+
+        }
+
+        return grimoire.IsFailure || covenant.IsFailure
+            ? Result<CovenantErasureCompletion>.Failure(MaintenanceFailure())
+            : Result<CovenantErasureCompletion>.Failure(error);
 
     }
 
