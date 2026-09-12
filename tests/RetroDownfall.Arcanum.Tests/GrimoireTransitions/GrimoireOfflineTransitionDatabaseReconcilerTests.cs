@@ -2,6 +2,8 @@ using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -13,7 +15,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
 /// <summary>
-/// The one exact terminal write an offline transition makes to its own operation row.
+/// The exact terminal or attention write an offline transition makes to its own operation row.
 /// </summary>
 /// <remarks>
 /// The row is reconciliation evidence, not competing phase authority: the journal decided what
@@ -567,6 +569,234 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
 
     }
 
+    [Fact]
+    public async Task Attention_is_written_and_reread_with_the_exact_sanitized_blocking_code()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(
+            store,
+            $"  {ErrorCodes.Covenant.ErasureIncomplete}  ");
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.Recorded, reconciled.Outcome);
+
+        Assert.True(reconciled.IsProven);
+
+        LongRunningOperation row = Assert.Single(store.Operations);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, row.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, row.TerminalErrorCode);
+
+        Assert.Equal(ExpectedRevision + 1, row.Revision);
+
+        Assert.Null(row.CompletedAt);
+
+    }
+
+    [Fact]
+    public async Task Attention_replay_with_the_same_binding_state_and_code_does_not_churn_revision()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        GrimoireOfflineTransitionAttentionReconciliation first = await ReconcileAttention(store);
+
+        long settled = Assert.Single(store.Operations).Revision;
+
+        GrimoireOfflineTransitionAttentionReconciliation second = await ReconcileAttention(store);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.Recorded, first.Outcome);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.AlreadyRecorded, second.Outcome);
+
+        Assert.True(second.IsProven);
+
+        Assert.Equal(settled, Assert.Single(store.Operations).Revision);
+
+    }
+
+    [Fact]
+    public async Task Attention_accepts_an_adopted_revision_ahead_of_the_launch_floor()
+    {
+
+        FakeLongRunningOperationStore store = Store("revision-ahead");
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(store);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.Recorded, reconciled.Outcome);
+
+        Assert.True(reconciled.IsProven);
+
+        Assert.Equal(
+            LongRunningOperationState.ReconciliationRequired,
+            Assert.Single(store.Operations).State);
+
+    }
+
+    [Fact]
+    public async Task Attention_never_creates_a_missing_row()
+    {
+
+        FakeLongRunningOperationStore store = new(_time);
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(store);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.RowMissing, reconciled.Outcome);
+
+        Assert.False(reconciled.IsProven);
+
+        Assert.Empty(store.Operations);
+
+    }
+
+    [Theory]
+    [InlineData("kind")]
+    [InlineData("launch-payload")]
+    [InlineData("revision-behind")]
+    public async Task Attention_never_overwrites_a_wrong_launch_or_a_row_behind_its_revision_floor(
+        string disturbed)
+    {
+
+        FakeLongRunningOperationStore store = Store(disturbed);
+
+        LongRunningOperation before = Assert.Single(store.Operations);
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(store);
+
+        Assert.Equal(
+            disturbed is "revision-behind"
+                ? GrimoireOfflineTransitionAttentionOutcome.RevisionMismatch
+                : GrimoireOfflineTransitionAttentionOutcome.RowConflicting,
+            reconciled.Outcome);
+
+        Assert.False(reconciled.IsProven);
+
+        Assert.Equal(before, Assert.Single(store.Operations));
+
+    }
+
+    [Theory]
+    [InlineData(LongRunningOperationState.Completed, null)]
+    [InlineData(LongRunningOperationState.Failed, "somebody.else")]
+    [InlineData(LongRunningOperationState.Abandoned, "somebody.else")]
+    [InlineData(LongRunningOperationState.ReconciliationRequired, "somebody.else")]
+    public async Task Attention_refuses_a_terminal_row_or_a_different_attention_code(
+        LongRunningOperationState state,
+        string? code)
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        Seed(store, state, code);
+
+        LongRunningOperation before = Assert.Single(store.Operations);
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(store);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.StateConflict, reconciled.Outcome);
+
+        Assert.False(reconciled.IsProven);
+
+        Assert.Equal(before, Assert.Single(store.Operations));
+
+    }
+
+    [Fact]
+    public async Task Attention_accepts_a_lost_compare_exchange_to_the_same_winner()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        store.TryTransitionOverride = observed =>
+        {
+
+            Assert.NotNull(observed);
+
+            Seed(
+                store,
+                LongRunningOperationState.ReconciliationRequired,
+                ErrorCodes.Covenant.ErasureIncomplete);
+
+            return false;
+
+        };
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(store);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.AlreadyRecorded, reconciled.Outcome);
+
+        Assert.True(reconciled.IsProven);
+
+    }
+
+    [Fact]
+    public async Task Attention_does_not_trust_a_compare_exchange_whose_winner_cannot_be_proven()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        store.TryTransitionOverride = _ => true;
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled = await ReconcileAttention(store);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.WinnerUnproven, reconciled.Outcome);
+
+        Assert.False(reconciled.IsProven);
+
+        Assert.Equal(LongRunningOperationState.Running, Assert.Single(store.Operations).State);
+
+    }
+
+    [Fact]
+    public async Task Attention_reports_a_write_that_remains_refused()
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        store.TryTransitionOverride = _ => false;
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled =
+            await new GrimoireOfflineTransitionDatabaseReconciler(
+                store,
+                TimeProvider.System).ReconcileAttentionAsync(
+                    Payload(
+                        CovenantResetPhase.InventoryPrepared,
+                        CovenantResetPhase.CanonicalApplied,
+                        Operation),
+                    ErrorCodes.Covenant.ErasureIncomplete,
+                    CancellationToken.None);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.WriteRefused, reconciled.Outcome);
+
+        Assert.False(reconciled.IsProven);
+
+        Assert.Equal(LongRunningOperationState.Running, Assert.Single(store.Operations).State);
+
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Attention_refuses_an_unusable_blocking_code(string code)
+    {
+
+        FakeLongRunningOperationStore store = Store();
+
+        LongRunningOperation before = Assert.Single(store.Operations);
+
+        GrimoireOfflineTransitionAttentionReconciliation reconciled =
+            await ReconcileAttention(store, code);
+
+        Assert.Equal(GrimoireOfflineTransitionAttentionOutcome.RequestUnusable, reconciled.Outcome);
+
+        Assert.False(reconciled.IsProven);
+
+        Assert.Equal(before, Assert.Single(store.Operations));
+
+    }
+
     private Task<GrimoireOfflineTransitionDatabaseReconciliation> Reconcile(
         FakeLongRunningOperationStore store) =>
         Reconcile(
@@ -583,6 +813,17 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
         new GrimoireOfflineTransitionDatabaseReconciler(store, _time).ReconcileAsync(
             Payload(lastCompleted, inFlight, Operation),
             disposition,
+            CancellationToken.None);
+
+    private Task<GrimoireOfflineTransitionAttentionReconciliation> ReconcileAttention(
+        FakeLongRunningOperationStore store,
+        string blockingErrorCode = ErrorCodes.Covenant.ErasureIncomplete) =>
+        new GrimoireOfflineTransitionDatabaseReconciler(store, _time).ReconcileAttentionAsync(
+            Payload(
+                CovenantResetPhase.InventoryPrepared,
+                CovenantResetPhase.CanonicalApplied,
+                Operation),
+            blockingErrorCode,
             CancellationToken.None);
 
     private static CovenantOfflineTransitionLaunchV4 Launch(Guid operationId) =>

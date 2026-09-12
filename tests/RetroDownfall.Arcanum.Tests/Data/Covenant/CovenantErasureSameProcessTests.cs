@@ -1212,7 +1212,13 @@ public sealed class CovenantErasureSameProcessTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(routeFailure: failure);
+        RouteOperationWriteObserver? operationWrites = failure is RouteFailure.KeepClosed
+            ? new RouteOperationWriteObserver()
+            : null;
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            routeFailure: failure,
+            operationWrites: operationWrites);
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
 
@@ -1226,7 +1232,9 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(expectedError, reset.Error.Code);
 
-        LongRunningOperation operation = await harness.ReadResetOperationAsync();
+        LongRunningOperation operation = failure is RouteFailure.KeepClosed
+            ? operationWrites!.LastSuccessfulWrite
+            : await harness.ReadResetOperationAsync();
 
         Assert.Equal(expectedState, operation.State);
 
@@ -1244,6 +1252,180 @@ public sealed class CovenantErasureSameProcessTests
         Assert.True(describesCovenantErasure);
 
         Assert.True(checkpoint.IsSuccess, checkpoint.Error.Message);
+
+    }
+
+    [SkippableFact]
+    public async Task Direct_retention_reset_KeepClosed_retains_Grimoire_admission_closure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RouteOperationWriteObserver operationWrites = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            routeFailure: RouteFailure.KeepClosed,
+            operationWrites: operationWrites);
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        IGrimoireConnectionAdmissionGate admission = harness.Services
+            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
+        long closedGeneration = admission.CurrentGeneration;
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyResetAsync(confirmed.PlanId);
+
+        LongRunningOperation operation = operationWrites.LastSuccessfulWrite;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, operation.TerminalErrorCode);
+
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
+
+        // The only store access after the attention write is the reconciler's own in-window reread
+        // proving that write. The direct caller performs none after either closure is disposed.
+        Assert.Equal(1, operationWrites.AccessesAfterAttentionWrite);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, result.Error.Code);
+
+        Assert.Equal(checked(closedGeneration + 1), admission.CurrentGeneration);
+
+        bool requestAdmitted = admission.TryAcquireRequestLease(
+            GrimoireRequestKind.Finite,
+            out IGrimoireRequestLease? requestLease);
+
+        try
+        {
+
+            Assert.False(requestAdmitted);
+
+            Assert.Null(requestLease);
+
+        }
+        finally
+        {
+
+            if (requestLease is not null)
+            {
+
+                await requestLease.DisposeAsync();
+
+            }
+
+        }
+
+        bool workAdmitted = admission.TryAcquireWorkLease(
+            GrimoireWorkKind.SessionAttachmentIndexing,
+            out IGrimoireWorkLease? workLease);
+
+        try
+        {
+
+            Assert.False(workAdmitted);
+
+            Assert.Null(workLease);
+
+        }
+        finally
+        {
+
+            if (workLease is not null)
+            {
+
+                await workLease.DisposeAsync();
+
+            }
+
+        }
+
+        using SqliteConnection connection = new();
+
+        Assert.Throws<GrimoireMaintenanceUnavailableException>(
+            () => admission.AcquireOrdinaryOpen(connection));
+
+        Result<CovenantErasureCheckpointState> checkpoint = CovenantErasureCheckpointState
+            .FromMutationCheckpoint(
+                operation.Id,
+                operation.CheckpointVersion,
+                operation.CheckpointPayload!,
+                out bool describesCovenantErasure);
+
+        Assert.True(describesCovenantErasure);
+
+        Assert.True(checkpoint.IsSuccess, checkpoint.Error.Message);
+
+        Result<CovenantOfflineTransitionLaunchV4> decoded = CovenantRecoveryCheckpointCodec
+            .DecodeCovenantOfflineTransitionLaunch(operation.CheckpointPayload!);
+
+        Assert.True(decoded.IsSuccess, decoded.Error.Message);
+
+        Result<GrimoireOfflineTransitionLaunchBinding> launch =
+            GrimoireOfflineTransitionLaunch.FromLaunch(decoded.Value);
+
+        Assert.True(launch.IsSuccess, launch.Error.Message);
+
+        GrimoireOfflineTransitionPhaseSession journal =
+            await harness.ReadAuthenticatedTransitionAsync(operation);
+
+        CovenantResetOfflineTransitionPayloadV1 payload =
+            Assert.IsType<CovenantResetOfflineTransitionPayloadV1>(journal.Current.Payload);
+
+        Assert.Equal(GrimoireOfflineTransitionState.KeepClosed, journal.State);
+
+        Assert.Equal(GrimoireOfflineTransitionHandlerOutcome.KeepClosed, journal.Outcome);
+
+        Assert.Equal(CovenantResetPhase.InventoryPrepared, journal.LastCompletedPhase);
+
+        Assert.Equal(CovenantResetPhase.CanonicalApplied, journal.InFlightPhase);
+
+        Assert.NotNull(payload.InFlightBeforeState);
+
+        Assert.Null(payload.BlockerResolutionEvidence);
+
+        GrimoireOfflineTransitionBlocker blocker = Assert.IsType<GrimoireOfflineTransitionBlocker>(
+            payload.Lifecycle.Blocker);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, blocker.ErrorCode);
+
+        Assert.Equal(GrimoireOfflineTransitionState.Applying, blocker.ResumeState);
+
+        Assert.True(blocker.ResolutionBindingDigest.IsValid);
+
+        Assert.True(blocker.ExpectedStateDigest.IsValid);
+
+        Assert.NotEqual(blocker.ResolutionBindingDigest, blocker.ExpectedStateDigest);
+
+        Assert.Equal(checkpoint.Value.OperationId, payload.Binding.OperationId);
+
+        Assert.Equal(GrimoireOfflineTransitionKind.CovenantReset, payload.Binding.Kind);
+
+        Assert.Equal(1, payload.Binding.PayloadVersion);
+
+        Assert.Equal(checkpoint.Value.EffectDigest, payload.Binding.EffectDigest);
+
+        Assert.Equal(
+            checkpoint.Value.Dataset.SourceDatasetGeneration,
+            payload.Binding.SourceDatasetGeneration);
+
+        Assert.Equal(
+            checkpoint.Value.Dataset.TargetDatasetGeneration,
+            payload.Binding.TargetDatasetGeneration);
+
+        Assert.Equal(launch.Value.Digest, payload.Binding.DatabaseOperationLaunchBindingDigest);
+
+        Assert.Equal(
+            checked((ulong)decoded.Value.StartingRevision + 1),
+            payload.Binding.ExpectedDatabaseOperationRevision);
+
+        Assert.Null(payload.Binding.ParentReceiptBindingDigest);
 
     }
 
@@ -1903,6 +2085,7 @@ public sealed class CovenantErasureSameProcessTests
             ConnectionStateObserver? connectionObserver = null,
             bool fastLeaseHeartbeat = false,
             RouteStoreFaults? storeFaults = null,
+            RouteOperationWriteObserver? operationWrites = null,
             CovenantErasureFaultSeam? faultSeam = null,
             Action<IServiceCollection>? serviceOverrides = null)
         {
@@ -1974,7 +2157,7 @@ public sealed class CovenantErasureSameProcessTests
 
                 }
 
-                if (storeFaults is not null)
+                if (storeFaults is not null || operationWrites is not null)
                 {
 
                     services.RemoveAll<ILongRunningOperationStore>();
@@ -1983,7 +2166,8 @@ public sealed class CovenantErasureSameProcessTests
                         provider => new RouteOperationStore(
                             ActivatorUtilities.CreateInstance<LongRunningOperationStore>(provider),
                             provider.GetRequiredService<TimeProvider>(),
-                            storeFaults));
+                            storeFaults ?? new RouteStoreFaults(RouteStoreFault.None),
+                            operationWrites));
 
                 }
 
@@ -2335,6 +2519,22 @@ public sealed class CovenantErasureSameProcessTests
             IReadOnlyList<LongRunningOperation> operations = await ReadResetOperationsAsync();
 
             return Assert.Single(operations);
+
+        }
+
+        internal async Task<GrimoireOfflineTransitionPhaseSession> ReadAuthenticatedTransitionAsync(
+            LongRunningOperation operation)
+        {
+
+            await using AsyncServiceScope scope = Services.CreateAsyncScope();
+
+            Result<GrimoireOfflineTransitionPhaseSession> journal = await scope.ServiceProvider
+                .GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>()
+                .OpenOrResumeAsync(operation, CancellationToken.None);
+
+            Assert.True(journal.IsSuccess, journal.Error.Message);
+
+            return journal.Value;
 
         }
 
@@ -3617,10 +3817,166 @@ public sealed class CovenantErasureSameProcessTests
 
     }
 
+    private sealed class RouteOperationWriteObserver
+    {
+
+        private readonly object _sync = new();
+
+        private LongRunningOperation? _current;
+
+        private LongRunningOperation? _lastSuccessfulWrite;
+
+        private int _accessesAfterAttentionWrite;
+
+        internal int AccessesAfterAttentionWrite
+        {
+            get
+            {
+
+                lock (_sync)
+                {
+
+                    return _accessesAfterAttentionWrite;
+
+                }
+
+            }
+        }
+
+        internal LongRunningOperation LastSuccessfulWrite
+        {
+            get
+            {
+
+                lock (_sync)
+                {
+
+                    return _lastSuccessfulWrite
+                        ?? throw new InvalidOperationException(
+                            "No durable operation write was observed.");
+
+                }
+
+            }
+        }
+
+        internal void RecordStarted(LongRunningOperation? operation)
+        {
+
+            if (operation is null)
+            {
+
+                return;
+
+            }
+
+            lock (_sync)
+            {
+
+                _current = Clone(operation);
+
+            }
+
+        }
+
+        internal void RecordCheckpoint(
+            Guid operationId,
+            int checkpointVersion,
+            byte[]? checkpointPayload,
+            string? checkpointReference,
+            string publicSummary,
+            DateTimeOffset utcNow)
+        {
+
+            lock (_sync)
+            {
+
+                LongRunningOperation current = RequireCurrent(operationId);
+
+                _current = current with
+                {
+                    HeartbeatAt = utcNow,
+                    CheckpointVersion = checkpointVersion,
+                    CheckpointPayload = checkpointPayload?.ToArray(),
+                    CheckpointReference = checkpointReference,
+                    PublicSummary = publicSummary,
+                    Revision = checked(current.Revision + 1),
+                };
+
+                _lastSuccessfulWrite = Clone(_current);
+
+            }
+
+        }
+
+        internal void RecordTransition(
+            Guid operationId,
+            LongRunningOperationState state,
+            DateTimeOffset utcNow,
+            string? terminalErrorCode)
+        {
+
+            lock (_sync)
+            {
+
+                LongRunningOperation current = RequireCurrent(operationId);
+
+                bool completed = state is LongRunningOperationState.Completed
+                    or LongRunningOperationState.Failed
+                    or LongRunningOperationState.Abandoned;
+
+                bool releasesLease = completed
+                    || state is LongRunningOperationState.ReconciliationRequired;
+
+                _current = current with
+                {
+                    State = state,
+                    CompletedAt = completed ? utcNow : null,
+                    LeaseOwner = releasesLease ? null : current.LeaseOwner,
+                    LeaseExpiresAt = releasesLease ? null : current.LeaseExpiresAt,
+                    TerminalErrorCode = terminalErrorCode,
+                    Revision = checked(current.Revision + 1),
+                };
+
+                _lastSuccessfulWrite = Clone(_current);
+
+            }
+
+        }
+
+        internal void RecordAccess()
+        {
+
+            lock (_sync)
+            {
+
+                if (_current?.State is LongRunningOperationState.ReconciliationRequired)
+                {
+
+                    _accessesAfterAttentionWrite++;
+
+                }
+
+            }
+
+        }
+
+        private LongRunningOperation RequireCurrent(Guid operationId) =>
+            _current is { } current && current.Id == operationId
+                ? current
+                : throw new InvalidOperationException(
+                    "The observed operation write did not follow its operation start.");
+
+        private static LongRunningOperation Clone(LongRunningOperation operation) =>
+            operation with { CheckpointPayload = operation.CheckpointPayload?.ToArray() };
+
+    }
+
     private sealed class RouteOperationStore(
         LongRunningOperationStore inner,
         TimeProvider timeProvider,
-        RouteStoreFaults faults) : ILongRunningOperationStore, IDisposable
+        RouteStoreFaults faults,
+        RouteOperationWriteObserver? operationWrites) : ILongRunningOperationStore, IDisposable
     {
 
         public void Dispose() => inner.Dispose();
@@ -3651,6 +4007,8 @@ public sealed class CovenantErasureSameProcessTests
                 leaseExpiresAt,
                 cancellationToken);
 
+            operationWrites?.RecordStarted(started);
+
             if (started is not null
                 && string.Equals(
                     request.Kind,
@@ -3669,10 +4027,16 @@ public sealed class CovenantErasureSameProcessTests
 
         public Task<LongRunningOperation?> GetAsync(
             Guid operationId,
-            CancellationToken cancellationToken = default) =>
-            faults.TakeThrowNextGet()
+            CancellationToken cancellationToken = default)
+        {
+
+            operationWrites?.RecordAccess();
+
+            return faults.TakeThrowNextGet()
                 ? throw new InvalidOperationException("Injected post-checkpoint ledger read failure.")
                 : inner.GetAsync(operationId, cancellationToken);
+
+        }
 
         public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
             Guid operationId,
@@ -3803,6 +4167,19 @@ public sealed class CovenantErasureSameProcessTests
                 utcNow,
                 cancellationToken);
 
+            if (saved)
+            {
+
+                operationWrites?.RecordCheckpoint(
+                    operationId,
+                    checkpointVersion,
+                    checkpointPayload,
+                    checkpointReference,
+                    publicSummary,
+                    utcNow);
+
+            }
+
             if (saved
                 && expectedCheckpointVersion == 0
                 && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
@@ -3860,6 +4237,17 @@ public sealed class CovenantErasureSameProcessTests
                 utcNow,
                 terminalErrorCode,
                 cancellationToken);
+
+            if (transitioned)
+            {
+
+                operationWrites?.RecordTransition(
+                    operationId,
+                    state,
+                    utcNow,
+                    terminalErrorCode);
+
+            }
 
             return transitioned;
 

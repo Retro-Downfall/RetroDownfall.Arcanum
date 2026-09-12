@@ -98,12 +98,52 @@ internal sealed record GrimoireOfflineTransitionDatabaseReconciliation(
 }
 
 /// <summary>
-/// The one exact terminal write an offline transition makes to its own operation row.
+/// What one nonterminal attention reconciliation found.
+/// </summary>
+internal enum GrimoireOfflineTransitionAttentionOutcome : byte
+{
+
+    Recorded = 1,
+
+    AlreadyRecorded = 2,
+
+    RowMissing = 3,
+
+    RowConflicting = 4,
+
+    RevisionMismatch = 5,
+
+    StateConflict = 6,
+
+    WinnerUnproven = 7,
+
+    RequestUnusable = 8,
+
+    WriteRefused = 9,
+
+}
+
+/// <summary>
+/// The result of recording and rereading one operation that requires reconciliation.
+/// </summary>
+internal sealed record GrimoireOfflineTransitionAttentionReconciliation(
+    GrimoireOfflineTransitionAttentionOutcome Outcome)
+{
+
+    internal bool IsProven =>
+        Outcome is GrimoireOfflineTransitionAttentionOutcome.Recorded
+            or GrimoireOfflineTransitionAttentionOutcome.AlreadyRecorded;
+
+}
+
+/// <summary>
+/// The exact terminal or attention write an offline transition makes to its own operation row.
 /// </summary>
 /// <remarks>
 /// The row is reconciliation evidence rather than competing phase authority. By the time this runs
-/// the journal has already decided what happened; all that is left is to record it once, against the
-/// exact row the launch created, at the exact revision the journal bound itself to.
+/// the journal has already decided what happened or that no safe answer exists; all that is left is to
+/// record it once against the exact row the launch created, at or beyond the revision floor the journal
+/// bound itself to.
 ///
 /// <para>Nothing here repairs. A missing row, a row belonging to another launch, and a row somebody
 /// else already terminalized are three different situations, and the safe action in all three is the
@@ -142,6 +182,8 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
     /// </remarks>
     private const int TerminalWriteAttempts = 8;
 
+    private const int MaxErrorCodeLength = 200;
+
     private static readonly TimeSpan TerminalWriteRetryDelay = TimeSpan.FromMilliseconds(20);
 
     private const string TerminalWinnerDomain = "arcanum.grimoire.offline-transition.terminal-winner.v1";
@@ -151,6 +193,154 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
 
     private readonly TimeProvider _timeProvider =
         timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
+    /// <summary>
+    /// Records and rereads the exact nonterminal attention state of a parked transition.
+    /// </summary>
+    internal async Task<GrimoireOfflineTransitionAttentionReconciliation> ReconcileAttentionAsync(
+        IGrimoireOfflineTransitionPayload journal,
+        string blockingErrorCode,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(journal);
+
+        string sanitized = blockingErrorCode?.Trim() ?? string.Empty;
+
+        if (sanitized.Length > MaxErrorCodeLength)
+        {
+
+            sanitized = sanitized[..MaxErrorCodeLength];
+
+        }
+
+        if (sanitized.Length == 0
+            || journal.Binding is not { } binding
+            || binding.OperationId == Guid.Empty
+            || !binding.DatabaseOperationLaunchBindingDigest.IsValid
+            || binding.ExpectedDatabaseOperationRevision == 0
+            || binding.ExpectedDatabaseOperationRevision > long.MaxValue
+            || !Enum.IsDefined(binding.Kind))
+        {
+
+            return Attention(GrimoireOfflineTransitionAttentionOutcome.RequestUnusable);
+
+        }
+
+        for (int attempt = 1; ; attempt++)
+        {
+
+            LongRunningOperation? current = await _operations
+                .GetAsync(binding.OperationId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (current is null)
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.RowMissing);
+
+            }
+
+            if (!DescribesTheSameLaunch(current, binding))
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.RowConflicting);
+
+            }
+
+            if (current.Revision < (long)binding.ExpectedDatabaseOperationRevision)
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.RevisionMismatch);
+
+            }
+
+            if (current.State is LongRunningOperationState.ReconciliationRequired)
+            {
+
+                return Attention(
+                    string.Equals(current.TerminalErrorCode, sanitized, StringComparison.Ordinal)
+                        ? GrimoireOfflineTransitionAttentionOutcome.AlreadyRecorded
+                        : GrimoireOfflineTransitionAttentionOutcome.StateConflict);
+
+            }
+
+            if (IsTerminal(current))
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.StateConflict);
+
+            }
+
+            bool won = await _operations.TryTransitionAsync(
+                binding.OperationId,
+                current.Revision,
+                ownerId: null,
+                LongRunningOperationState.ReconciliationRequired,
+                _timeProvider.GetUtcNow(),
+                sanitized,
+                cancellationToken).ConfigureAwait(false);
+
+            LongRunningOperation? winner = await _operations
+                .GetAsync(binding.OperationId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (winner is null || !DescribesTheSameLaunch(winner, binding))
+            {
+
+                return Attention(
+                    won
+                        ? GrimoireOfflineTransitionAttentionOutcome.WinnerUnproven
+                        : GrimoireOfflineTransitionAttentionOutcome.RowConflicting);
+
+            }
+
+            if (winner.Revision < (long)binding.ExpectedDatabaseOperationRevision)
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.RevisionMismatch);
+
+            }
+
+            if (winner.State is LongRunningOperationState.ReconciliationRequired)
+            {
+
+                return Attention(
+                    string.Equals(winner.TerminalErrorCode, sanitized, StringComparison.Ordinal)
+                        ? won
+                            ? GrimoireOfflineTransitionAttentionOutcome.Recorded
+                            : GrimoireOfflineTransitionAttentionOutcome.AlreadyRecorded
+                        : GrimoireOfflineTransitionAttentionOutcome.StateConflict);
+
+            }
+
+            if (IsTerminal(winner))
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.StateConflict);
+
+            }
+
+            if (won)
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.WinnerUnproven);
+
+            }
+
+            if (attempt >= TerminalWriteAttempts)
+            {
+
+                return Attention(GrimoireOfflineTransitionAttentionOutcome.WriteRefused);
+
+            }
+
+            await Task.Delay(TerminalWriteRetryDelay, _timeProvider, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+    }
 
     internal async Task<GrimoireOfflineTransitionDatabaseReconciliation> ReconcileAsync(
         IGrimoireOfflineTransitionPayload journal,
@@ -442,5 +632,9 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
     private static GrimoireOfflineTransitionDatabaseReconciliation Outcome(
         GrimoireOfflineTransitionDatabaseOutcome outcome) =>
         new(outcome, TerminalWinnerDigest: null);
+
+    private static GrimoireOfflineTransitionAttentionReconciliation Attention(
+        GrimoireOfflineTransitionAttentionOutcome outcome) =>
+        new(outcome);
 
 }

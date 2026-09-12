@@ -1909,6 +1909,12 @@ internal sealed partial class DataRetentionService(
                     LongRunningOperationState.Failed).ConfigureAwait(false);
             }
 
+            if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
+            {
+                return Result<DataRetentionApplyResult>.Failure(
+                    CovenantResetFailure(erased.Value.BlockingErrorCode));
+            }
+
             if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
             {
                 return await FailCovenantResetAsync(

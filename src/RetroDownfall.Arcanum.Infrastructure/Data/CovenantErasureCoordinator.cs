@@ -1033,22 +1033,23 @@ internal sealed class CovenantErasureCoordinator(
     /// How the Grimoire's closure ends, given how the Covenant scope ended.
     /// </summary>
     /// <remarks>
-    /// It always reopens, and that is not the same decision as the Covenant disposition beside it.
-    /// The Grimoire closure is the mechanism this erasure used to get exclusive access to a file; the
-    /// Covenant scope is the durable statement about whether the installation may be used. Leaving
-    /// ordinary connection admission shut after a parked erasure would not keep anything safe that
-    /// the Covenant scope is not already keeping safe — it would make the database unopenable, so an
-    /// operator could not even read the operation row that says what to do next, and no later process
-    /// could reach the journal's own terminal reconciliation.
+    /// The Covenant and Grimoire closures guard the same installation and share the same three
+    /// disposition semantics. A commit or a proven pre-effect rollback reopens both gates with the
+    /// corresponding account of why; a parked transition keeps both closed so the live admission
+    /// state agrees with the authenticated journal that survives the process.
     ///
-    /// <para>Which reopening disposition still matters, because the gate records it: a commit and a
-    /// rollback leave the same open gate but a different account of why.</para>
+    /// <para>The translation is explicit and exhaustive so a new or undefined disposition cannot be
+    /// folded into rollback and reopen.</para>
     /// </remarks>
     private static CovenantExclusiveLeaseDisposition GrimoireDispositionFor(
         CovenantExclusiveLeaseDisposition covenant) =>
-        covenant is CovenantExclusiveLeaseDisposition.CommitAndReopen
-            ? CovenantExclusiveLeaseDisposition.CommitAndReopen
-            : CovenantExclusiveLeaseDisposition.RollbackAndReopen;
+        covenant switch
+        {
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen => covenant,
+            CovenantExclusiveLeaseDisposition.CommitAndReopen => covenant,
+            CovenantExclusiveLeaseDisposition.KeepClosed => covenant,
+            _ => throw new ArgumentOutOfRangeException(nameof(covenant), covenant, null),
+        };
 
     /// <summary>Answers the lane's revalidation from the lease that closed the scope, and nothing else.</summary>
     private static async ValueTask<bool> RevalidateAsync(
@@ -1363,7 +1364,7 @@ internal sealed class CovenantErasureCoordinator(
 
                 _ = await unspent
                     .ReleaseAsync(
-                        CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                        CovenantExclusiveLeaseDisposition.KeepClosed,
                         CancellationToken.None)
                     .ConfigureAwait(false);
 
@@ -1387,9 +1388,9 @@ internal sealed class CovenantErasureCoordinator(
 
         CovenantErasureCheckpointState state = checkpoint;
 
-        // Released in the terminal suffix beside the Covenant lease, and in the unwind below on every
-        // path that never reaches one. A closure left behind holds ordinary admission shut for the
-        // life of the process, which is strictly worse than the failure that stranded it.
+        // Spent in the terminal suffix beside the Covenant lease, and kept closed by the unwind below
+        // on every path that never proves one. Reopening an unspent closure would announce a rollback
+        // that no durable disposition or attention row supports.
         CovenantGrimoireClosure? closure = null;
 
         CovenantClosedPeriodAuthority? maintenance = null;
@@ -2928,6 +2929,33 @@ internal sealed class CovenantErasureCoordinator(
         {
 
             disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
+
+            if (phases is null || string.IsNullOrWhiteSpace(blockingErrorCode))
+            {
+
+                return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
+
+            }
+
+            GrimoireOfflineTransitionAttentionReconciliation attention = await WithLedgerAsync(
+                closure,
+                token => _reconciler.ReconcileAttentionAsync(
+                    phases.Current.Payload,
+                    blockingErrorCode,
+                    token),
+                lifecycle.Token).ConfigureAwait(false);
+
+            if (!attention.IsProven)
+            {
+
+                _logger.LogError(
+                    "A Covenant erasure could not prove its parked operation attention state "
+                    + "({AttentionOutcome}); admission stays closed.",
+                    attention.Outcome);
+
+                return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
+
+            }
 
         }
 

@@ -727,6 +727,46 @@ public sealed class CovenantErasureCoordinatorTests
     }
 
     [Fact]
+    public async Task A_KeepClosed_completion_proves_its_attention_row_before_the_disposition()
+    {
+
+        CoordinatorHarness harness = new();
+
+        harness.Transition.FailingStep = "publish";
+
+        bool observedAtDisposition = false;
+
+        harness.Gate.OnDispositionAttempt = () =>
+        {
+
+            observedAtDisposition = true;
+
+            LongRunningOperation row = Assert.Single(harness.Store.Operations);
+
+            Assert.Equal(LongRunningOperationState.ReconciliationRequired, row.State);
+
+            Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, row.TerminalErrorCode);
+
+            Assert.Null(row.CompletedAt);
+
+            Assert.True(File.Exists(harness.Phases.JournalPath));
+
+        };
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.True(observedAtDisposition);
+
+        Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
+
+    }
+
+    [Fact]
     public async Task A_failed_disclosure_writer_restart_selects_keep_closed_before_any_disposition()
     {
 
@@ -743,6 +783,25 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Contains("publish", harness.Steps);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    [Fact]
+    public async Task An_unspent_Grimoire_closure_stays_closed_when_the_run_unwinds_without_a_disposition()
+    {
+
+        CoordinatorHarness harness = new(
+            faultSeam: static (boundary, phase, _) =>
+                boundary is CovenantErasureFaultBoundary.BeforePhaseBegin
+                    && phase is CovenantResetPhase.CanonicalApplied
+                    ? Task.FromException<Result>(
+                        new DataRetentionLeaseLostException("The injected owner was lost."))
+                    : Task.FromResult(Result.Success()));
+
+        await Assert.ThrowsAsync<DataRetentionLeaseLostException>(
+            () => harness.RunAsync(CovenantResetPhase.InventoryPrepared));
+
+        Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
     }
 
@@ -1403,6 +1462,8 @@ public sealed class CovenantErasureCoordinatorTests
 
         private readonly ICovenantErasureInventorySource _inventory;
 
+        private readonly CovenantErasureFaultSeam? _faultSeam;
+
         internal RecordingGate Gate { get; }
 
         /// <summary>
@@ -1436,10 +1497,13 @@ public sealed class CovenantErasureCoordinatorTests
             bool emptyLeaseDataset = false,
             ICovenantErasureInventorySource? inventory = null,
             Guid? datasetGeneration = null,
-            string? databasePath = null)
+            string? databasePath = null,
+            CovenantErasureFaultSeam? faultSeam = null)
         {
 
             _operation = operation;
+
+            _faultSeam = faultSeam;
 
             MaintenanceConnections = databasePath is null
                 ? new UnreachableMaintenanceFactory()
@@ -1520,6 +1584,24 @@ public sealed class CovenantErasureCoordinatorTests
             await read.Value.DisposeAsync();
 
             return true;
+
+        }
+
+        internal async Task<bool> GrimoireAdmissionIsOpenAsync()
+        {
+
+            bool admitted = Admission.TryAcquireWorkLease(
+                GrimoireWorkKind.LongRunningOperationRecovery,
+                out IGrimoireWorkLease? lease);
+
+            if (lease is not null)
+            {
+
+                await lease.DisposeAsync();
+
+            }
+
+            return admitted;
 
         }
 
@@ -1618,7 +1700,8 @@ public sealed class CovenantErasureCoordinatorTests
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
                 TimeProvider.System,
-                NullLogger<CovenantErasureCoordinator>.Instance);
+                NullLogger<CovenantErasureCoordinator>.Instance,
+                _faultSeam);
 
             CovenantErasureCheckpointState checkpoint = new(
                 checkpointOperationId ?? OperationId,
@@ -1676,7 +1759,8 @@ public sealed class CovenantErasureCoordinatorTests
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
                 TimeProvider.System,
-                NullLogger<CovenantErasureCoordinator>.Instance);
+                NullLogger<CovenantErasureCoordinator>.Instance,
+                _faultSeam);
 
             return await coordinator.RunAsync(
                 operation,
