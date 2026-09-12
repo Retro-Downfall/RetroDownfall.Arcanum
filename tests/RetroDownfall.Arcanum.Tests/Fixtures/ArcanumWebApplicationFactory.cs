@@ -1,13 +1,18 @@
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -130,6 +135,12 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     /// </summary>
     public Action<IServiceCollection>? ServiceOverrides { get; set; }
 
+    /// <summary>Pre-created test interceptors appended after production connection enrolment.</summary>
+    public IReadOnlyList<IInterceptor> AdditionalDbContextInterceptors { get; set; } = [];
+
+    /// <summary>Test-only invocation hook around the real endpoint, inside its production middleware.</summary>
+    public Func<HttpContext, RequestDelegate, Task>? BeforeEndpoint { get; set; }
+
     public HttpClient CreateAuthenticatedClient()
     {
 
@@ -215,10 +226,13 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                             .UseSqlite(connectionString)
                             .UseModel(ArcanumDbContextModel.Instance)
                             .AddInterceptors(
+                            [
                                 new CovenantConnectionEnrolmentInterceptor(
                                     sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
                                     sp.GetRequiredService<ICovenantConnectionDrain>(),
-                                    sp.GetRequiredService<ICovenantSqliteConnectionInitializer>())),
+                                    sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()),
+                                .. AdditionalDbContextInterceptors,
+                            ]),
                     poolSize: 32);
             }
             else
@@ -294,8 +308,52 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             ServiceOverrides?.Invoke(services);
 
+            if (BeforeEndpoint is not null)
+            {
+                services.AddSingleton<IStartupFilter>(new EndpointHookStartupFilter(BeforeEndpoint));
+            }
+
         });
 
+    }
+
+    private sealed class EndpointHookStartupFilter(
+        Func<HttpContext, RequestDelegate, Task> hook) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            next(app);
+
+            app.UseEndpoints(endpoints =>
+            {
+                EndpointDataSource[] sources = endpoints.DataSources.ToArray();
+
+                endpoints.DataSources.Clear();
+
+                foreach (EndpointDataSource source in sources)
+                {
+                    endpoints.DataSources.Add(new HookedEndpointDataSource(source, hook));
+                }
+            });
+        };
+    }
+
+    private sealed class HookedEndpointDataSource(
+        EndpointDataSource inner,
+        Func<HttpContext, RequestDelegate, Task> hook) : EndpointDataSource
+    {
+        public override IReadOnlyList<Endpoint> Endpoints => inner.Endpoints.Select(endpoint =>
+        {
+            if (endpoint is not RouteEndpoint route || route.RequestDelegate is not { } execute)
+            {
+                return endpoint;
+            }
+
+            return new RouteEndpoint(
+                context => hook(context, execute), route.RoutePattern, route.Order, route.Metadata, route.DisplayName);
+        }).ToArray();
+
+        public override IChangeToken GetChangeToken() => inner.GetChangeToken();
     }
 
     protected override IHost CreateHost(IHostBuilder builder)
