@@ -809,6 +809,40 @@ public sealed class CovenantErasureCoordinatorTests
 
     }
 
+    [Fact]
+    public async Task A_resumed_in_flight_phase_faulting_before_replay_stays_closed()
+    {
+
+        CoordinatorHarness harness = new(
+            faultSeam: static (boundary, phase, _) =>
+                boundary is CovenantErasureFaultBoundary.BeforePhaseBegin
+                    && phase is CovenantResetPhase.CanonicalApplied
+                    ? Task.FromResult(Result.Failure(new Error(
+                        ErrorCodes.Covenant.ErasureIncomplete,
+                        "The resumed phase was interrupted before replay.")))
+                    : Task.FromResult(Result.Success()));
+
+        harness.InFlightPhase = CovenantResetPhase.CanonicalApplied;
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantErasureCompletion> completion =
+            await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, Assert.Single(harness.Store.Operations).State);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+        Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
+
+        Assert.True(File.Exists(harness.Phases.JournalPath));
+
+    }
+
     [Theory]
     [InlineData(DispositionFailureMode.ReturnedFailure)]
     [InlineData(DispositionFailureMode.Cancelled)]
@@ -1738,6 +1772,9 @@ public sealed class CovenantErasureCoordinatorTests
         /// <summary>How far a resumed run's journal has already carried its replacement.</summary>
         internal SeededReplacement? Replacement { get; set; }
 
+        /// <summary>A phase whose begin publication exists but whose completion does not.</summary>
+        internal CovenantResetPhase? InFlightPhase { get; set; }
+
         /// <summary>
         /// Whether the seeded journal records the ordinary continuation as done, independently of the
         /// phase it is seeded at.
@@ -1786,6 +1823,7 @@ public sealed class CovenantErasureCoordinatorTests
                     ?? (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure
                         && phase >= CovenantResetPhase.HandlesClosed),
                 Replacement,
+                InFlightPhase,
                 cancellationToken ?? Token);
 
             CovenantErasureCoordinator coordinator = new(

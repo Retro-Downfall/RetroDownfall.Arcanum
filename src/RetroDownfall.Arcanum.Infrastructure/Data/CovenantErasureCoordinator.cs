@@ -2392,9 +2392,15 @@ internal sealed class CovenantErasureCoordinator(
 
         }
 
+        await FaultAsync(
+            CovenantErasureFaultBoundary.BeforePhaseBegin,
+            phase,
+            cancellationToken).ConfigureAwait(false);
+
         // The phase ladder is entered by the first phase that actually runs, not by the closing proof
         // that preceded it, because the rollback edge a pre-effect abort needs is only legal from
-        // Closing.
+        // Closing. The pre-begin boundary therefore runs before this publication: a fault there is
+        // proof that neither the phase nor its effect began and retains the rollback edge.
         if (phases.State is GrimoireOfflineTransitionState.Closing)
         {
 
@@ -2408,11 +2414,6 @@ internal sealed class CovenantErasureCoordinator(
             }
 
         }
-
-        await FaultAsync(
-            CovenantErasureFaultBoundary.BeforePhaseBegin,
-            phase,
-            cancellationToken).ConfigureAwait(false);
 
         // A journal that already names this phase in flight is a crash between the two publications.
         // The record it left is exactly the record this run was about to write, and writing it again

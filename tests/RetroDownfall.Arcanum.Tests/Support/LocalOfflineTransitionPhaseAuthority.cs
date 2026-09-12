@@ -144,7 +144,7 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
         CovenantResetPhase phase,
         bool factoryContinuationCompleted,
         CancellationToken cancellationToken) =>
-        SeedAsync(operation, phase, factoryContinuationCompleted, null, cancellationToken);
+        SeedAsync(operation, phase, factoryContinuationCompleted, null, null, cancellationToken);
 
     /// <summary>
     /// Seeds a journal that also carries a partly-published compaction replacement.
@@ -162,10 +162,11 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
         CovenantResetPhase phase,
         bool factoryContinuationCompleted,
         SeededReplacement? replacement,
+        CovenantResetPhase? inFlightPhase,
         CancellationToken cancellationToken)
     {
 
-        if (phase is CovenantResetPhase.InventoryPrepared)
+        if (phase is CovenantResetPhase.InventoryPrepared && inFlightPhase is null)
         {
 
             return;
@@ -195,7 +196,8 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
 
             }
 
-            if (step > phase || step is CovenantResetPhase.ReopenedVerified)
+            if ((step > phase && step != inFlightPhase)
+                || step is CovenantResetPhase.ReopenedVerified)
             {
 
                 break;
@@ -205,6 +207,13 @@ internal sealed class LocalOfflineTransitionPhaseAuthority
             Assert.True(
                 (await session.BeginPhaseAsync(step, cancellationToken)).IsSuccess,
                 "seed begin " + step);
+
+            if (step == inFlightPhase)
+            {
+
+                return;
+
+            }
 
             Assert.True(
                 (await session.CompletePhaseAsync(step, cancellationToken)).IsSuccess,

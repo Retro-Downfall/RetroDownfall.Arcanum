@@ -895,6 +895,126 @@ internal sealed class PausingStatsConnectionInterceptor(PostAdmissionEndpointPro
     }
 }
 
+internal readonly record struct OrdinaryMutationCounters(
+    long IndexAttempts,
+    long Billing,
+    long Failures,
+    long Watermarks);
+
+internal sealed class OrdinaryMutationCounterInterceptor : DbCommandInterceptor
+{
+
+    private long _indexAttempts;
+
+    private long _billing;
+
+    private long _failures;
+
+    private long _watermarks;
+
+    internal OrdinaryMutationCounters Snapshot => new(
+        Interlocked.Read(ref _indexAttempts),
+        Interlocked.Read(ref _billing),
+        Interlocked.Read(ref _failures),
+        Interlocked.Read(ref _watermarks));
+
+    public override InterceptionResult<DbDataReader> ReaderExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result)
+    {
+
+        Observe(command);
+
+        return result;
+
+    }
+
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+
+        Observe(command);
+
+        return ValueTask.FromResult(result);
+
+    }
+
+    public override InterceptionResult<int> NonQueryExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result)
+    {
+
+        Observe(command);
+
+        return result;
+
+    }
+
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+
+        Observe(command);
+
+        return ValueTask.FromResult(result);
+
+    }
+
+    private void Observe(DbCommand command)
+    {
+
+        string sql = command.CommandText;
+
+        if (!sql.Contains("INSERT", StringComparison.OrdinalIgnoreCase)
+            && !sql.Contains("UPDATE", StringComparison.OrdinalIgnoreCase)
+            && !sql.Contains("DELETE", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return;
+
+        }
+
+        if (sql.Contains("session_attachment_index_state", StringComparison.OrdinalIgnoreCase))
+        {
+
+            Interlocked.Increment(ref _indexAttempts);
+
+        }
+
+        if (sql.Contains("BillableOperations", StringComparison.OrdinalIgnoreCase))
+        {
+
+            Interlocked.Increment(ref _billing);
+
+        }
+
+        if (sql.Contains("FailureCode", StringComparison.OrdinalIgnoreCase)
+            || sql.Contains("LastFailure", StringComparison.OrdinalIgnoreCase))
+        {
+
+            Interlocked.Increment(ref _failures);
+
+        }
+
+        if (sql.Contains("UnseenServantWatermarks", StringComparison.OrdinalIgnoreCase))
+        {
+
+            Interlocked.Increment(ref _watermarks);
+
+        }
+
+    }
+
+}
+
 // Wiring control only. Production stats executes raw SqliteCommand and is observed above.
 internal sealed class PausingFactoryCommandInterceptor : DbCommandInterceptor
 {

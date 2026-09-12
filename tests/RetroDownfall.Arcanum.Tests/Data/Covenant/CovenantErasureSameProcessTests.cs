@@ -651,8 +651,21 @@ public sealed class CovenantErasureSameProcessTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
+        RouteOperationWriteObserver operationWrites = new();
+
+        RecordingManagedLogMutationGate cleanupGate = new();
+
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
-            routeFailure: RouteFailure.KeepClosed);
+            routeFailure: RouteFailure.KeepClosed,
+            operationWrites: operationWrites,
+            serviceOverrides: services =>
+            {
+
+                services.RemoveAll<IManagedLogMutationGate>();
+
+                services.AddSingleton<IManagedLogMutationGate>(cleanupGate);
+
+            });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
 
@@ -662,7 +675,7 @@ public sealed class CovenantErasureSameProcessTests
 
         DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
 
-        long ordinaryBefore = await harness.CountOrdinarySessionsAsync();
+        Assert.Equal(1, await harness.CountOrdinarySessionsAsync());
 
         Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
 
@@ -670,7 +683,20 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, result.Error.Code);
 
-        Assert.Equal(ordinaryBefore, await harness.CountOrdinarySessionsAsync());
+        LongRunningOperation parked = operationWrites.LastSuccessfulWrite;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ErasureIncomplete, parked.TerminalErrorCode);
+
+        Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, parked.CheckpointVersion);
+
+        // The reconciler's authenticated in-window reread is the sole operation-store access after
+        // attention. The factory caller must neither read the parked database nor enter ordinary
+        // deletion, whose first exclusive mutation gate would increment this observer.
+        Assert.Equal(1, operationWrites.AccessesAfterAttentionWrite);
+
+        Assert.Equal(0, cleanupGate.Acquisitions);
 
     }
 
@@ -3392,6 +3418,25 @@ public sealed class CovenantErasureSameProcessTests
             await pause.WaitForReleaseAsync(cancellationToken);
 
             return NoopAsyncDisposable.Instance;
+
+        }
+
+    }
+
+    private sealed class RecordingManagedLogMutationGate : IManagedLogMutationGate
+    {
+
+        private int _acquisitions;
+
+        internal int Acquisitions => Volatile.Read(ref _acquisitions);
+
+        public ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
+            CancellationToken cancellationToken = default)
+        {
+
+            Interlocked.Increment(ref _acquisitions);
+
+            return ValueTask.FromResult<IAsyncDisposable>(NoopAsyncDisposable.Instance);
 
         }
 

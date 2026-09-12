@@ -14,6 +14,8 @@ using System.Runtime.CompilerServices;
 
 using RetroDownfall.Arcanum.Core.Conclave;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -68,7 +70,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
-internal enum GrimoireTransitionEntryPoint : byte
+public enum GrimoireTransitionEntryPoint : byte
 {
     DirectCovenantReset = 1,
 
@@ -91,7 +93,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     private int _disposed;
 
-    private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture profile, bool ownsProfile, MaintenanceAdoptionObservation? adoption)
+    private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture profile, bool ownsProfile,
+        MaintenanceAdoptionObservation? adoption, CovenantErasureFaultSeam? faultSeam)
     {
         _profile = profile;
 
@@ -103,7 +106,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Stats = new PausingStatsConnectionInterceptor(StatsProbe);
 
-        Factory.AdditionalDbContextInterceptors = [Stats, EfOpen];
+        Factory.AdditionalDbContextInterceptors = [Stats, EfOpen, OrdinaryMutations];
 
         SseProbes =
         [
@@ -221,6 +224,37 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             services.AddScoped<ILongRunningOperationStore, RecordingLongRunningOperationStore>();
 
+            if (faultSeam is not null)
+            {
+                // The production registration constructs this concrete coordinator directly. A
+                // faulted host therefore replaces that concrete resolution with the same production
+                // dependency graph plus the requested one-shot seam; adding the delegate alone would
+                // not affect any caller.
+                services.AddScoped(sp => new CovenantErasureCoordinator(
+                    sp.GetRequiredService<ILongRunningOperationCoordinator>(),
+                    sp.GetRequiredService<ILongRunningOperationStore>(),
+                    sp.GetRequiredService<ICovenantOperationGate>(),
+                    sp.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
+                    sp.GetRequiredService<ICovenantManagedFileErasureKernel>(),
+                    sp.GetRequiredService<ICovenantErasureInventorySource>(),
+                    sp.GetRequiredService<ICovenantErasureTransition>(),
+                    sp.GetRequiredService<ICovenantDisclosureWriterLifecycle>(),
+                    sp.GetRequiredService<IGrimoireOfflineTransitionPhaseAuthority>(),
+                    sp.GetRequiredService<GrimoireOfflineTransitionEffectHandlerRegistry>(),
+                    sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                    sp.GetRequiredService<IGrimoireMaintenanceConnectionFactory>(),
+                    sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                    sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                    sp.GetRequiredService<ICovenantClosedPeriodLedgerConnection>(),
+                    sp.GetRequiredService<GrimoireRequestAdmissionScope>(),
+                    sp.GetRequiredService<ICovenantConnectionDrain>(),
+                    sp.GetRequiredService<GrimoireOfflineTransitionDatabaseReconciler>(),
+                    sp.GetRequiredService<LongRunningOperationOwnership>(),
+                    sp.GetRequiredService<TimeProvider>(),
+                    sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>(),
+                    faultSeam));
+            }
+
             services.AddSingleton(Adoption);
 
             services.RemoveAll<ILongRunningOperationMaintenanceLeaseAdoption>();
@@ -316,6 +350,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal PausingEfOpenInterceptor EfOpen { get; } = new();
 
+    internal OrdinaryMutationCounterInterceptor OrdinaryMutations { get; } = new();
+
     internal PausingOrdinaryConnectionFactoryTestSeam RawOpen { get; } = new();
 
     internal MaintenanceOperationObservations Operations { get; } = new();
@@ -364,7 +400,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal static Task<GrimoireMaintenanceAdmissionHarness> StartAsync(
         RestartableArcanumProfileFixture? profile = null,
-        MaintenanceAdoptionObservation? adoption = null)
+        MaintenanceAdoptionObservation? adoption = null,
+        CovenantErasureFaultSeam? faultSeam = null)
     {
         bool ownsProfile = profile is null;
 
@@ -377,7 +414,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             throw new InvalidOperationException("This profile's participant seed is one-shot. Use StartRecoveryAsync to reopen its retained identities.");
         }
 
-        return StartHostAsync(profile, ownsProfile, registration, seedParticipants: true, adoption);
+        return StartHostAsync(profile, ownsProfile, registration, seedParticipants: true, adoption, faultSeam);
     }
 
     internal static Task<GrimoireMaintenanceAdmissionHarness> StartRecoveryAsync(
@@ -390,7 +427,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             throw new InvalidOperationException("Recovery requires this profile's completed first-host participant seed.");
         }
 
-        return StartHostAsync(profile, ownsProfile: false, registration, seedParticipants: false, adoption);
+        return StartHostAsync(profile, ownsProfile: false, registration, seedParticipants: false, adoption, faultSeam: null);
     }
 
     private static async Task<GrimoireMaintenanceAdmissionHarness> StartHostAsync(
@@ -398,9 +435,10 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         bool ownsProfile,
         ParticipantSeedRegistration registration,
         bool seedParticipants,
-        MaintenanceAdoptionObservation? adoption)
+        MaintenanceAdoptionObservation? adoption,
+        CovenantErasureFaultSeam? faultSeam)
     {
-        GrimoireMaintenanceAdmissionHarness harness = new(profile, ownsProfile, adoption);
+        GrimoireMaintenanceAdmissionHarness harness = new(profile, ownsProfile, adoption, faultSeam);
 
         try
         {
