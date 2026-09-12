@@ -4,8 +4,12 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Reflection;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Performance;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -13,6 +17,125 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 [Collection("ApiHost")]
 public sealed class ArcanumWebApplicationFactoryTests
 {
+
+    [SkippableFact]
+    public async Task Restartable_profile_preserves_catalog_files_and_credentials_across_hosts()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string tempHome;
+
+        await using (RestartableArcanumProfileFixture profile = new())
+        {
+
+            tempHome = profile.TempHome;
+
+            string databasePath = Path.Combine(tempHome, ".config", "arcanum", "arcanum.db");
+
+            string sidecarPath = databasePath + ".kdf";
+
+            Guid markerId;
+
+            await using (ArcanumWebApplicationFactory firstFactory = profile.CreateFactory())
+            {
+
+                using IServiceScope firstScope = firstFactory.Services.CreateScope();
+
+                Assert.Same(
+                    profile.CredentialStore,
+                    firstScope.ServiceProvider.GetRequiredService<IOsCredentialStore>());
+
+                Assert.Same(
+                    profile.PassphraseSource,
+                    firstScope.ServiceProvider.GetRequiredService<IGrimoireDbPassphraseSource>());
+
+                ISessionRepository sessions = firstScope.ServiceProvider
+                    .GetRequiredService<ISessionRepository>();
+
+                Session marker = await sessions.CreateAsync(
+                    campaignId: null,
+                    title: "issue-257-restart-survives",
+                    CancellationToken.None);
+
+                markerId = marker.Id;
+
+                Assert.Equal(
+                    OsCredentialStoreStatus.Ok,
+                    profile.CredentialStore.Set(
+                        "arcanum-tests",
+                        "issue-257-restart",
+                        "survives").Status);
+
+            }
+
+            Assert.True(Directory.Exists(tempHome));
+
+            Assert.True(File.Exists(databasePath));
+
+            Assert.True(File.Exists(sidecarPath));
+
+            byte[] catalogBytes = await File.ReadAllBytesAsync(databasePath);
+
+            byte[] sidecarBytes = await File.ReadAllBytesAsync(sidecarPath);
+
+            Assert.NotEmpty(catalogBytes);
+
+            Assert.NotEmpty(sidecarBytes);
+
+            await using (ArcanumWebApplicationFactory secondFactory = profile.CreateFactory())
+            {
+
+                Assert.Equal(catalogBytes, await File.ReadAllBytesAsync(databasePath));
+
+                using IServiceScope secondScope = secondFactory.Services.CreateScope();
+
+                Assert.Equal(catalogBytes, await File.ReadAllBytesAsync(databasePath));
+
+                Assert.Same(
+                    profile.CredentialStore,
+                    secondScope.ServiceProvider.GetRequiredService<IOsCredentialStore>());
+
+                Assert.Same(
+                    profile.PassphraseSource,
+                    secondScope.ServiceProvider.GetRequiredService<IGrimoireDbPassphraseSource>());
+
+                ISessionRepository sessions = secondScope.ServiceProvider
+                    .GetRequiredService<ISessionRepository>();
+
+                Session? retained = await sessions.GetByIdAsync(markerId, CancellationToken.None);
+
+                Assert.NotNull(retained);
+
+                Assert.Equal("issue-257-restart-survives", retained.Title);
+
+                OsCredentialStoreResult credential = profile.CredentialStore.TryGet(
+                    "arcanum-tests",
+                    "issue-257-restart");
+
+                Assert.Equal(OsCredentialStoreStatus.Ok, credential.Status);
+
+                Assert.Equal("survives", credential.Value);
+
+                Assert.Equal(
+                    OsCredentialStoreStatus.Ok,
+                    profile.CredentialStore.Delete(
+                        "arcanum-tests",
+                        "issue-257-restart").Status);
+
+            }
+
+            Assert.True(Directory.Exists(tempHome));
+
+            Assert.NotEmpty(await File.ReadAllBytesAsync(databasePath));
+
+            Assert.Equal(sidecarBytes, await File.ReadAllBytesAsync(sidecarPath));
+
+        }
+
+        Assert.False(Directory.Exists(tempHome));
+
+    }
 
     [Fact]
     public async Task Constructor_redirects_persistent_paths_to_temp_home()

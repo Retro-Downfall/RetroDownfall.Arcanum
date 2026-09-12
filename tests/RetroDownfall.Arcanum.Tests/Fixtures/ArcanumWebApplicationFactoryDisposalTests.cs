@@ -9,6 +9,59 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 {
 
     [SkippableFact]
+    public async Task Host_disposal_never_deletes_an_externally_owned_restartable_profile()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string parentHome = CreateTempHome("parent-restartable");
+
+        using TestingEnvironmentScope scope = new(parentHome);
+
+        RestartableArcanumProfileFixture profile = new();
+
+        string profileHome = profile.TempHome;
+
+        try
+        {
+
+            ShutdownPathProbe probe = new();
+
+            ArcanumWebApplicationFactory factory = profile.CreateFactory();
+
+            factory.ServiceOverrides = services => services.AddSingleton<IHostedService>(probe);
+
+            using HttpClient client = factory.CreateAuthenticatedClient();
+
+            factory.Dispose();
+
+            AssertShutdownUsedFactoryGrimoire(probe, profileHome);
+
+            Assert.Equal(
+                parentHome,
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+
+            Assert.True(Directory.Exists(profileHome));
+
+            Assert.True(File.Exists(Path.Combine(profileHome, ".config", "arcanum", "arcanum.db")));
+
+            Assert.True(File.Exists(Path.Combine(profileHome, ".config", "arcanum", "arcanum.db.kdf")));
+
+            await profile.DisposeAsync();
+
+            Assert.False(Directory.Exists(profileHome));
+
+        }
+        finally
+        {
+
+            await profile.DisposeAsync();
+
+        }
+
+    }
+
+    [SkippableFact]
     public void Dispose_StopsHostBeforeRestoringTestingIsolation()
     {
 

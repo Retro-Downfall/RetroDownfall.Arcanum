@@ -17,6 +17,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -29,9 +31,9 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     private const string InMemoryCredentialOptInVariable =
         "ARCANUM_TEST_IN_MEMORY_CREDENTIALS";
 
-    private readonly string _tempHome;
+    private readonly RestartableArcanumProfileFixture _profile;
 
-    private readonly GrimoireFixture? _grimoireFixture;
+    private readonly bool _ownsProfile;
 
     private readonly FakeIntelligenceProvider _fakeIntelligence = new();
 
@@ -46,11 +48,25 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     private int _isolatedResourcesDisposed;
 
     public ArcanumWebApplicationFactory()
+        : this(new RestartableArcanumProfileFixture(), ownsProfile: true)
     {
 
-        _tempHome = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"api-host-{Guid.NewGuid():N}");
+    }
 
-        Directory.CreateDirectory(_tempHome);
+    internal ArcanumWebApplicationFactory(RestartableArcanumProfileFixture profile)
+        : this(profile, ownsProfile: false)
+    {
+
+    }
+
+    private ArcanumWebApplicationFactory(
+        RestartableArcanumProfileFixture profile,
+        bool ownsProfile)
+    {
+
+        _profile = profile;
+
+        _ownsProfile = ownsProfile;
 
         CaptureEnvironment();
 
@@ -61,13 +77,6 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
         ApplyIsolatedUserProfile();
-
-        if (GrimoireFixture.SqlCipherAvailable)
-        {
-
-            _grimoireFixture = new GrimoireFixture();
-
-        }
 
     }
 
@@ -101,7 +110,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     public FakeIntelligenceProvider FakeIntelligence => _fakeIntelligence;
 
-    public string TempHome => _tempHome;
+    public string TempHome => _profile.TempHome;
 
     /// <summary>
     /// Optional hook applied to the patched <see cref="ArcanumSettings"/> before the host starts, letting a
@@ -149,6 +158,14 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             services.AddSingleton<ISecretStore>(_secretStore);
 
+            services.RemoveAll<IOsCredentialStore>();
+
+            services.AddSingleton(_profile.CredentialStore);
+
+            services.RemoveAll<IGrimoireDbPassphraseSource>();
+
+            services.AddSingleton(_profile.PassphraseSource);
+
             services.RemoveAll<IArcanumIntelligenceProvider>();
 
             services.AddScoped<IArcanumIntelligenceProvider>(_ => _fakeIntelligence);
@@ -163,17 +180,17 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             services.RemoveAll<ArcanumDbContext>();
 
-            if (_grimoireFixture is { } grimoireFixture)
+            if (_profile.Grimoire is not null)
             {
                 string databasePath = Path.Combine(
-                    _tempHome,
+                    _profile.TempHome,
                     ".config",
                     "arcanum",
                     "arcanum.db");
                 string connectionString = new SqliteConnectionStringBuilder
                 {
                     DataSource = databasePath,
-                    Password = grimoireFixture.Passphrase,
+                    Password = _profile.PassphraseSource.Passphrase,
                     Pooling = true,
                 }.ToString();
 
@@ -234,9 +251,9 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                         ],
                     Security = built.Security with
                     {
-                        SpellWorkspaceRoots = [_tempHome],
-                        CampaignRoots = [_tempHome],
-                        PerceptionWorkspaceRoots = [_tempHome],
+                        SpellWorkspaceRoots = [_profile.TempHome],
+                        CampaignRoots = [_profile.TempHome],
+                        PerceptionWorkspaceRoots = [_profile.TempHome],
                     },
                     Integrations = built.Integrations with
                     {
@@ -251,7 +268,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                     },
                     Workspaces = built.Workspaces with
                     {
-                        DefaultRoot = _tempHome,
+                        DefaultRoot = _profile.TempHome,
                         EnableFileWrite = true,
                     },
                 };
@@ -281,7 +298,12 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     protected override IHost CreateHost(IHostBuilder builder)
     {
 
-        SeedGrimoireDatabaseIfAvailable();
+        if (_profile.ClaimInitialSeed())
+        {
+
+            SeedGrimoireDatabaseIfAvailable();
+
+        }
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP", "1");
 
@@ -296,28 +318,28 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     private void ApplyIsolatedUserProfile()
     {
 
-        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _tempHome);
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _profile.TempHome);
 
         global::System.Environment.SetEnvironmentVariable(InMemoryCredentialOptInVariable, "1");
 
-        global::System.Environment.SetEnvironmentVariable("HOME", _tempHome);
+        global::System.Environment.SetEnvironmentVariable("HOME", _profile.TempHome);
 
         if (OperatingSystem.IsWindows())
         {
 
-            string appData = Path.Combine(_tempHome, "AppData", "Roaming");
+            string appData = Path.Combine(_profile.TempHome, "AppData", "Roaming");
 
             Directory.CreateDirectory(appData);
 
             global::System.Environment.SetEnvironmentVariable("APPDATA", appData);
 
-            global::System.Environment.SetEnvironmentVariable("USERPROFILE", _tempHome);
+            global::System.Environment.SetEnvironmentVariable("USERPROFILE", _profile.TempHome);
 
         }
         else if (OperatingSystem.IsLinux())
         {
 
-            string xdgData = Path.Combine(_tempHome, ".local", "share");
+            string xdgData = Path.Combine(_profile.TempHome, ".local", "share");
 
             Directory.CreateDirectory(xdgData);
 
@@ -327,25 +349,29 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         else
         {
 
-            Directory.CreateDirectory(Path.Combine(_tempHome, "Library", "Application Support"));
+            Directory.CreateDirectory(Path.Combine(_profile.TempHome, "Library", "Application Support"));
 
         }
 
-        Directory.CreateDirectory(Path.Combine(_tempHome, ".config", "arcanum"));
+        Directory.CreateDirectory(Path.Combine(_profile.TempHome, ".config", "arcanum"));
 
     }
 
     private void SeedGrimoireDatabaseIfAvailable()
     {
 
-        if (_grimoireFixture is null)
+        if (_profile.Grimoire is not { } grimoire)
         {
 
             return;
 
         }
 
-        string databasePath = ArcanumPaths.GrimoireDatabaseFile;
+        string databasePath = Path.Combine(
+            _profile.TempHome,
+            ".config",
+            "arcanum",
+            "arcanum.db");
 
         string? directory = Path.GetDirectoryName(databasePath);
 
@@ -356,7 +382,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         }
 
-        string templateDatabasePath = _grimoireFixture.CopyDatabase();
+        string templateDatabasePath = grimoire.CopyDatabase();
 
         string templateSidecarPath = templateDatabasePath + ".kdf";
 
@@ -424,26 +450,15 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         try
         {
 
-            _grimoireFixture?.Dispose();
-
             // The application host uses the normal pooled SQLite connection string. Once the host
             // and Grimoire checkpoint have stopped, release those test-process pools before deleting
-            // this factory's isolated database tree on Windows.
+            // an owned profile's isolated database tree on Windows.
             SqliteConnection.ClearAllPools();
 
-            try
+            if (_ownsProfile)
             {
 
-                if (Directory.Exists(_tempHome))
-                {
-
-                    Directory.Delete(_tempHome, recursive: true);
-
-                }
-
-            }
-            catch
-            {
+                _profile.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
             }
 
