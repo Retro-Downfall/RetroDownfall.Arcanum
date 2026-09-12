@@ -8,6 +8,62 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 public sealed class ArcanumWebApplicationFactoryDisposalTests
 {
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Profile_disposal_attempts_every_step_before_becoming_terminal(
+        bool failPoolCleanup)
+    {
+
+        List<string> attempts = [];
+
+        InvalidOperationException expected = new("expected cleanup failure");
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: () =>
+            {
+
+                attempts.Add("pools");
+
+                if (failPoolCleanup)
+                {
+
+                    throw expected;
+
+                }
+
+            },
+            disposeGrimoire: () =>
+            {
+
+                attempts.Add("grimoire");
+
+                if (!failPoolCleanup)
+                {
+
+                    throw expected;
+
+                }
+
+            });
+
+        string profileHome = profile.TempHome;
+
+        InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => profile.DisposeAsync().AsTask());
+
+        Assert.Same(expected, thrown);
+
+        Assert.Equal(["pools", "grimoire"], attempts);
+
+        Assert.False(Directory.Exists(profileHome));
+
+        await profile.DisposeAsync();
+
+        Assert.Equal(["pools", "grimoire"], attempts);
+
+    }
+
     [SkippableFact]
     public async Task Host_disposal_never_deletes_an_externally_owned_restartable_profile()
     {
@@ -21,6 +77,10 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
         RestartableArcanumProfileFixture profile = new();
 
         string profileHome = profile.TempHome;
+
+        string siblingSentinel = Path.Combine(parentHome, "survives-profile-cleanup.txt");
+
+        File.WriteAllText(siblingSentinel, "outside restartable profile");
 
         try
         {
@@ -50,6 +110,10 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
             await profile.DisposeAsync();
 
             Assert.False(Directory.Exists(profileHome));
+
+            Assert.Equal(
+                "outside restartable profile",
+                File.ReadAllText(siblingSentinel));
 
         }
         finally

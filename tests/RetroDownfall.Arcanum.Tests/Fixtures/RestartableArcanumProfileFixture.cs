@@ -9,9 +9,17 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
     private int _initialSeedClaimed;
 
-    private int _disposed;
+    private readonly object _disposalSync = new();
 
-    internal RestartableArcanumProfileFixture()
+    private readonly Action _clearPools;
+
+    private readonly Action _disposeGrimoire;
+
+    private bool _disposed;
+
+    internal RestartableArcanumProfileFixture(
+        Action? clearPools = null,
+        Action? disposeGrimoire = null)
     {
 
         TempHome = Path.Combine(
@@ -41,6 +49,10 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
         CredentialStore = new InMemoryOsCredentialStore();
 
+        _clearPools = clearPools ?? SqliteConnection.ClearAllPools;
+
+        _disposeGrimoire = disposeGrimoire ?? (() => Grimoire?.Dispose());
+
     }
 
     internal string TempHome { get; }
@@ -59,30 +71,64 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
 
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_disposalSync)
         {
 
-            return ValueTask.CompletedTask;
-
-        }
-
-        try
-        {
-
-            SqliteConnection.ClearAllPools();
-
-            Grimoire?.Dispose();
-
-            if (Directory.Exists(TempHome))
+            if (_disposed)
             {
 
-                Directory.Delete(TempHome, recursive: true);
+                return ValueTask.CompletedTask;
 
             }
 
-        }
-        catch
-        {
+            try
+            {
+
+                try
+                {
+
+                    _clearPools();
+
+                }
+                finally
+                {
+
+                    _disposeGrimoire();
+
+                }
+
+            }
+            finally
+            {
+
+                try
+                {
+
+                    try
+                    {
+
+                        if (Directory.Exists(TempHome))
+                        {
+
+                            Directory.Delete(TempHome, recursive: true);
+
+                        }
+
+                    }
+                    catch
+                    {
+
+                    }
+
+                }
+                finally
+                {
+
+                    _disposed = true;
+
+                }
+
+            }
 
         }
 

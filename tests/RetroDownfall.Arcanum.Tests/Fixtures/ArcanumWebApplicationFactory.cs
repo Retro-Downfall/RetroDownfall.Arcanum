@@ -11,12 +11,15 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -298,7 +301,9 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     protected override IHost CreateHost(IHostBuilder builder)
     {
 
-        if (_profile.ClaimInitialSeed())
+        bool initialSeedClaimed = _profile.ClaimInitialSeed();
+
+        if (initialSeedClaimed)
         {
 
             SeedGrimoireDatabaseIfAvailable();
@@ -311,7 +316,65 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         _applicationHost = host;
 
+        if (initialSeedClaimed && _profile.Grimoire is not null)
+        {
+
+            SeedExternalInstallationIdentity(host);
+
+        }
+
         return host;
+
+    }
+
+    private void SeedExternalInstallationIdentity(IHost host)
+    {
+
+        string grimoireDirectory = Path.Combine(
+            _profile.TempHome,
+            ".config",
+            "arcanum");
+
+        using IServiceScope scope = host.Services.CreateScope();
+
+        Result<Guid> databaseIdentity = scope.ServiceProvider
+            .GetRequiredService<IInstallationResetDatabaseIdentityReader>()
+            .ReadAsync(CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+
+        Result<BackupRestoreProfileNamespace> profileNamespace =
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(grimoireDirectory);
+
+        Result<ArcanumMaintenanceLock> heldInstallationLock = host.Services
+            .GetRequiredService<InstallationResetMaintenanceLockAccessor>()
+            .BorrowHeldLock(grimoireDirectory);
+
+        if (databaseIdentity.IsFailure
+            || profileNamespace.IsFailure
+            || heldInstallationLock.IsFailure)
+        {
+
+            throw new InvalidOperationException(
+                "The restartable test profile's external installation identity could not be prepared.");
+
+        }
+
+        Result<Guid> seeded = new BackupRestoreJournalInstallationIdentityProvider(
+            _profile.CredentialStore)
+            .SeedFromDatabase(
+                heldInstallationLock.Value,
+                grimoireDirectory,
+                profileNamespace.Value,
+                databaseIdentity.Value);
+
+        if (seeded.IsFailure)
+        {
+
+            throw new InvalidOperationException(
+                "The restartable test profile's external installation identity could not be prepared.");
+
+        }
 
     }
 
