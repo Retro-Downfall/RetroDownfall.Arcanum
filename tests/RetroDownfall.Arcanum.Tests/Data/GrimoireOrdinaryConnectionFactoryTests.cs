@@ -415,6 +415,8 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         Assert.True(result.IsFailure);
 
+        Assert.Equal(GrimoireMaintenanceUnavailableException.Code, result.Error.Code);
+
         Assert.Equal(ConnectionState.Closed, connection.State);
 
         Assert.Equal(1, drain.ClearCount);
@@ -491,8 +493,10 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
     }
 
-    [Fact]
-    public async Task Generation_race_closes_clears_observes_and_then_terminally_refuses()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Generation_race_closes_clears_observes_and_then_terminally_refuses(bool lostAtFinalAdmission)
     {
 
         List<string> events = [];
@@ -501,8 +505,11 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
             connection: null,
             events)
         {
-            RevalidateResult = Result.Failure(
-                new Error(ErrorCodes.Covenant.Unavailable, "generation changed")),
+            RevalidateResult = lostAtFinalAdmission ? Result.Success() : Result.Failure(
+                new Error("Grimoire.StaleOpenGeneration", "generation changed")),
+
+            OpenedResult = lostAtFinalAdmission ? Result.Failure(
+                new Error("Grimoire.StaleOpenGeneration", "generation changed")) : Result.Success(),
         };
 
         RecordingLifecycle lifecycle = new(events)
@@ -538,6 +545,10 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
         Assert.Equal(ConnectionState.Closed, drain.StateAtClear);
 
         Assert.Same(connection, seam.ClearedConnection);
+
+        Assert.Equal(GrimoireMaintenanceUnavailableException.Code, result.Error.Code);
+
+        Assert.Equal("The Grimoire is temporarily unavailable while maintenance owns connection admission.", result.Error.Message);
 
         AssertOrdered(events, "revalidate", "clear", "after-clear", "refused", "release");
 

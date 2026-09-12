@@ -354,7 +354,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             registration.Dispose();
 
-            return Result.Failure(revalidated.Error);
+            return MaintenanceUnavailable();
 
         }
 
@@ -397,7 +397,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             registration.Dispose();
 
-            return Result.Failure(opened.Error);
+            return MaintenanceUnavailable();
 
         }
 

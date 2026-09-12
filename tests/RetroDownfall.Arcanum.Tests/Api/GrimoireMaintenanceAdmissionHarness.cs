@@ -173,6 +173,15 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.AddScoped<ICovenantErasureTransition>(sp => new ObservingMaintenanceTransition(
                 sp.GetRequiredService<CovenantErasureTransition>(), sp.GetRequiredService<CovenantRuntimeGenerationProvider>(), Journal));
 
+            ServiceDescriptor parentResolver = services.Last(descriptor =>
+                descriptor.ServiceType == typeof(IGrimoireOfflineTransitionParentReceiptResolver));
+
+            services.RemoveAll<IGrimoireOfflineTransitionParentReceiptResolver>();
+
+            services.AddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(sp =>
+                new ObservingMaintenanceParentReceiptResolver(
+                    (IGrimoireOfflineTransitionParentReceiptResolver)parentResolver.ImplementationFactory!(sp), Journal));
+
             // Preserve the factory's seeded API/Grimoire secret path while retaining blob keys
             // through the real file-secret implementation over this profile's fake OS store.
             ISecretStore seededSecrets = (ISecretStore)services.Single(descriptor => descriptor.ServiceType == typeof(ISecretStore)).ImplementationInstance!;
@@ -405,6 +414,11 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             if (seedParticipants)
             {
+                // The real worker initially reconciles before waiting on its queue. Finish
+                // that empty-profile scope before exposing A/B, so it cannot claim their
+                // identities as automatic Attempt=0 work ahead of the test-owned requests.
+                await harness.WorkerScopes.WaitUntilInitialScopeDisposedAsync();
+
                 await harness.SeedAsync();
 
                 registration.Seed = new(harness.SessionId, harness.ApprenticeId, harness.EntryId,

@@ -171,11 +171,11 @@ internal sealed partial class DataRetentionService
 
             }
 
-            if (current.Conflicts.Length > 0)
+            if (FirstUndrainableFactoryConflict(current) is { } currentConflict)
             {
 
                 return Result<DataRetentionApplyResult>.Failure(
-                    new Error(ErrorCodes.Data.Conflict, current.Conflicts[0].Message));
+                    new Error(ErrorCodes.Data.Conflict, currentConflict.Message));
 
             }
 
@@ -303,12 +303,14 @@ internal sealed partial class DataRetentionService
 
             revalidated = BindCovenantErasurePlanIdentity(revalidated, inventory);
 
-            if (revalidated.Blockers.Length > 0 || revalidated.Conflicts.Length > 0)
+            DataRetentionConflict? revalidatedConflict = FirstUndrainableFactoryConflict(revalidated);
+
+            if (revalidated.Blockers.Length > 0 || revalidatedConflict is not null)
             {
 
                 Error refusal = revalidated.Blockers.Length > 0
                     ? new Error(ErrorCodes.Data.Blocked, revalidated.Blockers[0].Message)
-                    : new Error(ErrorCodes.Data.Conflict, revalidated.Conflicts[0].Message);
+                    : new Error(ErrorCodes.Data.Conflict, revalidatedConflict!.Message);
 
                 return await FailCovenantResetAsync(
                     operation,
@@ -596,6 +598,12 @@ internal sealed partial class DataRetentionService
         }
 
     }
+
+    // A live admitted inference must finish during stage one. Keep its diagnostic in the
+    // confirmed plan; the closed pre-canonical snapshot refuses any Running row left by drain.
+    // Every other conflict remains a pre-launch refusal.
+    private static DataRetentionConflict? FirstUndrainableFactoryConflict(DataRetentionPlan plan) =>
+        plan.Conflicts.FirstOrDefault(static conflict => conflict.Code != "Data.InferenceRunActive");
 
     private static Result<DataRetentionApplyResult> MapFactoryErasureReplay(
         LongRunningOperationRequestIdentityMatch match,

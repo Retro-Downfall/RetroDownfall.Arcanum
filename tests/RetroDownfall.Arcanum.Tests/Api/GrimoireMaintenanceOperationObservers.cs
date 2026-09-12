@@ -45,6 +45,10 @@ internal sealed class MaintenanceJournalObservations
 
     internal CovenantVerifiedCandidateState? VerifiedCandidate { get; set; }
 
+    internal ICovenantExclusiveOperationLease? CommittedLease { get; set; }
+
+    internal List<MaintenanceParentResolution> ParentResolutions { get; } = [];
+
     internal bool PublishedExactCandidate { get; set; }
 
     internal byte[]? InitialJournalKeyFingerprint { get; set; }
@@ -210,6 +214,8 @@ internal sealed class ObservingMaintenanceTransition(CovenantErasureTransition i
 
     public async Task<Result> PublishCommittedAsync(ICovenantExclusiveOperationLease lease, CovenantVerifiedCandidateState candidate, CancellationToken token)
     {
+        observations.CommittedLease = lease;
+
         observations.PublishedExactCandidate = ReferenceEquals(observations.VerifiedCandidate, candidate);
 
         var result = await inner.PublishCommittedAsync(lease, candidate, token);
@@ -218,6 +224,27 @@ internal sealed class ObservingMaintenanceTransition(CovenantErasureTransition i
         {
             observations.RecordStep("transition:published");
         }
+
+        return result;
+    }
+}
+
+internal sealed record MaintenanceParentResolution(GrimoireOfflineTransitionKind Kind,
+    CovenantDigest? CommittedBinding, bool Succeeded, bool HasSink);
+
+// Delegate to the resolver chosen by production composition. Retaining its answer proves
+// standalone flows receive no parent capability to create or reconcile a receipt.
+internal sealed class ObservingMaintenanceParentReceiptResolver(IGrimoireOfflineTransitionParentReceiptResolver inner,
+    MaintenanceJournalObservations observations) : IGrimoireOfflineTransitionParentReceiptResolver
+{
+    public async Task<Result<IGrimoireOfflineTransitionParentReceiptSink?>> ResolveAsync(
+        ArcanumMaintenanceLock heldInstallationLock, GrimoireOfflineTransitionKind kind,
+        CovenantDigest nestedEffectDigest, CovenantDigest? committedBindingDigest, CancellationToken cancellationToken)
+    {
+        var result = await inner.ResolveAsync(heldInstallationLock, kind, nestedEffectDigest, committedBindingDigest, cancellationToken);
+
+        observations.ParentResolutions.Add(new(kind, committedBindingDigest, result.IsSuccess,
+            result.IsSuccess && result.Value is not null));
 
         return result;
     }

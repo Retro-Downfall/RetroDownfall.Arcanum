@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 /// <summary>
@@ -121,6 +123,25 @@ internal sealed class CovenantErasureInventorySource(
                     {
 
                         return Result<CovenantErasureInventorySummary>.Failure(healthy.Error);
+
+                    }
+
+                    // Stage one has drained every admitted request and effect. A persisted run
+                    // still Running now has no proven terminal accounting and cannot be erased.
+                    await using SqliteCommand running = connection.CreateCommand();
+
+                    running.Transaction = transaction;
+
+                    running.CommandText = "SELECT EXISTS (SELECT 1 FROM InferenceRuns WHERE Status = $running);";
+
+                    running.Parameters.AddWithValue("$running", (int)InferenceRunStatus.Running);
+
+                    if (Convert.ToInt64(await running.ExecuteScalarAsync(token).ConfigureAwait(false)) != 0)
+                    {
+
+                        return Result<CovenantErasureInventorySummary>.Failure(new Error(
+                            ErrorCodes.Data.Conflict,
+                            "An active inference run still protects its inputs and accounting chain after maintenance drain."));
 
                     }
 

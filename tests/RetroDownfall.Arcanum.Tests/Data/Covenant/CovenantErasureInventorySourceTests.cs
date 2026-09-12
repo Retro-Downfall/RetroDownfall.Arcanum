@@ -275,6 +275,46 @@ public sealed class CovenantErasureInventorySourceTests
 
     }
 
+    // Removing the post-drain guard would erase an orphaned Running run; widening it to
+    // terminal rows or to direct Covenant reset would refuse safe, unrelated transitions.
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, InferenceRunStatus.Running, false)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, InferenceRunStatus.Completed, true)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure, InferenceRunStatus.Failed, true)]
+    [InlineData(CovenantExclusiveOperation.CovenantReset, InferenceRunStatus.Running, true)]
+    public async Task Factory_preflight_refuses_only_a_still_running_inference_after_drain(
+        CovenantExclusiveOperation operation, InferenceRunStatus status, bool allowed)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: true);
+
+        await fixture.SeedInferenceAsync(status);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) =
+            await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
+            operation, dataset, period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, preflight.IsSuccess);
+
+        if (!allowed)
+        {
+            Assert.Equal(ErrorCodes.Data.Conflict, preflight.Error.Code);
+        }
+
+        Assert.Equal(1, opens.Opened);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+
+        Assert.Empty(fixture.OrdinaryConnections.Opened);
+    }
+
     [Fact]
     public async Task Factory_preflight_borrows_the_inventory_snapshot_and_opens_no_guard_handle()
     {
@@ -683,6 +723,7 @@ public sealed class CovenantErasureInventorySourceTests
 
                 await database.InstallCoreObjectsAsync(
                     [
+                        "InferenceRuns",
                         "artifact_sensitivity",
                         "managed_file_write_intents",
                         "local_erasure_work_items",
@@ -769,6 +810,20 @@ public sealed class CovenantErasureInventorySourceTests
                 connections,
                 new GrimoireSchemaManifestInspector(
                     GrimoireSchemaTierOwnershipRegistry.CreateDefault()));
+
+        internal async Task SeedInferenceAsync(InferenceRunStatus status)
+        {
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                INSERT INTO InferenceRuns (Id, RequestId, Surface, Purpose, StartedAt, Status)
+                VALUES ('25700000-0000-4000-8000-000000000002', 'orphan', 'test', 'test', '2026-09-12T00:00:00Z', $status);
+                """;
+
+            command.Parameters.AddWithValue("$status", (int)status);
+
+            await command.ExecuteNonQueryAsync();
+        }
 
         internal async Task SeedInterleavedLabelsAsync(
             int count,

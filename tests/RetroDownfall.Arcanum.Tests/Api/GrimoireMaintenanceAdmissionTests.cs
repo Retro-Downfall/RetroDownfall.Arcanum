@@ -258,7 +258,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         return await IndexingSnapshotAsync(db.Database.GetDbConnection(), attachmentId);
     }
 
-    private static async Task<string[]> ClosedIndexingSnapshotAsync(GrimoireMaintenanceAdmissionHarness harness, Guid attachmentId, CancellationToken cancellationToken)
+    private static async Task<string[]> ClosedIndexingSnapshotAsync(GrimoireMaintenanceAdmissionHarness harness, Guid attachmentId,
+        CancellationToken cancellationToken, Func<DbConnection, Task>? inspectDrainedParticipants = null)
     {
         IGrimoireExclusiveClosedLease closed = Assert.IsAssignableFrom<IGrimoireExclusiveClosedLease>(harness.Admission.LastClosedLease);
 
@@ -280,6 +281,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         try
         {
             await ledger.OpenAsync(cancellationToken);
+
+            if (inspectDrainedParticipants is not null)
+            {
+                await inspectDrainedParticipants(ledger.Connection);
+            }
 
             return await IndexingSnapshotAsync(ledger.Connection, attachmentId);
         }
@@ -343,6 +349,5 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         return rows.ToArray();
     }
-
 
 }

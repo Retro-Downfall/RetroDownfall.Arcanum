@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -15,6 +17,56 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Trait("Category", "Integration")]
 public sealed class GrimoireMaintenanceParticipantObserversTests
 {
+    [Fact]
+    public async Task Initial_worker_scope_waits_for_actual_async_disposal_before_participant_seed()
+    {
+        HeldInitialScopeSentinel sentinel = new();
+
+        await using ServiceProvider services = new ServiceCollection().AddScoped(_ => sentinel).BuildServiceProvider();
+
+        ObservingWorkerScopeFactory factory = new(services.GetRequiredService<IServiceScopeFactory>());
+
+        Task readyToSeed = factory.WaitUntilInitialScopeDisposedAsync();
+
+        Assert.False(readyToSeed.IsCompleted);
+
+        AsyncServiceScope scope = factory.CreateAsyncScope();
+
+        _ = scope.ServiceProvider.GetRequiredService<HeldInitialScopeSentinel>();
+
+        Task disposing = scope.DisposeAsync().AsTask();
+
+        try
+        {
+            await sentinel.Checkpoint.WaitUntilReachedAsync();
+
+            Assert.False(readyToSeed.IsCompleted);
+
+            Assert.Equal(0, Assert.Single(factory.Scopes).Disposals);
+
+            sentinel.Checkpoint.Release();
+
+            await disposing.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await readyToSeed.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, Assert.Single(factory.Scopes).Disposals);
+        }
+        finally
+        {
+            sentinel.Checkpoint.Release();
+
+            await disposing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    private sealed class HeldInitialScopeSentinel : IAsyncDisposable
+    {
+        internal MaintenanceCheckpoint Checkpoint { get; } = new();
+
+        public async ValueTask DisposeAsync() => await Checkpoint.PauseAsync(CancellationToken.None);
+    }
+
     [Fact]
     public async Task Effect_observation_keeps_the_real_work_lifetime_until_its_terminal_disposal()
     {

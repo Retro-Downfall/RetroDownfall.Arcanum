@@ -320,7 +320,16 @@ internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : 
 {
     private readonly ConcurrentQueue<WorkerScopeObservation> _scopes = new();
 
+    private readonly TaskCompletionSource<WorkerScopeObservation> _firstScope = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     internal IReadOnlyList<WorkerScopeObservation> Scopes => _scopes.ToArray();
+
+    internal async Task WaitUntilInitialScopeDisposedAsync()
+    {
+        WorkerScopeObservation first = await _firstScope.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await first.WaitUntilDisposedAsync();
+    }
 
     public IServiceScope CreateScope()
     {
@@ -329,6 +338,8 @@ internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : 
         WorkerScopeObservation observation = new();
 
         _scopes.Enqueue(observation);
+
+        _firstScope.TrySetResult(observation);
 
         return new ObservedScope(scope, observation);
     }

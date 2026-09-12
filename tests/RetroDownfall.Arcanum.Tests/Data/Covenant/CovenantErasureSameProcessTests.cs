@@ -1,4 +1,8 @@
 using System.Data;
+
+using System.Data.Common;
+
+using System.Globalization;
 using System.Text;
 
 using Microsoft.Data.Sqlite;
@@ -532,6 +536,113 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.Equal(0, operation.CheckpointVersion);
 
+    }
+
+    // The sole drainable diagnostic may reach the closed guard. A stranded run must survive
+    // that attempt, while other conflicts and stale previews must still refuse before closure.
+    [SkippableTheory]
+    [InlineData("orphan")]
+    [InlineData("other-before-launch")]
+    [InlineData("other-after-launch")]
+    [InlineData("stale-plan")]
+    public async Task Factory_inference_drain_preserves_orphans_and_strict_prelaunch_refusals(string scenario)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(storeFaults: faults);
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        await harness.SeedOrdinarySessionAsync();
+
+        await harness.SeedOrphanInferenceAsync();
+
+        string[] inferenceBefore = await harness.ReadOrphanInferenceAsync();
+
+        CovenantRouteState protectedBefore = await harness.CaptureRouteStateAsync();
+
+        string file = Path.Combine(harness.LogsRoot, "audit-20000101.jsonl");
+
+        await File.WriteAllTextAsync(file, "retained factory orphan sentinel");
+
+        if (scenario == "other-before-launch")
+        {
+            await harness.SeedConflictingOperationAsync(CancellationToken.None);
+        }
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Assert.Contains(confirmed.Conflicts, conflict => conflict.Code == "Data.InferenceRunActive");
+
+        if (scenario == "other-after-launch")
+        {
+            faults.AfterFactoryStarted = harness.SeedConflictingOperationAsync;
+        }
+
+        if (scenario == "stale-plan")
+        {
+            await harness.SeedOrdinarySessionAsync();
+        }
+
+        long ordinaryBefore = await harness.CountOrdinarySessionsAsync();
+
+        harness.RouteGate.ResetApplyObservations();
+
+        IGrimoireConnectionAdmissionGate admission = harness.Services.GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
+        long generation = admission.CurrentGeneration;
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(scenario == "stale-plan" ? ErrorCodes.Data.PlanChanged : ErrorCodes.Data.Conflict, result.Error.Code);
+
+        Assert.Equal(inferenceBefore, await harness.ReadOrphanInferenceAsync());
+
+        Assert.Equal(protectedBefore, await harness.CaptureRouteStateAsync());
+
+        Assert.Equal(ordinaryBefore, await harness.CountOrdinarySessionsAsync());
+
+        Assert.Equal("retained factory orphan sentinel", await File.ReadAllTextAsync(file));
+
+        Assert.Equal(before.DatasetGeneration, harness.Availability.Current.DatasetGeneration);
+
+        ICovenantEnvelopeCodec codec = harness.Services.GetRequiredService<ICovenantEnvelopeCodec>();
+
+        foreach ((CovenantEnvelopePurpose purpose, string token) in before.Tokens)
+        {
+            Assert.True(codec.Decode(purpose, token).IsSuccess);
+        }
+
+        Assert.True(admission.TryAcquireWorkLease(GrimoireWorkKind.SessionAttachmentIndexing, out var work));
+
+        await work!.DisposeAsync();
+
+        if (scenario == "orphan")
+        {
+            Assert.NotNull(harness.RouteGate.ExclusiveOwner);
+
+            Assert.Equal(generation + 1, admission.CurrentGeneration);
+
+            LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
+
+            Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+            Assert.Equal("grimoire.offline_transition_not_applied", operation.TerminalErrorCode);
+
+            Assert.Equal(2, operation.CheckpointVersion);
+        }
+        else
+        {
+            Assert.Null(harness.RouteGate.ExclusiveOwner);
+
+            Assert.Equal(generation, admission.CurrentGeneration);
+        }
     }
 
     [SkippableFact]
@@ -2403,6 +2514,54 @@ public sealed class CovenantErasureSameProcessTests
 
             return sessionId;
 
+        }
+
+        internal async Task SeedOrphanInferenceAsync()
+        {
+            await using AsyncServiceScope scope = Services.CreateAsyncScope();
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO InferenceRuns (Id, RequestId, Surface, Purpose, StartedAt, Status)
+                VALUES ('25700000-0000-4000-8000-000000000002', 'orphan', 'test', 'test', '2026-09-12T00:00:00Z', 0);
+                """);
+        }
+
+        internal async Task<string[]> ReadOrphanInferenceAsync()
+        {
+            await using AsyncServiceScope scope = Services.CreateAsyncScope();
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+            await db.Database.OpenConnectionAsync(timeout.Token);
+
+            await using DbCommand command = db.Database.GetDbConnection().CreateCommand();
+
+            command.CommandText = "SELECT * FROM InferenceRuns WHERE Id = '25700000-0000-4000-8000-000000000002';";
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(timeout.Token);
+
+            Assert.True(await reader.ReadAsync(timeout.Token));
+
+            string[] values = Enumerable.Range(0, reader.FieldCount)
+                .Select(index => reader.IsDBNull(index) ? "null" : Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture)!)
+                .ToArray();
+
+            Assert.False(await reader.ReadAsync(timeout.Token));
+
+            return values;
+        }
+
+        internal async Task SeedConflictingOperationAsync(CancellationToken cancellationToken)
+        {
+            await using AsyncServiceScope scope = Services.CreateAsyncScope();
+
+            await scope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>().CreateAsync(
+                new LongRunningOperationCreateRequest(LongRunningOperationKinds.DataRetentionMutation,
+                    LongRunningOperationRecoveryPolicy.ReconcileAndComplete, "retained conflict", DateTimeOffset.UtcNow), cancellationToken);
         }
 
         internal async Task<DataRetentionPlan> PlanFactoryAsync()
