@@ -2529,9 +2529,11 @@ public sealed class CovenantErasureSameProcessTests
                 prepared.Admission,
                 CancellationToken.None);
 
-        Assert.True(result.IsFailure);
-
         Assert.Equal(1, preSessionFailure.Failures);
+
+        Assert.Equal(0, preSessionFailure.ReopensAfterFailure);
+
+        Assert.True(result.IsFailure);
 
         Assert.Same(parked, operationWrites.LastSuccessfulWrite);
 
@@ -5668,7 +5670,13 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _failures;
 
+        private int _fired;
+
+        private int _reopensAfterFailure;
+
         internal int Failures => Volatile.Read(ref _failures);
+
+        internal int ReopensAfterFailure => Volatile.Read(ref _reopensAfterFailure);
 
         internal void FailNext(string stage) => Interlocked.Exchange(ref _stage, stage);
 
@@ -5687,7 +5695,21 @@ public sealed class CovenantErasureSameProcessTests
 
             Interlocked.Increment(ref _failures);
 
+            Interlocked.Exchange(ref _fired, 1);
+
             return true;
+
+        }
+
+        internal void RecordReopen()
+        {
+
+            if (Volatile.Read(ref _fired) != 0)
+            {
+
+                Interlocked.Increment(ref _reopensAfterFailure);
+
+            }
 
         }
 
@@ -5729,8 +5751,14 @@ public sealed class CovenantErasureSameProcessTests
                     AuthenticatedPreSessionFailure.InjectedFailure()))
                 : inner.QuiesceAsync(cancellationToken);
 
-        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
-            inner.ReopenAsync(cancellationToken);
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken)
+        {
+
+            failure.RecordReopen();
+
+            return inner.ReopenAsync(cancellationToken);
+
+        }
 
     }
 

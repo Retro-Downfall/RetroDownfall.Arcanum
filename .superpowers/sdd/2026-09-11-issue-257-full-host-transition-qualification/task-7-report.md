@@ -56,8 +56,8 @@ In progress. This report records the authenticated nonterminal-recovery slice. T
 1. Fresh review found that authenticated recovery arrived with real retained closures but still used launch-seeded `InventoryPrepared` progress until its phase session was reconstructed. Quiesce refusal or exact-journal resume refusal therefore reached ordinary `AbortBeforeErasureAsync`, reopened the writer, inferred a no-effect rollback, and treated the active journal as `NoJournal`.
 2. Focused RED: both injected `quiesce` and `resume` rows made `RunAuthenticatedAsync` report success through `RollbackAndReopen` instead of refusing recovery.
 3. The recovery-only pre-session unwind now bypasses ordinary abort and `CloseAsync`. It spends exactly one accepted `KeepClosed` on the retained Grimoire and Covenant authorities, preserves the adopted nonterminal operation and byte-identical journal evidence, never calls writer reopen, and returns attention/refusal. The ordinary fresh-run proven-no-effect rollback is unchanged.
-4. Restored GREEN: 2/2 rows prove no successful operation write, identical journal binding/slot/revision/digest, one successful `KeepClosed` per authority with zero commit/rollback, request/work/open/Covenant-read refusal, and a subsequent authenticated admission for the same operation.
-5. Mutation: forcing the recovery rows back through ordinary `AbortBeforeErasureAsync` made both rows RED again at the expected refusal assertion. The mutation was restored.
+4. Restored GREEN: 2/2 rows prove no successful operation write, identical journal binding/slot/revision/digest, one successful `KeepClosed` per authority with zero commit/rollback, zero disclosure-writer `ReopenAsync` calls after the injected refusal, request/work/open/Covenant-read refusal, and a subsequent authenticated admission for the same operation.
+5. Mutation: forcing the recovery rows back through ordinary `AbortBeforeErasureAsync` made both rows RED with expected post-fault writer reopens `0`, actual `1`. The mutation was restored.
 
 ### Exact V4/V2 handler guards
 
