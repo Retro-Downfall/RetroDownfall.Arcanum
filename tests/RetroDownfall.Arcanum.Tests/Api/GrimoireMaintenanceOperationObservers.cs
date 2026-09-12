@@ -29,7 +29,8 @@ internal sealed record RecordedMaintenancePublication(
     IGrimoireOfflineTransitionPayload Payload,
     int AcceptedGrimoireDispositions,
     Guid? PublishedDatasetGeneration,
-    bool MaintenanceLaneClosed);
+    bool MaintenanceLaneClosed,
+    RecordedMaintenanceOperationRead? InitialBindingOperation);
 
 internal sealed class MaintenanceJournalObservations
 {
@@ -79,8 +80,11 @@ internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJo
 
     private readonly IOsCredentialStore _credentials;
 
+    private readonly MaintenanceOperationObservations _operations;
+
     internal ObservingMaintenanceJournal(IOsCredentialStore credentials, GrimoireMaintenanceAdmissionObserver admission,
-        CovenantRuntimeGenerationProvider runtime, MaintenanceJournalObservations observations)
+        CovenantRuntimeGenerationProvider runtime, MaintenanceJournalObservations observations,
+        MaintenanceOperationObservations operations)
     {
         _admission = admission;
 
@@ -89,6 +93,8 @@ internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJo
         _observations = observations;
 
         _credentials = credentials;
+
+        _operations = operations;
 
         _inner = new GrimoireOfflineTransitionJournalStore(credentials,
             new GrimoireOfflineTransitionJournalFileStore(afterStep: RecordStep),
@@ -107,17 +113,32 @@ internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJo
         string guardedDirectory, Guid installationId, Guid operationId, GrimoireOfflineTransitionKind kind,
         byte payloadVersion, ReadOnlyMemory<byte> payloadBytes, CancellationToken cancellationToken) =>
         await ObserveAsync(await _inner.BeginAsync(heldInstallationLock, guardedDirectory, installationId, operationId, kind,
-            payloadVersion, payloadBytes, cancellationToken), cancellationToken);
+            payloadVersion, payloadBytes, cancellationToken), initialBindingOperation: null, cancellationToken);
 
     public async Task<Result<GrimoireOfflineTransitionJournalPublication>> BeginBoundAsync(ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory, Guid installationId, Guid operationId, GrimoireOfflineTransitionKind kind,
-        byte payloadVersion, GrimoireOfflineTransitionJournalPayloadFactory payloadFactory, CancellationToken cancellationToken) =>
-        await ObserveAsync(await _inner.BeginBoundAsync(heldInstallationLock, guardedDirectory, installationId, operationId, kind,
-            payloadVersion, payloadFactory, cancellationToken), cancellationToken);
+        byte payloadVersion, GrimoireOfflineTransitionJournalPayloadFactory payloadFactory, CancellationToken cancellationToken)
+    {
+        RecordedMaintenanceOperationRead? bindingOperation = _operations.Reads
+            .LastOrDefault(read => read.OperationId == operationId);
+
+        Result<GrimoireOfflineTransitionJournalPublication> result = await _inner.BeginBoundAsync(
+            heldInstallationLock,
+            guardedDirectory,
+            installationId,
+            operationId,
+            kind,
+            payloadVersion,
+            payloadFactory,
+            cancellationToken);
+
+        return await ObserveAsync(result, bindingOperation, cancellationToken);
+    }
 
     public async Task<Result<GrimoireOfflineTransitionJournalPublication>> AdvanceAsync(ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionJournalPublication current, ReadOnlyMemory<byte> payloadBytes, CancellationToken cancellationToken) =>
-        await ObserveAsync(await _inner.AdvanceAsync(heldInstallationLock, current, payloadBytes, cancellationToken), cancellationToken);
+        await ObserveAsync(await _inner.AdvanceAsync(heldInstallationLock, current, payloadBytes, cancellationToken),
+            initialBindingOperation: null, cancellationToken);
 
     public Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> RecoverAsync(ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory, CancellationToken cancellationToken) =>
@@ -127,7 +148,9 @@ internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJo
         GrimoireOfflineTransitionJournalPublication terminal, CancellationToken cancellationToken) =>
         _inner.RetireAsync(heldInstallationLock, terminal, cancellationToken);
 
-    private async Task<Result<GrimoireOfflineTransitionJournalPublication>> ObserveAsync(Result<GrimoireOfflineTransitionJournalPublication> result,
+    private async Task<Result<GrimoireOfflineTransitionJournalPublication>> ObserveAsync(
+        Result<GrimoireOfflineTransitionJournalPublication> result,
+        RecordedMaintenanceOperationRead? initialBindingOperation,
         CancellationToken cancellationToken)
     {
         if (result.IsSuccess)
@@ -144,7 +167,8 @@ internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJo
                 && (await lane.RevalidateDurableOwnerAsync((_, _, _) => ValueTask.FromResult(true), cancellationToken)).IsFailure;
 
             _observations.Record(new(publication with { PayloadBytes = publication.PayloadBytes.ToArray() }, payload,
-                _admission.ClosedLeases.Sum(lease => lease.Dispositions.Count), _runtime.Current.Availability.DatasetGeneration, laneClosed));
+                _admission.ClosedLeases.Sum(lease => lease.Dispositions.Count), _runtime.Current.Availability.DatasetGeneration,
+                laneClosed, initialBindingOperation));
         }
 
         return result;
@@ -325,19 +349,31 @@ internal sealed record RecordedMaintenanceTransition(
     DateTimeOffset UtcNow,
     string? TerminalErrorCode);
 
+internal sealed record RecordedMaintenanceOperationRead(
+    Guid OperationId,
+    long Revision,
+    int CheckpointVersion,
+    ImmutableArray<byte>? CheckpointPayload);
+
 internal sealed class MaintenanceOperationObservations
 {
     private readonly ConcurrentQueue<RecordedMaintenanceCheckpoint> _checkpoints = new();
 
     private readonly ConcurrentQueue<RecordedMaintenanceTransition> _transitions = new();
 
+    private readonly ConcurrentQueue<RecordedMaintenanceOperationRead> _reads = new();
+
     internal IReadOnlyList<RecordedMaintenanceCheckpoint> Checkpoints => _checkpoints.ToArray();
 
     internal IReadOnlyList<RecordedMaintenanceTransition> Transitions => _transitions.ToArray();
 
+    internal IReadOnlyList<RecordedMaintenanceOperationRead> Reads => _reads.ToArray();
+
     internal void Record(RecordedMaintenanceCheckpoint checkpoint) => _checkpoints.Enqueue(checkpoint);
 
     internal void Record(RecordedMaintenanceTransition transition) => _transitions.Enqueue(transition);
+
+    internal void Record(RecordedMaintenanceOperationRead read) => _reads.Enqueue(read);
 }
 
 // This scoped decorator never performs an extra read. Closed-period assertions consume only
@@ -365,8 +401,25 @@ internal sealed class RecordingLongRunningOperationStore(
         CancellationToken cancellationToken = default) =>
         inner.TryStartSingleFlightAsync(request, ownerId, utcNow, leaseExpiresAt, cancellationToken);
 
-    public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default) =>
-        inner.GetAsync(operationId, cancellationToken);
+    public async Task<LongRunningOperation?> GetAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default)
+    {
+        LongRunningOperation? operation = await inner.GetAsync(operationId, cancellationToken);
+
+        if (operation is not null)
+        {
+            observations.Record(new RecordedMaintenanceOperationRead(
+                operation.Id,
+                operation.Revision,
+                operation.CheckpointVersion,
+                operation.CheckpointPayload is null
+                    ? null
+                    : ImmutableArray.CreateRange(operation.CheckpointPayload)));
+        }
+
+        return operation;
+    }
 
     public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(Guid operationId, CancellationToken cancellationToken = default) =>
         inner.FindRequestIdentityAsync(operationId, cancellationToken);

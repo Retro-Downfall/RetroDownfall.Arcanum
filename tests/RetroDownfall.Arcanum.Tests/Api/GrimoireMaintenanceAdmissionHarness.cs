@@ -237,7 +237,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.AddSingleton<IGrimoireOfflineTransitionJournalStore>(sp => new ObservingMaintenanceJournal(
                 _profile.CredentialStore,
                 (GrimoireMaintenanceAdmissionObserver)sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
-                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(), Journal));
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(), Journal, Operations));
 
             services.RemoveAll<ILongRunningOperationStore>();
 

@@ -101,6 +101,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
+        await AssertEntryPointContextAsync(
+            entryPoint,
+            () => AssertRollbackScenarioAsync(entryPoint));
+    }
+
+    private static async Task AssertRollbackScenarioAsync(
+        GrimoireTransitionEntryPoint entryPoint)
+    {
+
         OneShotOutcomeFault fault = new(
             CovenantErasureFaultBoundary.BeforePhaseBegin,
             CovenantResetPhase.CanonicalApplied);
@@ -154,14 +163,33 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.NotNull(operation.CompletedAt);
 
-        AssertOutcomeLaunch(entryPoint, operation.CheckpointVersion, operation.CheckpointPayload!, terminal, requestedOperationId);
+        RecordedMaintenanceOperationRead bindingOperation = AssertInitialBindingOperation(
+            harness,
+            operationId);
+
+        AssertOutcomeLaunch(
+            entryPoint,
+            operation.CheckpointVersion,
+            operation.CheckpointPayload!,
+            terminal,
+            requestedOperationId,
+            bindingOperation);
 
         AssertOutcomeLaunchRejectsBindingMismatch(
             entryPoint,
             operation.CheckpointVersion,
             operation.CheckpointPayload!,
             terminal,
-            requestedOperationId);
+            requestedOperationId,
+            bindingOperation);
+
+        AssertOutcomeLaunchRejectsRevisionMismatch(
+            entryPoint,
+            operation.CheckpointVersion,
+            operation.CheckpointPayload!,
+            terminal,
+            requestedOperationId,
+            bindingOperation);
 
         Assert.Equal(originalGeneration + 1, harness.Admission.CurrentGeneration);
 
@@ -201,6 +229,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         GrimoireTransitionEntryPoint entryPoint)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await AssertEntryPointContextAsync(
+            entryPoint,
+            () => AssertKeepClosedScenarioAsync(entryPoint));
+    }
+
+    private static async Task AssertKeepClosedScenarioAsync(
+        GrimoireTransitionEntryPoint entryPoint)
+    {
 
         OneShotOutcomeFault fault = new(
             CovenantErasureFaultBoundary.AfterPhaseBegin,
@@ -317,7 +354,17 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.NotNull(checkpoint.Payload);
 
-        AssertOutcomeLaunch(entryPoint, checkpoint.Version, checkpoint.Payload!.Value.AsSpan(), parked, requestedOperationId);
+        RecordedMaintenanceOperationRead bindingOperation = AssertInitialBindingOperation(
+            harness,
+            operationId);
+
+        AssertOutcomeLaunch(
+            entryPoint,
+            checkpoint.Version,
+            checkpoint.Payload!.Value.AsSpan(),
+            parked,
+            requestedOperationId,
+            bindingOperation);
 
         await AssertNoParentReceiptAsync(harness, parked, timeout.Token, entryPoint);
 
@@ -348,6 +395,20 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.False(retainedAdmission.TryAcquireWorkLease(GrimoireWorkKind.SessionAttachmentIndexing, out var afterHostWork));
 
         Assert.Null(afterHostWork);
+    }
+
+    [Theory]
+    [InlineData(GrimoireTransitionEntryPoint.DirectCovenantReset)]
+    [InlineData(GrimoireTransitionEntryPoint.StandaloneFactoryReset)]
+    public async Task Outcome_scenario_assertion_failures_name_the_entry_point(
+        GrimoireTransitionEntryPoint entryPoint)
+    {
+        Xunit.Sdk.XunitException failure = await Assert.ThrowsAsync<Xunit.Sdk.XunitException>(() =>
+            AssertEntryPointContextAsync(
+                entryPoint,
+                () => Task.FromException(new Xunit.Sdk.XunitException("sentinel assertion"))));
+
+        Assert.StartsWith($"{entryPoint}: ", failure.Message, StringComparison.Ordinal);
     }
 
     private static async Task SeedOutcomeDatasetAsync(
@@ -514,12 +575,39 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.DoesNotContain(operationId.ToString(), raw, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static RecordedMaintenanceOperationRead AssertInitialBindingOperation(
+        GrimoireMaintenanceAdmissionHarness harness,
+        Guid operationId)
+    {
+        RecordedMaintenancePublication opening = Assert.Single(
+            harness.Journal.Publications,
+            publication => publication.InitialBindingOperation?.OperationId == operationId);
+
+        Assert.Same(harness.Journal.Publications.First(), opening);
+
+        Assert.Equal(GrimoireOfflineTransitionState.Prepared, opening.Payload.Lifecycle.State);
+
+        RecordedMaintenanceOperationRead operation = Assert.IsType<RecordedMaintenanceOperationRead>(
+            opening.InitialBindingOperation);
+
+        Assert.Equal(operationId, operation.OperationId);
+
+        Assert.NotNull(operation.CheckpointPayload);
+
+        Assert.Equal(
+            checked((ulong)operation.Revision),
+            opening.Payload.Binding.ExpectedDatabaseOperationRevision);
+
+        return operation;
+    }
+
     private static void AssertOutcomeLaunch(
         GrimoireTransitionEntryPoint entryPoint,
         int checkpointVersion,
         ReadOnlySpan<byte> checkpointPayload,
         RecordedMaintenancePublication publication,
-        Guid requestedOperationId)
+        Guid requestedOperationId,
+        RecordedMaintenanceOperationRead bindingOperation)
     {
         try
         {
@@ -528,7 +616,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 checkpointVersion,
                 checkpointPayload,
                 publication,
-                requestedOperationId);
+                requestedOperationId,
+                bindingOperation);
         }
         catch (Xunit.Sdk.XunitException failure)
         {
@@ -541,7 +630,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         int checkpointVersion,
         ReadOnlySpan<byte> checkpointPayload,
         RecordedMaintenancePublication publication,
-        Guid requestedOperationId)
+        Guid requestedOperationId,
+        RecordedMaintenanceOperationRead bindingOperation)
     {
         GrimoireOfflineTransitionBinding authenticated = publication.Payload.Binding;
 
@@ -580,15 +670,21 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(authenticated.DatabaseOperationLaunchBindingDigest, launch.Digest);
 
-        Assert.True(authenticated.ExpectedDatabaseOperationRevision <= long.MaxValue);
+        Assert.Equal(authenticated.OperationId, bindingOperation.OperationId);
 
-        Assert.True(authenticated.ExpectedDatabaseOperationRevision > checked((ulong)launch.StartingRevision));
+        Assert.Equal(checkpointVersion, bindingOperation.CheckpointVersion);
+
+        Assert.Equal(checkpointPayload.ToArray(), bindingOperation.CheckpointPayload!.Value.ToArray());
+
+        Assert.True(bindingOperation.Revision > launch.StartingRevision);
+
+        Assert.Equal(checked((ulong)bindingOperation.Revision), authenticated.ExpectedDatabaseOperationRevision);
 
         Result<GrimoireOfflineTransitionBinding> rebound = GrimoireOfflineTransitionLaunch.JournalBinding(
             launch,
             authenticated.SlotEpoch,
             authenticated.PayloadVersion,
-            checked((long)authenticated.ExpectedDatabaseOperationRevision),
+            bindingOperation.Revision,
             parentReceiptBindingDigest: null);
 
         Assert.True(rebound.IsSuccess, rebound.Error.Message);
@@ -606,7 +702,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         int checkpointVersion,
         ReadOnlySpan<byte> checkpointPayload,
         RecordedMaintenancePublication publication,
-        Guid requestedOperationId)
+        Guid requestedOperationId,
+        RecordedMaintenanceOperationRead bindingOperation)
     {
         GrimoireOfflineTransitionBinding mismatchedBinding = publication.Payload.Binding with
         {
@@ -627,7 +724,51 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         byte[] retainedCheckpointPayload = checkpointPayload.ToArray();
 
         Xunit.Sdk.XunitException failure = Assert.Throws<Xunit.Sdk.XunitException>(() =>
-            AssertOutcomeLaunch(entryPoint, checkpointVersion, retainedCheckpointPayload, mismatched, requestedOperationId));
+            AssertOutcomeLaunch(
+                entryPoint,
+                checkpointVersion,
+                retainedCheckpointPayload,
+                mismatched,
+                requestedOperationId,
+                bindingOperation));
+
+        Assert.Contains(entryPoint.ToString(), failure.Message, StringComparison.Ordinal);
+    }
+
+    private static void AssertOutcomeLaunchRejectsRevisionMismatch(
+        GrimoireTransitionEntryPoint entryPoint,
+        int checkpointVersion,
+        ReadOnlySpan<byte> checkpointPayload,
+        RecordedMaintenancePublication publication,
+        Guid requestedOperationId,
+        RecordedMaintenanceOperationRead bindingOperation)
+    {
+        GrimoireOfflineTransitionBinding mismatchedBinding = publication.Payload.Binding with
+        {
+            ExpectedDatabaseOperationRevision = publication.Payload.Binding.ExpectedDatabaseOperationRevision + 1,
+        };
+
+        IGrimoireOfflineTransitionPayload mismatchedPayload = publication.Payload switch
+        {
+            CovenantResetOfflineTransitionPayloadV1 reset => reset with { Binding = mismatchedBinding },
+
+            HealthyCatalogFactoryErasureOfflineTransitionPayloadV1 factory => factory with { Binding = mismatchedBinding },
+
+            _ => throw new Xunit.Sdk.XunitException($"{entryPoint}: unsupported outcome payload type."),
+        };
+
+        RecordedMaintenancePublication mismatched = publication with { Payload = mismatchedPayload };
+
+        byte[] retainedCheckpointPayload = checkpointPayload.ToArray();
+
+        Xunit.Sdk.XunitException failure = Assert.Throws<Xunit.Sdk.XunitException>(() =>
+            AssertOutcomeLaunch(
+                entryPoint,
+                checkpointVersion,
+                retainedCheckpointPayload,
+                mismatched,
+                requestedOperationId,
+                bindingOperation));
 
         Assert.Contains(entryPoint.ToString(), failure.Message, StringComparison.Ordinal);
     }
@@ -636,6 +777,25 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         entryPoint is GrimoireTransitionEntryPoint.DirectCovenantReset
             ? CovenantExclusiveOperation.CovenantReset
             : CovenantExclusiveOperation.HealthyCatalogFactoryErasure;
+
+    private static async Task AssertEntryPointContextAsync(
+        GrimoireTransitionEntryPoint entryPoint,
+        Func<Task> assertion)
+    {
+        try
+        {
+            await assertion();
+        }
+        catch (Xunit.Sdk.XunitException failure)
+        {
+            if (failure.Message.StartsWith($"{entryPoint}: ", StringComparison.Ordinal))
+            {
+                throw;
+            }
+
+            throw new Xunit.Sdk.XunitException($"{entryPoint}: {failure.Message}");
+        }
+    }
 
     private static async Task AssertRollbackRetirementAsync(
         GrimoireMaintenanceAdmissionHarness harness,
