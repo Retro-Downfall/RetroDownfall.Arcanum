@@ -36,6 +36,7 @@ internal sealed class RecordingRecoveryDispatchSeam(
     CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     : IGrimoireRecoveryOnlyUnlock,
         IHostProcessToolsRecoveryStartupClassifier,
+        IGrimoireOfflineTransitionTerminalSuffixFinisher,
         ICovenantRecoveryAuthorityBootstrapper,
         ICovenantClosedRecoveryHandoff,
         IGrimoireOfflineTransitionHandlerDispatch
@@ -66,7 +67,7 @@ internal sealed class RecordingRecoveryDispatchSeam(
     {
         steps.Add("marker");
 
-        return failAt == "marker"
+        return failAt is "marker" or "marker-terminal"
             ? Result<HostProcessToolsRecoveryMarkerSnapshot>.Failure(Refusal)
             : new HostProcessToolsRecoveryMarkerSnapshot(
                 new HostProcessToolsMarkerReadResult(HostProcessToolsMarkerReadStatus.Absent, null));
@@ -121,6 +122,26 @@ internal sealed class RecordingRecoveryDispatchSeam(
             failAt == "classify"
                 ? Result<IHostProcessToolsRuntimePolicy>.Failure(Refusal)
                 : Result<IHostProcessToolsRuntimePolicy>.Success(PermittedPolicy.Instance));
+    }
+
+    public Task<Result<GrimoireOfflineTransitionTerminalSuffixOutcome>> FinishAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        SqliteConnection recoveryConnection,
+        GrimoireOfflineTransitionRecoveryEvidence evidence,
+        CancellationToken cancellationToken)
+    {
+        steps.Add("terminal");
+
+        Assert.Equal(ConnectionState.Open, recoveryConnection.State);
+
+        return Task.FromResult(
+            failAt == "terminal"
+                ? Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Failure(Refusal)
+                : Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Success(
+                    failAt == "marker-terminal"
+                        ? GrimoireOfflineTransitionTerminalSuffixOutcome.Completed
+                        : GrimoireOfflineTransitionTerminalSuffixOutcome.Nonterminal));
     }
 
     public Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(

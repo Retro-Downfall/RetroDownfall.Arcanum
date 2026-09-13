@@ -657,6 +657,43 @@ public sealed class CovenantErasureInventorySourceTests
 
     }
 
+    [Fact]
+    public async Task Terminal_transition_tuple_read_accepts_an_exact_saturated_target()
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SetCanonicalEpochsAsync(
+            accelerator: long.MaxValue,
+            keyReclamation: long.MaxValue,
+            envelopeKey: long.MaxValue);
+
+        Result<CovenantOfflineTransitionSourceState> read = await fixture
+            .ReadTerminalObservedStateAsync();
+
+        Assert.True(read.IsSuccess, read.IsFailure ? read.Error.Message : null);
+
+        Assert.Equal((ulong)long.MaxValue, read.Value.AcceleratorEpoch);
+
+        Assert.Equal((ulong)long.MaxValue, read.Value.KeyReclamationEpoch);
+
+        Assert.Equal((ulong)long.MaxValue, read.Value.EnvelopeKeyEpoch);
+    }
+
+    [Fact]
+    public async Task Terminal_transition_tuple_read_refuses_noninteger_epoch_storage()
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.ShadowCanonicalTupleWithRealEpochsAsync();
+
+        Result<CovenantOfflineTransitionSourceState> read = await fixture
+            .ReadTerminalObservedStateAsync();
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
+    }
+
     /// <summary>
     /// A canonical singleton that is not there is a refusal rather than a default tuple.
     /// </summary>
@@ -1019,6 +1056,40 @@ public sealed class CovenantErasureInventorySourceTests
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
 
+        }
+
+        internal Task<Result<CovenantOfflineTransitionSourceState>> ReadTerminalObservedStateAsync() =>
+            CovenantErasureInventorySource.ReadOfflineTransitionObservedStateAsync(
+                _database.Connection,
+                transaction: null,
+                CancellationToken.None);
+
+        internal async Task ShadowCanonicalTupleWithRealEpochsAsync()
+        {
+            Guid generation = await ReadDatasetGenerationAsync();
+
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText =
+                """
+                CREATE TEMP TABLE covenant_state (
+                    StateKey,
+                    DatasetGeneration,
+                    AcceleratorEpoch,
+                    KeyReclamationEpoch,
+                    EnvelopeKeyEpoch);
+                INSERT INTO temp.covenant_state (
+                    StateKey,
+                    DatasetGeneration,
+                    AcceleratorEpoch,
+                    KeyReclamationEpoch,
+                    EnvelopeKeyEpoch)
+                VALUES (1, $generation, CAST(7 AS REAL), CAST(11 AS REAL), CAST(13 AS REAL));
+                """;
+
+            _ = command.Parameters.AddWithValue("$generation", generation.ToByteArray());
+
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
         }
 
         internal async Task DeleteCanonicalSingletonAsync()

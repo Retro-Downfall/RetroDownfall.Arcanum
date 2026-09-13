@@ -107,7 +107,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture profile, bool ownsProfile,
         MaintenanceAdoptionObservation? adoption, CovenantErasureFaultSeam? faultSeam,
-        RecoveryHostStartupObservation? startupObservation)
+        GrimoireOfflineTransitionTerminalSuffixFaultSeam? terminalSuffixFaultSeam,
+        RecoveryHostStartupObservation? startupObservation,
+        bool failCompletedOperationTransitions)
     {
         _profile = profile;
 
@@ -118,6 +120,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         OrdinaryMutations = startupObservation?.OrdinaryMutations ?? new OrdinaryMutationObservations();
 
         Operations = startupObservation?.Operations ?? new MaintenanceOperationObservations();
+
+        Operations.FailCompletedTransitions = failCompletedOperationTransitions;
 
         Journal = startupObservation?.Journal ?? new MaintenanceJournalObservations();
 
@@ -216,6 +220,28 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
                         (ICovenantRecoveryAuthorityBootstrapper)authority.ImplementationFactory!(sp),
                         startupObservation);
                 });
+
+                ServiceDescriptor dispatch = services.Single(descriptor =>
+                    descriptor.ServiceType == typeof(IGrimoireOfflineTransitionHandlerDispatch));
+
+                services.RemoveAll<IGrimoireOfflineTransitionHandlerDispatch>();
+
+                services.AddSingleton<IGrimoireOfflineTransitionHandlerDispatch>(sp =>
+                    new ObservingTerminalRecoveryDispatch(
+                        (IGrimoireOfflineTransitionHandlerDispatch)dispatch.ImplementationFactory!(sp),
+                        startupObservation));
+
+                services.RemoveAll<IGrimoireOfflineTransitionTerminalSuffixFinisher>();
+
+                services.AddSingleton<IGrimoireOfflineTransitionTerminalSuffixFinisher>(sp =>
+                    new ObservingTerminalSuffixFinisher(
+                        new GrimoireOfflineTransitionTerminalSuffixFinisher(
+                            sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                            sp.GetRequiredService<IServiceScopeFactory>(),
+                            sp.GetRequiredService<CovenantOperationGate>(),
+                            sp.GetRequiredService<GrimoireConnectionAdmissionGate>(),
+                            startupObservation.ObserveTerminalSuffixAsync),
+                        startupObservation));
             }
 
             // The production Serilog factory does not forward added providers. Match the existing
@@ -294,7 +320,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             services.AddScoped<ILongRunningOperationStore, RecordingLongRunningOperationStore>();
 
-            if (faultSeam is not null)
+            if (faultSeam is not null || terminalSuffixFaultSeam is not null)
             {
                 // The production registration constructs this concrete coordinator directly. A
                 // faulted host therefore replaces that concrete resolution with the same production
@@ -322,7 +348,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
                     sp.GetRequiredService<LongRunningOperationOwnership>(),
                     sp.GetRequiredService<TimeProvider>(),
                     sp.GetRequiredService<ILogger<CovenantErasureCoordinator>>(),
-                    faultSeam));
+                    faultSeam,
+                    terminalSuffixFaultSeam));
             }
 
             services.AddSingleton(Adoption);
@@ -415,6 +442,14 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             if (startupObservation is not null)
             {
+                services.RemoveAll<CovenantDisclosureWriter>();
+
+                services.AddSingleton(provider => new CovenantDisclosureWriter(
+                    provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                    provider.GetRequiredService<ICovenantAvailability>(),
+                    provider.GetRequiredService<ICovenantDisclosureTransactionWriter>(),
+                    startupObservation.ObserveDisclosureWriterReopen));
+
                 if (startupObservation.FailDisclosureWriterRestore)
                 {
                     services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
@@ -503,7 +538,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     internal static Task<GrimoireMaintenanceAdmissionHarness> StartAsync(
         RestartableArcanumProfileFixture? profile = null,
         MaintenanceAdoptionObservation? adoption = null,
-        CovenantErasureFaultSeam? faultSeam = null)
+        CovenantErasureFaultSeam? faultSeam = null,
+        GrimoireOfflineTransitionTerminalSuffixFaultSeam? terminalSuffixFaultSeam = null,
+        bool failCompletedOperationTransitions = false)
     {
         bool ownsProfile = profile is null;
 
@@ -517,7 +554,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         }
 
         return StartHostAsync(profile, ownsProfile, registration, seedParticipants: true, adoption, faultSeam,
-            startupObservation: null);
+            terminalSuffixFaultSeam,
+            startupObservation: null,
+            failCompletedOperationTransitions);
     }
 
     internal static Task<GrimoireMaintenanceAdmissionHarness> StartRecoveryAsync(
@@ -532,7 +571,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         }
 
         return StartHostAsync(profile, ownsProfile: false, registration, seedParticipants: false, adoption,
-            faultSeam: null, startupObservation);
+            faultSeam: null, terminalSuffixFaultSeam: null, startupObservation,
+            failCompletedOperationTransitions: false);
     }
 
     private static async Task<GrimoireMaintenanceAdmissionHarness> StartHostAsync(
@@ -542,10 +582,14 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         bool seedParticipants,
         MaintenanceAdoptionObservation? adoption,
         CovenantErasureFaultSeam? faultSeam,
-        RecoveryHostStartupObservation? startupObservation)
+        GrimoireOfflineTransitionTerminalSuffixFaultSeam? terminalSuffixFaultSeam,
+        RecoveryHostStartupObservation? startupObservation,
+        bool failCompletedOperationTransitions)
     {
         GrimoireMaintenanceAdmissionHarness harness = new(profile, ownsProfile, adoption, faultSeam,
-            startupObservation);
+            terminalSuffixFaultSeam,
+            startupObservation,
+            failCompletedOperationTransitions);
 
         startupObservation?.ObserveHarness(harness);
 
@@ -885,6 +929,12 @@ internal sealed class RecoveryHostStartupObservation
     private readonly TaskCompletionSource<GrimoireMaintenanceAdmissionHarness> _harnessCreated =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    private readonly TaskCompletionSource<GrimoireOfflineTransitionTerminalSuffixBoundary>
+        _terminalSuffixReached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly TaskCompletionSource _releaseTerminalSuffix =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     internal GrimoireDbReadiness Readiness { get; } = new();
 
     internal MaintenanceJournalObservations Journal { get; } = new();
@@ -899,15 +949,26 @@ internal sealed class RecoveryHostStartupObservation
 
     internal Result? AuthorityConsume { get; set; }
 
+    internal int DispatchCalls;
+
+    internal int TerminalSuffixCalls;
+
+    private int _disclosureWriterReopenCalls;
+
     internal bool? CovenantPermitted { get; set; }
 
     internal IHostProcessToolsRuntimePolicy? ActualHostToolsPolicy { get; set; }
 
     internal bool FailDisclosureWriterRestore { get; init; }
 
+    internal int DisclosureWriterReopenCalls => Volatile.Read(ref _disclosureWriterReopenCalls);
+
     internal Task FinalHostedServiceStarted => _finalHostedServiceStarted.Task;
 
     internal Task<GrimoireMaintenanceAdmissionHarness> HarnessCreated => _harnessCreated.Task;
+
+    internal Task<GrimoireOfflineTransitionTerminalSuffixBoundary> TerminalSuffixReached =>
+        _terminalSuffixReached.Task;
 
     internal long InitialOpenGeneration => Interlocked.Read(ref _initialOpenGeneration);
 
@@ -966,6 +1027,65 @@ internal sealed class RecoveryHostStartupObservation
 
     internal void ObserveHarness(GrimoireMaintenanceAdmissionHarness harness) =>
         _harnessCreated.TrySetResult(harness);
+
+    internal async Task<Result> ObserveTerminalSuffixAsync(
+        GrimoireOfflineTransitionTerminalSuffixBoundary boundary,
+        CancellationToken cancellationToken)
+    {
+        _ = _terminalSuffixReached.TrySetResult(boundary);
+
+        await _releaseTerminalSuffix.Task.WaitAsync(cancellationToken);
+
+        return Result.Success();
+    }
+
+    internal void ReleaseTerminalSuffix() => _releaseTerminalSuffix.TrySetResult();
+
+    internal void ObserveDisclosureWriterReopen() =>
+        _ = Interlocked.Increment(ref _disclosureWriterReopenCalls);
+}
+
+internal sealed class ObservingTerminalSuffixFinisher(
+    IGrimoireOfflineTransitionTerminalSuffixFinisher inner,
+    RecoveryHostStartupObservation observation)
+    : IGrimoireOfflineTransitionTerminalSuffixFinisher
+{
+    public Task<Result<GrimoireOfflineTransitionTerminalSuffixOutcome>> FinishAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        SqliteConnection recoveryConnection,
+        GrimoireOfflineTransitionRecoveryEvidence evidence,
+        CancellationToken cancellationToken)
+    {
+        _ = Interlocked.Increment(ref observation.TerminalSuffixCalls);
+
+        return inner.FinishAsync(
+            heldInstallationLock,
+            guardedDirectory,
+            recoveryConnection,
+            evidence,
+            cancellationToken);
+    }
+}
+
+internal sealed class ObservingTerminalRecoveryDispatch(
+    IGrimoireOfflineTransitionHandlerDispatch inner,
+    RecoveryHostStartupObservation observation) : IGrimoireOfflineTransitionHandlerDispatch
+{
+    public Task<Result<LongRunningOperationSettlementOutcome>> DispatchAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        LongRunningRecoveryOwnerEvidence ownerEvidence,
+        CancellationToken cancellationToken)
+    {
+        _ = Interlocked.Increment(ref observation.DispatchCalls);
+
+        return inner.DispatchAsync(
+            heldInstallationLock,
+            guardedDirectory,
+            ownerEvidence,
+            cancellationToken);
+    }
 }
 
 internal sealed class ForwardingDisclosureWriterLifecycle(

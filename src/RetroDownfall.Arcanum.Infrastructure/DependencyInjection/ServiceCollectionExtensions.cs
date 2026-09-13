@@ -1113,10 +1113,18 @@ public static class ServiceCollectionExtensions
 
         services.AddGrimoireOfflineTransitionHandlerDispatch();
 
+        services.AddSingleton<IGrimoireOfflineTransitionTerminalSuffixFinisher>(
+            static sp => new GrimoireOfflineTransitionTerminalSuffixFinisher(
+                sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<CovenantOperationGate>(),
+                sp.GetRequiredService<GrimoireConnectionAdmissionGate>()));
+
         services.AddSingleton<IGrimoireOfflineTransitionStartupRecovery>(
             static sp => new GrimoireOfflineTransitionStartupRecovery(
                 sp.GetRequiredService<IGrimoireRecoveryOnlyUnlock>(),
                 sp.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionTerminalSuffixFinisher>(),
                 sp.GetRequiredService<ICovenantRecoveryAuthorityBootstrapper>(),
                 sp.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()));
 

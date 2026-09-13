@@ -26,6 +26,8 @@ internal sealed class CovenantDisclosureWriter :
 
     private readonly ICovenantDisclosureTransactionWriter _transactions;
 
+    private readonly Action _observeReopen;
+
     private readonly Lock _state = new();
 
     private readonly SemaphoreSlim _serializer = new(1, 1);
@@ -47,7 +49,8 @@ internal sealed class CovenantDisclosureWriter :
     internal CovenantDisclosureWriter(
         IGrimoireOrdinaryConnectionFactory connections,
         ICovenantAvailability availability,
-        ICovenantDisclosureTransactionWriter transactions)
+        ICovenantDisclosureTransactionWriter transactions,
+        Action? observeReopen = null)
     {
 
         _connections = connections ?? throw new ArgumentNullException(nameof(connections));
@@ -56,6 +59,12 @@ internal sealed class CovenantDisclosureWriter :
 
         _transactions = transactions ?? throw new ArgumentNullException(nameof(transactions));
 
+        _observeReopen = observeReopen ?? NoObservation;
+
+    }
+
+    private static void NoObservation()
+    {
     }
 
     public async ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
@@ -194,6 +203,8 @@ internal sealed class CovenantDisclosureWriter :
 
     public async ValueTask<Result> ReopenAsync(CancellationToken cancellationToken)
     {
+
+        _observeReopen();
 
         long reopenEpoch;
 

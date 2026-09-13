@@ -321,6 +321,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
                 new TestApiKeySecretStore(GrimoireFixture.TestApiKey),
                 new GrimoireDbPassphraseSource()),
             PermittedRecoveryHostToolsClassifier.Instance,
+            NonterminalSuffixFinisher.Instance,
             new CovenantRecoveryAuthorityBootstrapper(
                 composition.Gate,
                 composition.Runtime,
@@ -332,6 +333,21 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
                     .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
                     .Value),
             dispatch);
+
+    private sealed class NonterminalSuffixFinisher
+        : IGrimoireOfflineTransitionTerminalSuffixFinisher
+    {
+        internal static NonterminalSuffixFinisher Instance { get; } = new();
+
+        public Task<Result<GrimoireOfflineTransitionTerminalSuffixOutcome>> FinishAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            string guardedDirectory,
+            SqliteConnection recoveryConnection,
+            GrimoireOfflineTransitionRecoveryEvidence evidence,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<GrimoireOfflineTransitionTerminalSuffixOutcome>.Success(
+                GrimoireOfflineTransitionTerminalSuffixOutcome.Nonterminal));
+    }
 
     private async Task CloseSeedingConnectionAsync()
     {

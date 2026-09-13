@@ -85,6 +85,32 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
     }
 
+    /// <summary>
+    /// Proves a fresh startup process has no live Covenant capability left by the process that
+    /// published a terminal offline-transition suffix.
+    /// </summary>
+    /// <remarks>
+    /// This is verification only: it never adopts, resumes, or completes an exclusive lease. A
+    /// terminal suffix cannot reconstruct the dead process's one-shot disposition authority, but it
+    /// can require the postcondition that no local owner or ordinary registration exists before it
+    /// records that the historical disposition is no longer live.
+    /// </remarks>
+    internal Result ProveFreshTerminalSuffixPostcondition()
+    {
+        lock (_sync)
+        {
+            return !_readinessPublished
+                && _registrations.Count == 0
+                && _campaignClosures.Count == 0
+                && _installationClosure is null
+                && _globalScopeClosure is null
+                    ? Result.Success()
+                    : Result.Failure(new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "A terminal offline transition requires a fresh process with no live Covenant authority."));
+        }
+    }
+
     public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
         CancellationToken cancellationToken) =>
         ValueTask.FromResult(

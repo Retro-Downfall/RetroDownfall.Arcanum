@@ -920,6 +920,132 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationState.Cancelling, persisted.State);
     }
 
+    [SkippableTheory]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, CovenantOfflineTransitionLaunchV4.CurrentVersion)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, DataRetentionFactoryTransitionLaunchV2.CurrentVersion)]
+    public async Task RequestCancellationAsync_DoesNotRewriteOwnerBoundOfflineTransitionAttention(
+        string kind,
+        int checkpointVersion)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation created = await store.CreateAsync(new(
+            kind,
+            kind == LongRunningOperationKinds.DataRetentionMutation
+                ? LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+                : LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Retain authenticated offline-transition recovery.",
+            now));
+
+        LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+            created.Id,
+            "offline-transition-owner",
+            now,
+            now.AddMinutes(1));
+
+        Assert.True(leased.Acquired);
+
+        Assert.True(await store.SaveCheckpointAsync(
+            created.Id,
+            "offline-transition-owner",
+            expectedCheckpointVersion: 0,
+            checkpointVersion,
+            checkpointPayload: [0x01],
+            checkpointReference: "offline-transition:" + created.Id.ToString("N"),
+            created.PublicSummary,
+            now.AddSeconds(1)));
+
+        LongRunningOperation checkpointed = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(created.Id));
+
+        Assert.True(await store.TryTransitionAsync(
+            created.Id,
+            checkpointed.Revision,
+            "offline-transition-owner",
+            LongRunningOperationState.ReconciliationRequired,
+            now.AddSeconds(2),
+            ErrorCodes.Covenant.MaintenanceFailed));
+
+        LongRunningOperation before = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(created.Id));
+
+        Assert.False(await store.RequestCancellationAsync(
+            created.Id,
+            before.Revision,
+            now.AddSeconds(3)));
+
+        LongRunningOperation after = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(created.Id));
+
+        Assert.Equal(before.State, after.State);
+
+        Assert.Equal(before.TerminalErrorCode, after.TerminalErrorCode);
+
+        Assert.Equal(before.Revision, after.Revision);
+
+        Assert.Equal(before.CheckpointVersion, after.CheckpointVersion);
+
+        Assert.Equal(before.CheckpointReference, after.CheckpointReference);
+
+        Assert.Equal(before.CheckpointPayload, after.CheckpointPayload);
+    }
+
+    [SkippableTheory]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, CovenantOfflineTransitionLaunchV4.CurrentVersion - 1)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, DataRetentionFactoryTransitionLaunchV2.CurrentVersion - 1)]
+    public async Task RequestCancellationAsync_RetainsLegacyRetentionCheckpointBehavior(
+        string kind,
+        int checkpointVersion)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 9, 13, 13, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation created = await store.CreateAsync(new(
+            kind,
+            kind == LongRunningOperationKinds.DataRetentionMutation
+                ? LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+                : LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Legacy retention checkpoint.",
+            now));
+
+        LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+            created.Id,
+            "legacy-owner",
+            now,
+            now.AddMinutes(1));
+
+        Assert.True(leased.Acquired);
+
+        Assert.True(await store.SaveCheckpointAsync(
+            created.Id,
+            "legacy-owner",
+            expectedCheckpointVersion: 0,
+            checkpointVersion,
+            checkpointPayload: [0x01],
+            checkpointReference: null,
+            created.PublicSummary,
+            now.AddSeconds(1)));
+
+        LongRunningOperation checkpointed = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(created.Id));
+
+        Assert.True(await store.RequestCancellationAsync(
+            created.Id,
+            checkpointed.Revision,
+            now.AddSeconds(2)));
+
+        Assert.Equal(
+            LongRunningOperationState.Cancelling,
+            (await store.GetAsync(created.Id))!.State);
+    }
+
     /// <summary>
     /// 'arcanum operation retry' parks the row in Pending. If the only discovery query ignored
     /// Pending, nothing would ever re-drive it, and for a data-retention kind Pending also blocks

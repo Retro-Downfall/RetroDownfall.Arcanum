@@ -220,6 +220,32 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         }
     }
 
+    /// <summary>
+    /// Proves terminal-suffix recovery is running on the fresh host's untouched admission gate.
+    /// </summary>
+    /// <remarks>
+    /// No dead-process Grimoire owner is reconstructed. The proof is deliberately stronger than
+    /// merely seeing Ordinary: the initial generation, empty admission sets, and absent maintenance
+    /// interlock show this process has not opened or closed a maintenance lifetime of its own.
+    /// </remarks>
+    internal Result ProveFreshTerminalSuffixPostcondition()
+    {
+        lock (_sync)
+        {
+            return _state == GateState.Ordinary
+                && _generation == 1
+                && _closure is null
+                && _maintenanceAdoptionInterlockOwner is null
+                && _unresolvedOpens.Count == 0
+                && _requestLeases.Count == 0
+                && _workLeases.Count == 0
+                    ? Result.Success()
+                    : Result.Failure(new Error(
+                        ErrorCodes.Covenant.ManualRecoveryRequired,
+                        "A terminal offline transition requires an untouched fresh-process Grimoire gate."));
+        }
+    }
+
     public bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
         out IGrimoireRequestLease? lease)

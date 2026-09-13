@@ -209,6 +209,45 @@ internal sealed class InstallationResetNestedTransitionReceiptSink(
 
     }
 
+    public async Task<Result<CovenantDigest>> VerifyCompletedAsync(
+        CovenantDigest terminalWinnerDigest,
+        CancellationToken cancellationToken)
+    {
+        _heldInstallationLock.AssertHeldFor(_store.GuardedRoot);
+
+        if (!terminalWinnerDigest.IsValid)
+        {
+            return Refused<CovenantDigest>();
+        }
+
+        Result<InstallationResetActivePublication> current = await ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (current.IsFailure
+            || current.Value.Payload.NestedTransitionReceipt is not
+            {
+                Version: 1,
+                Phase: InstallationResetNestedTransitionPhase.Completed,
+                NestedEffectDigest: { } effect,
+                TerminalWinnerDigest: { } winner,
+            } receipt
+            || receipt.NestedOperationId != nestedOperationId
+            || effect != nestedEffectDigest
+            || winner != terminalWinnerDigest)
+        {
+            return Refused<CovenantDigest>();
+        }
+
+        Result<CovenantDigest> binding = GrimoireOfflineTransitionParentReceipt.BindingDigest(
+            current.Value.Payload.OperationId,
+            receipt.NestedOperationId,
+            effect);
+
+        return binding.IsSuccess && binding.Value == BindingDigest
+            ? binding
+            : Refused<CovenantDigest>();
+    }
+
     private async Task<Result<InstallationResetActivePublication>> ReadAsync(
         CancellationToken cancellationToken)
     {

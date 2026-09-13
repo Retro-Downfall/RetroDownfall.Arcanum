@@ -112,6 +112,13 @@ internal interface IGrimoireOfflineTransitionParentReceiptSink
         CovenantDigest terminalWinnerDigest,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Rereads an already-satisfied receipt and proves the exact terminal winner without writing.
+    /// </summary>
+    Task<Result<CovenantDigest>> VerifyCompletedAsync(
+        CovenantDigest terminalWinnerDigest,
+        CancellationToken cancellationToken);
+
 }
 
 /// <summary>

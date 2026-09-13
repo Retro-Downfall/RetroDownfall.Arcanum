@@ -540,6 +540,41 @@ internal delegate Task<Result> CovenantErasureFaultSeam(
     CovenantResetPhase phase,
     CancellationToken cancellationToken);
 
+/// <summary>Durable suffix boundaries available only to deterministic crash qualification.</summary>
+internal enum GrimoireOfflineTransitionTerminalSuffixBoundary : byte
+{
+    /// <summary>The exact terminal operation row was written and reread; its winner is not journaled.</summary>
+    DatabaseTerminalized = 1,
+
+    /// <summary>The terminal winner is durable in the authenticated journal.</summary>
+    DatabaseTerminalWinner = 2,
+
+    /// <summary>The exact parent receipt, or explicit no-parent fact, is durable.</summary>
+    ParentReceiptSatisfied = 3,
+
+    /// <summary>The old process closed its maintenance lane and recorded that fact.</summary>
+    LaneClosed = 4,
+
+    /// <summary>The old process spent its disposition while the journal still records it in flight.</summary>
+    CovenantDispositionInFlight = 5,
+
+    /// <summary>The fresh-readable postcondition of the disposition is durable.</summary>
+    CovenantDispositionVerified = 6,
+
+    /// <summary>Every logical suffix step is durable and only retirement remains.</summary>
+    RetirementPending = 7,
+
+    /// <summary>The typed retirement protocol completed its Closed-anchor and unlink sequence.</summary>
+    Retired = 8,
+}
+
+/// <summary>
+/// The inert production seam that lets tests interrupt after one durable terminal-suffix boundary.
+/// </summary>
+internal delegate Task<Result> GrimoireOfflineTransitionTerminalSuffixFaultSeam(
+    GrimoireOfflineTransitionTerminalSuffixBoundary boundary,
+    CancellationToken cancellationToken);
+
 /// <summary>
 /// The single coordinator for Covenant reset and healthy-catalog factory erasure.
 /// </summary>
@@ -584,7 +619,8 @@ internal sealed class CovenantErasureCoordinator(
     LongRunningOperationOwnership ownership,
     TimeProvider timeProvider,
     ILogger<CovenantErasureCoordinator> logger,
-    CovenantErasureFaultSeam? faultSeam = null)
+    CovenantErasureFaultSeam? faultSeam = null,
+    GrimoireOfflineTransitionTerminalSuffixFaultSeam? terminalSuffixFaultSeam = null)
 {
 
     /// <summary>
@@ -690,9 +726,17 @@ internal sealed class CovenantErasureCoordinator(
 
     private readonly CovenantErasureFaultSeam _faultSeam = faultSeam ?? NoFault;
 
+    private readonly GrimoireOfflineTransitionTerminalSuffixFaultSeam _terminalSuffixFaultSeam =
+        terminalSuffixFaultSeam ?? NoTerminalSuffixFault;
+
     private static Task<Result> NoFault(
         CovenantErasureFaultBoundary boundary,
         CovenantResetPhase phase,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(Result.Success());
+
+    private static Task<Result> NoTerminalSuffixFault(
+        GrimoireOfflineTransitionTerminalSuffixBoundary boundary,
         CancellationToken cancellationToken) =>
         Task.FromResult(Result.Success());
 
@@ -3800,6 +3844,15 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
+            Result interrupted = await _terminalSuffixFaultSeam(
+                GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalized,
+                cancellationToken).ConfigureAwait(false);
+
+            if (interrupted.IsFailure)
+            {
+                return Result<ReconciliationSuffix>.Failure(interrupted.Error);
+            }
+
             Result recorded = await phases.RecordTerminalWinnerAsync(winner, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -3808,6 +3861,15 @@ internal sealed class CovenantErasureCoordinator(
 
                 return Result<ReconciliationSuffix>.Failure(recorded.Error);
 
+            }
+
+            Result interruptedAfterWinner = await _terminalSuffixFaultSeam(
+                GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalWinner,
+                cancellationToken).ConfigureAwait(false);
+
+            if (interruptedAfterWinner.IsFailure)
+            {
+                return Result<ReconciliationSuffix>.Failure(interruptedAfterWinner.Error);
             }
 
         }
@@ -3861,6 +3923,15 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
+            Result interruptedAfterParent = await _terminalSuffixFaultSeam(
+                GrimoireOfflineTransitionTerminalSuffixBoundary.ParentReceiptSatisfied,
+                cancellationToken).ConfigureAwait(false);
+
+            if (interruptedAfterParent.IsFailure)
+            {
+                return Result<ReconciliationSuffix>.Failure(interruptedAfterParent.Error);
+            }
+
         }
 
         if (step < GrimoireOfflineTransitionReconciliationStep.LaneClosed)
@@ -3880,6 +3951,15 @@ internal sealed class CovenantErasureCoordinator(
 
                 return Result<ReconciliationSuffix>.Failure(lane.Error);
 
+            }
+
+            Result interruptedAfterLane = await _terminalSuffixFaultSeam(
+                GrimoireOfflineTransitionTerminalSuffixBoundary.LaneClosed,
+                cancellationToken).ConfigureAwait(false);
+
+            if (interruptedAfterLane.IsFailure)
+            {
+                return Result<ReconciliationSuffix>.Failure(interruptedAfterLane.Error);
             }
 
         }
@@ -3966,10 +4046,19 @@ internal sealed class CovenantErasureCoordinator(
             ? Result<ReconciliationSuffix>.Failure(parked.Error)
             : Result<ReconciliationSuffix>.Success(ReconciliationSuffix.Parked);
 
-    private static async Task<Result> RetireAsync(
+    private async Task<Result> RetireAsync(
         GrimoireOfflineTransitionPhaseSession phases,
         CancellationToken cancellationToken)
     {
+
+        Result interruptedInFlight = await _terminalSuffixFaultSeam(
+            GrimoireOfflineTransitionTerminalSuffixBoundary.CovenantDispositionInFlight,
+            cancellationToken).ConfigureAwait(false);
+
+        if (interruptedInFlight.IsFailure)
+        {
+            return interruptedInFlight;
+        }
 
         // Both publications are skipped when the journal already carries them, for the same reason the
         // suffix above is: a run resuming from a crash between them would otherwise fail on an edge it
@@ -3988,6 +4077,15 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
+            Result interruptedAfterDisposition = await _terminalSuffixFaultSeam(
+                GrimoireOfflineTransitionTerminalSuffixBoundary.CovenantDispositionVerified,
+                cancellationToken).ConfigureAwait(false);
+
+            if (interruptedAfterDisposition.IsFailure)
+            {
+                return interruptedAfterDisposition;
+            }
+
         }
 
         if (phases.State is not GrimoireOfflineTransitionState.RetirementPending)
@@ -4003,9 +4101,27 @@ internal sealed class CovenantErasureCoordinator(
 
             }
 
+            Result interruptedBeforeRetirement = await _terminalSuffixFaultSeam(
+                GrimoireOfflineTransitionTerminalSuffixBoundary.RetirementPending,
+                cancellationToken).ConfigureAwait(false);
+
+            if (interruptedBeforeRetirement.IsFailure)
+            {
+                return interruptedBeforeRetirement;
+            }
+
         }
 
-        return await phases.RetireAsync(cancellationToken).ConfigureAwait(false);
+        Result retired = await phases.RetireAsync(cancellationToken).ConfigureAwait(false);
+
+        if (retired.IsFailure)
+        {
+            return retired;
+        }
+
+        return await _terminalSuffixFaultSeam(
+            GrimoireOfflineTransitionTerminalSuffixBoundary.Retired,
+            cancellationToken).ConfigureAwait(false);
 
     }
 

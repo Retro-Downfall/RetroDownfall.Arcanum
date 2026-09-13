@@ -157,6 +157,40 @@ public sealed class InstallationResetNestedTransitionReceiptResolverTests : IAsy
 
     }
 
+    [Fact]
+    public async Task Verify_only_requires_the_exact_completed_winner_and_never_publishes()
+    {
+        using Harness harness = Create("verify-only");
+
+        Guid nested = Guid.Parse("70707070-7070-4070-8070-707070707070");
+
+        _ = await ClaimAsync(harness, nested);
+
+        IGrimoireOfflineTransitionParentReceiptSink sink =
+            Assert.IsAssignableFrom<IGrimoireOfflineTransitionParentReceiptSink>(
+                await ResolvedAsync(harness, committed: null));
+
+        CovenantDigest winner = Digest(0x91);
+
+        ulong claimedRevision = Published(harness).Envelope.Revision;
+
+        Assert.True((await sink.VerifyCompletedAsync(winner, CancellationToken.None)).IsFailure);
+
+        Assert.Equal(claimedRevision, Published(harness).Envelope.Revision);
+
+        _ = Value(await sink.PublishAndRereadAsync(winner, CancellationToken.None));
+
+        ulong completedRevision = Published(harness).Envelope.Revision;
+
+        Assert.True((await sink.VerifyCompletedAsync(Digest(0x92), CancellationToken.None)).IsFailure);
+
+        Assert.Equal(
+            sink.BindingDigest,
+            Value(await sink.VerifyCompletedAsync(winner, CancellationToken.None)));
+
+        Assert.Equal(completedRevision, Published(harness).Envelope.Revision);
+    }
+
     private static CovenantDigest Effect => Digest(0x11);
 
     private async Task<IGrimoireOfflineTransitionParentReceiptSink?> ResolvedAsync(

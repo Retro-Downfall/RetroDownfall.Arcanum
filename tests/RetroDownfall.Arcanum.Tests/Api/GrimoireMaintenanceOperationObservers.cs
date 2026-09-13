@@ -361,7 +361,8 @@ internal sealed record RecordedMaintenanceOperationRead(
     Guid OperationId,
     long Revision,
     int CheckpointVersion,
-    ImmutableArray<byte>? CheckpointPayload);
+    ImmutableArray<byte>? CheckpointPayload,
+    LongRunningOperation? Operation = null);
 
 internal sealed class MaintenanceOperationObservations
 {
@@ -376,6 +377,10 @@ internal sealed class MaintenanceOperationObservations
     internal IReadOnlyList<RecordedMaintenanceTransition> Transitions => _transitions.ToArray();
 
     internal IReadOnlyList<RecordedMaintenanceOperationRead> Reads => _reads.ToArray();
+
+    internal bool FailCompletedTransitions { get; set; }
+
+    internal int RefusedCompletedTransitions;
 
     internal void Record(RecordedMaintenanceCheckpoint checkpoint) => _checkpoints.Enqueue(checkpoint);
 
@@ -423,7 +428,13 @@ internal sealed class RecordingLongRunningOperationStore(
                 operation.CheckpointVersion,
                 operation.CheckpointPayload is null
                     ? null
-                    : ImmutableArray.CreateRange(operation.CheckpointPayload)));
+                    : ImmutableArray.CreateRange(operation.CheckpointPayload),
+                operation with
+                {
+                    CheckpointPayload = operation.CheckpointPayload is null
+                        ? null
+                        : [.. operation.CheckpointPayload],
+                }));
         }
 
         return operation;
@@ -500,6 +511,14 @@ internal sealed class RecordingLongRunningOperationStore(
         string? terminalErrorCode = null,
         CancellationToken cancellationToken = default)
     {
+        if (state is LongRunningOperationState.Completed
+            && observations.FailCompletedTransitions)
+        {
+            _ = Interlocked.Increment(ref observations.RefusedCompletedTransitions);
+
+            return false;
+        }
+
         bool result = await inner.TryTransitionAsync(operationId, expectedRevision, ownerId, state, utcNow, terminalErrorCode, cancellationToken);
 
         if (result)

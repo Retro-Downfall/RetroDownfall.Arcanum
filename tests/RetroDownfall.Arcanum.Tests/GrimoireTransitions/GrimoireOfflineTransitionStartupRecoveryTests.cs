@@ -96,7 +96,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.Equal(GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed, recovered.Value);
 
         Assert.Equal(
-            ["marker", "unlock", "classify", "load", "consume", "close", "dispatch"],
+            ["marker", "unlock", "terminal", "classify", "load", "consume", "close", "dispatch"],
             harness.Steps);
     }
 
@@ -166,17 +166,19 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
 
     [Theory]
 
-    [InlineData("marker", new[] { "marker" })]
+    [InlineData("marker", new[] { "marker", "unlock", "terminal", "close" })]
 
     [InlineData("unlock", new[] { "marker", "unlock" })]
 
-    [InlineData("classify", new[] { "marker", "unlock", "classify", "close" })]
+    [InlineData("terminal", new[] { "marker", "unlock", "terminal", "close" })]
 
-    [InlineData("load", new[] { "marker", "unlock", "classify", "load", "close" })]
+    [InlineData("classify", new[] { "marker", "unlock", "terminal", "classify", "close" })]
 
-    [InlineData("consume", new[] { "marker", "unlock", "classify", "load", "consume", "close" })]
+    [InlineData("load", new[] { "marker", "unlock", "terminal", "classify", "load", "close" })]
 
-    [InlineData("dispatch", new[] { "marker", "unlock", "classify", "load", "consume", "close", "dispatch" })]
+    [InlineData("consume", new[] { "marker", "unlock", "terminal", "classify", "load", "consume", "close" })]
+
+    [InlineData("dispatch", new[] { "marker", "unlock", "terminal", "classify", "load", "consume", "close", "dispatch" })]
     public async Task A_refusal_at_any_step_stops_the_pass_there(string failing, string[] expected)
     {
         using Harness harness = Create("short-circuit-" + failing, failAt: failing);
@@ -211,9 +213,33 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
                 harness.Journal,
                 Token));
 
-        Assert.Equal(["marker", "unlock", "classify", "close"], harness.Steps);
+        Assert.Equal(["marker", "unlock", "terminal", "classify", "close"], harness.Steps);
 
         Assert.True(harness.Unlock.Disposed);
+    }
+
+    /// <summary>
+    /// Pins only the tri-state branch order. The real encrypted-catalog proof is
+    /// <c>Exact_terminal_candidate_takes_the_terminal_route_before_authority_load</c>, which drives
+    /// this startup method through the production terminal finisher and exact terminal row.
+    /// </summary>
+    [Fact]
+    public async Task A_terminal_finisher_outcome_ignores_marker_failure_and_never_dispatches()
+    {
+        using Harness harness = Create("terminal-short-circuit", failAt: "marker-terminal");
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> recovered = await harness.Recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token);
+
+        Assert.Equal(GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed, recovered.Value);
+
+        Assert.Equal(["marker", "unlock", "terminal", "close"], harness.Steps);
     }
 
     /// <summary>
@@ -343,7 +369,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             steps,
             seam,
             Journal(exclusiveOperation),
-            new GrimoireOfflineTransitionStartupRecovery(seam, seam, seam, seam));
+            new GrimoireOfflineTransitionStartupRecovery(seam, seam, seam, seam, seam));
     }
 
     private static GrimoireOfflineTransitionRecoveryEvidence Journal(

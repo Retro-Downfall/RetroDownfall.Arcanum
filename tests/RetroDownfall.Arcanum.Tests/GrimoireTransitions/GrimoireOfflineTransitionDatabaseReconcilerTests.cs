@@ -462,6 +462,27 @@ public sealed class GrimoireOfflineTransitionDatabaseReconcilerTests
 
     }
 
+    [Fact]
+    public void The_bounded_terminal_projection_matches_the_fixed_protocol_vector()
+    {
+        GrimoireOfflineTransitionBinding binding = Journal() with
+        {
+            DatabaseOperationLaunchBindingDigest = new CovenantDigest(
+                [.. Enumerable.Range(0, 32).Select(static value => (byte)value)]),
+        };
+
+        CovenantDigest digest = GrimoireOfflineTransitionDatabaseReconciler.WinnerDigest(
+            binding,
+            Operation,
+            LongRunningOperationState.Completed,
+            terminalErrorCode: null,
+            revisionValue: 6);
+
+        Assert.Equal(
+            "b6580a4f8e2adaaa630769b4dd12c846208e25ee4a093f12b45f7fa611a7afdf",
+            Convert.ToHexStringLower(digest.Bytes));
+    }
+
     /// <summary>
     /// The terminal code is part of the evidence too, and of the comparison that reads it back: a
     /// row failed under somebody else's code is not this transition's answer.

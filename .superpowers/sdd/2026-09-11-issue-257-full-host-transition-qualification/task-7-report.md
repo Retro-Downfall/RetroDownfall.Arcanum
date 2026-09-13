@@ -104,6 +104,24 @@ These are slice checkpoints, not final Task 7 verification. All remaining Task 7
 - Same-process recovery explicitly qualifies retained-owner coordinator semantics. It does not claim cross-process authentication; the required real two-host tests remain pending.
 - Terminal rows remain unadoptable. No terminal-suffix behavior has been added in this slice.
 
+## Slice 3: exact terminal suffix recovery
+
+The complete slice chronology, rulings, mutation results, and test evidence are in
+`task-7-slice-3-report.md`. Startup now classifies an exact authenticated terminal row before
+host-tools authority and finishes only its missing winner/parent/lane/disposition/retirement suffix.
+Malformed terminal-looking evidence refuses without fallback; terminal rows are never adopted,
+re-CASed, dispatched, or replayed through a coordinator/effect handler. V4/V2 real two-host coverage
+spans all eight durable boundaries, exact commit and rollback, byte-stable operation rows, independent
+winner bytes, fresh-process gate proofs, deferred writer restoration, initial host generation, and
+entry-point-specific catalog/file/parent postconditions. Closed canonical/Retiring/absent cleanup stays
+in the earlier physical recovery path. The retained nonterminal finalizer continues through the
+slice-2 authenticated path and converges before readiness.
+
+An adjacent invariant correction prevents operator cancellation from rewriting current owner-bound
+V4/V2 checkpoint rows into a contradictory active-state/error shape; ordinary and legacy retention
+checkpoints retain cancellation. The real bound-parent finisher test proves completed-winner re-read,
+zero parent republish, exact remaining suffix, and typed journal retirement.
+
 ## Slice 2: real two-host authenticated recovery
 
 ### TDD chronology and rulings

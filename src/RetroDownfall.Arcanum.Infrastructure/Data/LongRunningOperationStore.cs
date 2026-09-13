@@ -1149,6 +1149,16 @@ internal sealed class LongRunningOperationStore(
             cancellationToken);
     }
 
+    /// <summary>
+    /// Requests cancellation without rewriting current V4/V2 offline-transition owners.
+    /// </summary>
+    /// <remarks>
+    /// Those checkpoints are owned by the authenticated journal and coordinator, including while
+    /// their durable row is parked for reconciliation. Turning one into <c>Cancelling</c> would
+    /// preserve an attention-only error code in an active state and make neither authority able to
+    /// prove its exact recovery contract. Older and ordinary operation checkpoints retain the
+    /// operator cancellation behavior.
+    /// </remarks>
     public Task<bool> RequestCancellationAsync(
         Guid operationId,
         long expectedRevision,
@@ -1160,6 +1170,9 @@ internal sealed class LongRunningOperationStore(
             SET "State" = @cancelling, "HeartbeatAt" = @now, "Revision" = "Revision" + 1
             WHERE "Id" = @id AND "Revision" = @revision
               AND "State" IN (@pending, @running, @waiting, @attention)
+              AND NOT (
+                  ("Kind" = @retentionMutation AND "CheckpointVersion" = @mutationOwnerVersion)
+                  OR ("Kind" = @retentionFactory AND "CheckpointVersion" = @factoryOwnerVersion))
             """,
             cmd =>
             {
@@ -1170,6 +1183,10 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
                 Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
+                Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
+                Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
+                Add(cmd, "@mutationOwnerVersion", CovenantOfflineTransitionLaunchV4.CurrentVersion);
+                Add(cmd, "@factoryOwnerVersion", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
                 Add(cmd, "@now", Format(utcNow));
             },
             cancellationToken);

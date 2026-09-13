@@ -280,6 +280,7 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
 internal sealed class GrimoireOfflineTransitionStartupRecovery(
     IGrimoireRecoveryOnlyUnlock unlock,
     IHostProcessToolsRecoveryStartupClassifier hostTools,
+    IGrimoireOfflineTransitionTerminalSuffixFinisher terminalSuffix,
     ICovenantRecoveryAuthorityBootstrapper authority,
     IGrimoireOfflineTransitionHandlerDispatch dispatch) : IGrimoireOfflineTransitionStartupRecovery
 {
@@ -291,6 +292,9 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
     private readonly IHostProcessToolsRecoveryStartupClassifier _hostTools =
         hostTools ?? throw new ArgumentNullException(nameof(hostTools));
+
+    private readonly IGrimoireOfflineTransitionTerminalSuffixFinisher _terminalSuffix =
+        terminalSuffix ?? throw new ArgumentNullException(nameof(terminalSuffix));
 
     private readonly IGrimoireOfflineTransitionHandlerDispatch _dispatch =
         dispatch ?? throw new ArgumentNullException(nameof(dispatch));
@@ -342,11 +346,6 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
         Result<HostProcessToolsRecoveryMarkerSnapshot> marker = _hostTools.CaptureMarker();
 
-        if (marker.IsFailure)
-        {
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
-        }
-
         Result<GrimoireRecoveryUnlockedCatalog> unlocked = await _unlock
             .OpenExistingAsync(heldInstallationLock, guardedDirectory, databasePath, cancellationToken)
             .ConfigureAwait(false);
@@ -354,6 +353,45 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         if (unlocked.IsFailure)
         {
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(unlocked.Error);
+        }
+
+        Result<GrimoireOfflineTransitionTerminalSuffixOutcome> terminal;
+
+        try
+        {
+            terminal = await _terminalSuffix.FinishAsync(
+                heldInstallationLock,
+                guardedDirectory,
+                unlocked.Value.Connection,
+                journal,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+
+            throw;
+        }
+
+        if (terminal.IsFailure)
+        {
+            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
+        }
+
+        if (terminal.Value is GrimoireOfflineTransitionTerminalSuffixOutcome.Completed)
+        {
+            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+
+            return GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed;
+        }
+
+        if (marker.IsFailure)
+        {
+            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
         }
 
         Result<IHostProcessToolsRuntimePolicy> provisionalHostTools;

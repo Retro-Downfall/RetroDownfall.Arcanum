@@ -1,3 +1,6 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Operations;
@@ -5,6 +8,10 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -17,6 +24,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Operations;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
@@ -668,6 +677,142 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
 
     }
 
+    private static async Task DriveFactoryToAppliedAsync(
+        GrimoireOfflineTransitionPhaseSession session)
+    {
+        await EnterApplyingAsync(session);
+
+        foreach (CovenantResetPhase phase in CovenantResetPhaseMachine.Ordered)
+        {
+            if (phase is CovenantResetPhase.InventoryPrepared)
+            {
+                continue;
+            }
+
+            if (phase is CovenantResetPhase.ReopenedVerified)
+            {
+                break;
+            }
+
+            if (phase is CovenantResetPhase.HandlesClosed)
+            {
+                Assert.True((await session.RecordFactoryContinuationAsync(
+                    CancellationToken.None)).IsSuccess);
+            }
+
+            await RunPhaseAsync(session, phase);
+        }
+    }
+
+    private static async Task<SqliteConnection> TerminalCatalogAsync(long terminalRevision)
+    {
+        SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand schema = connection.CreateCommand();
+
+        schema.CommandText = """
+            CREATE TABLE LongRunningOperations (
+                Id TEXT NOT NULL,
+                Kind TEXT NOT NULL,
+                State INTEGER NOT NULL,
+                RecoveryPolicy INTEGER NOT NULL,
+                RootOperationId TEXT NULL,
+                ParentOperationId TEXT NULL,
+                SessionId TEXT NULL,
+                RunId TEXT NULL,
+                InferenceRunId TEXT NULL,
+                BudgetReservationId TEXT NULL,
+                IdempotencyClaimId TEXT NULL,
+                CreatedAt TEXT NOT NULL,
+                StartedAt TEXT NULL,
+                HeartbeatAt TEXT NULL,
+                CompletedAt TEXT NULL,
+                LeaseOwner TEXT NULL,
+                LeaseExpiresAt TEXT NULL,
+                AttemptCount INTEGER NOT NULL,
+                CheckpointVersion INTEGER NOT NULL,
+                CheckpointPayload BLOB NOT NULL,
+                CheckpointReference TEXT NULL,
+                PublicSummary TEXT NOT NULL,
+                TerminalErrorCode TEXT NULL,
+                Revision INTEGER NOT NULL);
+
+            CREATE TABLE covenant_state (
+                StateKey INTEGER PRIMARY KEY,
+                DatasetGeneration BLOB NOT NULL,
+                AcceleratorEpoch INTEGER NOT NULL,
+                KeyReclamationEpoch INTEGER NOT NULL,
+                EnvelopeKeyEpoch INTEGER NOT NULL);
+            """;
+
+        await schema.ExecuteNonQueryAsync();
+
+        DataRetentionFactoryTransitionLaunchV2 launch = new(
+            DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+            Operation,
+            LongRunningOperationKinds.DataRetentionFactoryReset,
+            nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+            CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+            CovenantRecoveryCheckpointCodec.EncodeEffectDigest(Digest(0x11)),
+            Source,
+            Target,
+            new CovenantOfflineTransitionEpochsV1(1, 2, 3),
+            new CovenantOfflineTransitionEpochsV1(2, 3, 4),
+            StartingRevision: 3);
+
+        DateTimeOffset created = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
+
+        await using SqliteCommand seed = connection.CreateCommand();
+
+        seed.CommandText = """
+            INSERT INTO LongRunningOperations VALUES (
+                @id, @kind, @state, @policy,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                @created, @started, @heartbeat, @completed,
+                NULL, NULL, 1, @version, @payload, @reference, @summary, NULL, @revision);
+
+            INSERT INTO covenant_state VALUES (1, @target, 2, 3, 4);
+            """;
+
+        _ = seed.Parameters.AddWithValue("@id", Operation.ToString("N"));
+
+        _ = seed.Parameters.AddWithValue("@kind", LongRunningOperationKinds.DataRetentionFactoryReset);
+
+        _ = seed.Parameters.AddWithValue("@state", (int)LongRunningOperationState.Completed);
+
+        _ = seed.Parameters.AddWithValue("@policy", (int)LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        _ = seed.Parameters.AddWithValue("@created", UtcInstantText.Format(created));
+
+        _ = seed.Parameters.AddWithValue("@started", UtcInstantText.Format(created.AddSeconds(1)));
+
+        _ = seed.Parameters.AddWithValue("@heartbeat", UtcInstantText.Format(created.AddSeconds(2)));
+
+        _ = seed.Parameters.AddWithValue("@completed", UtcInstantText.Format(created.AddSeconds(3)));
+
+        _ = seed.Parameters.AddWithValue("@version", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
+
+        _ = seed.Parameters.AddWithValue("@payload", CovenantRecoveryCheckpointCodec.Encode(launch));
+
+        _ = seed.Parameters.AddWithValue(
+            "@reference",
+            CovenantResetCheckpointInitiator.CheckpointReference(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                Operation));
+
+        _ = seed.Parameters.AddWithValue("@summary", "Terminal factory transition.");
+
+        _ = seed.Parameters.AddWithValue("@revision", terminalRevision);
+
+        _ = seed.Parameters.AddWithValue("@target", Target.ToByteArray());
+
+        await seed.ExecuteNonQueryAsync();
+
+        return connection;
+    }
+
     private static async Task RunPhaseAsync(
         GrimoireOfflineTransitionPhaseSession session,
         CovenantResetPhase phase)
@@ -784,13 +929,202 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
         : IGrimoireOfflineTransitionParentReceiptSink
     {
 
+        internal int VerifyCalls { get; private set; }
+
+        internal int PublishCalls { get; private set; }
+
+        internal CovenantDigest? VerifiedWinner { get; private set; }
+
         public CovenantDigest BindingDigest { get; } = bindingDigest;
 
         public Task<Result<CovenantDigest>> PublishAndRereadAsync(
             CovenantDigest terminalWinnerDigest,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<CovenantDigest>.Success(BindingDigest));
+            CancellationToken cancellationToken)
+        {
+            PublishCalls++;
 
+            return Task.FromResult(Result<CovenantDigest>.Success(BindingDigest));
+        }
+
+        public Task<Result<CovenantDigest>> VerifyCompletedAsync(
+            CovenantDigest terminalWinnerDigest,
+            CancellationToken cancellationToken)
+        {
+            VerifyCalls++;
+
+            VerifiedWinner = terminalWinnerDigest;
+
+            return Task.FromResult(Result<CovenantDigest>.Success(BindingDigest));
+        }
+
+    }
+
+    private sealed class FixedParentResolver(IGrimoireOfflineTransitionParentReceiptSink parent)
+        : IGrimoireOfflineTransitionParentReceiptResolver
+    {
+        public Task<Result<IGrimoireOfflineTransitionParentReceiptSink?>> ResolveAsync(
+            ArcanumMaintenanceLock heldInstallationLock,
+            GrimoireOfflineTransitionKind kind,
+            CovenantDigest nestedEffectDigest,
+            CovenantDigest? committedBindingDigest,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IGrimoireOfflineTransitionParentReceiptSink?>.Success(parent));
+    }
+
+    [Fact]
+    public async Task A_recorded_bound_parent_is_reproved_before_the_remaining_real_suffix_retires()
+    {
+        CovenantDigest binding = Digest(0x71);
+
+        CovenantDigest winner = Digest(0x31);
+
+        StubParentReceipt parent = new(binding);
+
+        GrimoireOfflineTransitionPhaseSession session = await OpenAsync(
+            GrimoireOfflineTransitionKind.CovenantReset,
+            parent);
+
+        await DriveToAppliedAsync(session, CovenantResetPhaseMachine.Ordered);
+
+        Assert.True((await session.PrepareReopenAsync(
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.EnterVerifyingAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(
+            true,
+            true,
+            true,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.BeginReconciliationAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordTerminalWinnerAsync(winner, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordParentReceiptAsync(binding, CancellationToken.None)).IsSuccess);
+
+        ulong suffixStartRevision = session.Current.Raw.Envelope.Revision;
+
+        string journalPath = session.Current.Raw.Location.JournalPath;
+
+        Result verified = await GrimoireOfflineTransitionTerminalSuffixFinisher
+            .VerifyRecordedParentAsync(
+                binding,
+                session.Current.Payload.Lifecycle.ReconciliationEvidence!.Step,
+                parent,
+                winner,
+                CancellationToken.None);
+
+        Assert.True(verified.IsSuccess);
+
+        Assert.Equal(1, parent.VerifyCalls);
+
+        Assert.Equal(0, parent.PublishCalls);
+
+        Assert.Equal(winner, parent.VerifiedWinner);
+
+        Assert.True((await session.RecordLaneClosedAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.BeginCovenantDispositionAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.CompleteCovenantDispositionAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.PrepareRetirementAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(suffixStartRevision + 4, session.Current.Raw.Envelope.Revision);
+
+        Assert.Equal(GrimoireOfflineTransitionState.RetirementPending, session.State);
+
+        Assert.True((await session.RetireAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.False(File.Exists(journalPath));
+    }
+
+    [Fact]
+    public async Task The_terminal_finisher_reproves_a_bound_parent_and_retires_the_real_journal()
+    {
+        CovenantDigest parentBinding = Digest(0x71);
+
+        StubParentReceipt parent = new(parentBinding);
+
+        GrimoireOfflineTransitionPhaseSession session = await OpenAsync(
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure,
+            parent);
+
+        await DriveFactoryToAppliedAsync(session);
+
+        Assert.True((await session.PrepareReopenAsync(
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.EnterVerifyingAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(
+            true,
+            true,
+            true,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.BeginReconciliationAsync(CancellationToken.None)).IsSuccess);
+
+        const long terminalRevision = 6;
+
+        CovenantDigest winner = GrimoireOfflineTransitionDatabaseReconciler.WinnerDigest(
+            session.Binding,
+            Operation,
+            LongRunningOperationState.Completed,
+            terminalErrorCode: null,
+            terminalRevision);
+
+        Assert.True((await session.RecordTerminalWinnerAsync(
+            winner,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordParentReceiptAsync(
+            parentBinding,
+            CancellationToken.None)).IsSuccess);
+
+        GrimoireOfflineTransitionRecoveryEvidence evidence = Evidence(session);
+
+        string journalPath = session.Current.Raw.Location.JournalPath;
+
+        await using SqliteConnection connection = await TerminalCatalogAsync(terminalRevision);
+
+        await using ServiceProvider services = new ServiceCollection()
+            .AddScoped<IGrimoireOfflineTransitionParentReceiptResolver>(
+                _ => new FixedParentResolver(parent))
+            .BuildServiceProvider();
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = new(
+            new GrimoireOfflineTransitionJournalStore(_credentials),
+            GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        GrimoireOfflineTransitionTerminalSuffixFinisher finisher = new(
+            lifecycle,
+            services.GetRequiredService<IServiceScopeFactory>(),
+            CovenantOperationGateFixture.CreateGate(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        Result<GrimoireOfflineTransitionTerminalSuffixOutcome> finished = await finisher
+            .FinishAsync(
+                _lock,
+                _guarded,
+                connection,
+                evidence,
+                CancellationToken.None);
+
+        Assert.True(finished.IsSuccess, finished.IsFailure ? finished.Error.Message : null);
+
+        Assert.Equal(GrimoireOfflineTransitionTerminalSuffixOutcome.Completed, finished.Value);
+
+        Assert.Equal(1, parent.VerifyCalls);
+
+        Assert.Equal(0, parent.PublishCalls);
+
+        Assert.Equal(winner, parent.VerifiedWinner);
+
+        Assert.False(File.Exists(journalPath));
     }
 
     [Fact]

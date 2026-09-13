@@ -538,6 +538,33 @@ internal sealed class CovenantErasureInventorySource(
         ReadOfflineTransitionSourceStateAsync(
             SqliteConnection connection,
             SqliteTransaction? transaction,
+            CancellationToken cancellationToken) =>
+        await ReadOfflineTransitionStateAsync(
+            connection,
+            transaction,
+            requireAdvanceableEpochs: true,
+            cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Reads the exact canonical tuple for terminal recovery without requiring the already-selected
+    /// target to have another successor.
+    /// </summary>
+    internal static async Task<Result<CovenantOfflineTransitionSourceState>>
+        ReadOfflineTransitionObservedStateAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            CancellationToken cancellationToken) =>
+        await ReadOfflineTransitionStateAsync(
+            connection,
+            transaction,
+            requireAdvanceableEpochs: false,
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task<Result<CovenantOfflineTransitionSourceState>>
+        ReadOfflineTransitionStateAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            bool requireAdvanceableEpochs,
             CancellationToken cancellationToken)
     {
 
@@ -550,7 +577,10 @@ internal sealed class CovenantErasureInventorySource(
             FROM covenant_state
             WHERE StateKey = 1
               AND typeof(DatasetGeneration) = 'blob'
-              AND length(DatasetGeneration) = 16;
+              AND length(DatasetGeneration) = 16
+              AND typeof(AcceleratorEpoch) = 'integer'
+              AND typeof(KeyReclamationEpoch) = 'integer'
+              AND typeof(EnvelopeKeyEpoch) = 'integer';
             """;
 
         await using SqliteDataReader reader = await command
@@ -567,9 +597,9 @@ internal sealed class CovenantErasureInventorySource(
         Guid generation = new(reader.GetFieldValue<byte[]>(0));
 
         if (generation == Guid.Empty
-            || !TryReadAdvanceableEpoch(reader, 1, out ulong accelerator)
-            || !TryReadAdvanceableEpoch(reader, 2, out ulong keyReclamation)
-            || !TryReadAdvanceableEpoch(reader, 3, out ulong envelopeKey))
+            || !TryReadEpoch(reader, 1, requireAdvanceableEpochs, out ulong accelerator)
+            || !TryReadEpoch(reader, 2, requireAdvanceableEpochs, out ulong keyReclamation)
+            || !TryReadEpoch(reader, 3, requireAdvanceableEpochs, out ulong envelopeKey))
         {
 
             return Result<CovenantOfflineTransitionSourceState>.Failure(UnadvanceableCanonicalState);
@@ -586,30 +616,30 @@ internal sealed class CovenantErasureInventorySource(
     }
 
     /// <summary>
-    /// One epoch, when it is one a successor can still be preselected for.
+    /// One canonical persisted epoch, optionally restricted to one that still has a successor.
     /// </summary>
     /// <remarks>
-    /// The column is a signed integer whose check constraint already refuses zero and whose update
-    /// trigger already refuses a decrease, so both bounds below describe a row this product does not
-    /// write. They are checked anyway because the cost of being wrong is asymmetric: a refused read
-    /// is a message, and an accepted one is a launch committed to a target the database will reject
-    /// once there is no ordinary access left to fall back to.
+    /// The launch-time source reader refuses saturation because it must preselect a successor. The
+    /// terminal verifier permits saturation because that exact successor may already be the durable
+    /// target, but both readers require the raw SQLite INTEGER storage class and a positive value.
     /// </remarks>
-    private static bool TryReadAdvanceableEpoch(SqliteDataReader reader, int ordinal, out ulong epoch)
+    private static bool TryReadEpoch(
+        SqliteDataReader reader,
+        int ordinal,
+        bool requireAdvanceable,
+        out ulong epoch)
     {
 
         epoch = 0;
 
-        if (reader.IsDBNull(ordinal))
+        if (reader.GetValue(ordinal) is not long value)
         {
 
             return false;
 
         }
 
-        long value = reader.GetInt64(ordinal);
-
-        if (value is <= 0 or long.MaxValue)
+        if (value <= 0 || requireAdvanceable && value == long.MaxValue)
         {
 
             return false;

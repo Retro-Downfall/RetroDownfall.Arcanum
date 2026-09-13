@@ -594,7 +594,21 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
     /// </remarks>
     internal static CovenantDigest WinnerDigest(
         GrimoireOfflineTransitionBinding binding,
-        LongRunningOperation winner)
+        LongRunningOperation winner) =>
+        WinnerDigest(
+            binding,
+            winner.Id,
+            winner.State,
+            winner.TerminalErrorCode,
+            winner.Revision);
+
+    /// <summary>The same winner digest over the bounded immutable terminal projection.</summary>
+    internal static CovenantDigest WinnerDigest(
+        GrimoireOfflineTransitionBinding binding,
+        Guid operationId,
+        LongRunningOperationState state,
+        string? terminalErrorCode,
+        long revisionValue)
     {
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -605,11 +619,11 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
 
         hash.AppendData(binding.DatabaseOperationLaunchBindingDigest.Bytes);
 
-        hash.AppendData(winner.Id.ToByteArray(bigEndian: true));
+        hash.AppendData(operationId.ToByteArray(bigEndian: true));
 
-        hash.AppendData([(byte)winner.State]);
+        hash.AppendData([(byte)state]);
 
-        byte[] encoded = Encoding.UTF8.GetBytes(winner.TerminalErrorCode ?? string.Empty);
+        byte[] encoded = Encoding.UTF8.GetBytes(terminalErrorCode ?? string.Empty);
 
         byte[] length = new byte[sizeof(ushort)];
 
@@ -621,7 +635,7 @@ internal sealed class GrimoireOfflineTransitionDatabaseReconciler(
 
         byte[] revision = new byte[sizeof(long)];
 
-        BinaryPrimitives.WriteInt64BigEndian(revision, winner.Revision);
+        BinaryPrimitives.WriteInt64BigEndian(revision, revisionValue);
 
         hash.AppendData(revision);
 
