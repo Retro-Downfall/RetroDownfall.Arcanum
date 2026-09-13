@@ -116,6 +116,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Null(parked.Payload.Binding.ParentReceiptBindingDigest);
 
+        await AssertNoParentReceiptAsync(first, parked, timeout.Token, entryPoint);
+
         Assert.True(File.Exists(parked.Raw.Location.JournalPath));
 
         byte[] journalKeyFingerprint = ObservingMaintenanceJournal.JournalKeyFingerprint(
@@ -499,6 +501,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
                 Assert.True(decoded.IsSuccess, decoded.Error.Message);
 
+                await AssertInstallationIdentityAsync(
+                    fresh.Value.Connection,
+                    installationId,
+                    cancellationToken);
+
                 await AssertFactoryCatalogAsync(fresh.Value.Connection, decoded.Value, cancellationToken);
             }
         }
@@ -536,6 +543,24 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         {
             Assert.All(before.ManagedFiles.Keys, path => Assert.False(File.Exists(path), path));
         }
+    }
+
+    private static async Task AssertInstallationIdentityAsync(
+        SqliteConnection connection,
+        Guid expected,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT InstallationIdentity
+            FROM covenant_authority_state
+            WHERE StateKey = 1;
+            """;
+
+        Assert.Equal(
+            expected.ToString("D").ToUpperInvariant(),
+            Assert.IsType<string>(await command.ExecuteScalarAsync(cancellationToken)));
     }
 
     private static async Task AssertRecoveredCovenantCatalogAsync(

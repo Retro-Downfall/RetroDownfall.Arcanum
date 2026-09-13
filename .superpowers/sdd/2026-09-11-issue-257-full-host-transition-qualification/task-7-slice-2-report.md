@@ -20,6 +20,8 @@
 
 The complete chronology is in `task-7-report.md`. The production gaps were each observed as focused REDs: unpublished real host policy blocked Load; `ErasureIncomplete` blocked adoption; null initial diagnostics blocked candidate projection; and pre-schema writer reopen blocked verified recovery. Restored mutations killed provisional classification, held-lock adoption, initial diagnostics, exact identity, the post-secret real-policy veto, authenticated coordinator writer deferral, and both sides of the bootstrap writer-order window. All were restored before final verification.
 
+Post-commit self-review tightened two existing requirements without changing production: the parked V4/V2 rows now directly prove no active parent reset publication, and the terminal V2 row re-reads and exact-matches the installation identity from `covenant_authority_state`. The focused two-host V4/V2 plus writer-failure selection passed 3/3 after those assertions were added.
+
 ## Verification
 
 - `dotnet test ... --filter '<startup/classifier/authority/adoption/runtime selection>'`: 72/72 passed.
