@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. The authenticated nonterminal-recovery and real two-host V4/V2 slices are implemented. The terminal-suffix finisher and matrix, retained-finalizer restart, final Task 7 authority suites, and final Task 7 commit remain pending. Slice 2 has its standalone evidence report in `task-7-slice-2-report.md`.
+Task 7 implementation and all three slices are complete through `3053c778d3c4e13dbddf203c3448d52b3797e476`. Task 7 formal review remains pending only this aggregate-report correction. Task 8, delivery, and the local Ollama qualification remain pending and are outside this report's completed scope. Slice 2 and slice 3 retain their standalone evidence reports in `task-7-slice-2-report.md` and `task-7-slice-3-report.md`.
 
 ## Binding rulings applied
 
@@ -150,6 +150,11 @@ theory, 7-row routing/rollback/finalizer/Closed cluster, 2 real fresh-gate rows,
 rows, and isolated architecture authority. The bounded Task 7 startup/authentication plus terminal,
 phase-session, cancellation, and architecture selection passed 396/396. Fresh Release builds of the
 test project and solution both completed with zero warnings and zero errors.
+
+Scoped re-review of `f92d671f..3053c778` passed 8/8 focused rows. The original four formal-review
+findings—catalog installation identity, joint row/journal classification, safety regression/mutation
+proof, and recovery-host cleanup ownership—were all addressed, with no code or test regression found.
+The sole remaining review item was the stale aggregate Status corrected above.
 
 ## Slice 2: real two-host authenticated recovery
 
