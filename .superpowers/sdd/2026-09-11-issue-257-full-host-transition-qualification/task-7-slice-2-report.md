@@ -40,3 +40,9 @@ Post-commit self-review tightened two existing requirements without changing pro
 - Host-1 and host-2 generations are not compared as a shared process value; host 2 is checked only against its own captured baseline.
 - The second-host test owns cleanup from task creation onward and cannot detach startup while the shared profile is disposed.
 - No terminal row was made adoptable and no terminal-suffix behavior was introduced.
+
+## Formal review fix round 1
+
+1. The writer-restoration failure row previously asserted its expected failure only in the `catch` arm. Mutating `FailDisclosureWriterRestore` to `false` therefore let a fully successful startup follow the ordinary success path and pass 1/1. The expected-failure mode now owns the returned harness with `await using` and explicitly fails if startup reaches readiness. With the bypass mutation still active, the row turned RED with `Authenticated disclosure-writer restoration was expected to fail, but startup reached readiness.` Restoring the real injected failure returned the row GREEN.
+2. Host 1 was explicitly disposed at the intended restart boundary but had no enclosing ownership if setup failed earlier. A focused controlled exception immediately after `StartAsync` observed `IsDisposed == false` under the old declaration. Host 1 is now declared with `await using` while retaining the idempotent explicit early disposal. The same focused row is GREEN and proves that the pre-restart exception path disposes the harness.
+3. The complete restored recovery selection—V4, V2, expected writer failure, and early host-1 setup failure—passed 4/4 with 0 failures and 0 skips. This round changes test ownership/assertions only; production behavior is unchanged.

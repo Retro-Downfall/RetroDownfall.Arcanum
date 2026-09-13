@@ -141,3 +141,10 @@ These are slice checkpoints, not final Task 7 verification. All remaining Task 7
 - `dotnet build RetroDownfall.Arcanum.slnx -c Release --no-restore --nologo`: succeeded with 0 warnings and 0 errors after restoring the six missing isolated-worktree assets files.
 
 These are slice-2 checkpoints, not final Task 7 verification. Terminal-suffix behavior remains exclusively slice 3.
+
+### Slice 2 formal review fix round 1
+
+1. Mutation first set the writer-failure seam to `false`. The existing expected-failure row incorrectly passed 1/1 by entering the ordinary successful-startup path, confirming the review finding.
+2. The expected-failure path now separately awaits startup, disposes any unexpectedly returned harness, and throws an explicit test failure if readiness succeeds. With the bypass mutation retained it turned RED with the intended unexpected-success message; restoring the failure seam returned GREEN.
+3. A focused pre-restart exception seam observed host 1 remained undisposed under the old local declaration. Declaring host 1 with `await using` while retaining its explicit idempotent disposal at the restart boundary made the row GREEN.
+4. Restored focused verification passed V4, V2, expected writer failure, and early host-1 cleanup 4/4 with no failures or skips. No production files changed in this review round.

@@ -59,9 +59,34 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 failDisclosureWriterRestore: true));
     }
 
+    [SkippableFact]
+    public async Task First_host_is_disposed_when_pre_restart_setup_throws()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireMaintenanceAdmissionHarness? observed = null;
+
+        InvalidOperationException expected = new("controlled pre-restart setup failure");
+
+        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => AssertTwoHostRecoveryAsync(
+                GrimoireTransitionEntryPoint.DirectCovenantReset,
+                afterFirstHostStarted: harness =>
+                {
+                    observed = harness;
+
+                    throw expected;
+                }));
+
+        Assert.Same(expected, failure);
+
+        Assert.True(Assert.IsType<GrimoireMaintenanceAdmissionHarness>(observed).IsDisposed);
+    }
+
     private static async Task AssertTwoHostRecoveryAsync(
         GrimoireTransitionEntryPoint entryPoint,
-        bool failDisclosureWriterRestore = false)
+        bool failDisclosureWriterRestore = false,
+        Action<GrimoireMaintenanceAdmissionHarness>? afterFirstHostStarted = null)
     {
         OneShotOutcomeFault fault = new(
             CovenantErasureFaultBoundary.AfterPhaseBegin,
@@ -69,8 +94,10 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         await using RestartableArcanumProfileFixture profile = new();
 
-        GrimoireMaintenanceAdmissionHarness first = await GrimoireMaintenanceAdmissionHarness
+        await using GrimoireMaintenanceAdmissionHarness first = await GrimoireMaintenanceAdmissionHarness
             .StartAsync(profile, faultSeam: fault.RaiseAsync);
+
+        afterFirstHostStarted?.Invoke(first);
 
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(45));
 
@@ -282,17 +309,16 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 adoption.Checkpoint.Release();
             }
 
-            GrimoireMaintenanceAdmissionHarness second;
-
-            try
+            if (failDisclosureWriterRestore)
             {
-                second = await starting.WaitAsync(timeout.Token);
+                try
+                {
+                    await using GrimoireMaintenanceAdmissionHarness unexpected =
+                        await starting.WaitAsync(timeout.Token);
 
-                startupTransferred = true;
-            }
-            catch (Exception failure)
-            {
-                if (failDisclosureWriterRestore)
+                    startupTransferred = true;
+                }
+                catch (Exception failure)
                 {
                     Assert.IsType<GrimoireDatabaseUnavailableException>(failure);
 
@@ -320,6 +346,20 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     return;
                 }
 
+                throw new Xunit.Sdk.XunitException(
+                    "Authenticated disclosure-writer restoration was expected to fail, but startup reached readiness.");
+            }
+
+            GrimoireMaintenanceAdmissionHarness second;
+
+            try
+            {
+                second = await starting.WaitAsync(timeout.Token);
+
+                startupTransferred = true;
+            }
+            catch (Exception failure)
+            {
                 string publications = string.Join(",", startup.Journal.Publications.Select(item =>
                     $"{item.Payload.Lifecycle.State}/{item.Payload.LastCompletedPhase}/{item.Payload.InFlightPhase}"));
 

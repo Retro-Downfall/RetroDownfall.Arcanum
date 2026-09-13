@@ -103,6 +103,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     private int _disposed;
 
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
     private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture profile, bool ownsProfile,
         MaintenanceAdoptionObservation? adoption, CovenantErasureFaultSeam? faultSeam,
         RecoveryHostStartupObservation? startupObservation)
