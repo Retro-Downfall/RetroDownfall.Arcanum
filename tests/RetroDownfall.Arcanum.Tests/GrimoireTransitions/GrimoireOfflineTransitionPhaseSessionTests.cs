@@ -745,6 +745,10 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
                 AcceleratorEpoch INTEGER NOT NULL,
                 KeyReclamationEpoch INTEGER NOT NULL,
                 EnvelopeKeyEpoch INTEGER NOT NULL);
+
+            CREATE TABLE covenant_authority_state (
+                StateKey INTEGER PRIMARY KEY,
+                InstallationIdentity TEXT NOT NULL);
             """;
 
         await schema.ExecuteNonQueryAsync();
@@ -774,6 +778,8 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
                 NULL, NULL, 1, @version, @payload, @reference, @summary, NULL, @revision);
 
             INSERT INTO covenant_state VALUES (1, @target, 2, 3, 4);
+
+            INSERT INTO covenant_authority_state VALUES (1, @installation);
             """;
 
         _ = seed.Parameters.AddWithValue("@id", Operation.ToString("N"));
@@ -807,6 +813,10 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
         _ = seed.Parameters.AddWithValue("@revision", terminalRevision);
 
         _ = seed.Parameters.AddWithValue("@target", Target.ToByteArray());
+
+        _ = seed.Parameters.AddWithValue(
+            "@installation",
+            Installation.ToString("D").ToUpperInvariant());
 
         await seed.ExecuteNonQueryAsync();
 
@@ -1125,6 +1135,76 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
         Assert.Equal(winner, parent.VerifiedWinner);
 
         Assert.False(File.Exists(journalPath));
+    }
+
+    [Fact]
+    public async Task Candidate_verified_before_the_terminal_CAS_remains_nonterminal_recovery()
+    {
+        GrimoireOfflineTransitionPhaseSession session = await OpenAsync(
+            GrimoireOfflineTransitionKind.HealthyCatalogFactoryErasure);
+
+        await DriveFactoryToAppliedAsync(session);
+
+        Assert.True((await session.PrepareReopenAsync(
+            GrimoireOfflineTransitionTerminalIntent.CommitAndReopen,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.EnterVerifyingAsync(CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.RecordVerificationAsync(
+            true,
+            true,
+            true,
+            CancellationToken.None)).IsSuccess);
+
+        Assert.True((await session.BeginReconciliationAsync(CancellationToken.None)).IsSuccess);
+
+        GrimoireOfflineTransitionRecoveryEvidence evidence = Evidence(session);
+
+        await using SqliteConnection connection = await TerminalCatalogAsync(terminalRevision: 6);
+
+        await using (SqliteCommand nonterminal = connection.CreateCommand())
+        {
+            nonterminal.CommandText = $"""
+                UPDATE LongRunningOperations
+                SET State = {(int)LongRunningOperationState.Running},
+                    CompletedAt = NULL,
+                    TerminalErrorCode = NULL
+                WHERE Id = @id;
+                """;
+
+            _ = nonterminal.Parameters.AddWithValue("@id", Operation.ToString("N"));
+
+            Assert.Equal(1, await nonterminal.ExecuteNonQueryAsync());
+        }
+
+        await using ServiceProvider services = new ServiceCollection()
+            .AddScoped<IGrimoireOfflineTransitionParentReceiptResolver,
+                GrimoireOfflineTransitionUnparentedReceiptResolver>()
+            .BuildServiceProvider();
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = new(
+            new GrimoireOfflineTransitionJournalStore(_credentials),
+            GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        GrimoireOfflineTransitionTerminalSuffixFinisher finisher = new(
+            lifecycle,
+            services.GetRequiredService<IServiceScopeFactory>(),
+            CovenantOperationGateFixture.CreateGate(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System));
+
+        Result<GrimoireOfflineTransitionTerminalSuffixOutcome> result = await finisher.FinishAsync(
+            _lock,
+            _guarded,
+            connection,
+            evidence,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(GrimoireOfflineTransitionTerminalSuffixOutcome.Nonterminal, result.Value);
+
+        Assert.True(File.Exists(session.Current.Raw.Location.JournalPath));
     }
 
     [Fact]

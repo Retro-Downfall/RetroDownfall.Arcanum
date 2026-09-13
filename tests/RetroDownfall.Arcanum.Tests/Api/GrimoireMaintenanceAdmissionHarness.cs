@@ -14,6 +14,8 @@ using System.Net.Http.Json;
 
 using System.Net;
 
+using System.Runtime.ExceptionServices;
+
 using System.Runtime.CompilerServices;
 
 using RetroDownfall.Arcanum.Core.Conclave;
@@ -234,14 +236,23 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
                 services.RemoveAll<IGrimoireOfflineTransitionTerminalSuffixFinisher>();
 
                 services.AddSingleton<IGrimoireOfflineTransitionTerminalSuffixFinisher>(sp =>
-                    new ObservingTerminalSuffixFinisher(
+                {
+                    CovenantOperationGate covenant = sp.GetRequiredService<CovenantOperationGate>();
+
+                    GrimoireConnectionAdmissionGate grimoire = sp
+                        .GetRequiredService<GrimoireConnectionAdmissionGate>();
+
+                    startupObservation.PrepareTerminalFreshnessMutation(covenant, grimoire);
+
+                    return new ObservingTerminalSuffixFinisher(
                         new GrimoireOfflineTransitionTerminalSuffixFinisher(
                             sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
                             sp.GetRequiredService<IServiceScopeFactory>(),
-                            sp.GetRequiredService<CovenantOperationGate>(),
-                            sp.GetRequiredService<GrimoireConnectionAdmissionGate>(),
+                            covenant,
+                            grimoire,
                             startupObservation.ObserveTerminalSuffixAsync),
-                        startupObservation));
+                        startupObservation);
+                });
             }
 
             // The production Serilog factory does not forward added providers. Match the existing
@@ -906,6 +917,15 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     }
 }
 
+internal enum TerminalFreshnessMutation : byte
+{
+    None = 0,
+
+    CovenantReadiness = 1,
+
+    GrimoireRequestLease = 2,
+}
+
 // This pre-created observation surface is safe to inspect while TestServer startup is blocked.
 // It never resolves Factory.Services; DI factories publish only the real host-2 objects that
 // production startup has already requested.
@@ -955,11 +975,19 @@ internal sealed class RecoveryHostStartupObservation
 
     private int _disclosureWriterReopenCalls;
 
+    private IGrimoireRequestLease? _terminalFreshnessRequestLease;
+
+    private int _terminalFreshnessPrepared;
+
     internal bool? CovenantPermitted { get; set; }
 
     internal IHostProcessToolsRuntimePolicy? ActualHostToolsPolicy { get; set; }
 
     internal bool FailDisclosureWriterRestore { get; init; }
+
+    internal TerminalFreshnessMutation TerminalFreshnessMutation { get; init; }
+
+    internal bool SuppressTerminalSuffixReached { get; init; }
 
     internal int DisclosureWriterReopenCalls => Volatile.Read(ref _disclosureWriterReopenCalls);
 
@@ -1032,7 +1060,10 @@ internal sealed class RecoveryHostStartupObservation
         GrimoireOfflineTransitionTerminalSuffixBoundary boundary,
         CancellationToken cancellationToken)
     {
-        _ = _terminalSuffixReached.TrySetResult(boundary);
+        if (!SuppressTerminalSuffixReached)
+        {
+            _ = _terminalSuffixReached.TrySetResult(boundary);
+        }
 
         await _releaseTerminalSuffix.Task.WaitAsync(cancellationToken);
 
@@ -1043,6 +1074,94 @@ internal sealed class RecoveryHostStartupObservation
 
     internal void ObserveDisclosureWriterReopen() =>
         _ = Interlocked.Increment(ref _disclosureWriterReopenCalls);
+
+    internal void PrepareTerminalFreshnessMutation(
+        CovenantOperationGate covenant,
+        GrimoireConnectionAdmissionGate grimoire)
+    {
+        if (Interlocked.Exchange(ref _terminalFreshnessPrepared, 1) != 0)
+        {
+            return;
+        }
+
+        if (TerminalFreshnessMutation is TerminalFreshnessMutation.CovenantReadiness)
+        {
+            covenant.PublishReadiness();
+        }
+        else if (TerminalFreshnessMutation is TerminalFreshnessMutation.GrimoireRequestLease)
+        {
+            if (!grimoire.TryAcquireRequestLease(
+                GrimoireRequestKind.Finite,
+                out IGrimoireRequestLease? admitted))
+            {
+                throw new InvalidOperationException(
+                    "The terminal freshness test could not acquire its real request lease.");
+            }
+
+            _terminalFreshnessRequestLease = admitted;
+        }
+    }
+
+    internal async ValueTask ReleaseTerminalFreshnessMutationAsync()
+    {
+        IGrimoireRequestLease? held = Interlocked.Exchange(
+            ref _terminalFreshnessRequestLease,
+            null);
+
+        if (held is not null)
+        {
+            await held.DisposeAsync();
+        }
+    }
+
+    internal static async Task DisposeAndObserveStartupAsync(
+        Task<GrimoireMaintenanceAdmissionHarness> starting,
+        RecoveryHostStartupObservation observation)
+    {
+        using CancellationTokenSource cleanup = new(TimeSpan.FromSeconds(10));
+
+        Task ownerBoundary = await Task.WhenAny(observation.HarnessCreated, starting)
+            .WaitAsync(cleanup.Token);
+
+        GrimoireMaintenanceAdmissionHarness? owned = null;
+
+        if (ReferenceEquals(ownerBoundary, observation.HarnessCreated))
+        {
+            owned = await observation.HarnessCreated.WaitAsync(cleanup.Token);
+        }
+        else if (starting.IsCompletedSuccessfully)
+        {
+            owned = await starting;
+        }
+
+        Exception? disposalFailure = null;
+
+        if (owned is not null)
+        {
+            try
+            {
+                await owned.DisposeAsync().AsTask().WaitAsync(cleanup.Token);
+            }
+            catch (Exception ex)
+            {
+                disposalFailure = ex;
+            }
+        }
+
+        try
+        {
+            _ = await starting.WaitAsync(cleanup.Token);
+        }
+        catch (Exception) when (!cleanup.IsCancellationRequested)
+        {
+            // The owned host was disposed and its terminal startup result was observed.
+        }
+
+        if (disposalFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(disposalFailure).Throw();
+        }
+    }
 }
 
 internal sealed class ObservingTerminalSuffixFinisher(

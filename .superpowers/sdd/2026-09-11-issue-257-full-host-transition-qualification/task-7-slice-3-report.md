@@ -68,6 +68,58 @@ refusal for current owner-bound V4/V2 offline-transition checkpoints because onl
 journal/coordinator may move them. This is not a new verb or response shape, but it is a newly explicit
 restriction on an existing command and should not remain architecture-only.
 
+## Formal review fix round 1
+
+Fix base: `f92d671fd084191a560addfbcee0e7fdc1aeb8ba`.
+
+1. **Catalog installation identity.** The first foreign-identity RED reached readiness. The terminal
+   finisher now calls the existing strict, read-only installation-identity verifier after terminal
+   classification and before any suffix publication. Missing table, missing singleton row,
+   malformed text, guaranteed noncanonical `N` spelling, and a foreign canonical identity all refuse
+   with one finisher call, zero authority/adoption/dispatch/effect work, and byte-stable row/journal.
+   Removing the verifier made the foreign row reach readiness again. The real bound-parent fixture
+   now seeds the exact canonical authority row.
+2. **Joint operation/journal classification.** A winner-bearing journal and a RetirementPending
+   journal whose row was rewritten to a superficially valid `Running`/null-completion/null-code shape
+   both reached ordinary recovery before the joint guard. A real `DatabaseReconciliationPending /
+   CandidateVerified / no winner` crash remains a positive nonterminal control. The first correction
+   still admitted a legal `KeepClosed` park around `DatabaseTerminalWinner`; a new real parked-winner
+   row reproduced forbidden readiness. Classification now uses `Blocker.ResumeState` as the effective
+   state and admits only pre-terminal states or the exact pre-CAS candidate/no-winner window. Restoring
+   the broad `KeepClosed` arm makes the parked-winner row RED.
+3. **Safety routes and mutations.** The refusal matrix now asserts the routing boundary: structurally
+   corrupt or terminal-phase-incoherent journals are rejected by authenticated lifecycle recovery and
+   call the finisher zero times; row, identity, launch, catalog, joint-state, and real fresh-gate
+   candidates call it exactly once. This distinction corrects the earlier report implication that
+   nonfinal/in-flight raw JSON reached `ExactTerminal`: those semantic shapes are rejected one layer
+   earlier and are not claimed as a direct finisher guard mutation. Removing both real fresh-process
+   gate proofs makes the Covenant and Grimoire rows reach readiness. Removing the full-row equality
+   reread makes the controlled `PublicSummary` drift retire successfully. Launch-effect, source, and
+   rollback-isolated target-generation drifts each reach readiness only after their complete layered
+   binding checks are removed; a separately authenticated journal launch-binding-digest drift kills
+   both duplicate digest checks. Every guard was restored. The rollback target case pins the injected
+   pre-effect fault, exact `Failed` row, and `RollbackAndReopen` journal so catalog classification checks
+   the unchanged source rather than accidentally supplying a second target guard.
+4. **Owned startup cleanup.** Suppressing the terminal barrier and canceling the outer 250 ms wait
+   deterministically showed the former same-canceled-token cleanup left the observed host undisposed.
+   One shared helper now races `HarnessCreated` against terminal startup, disposes any owned harness
+   under a fresh 10-second bound, always observes the startup task, and rethrows a disposal failure only
+   after observation. The focused timeout row proves the created harness is disposed and startup is
+   terminal; no detached cleanup can outlive the profile.
+5. **Adjacent Task 7 architecture debt.** The broad authority selection exposed a pre-slice assertion
+   that still named the old nested authenticated-owner evidence. It now pins the approved slice-1
+   shape without changing production: exactly two sealed issuers; launch-gap nested/private,
+   authenticated-journal top-level/internal; and the exact current `Evidence` and `PrepareAsync`
+   creation sites. The isolated authority is green.
+
+Restored checkpoints in this fix round: refusal/route matrix 35/35 in 1m01s; required
+terminal-boundary theory 16/16 in 36s; exact route/rollback/retained-finalizer/Closed topology 7/7 in
+16s; fresh-gate subset 2/2; parked/target/cleanup subset 3/3; and owner-evidence architecture 1/1.
+The approved bounded startup/authentication filter plus terminal, phase-session, cancellation, and
+architecture authorities passed 396/396 in 2m43s. A fresh single-node Release test-project build
+succeeded with 0 warnings/errors in 0.71s, and the Release solution build succeeded with 0
+warnings/errors in 11.28s.
+
 ## Self-review
 
 - Terminal classification cannot fall through on malformed terminal-looking evidence.

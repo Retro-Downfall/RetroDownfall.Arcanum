@@ -6,6 +6,8 @@ using System.Security.Cryptography;
 
 using System.Text;
 
+using System.Text.Json.Nodes;
+
 using Microsoft.Data.Sqlite;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +20,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -88,6 +91,32 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 rollback: true));
     }
 
+    [SkippableFact]
+    public async Task Terminal_suffix_refuses_operation_row_drift_before_retirement()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await AssertEntryPointContextAsync(
+            GrimoireTransitionEntryPoint.DirectCovenantReset,
+            () => AssertTerminalRestartAsync(
+                GrimoireTransitionEntryPoint.DirectCovenantReset,
+                GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalized,
+                rowDriftBeforeRetirement: true));
+    }
+
+    [SkippableFact]
+    public async Task Terminal_restart_timeout_disposes_and_observes_the_created_recovery_host()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await AssertEntryPointContextAsync(
+            GrimoireTransitionEntryPoint.DirectCovenantReset,
+            () => AssertTerminalRestartAsync(
+                GrimoireTransitionEntryPoint.DirectCovenantReset,
+                GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalized,
+                forceStartupBarrierTimeout: true));
+    }
+
     [SkippableTheory]
     [InlineData("missing-row")]
     [InlineData("wrong-kind")]
@@ -95,6 +124,10 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     [InlineData("wrong-version")]
     [InlineData("wrong-reference")]
     [InlineData("payload-whitespace")]
+    [InlineData("launch-binding-digest-drift")]
+    [InlineData("launch-effect-drift")]
+    [InlineData("launch-source-drift")]
+    [InlineData("launch-target-drift")]
     [InlineData("revision-below-floor")]
     [InlineData("abandoned")]
     [InlineData("crossed-terminal-code")]
@@ -103,10 +136,22 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     [InlineData("nonterminal-with-completed-at")]
     [InlineData("nonterminal-with-terminal-code")]
     [InlineData("running-with-terminal-code")]
+    [InlineData("winner-journal-with-running-row")]
+    [InlineData("parked-winner-journal-with-running-row")]
+    [InlineData("retirement-journal-with-running-row")]
     [InlineData("wrong-catalog")]
+    [InlineData("missing-authority-table")]
+    [InlineData("missing-authority-row")]
+    [InlineData("malformed-installation-identity")]
+    [InlineData("noncanonical-installation-identity")]
+    [InlineData("foreign-installation-identity")]
     [InlineData("recorded-winner-drift")]
     [InlineData("noncanonical-completed-at")]
     [InlineData("invalid-terminal-chronology")]
+    [InlineData("terminal-nonfinal-phase")]
+    [InlineData("terminal-inflight-phase")]
+    [InlineData("nonfresh-covenant-gate")]
+    [InlineData("nonfresh-grimoire-gate")]
     [InlineData("corrupt-journal")]
     public async Task Terminal_suffix_candidate_refuses_without_fallback(string mutation)
     {
@@ -144,7 +189,9 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     private static async Task AssertTerminalRestartAsync(
         GrimoireTransitionEntryPoint entryPoint,
         GrimoireOfflineTransitionTerminalSuffixBoundary boundary,
-        bool rollback = false)
+        bool rollback = false,
+        bool rowDriftBeforeRetirement = false,
+        bool forceStartupBarrierTimeout = false)
     {
         OneShotTerminalSuffixFault fault = new(boundary);
 
@@ -297,9 +344,18 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         await first.DisposeAsync();
 
+        string databasePath = Path.Combine(
+            profile.TempHome,
+            ".config",
+            "arcanum",
+            "arcanum.db");
+
         MaintenanceAdoptionObservation adoption = new();
 
-        RecoveryHostStartupObservation startup = new();
+        RecoveryHostStartupObservation startup = new()
+        {
+            SuppressTerminalSuffixReached = forceStartupBarrierTimeout,
+        };
 
         if (boundary is GrimoireOfflineTransitionTerminalSuffixBoundary.Retired)
         {
@@ -313,6 +369,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             TaskScheduler.Default).Unwrap();
 
         GrimoireMaintenanceAdmissionHarness? second = null;
+
+        if (forceStartupBarrierTimeout)
+        {
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(250));
+        }
 
         try
         {
@@ -356,10 +417,32 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
                 Assert.Empty(startup.Workers?.Scopes ?? []);
 
+                if (rowDriftBeforeRetirement)
+                {
+                    await MutateTerminalSummaryAsync(
+                        profile,
+                        databasePath,
+                        terminal.Id,
+                        timeout.Token);
+                }
+
                 startup.ReleaseTerminalSuffix();
             }
 
-            second = await starting.WaitAsync(timeout.Token);
+            if (rowDriftBeforeRetirement)
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    _ = await starting.WaitAsync(timeout.Token));
+            }
+            else
+            {
+                second = await starting.WaitAsync(timeout.Token);
+            }
+        }
+        catch (OperationCanceledException) when (
+            forceStartupBarrierTimeout && timeout.IsCancellationRequested)
+        {
+            // The focused ownership test deliberately expires the caller's wait token.
         }
         finally
         {
@@ -367,18 +450,74 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             if (second is null)
             {
-                try
-                {
-                    GrimoireMaintenanceAdmissionHarness orphan = await starting.WaitAsync(timeout.Token);
-
-                    await orphan.DisposeAsync();
-                }
-                catch
-                {
-                    // The startup helper owns and disposes its harness on every failed start.
-                }
+                await RecoveryHostStartupObservation.DisposeAndObserveStartupAsync(
+                    starting,
+                    startup);
             }
         }
+
+        if (forceStartupBarrierTimeout)
+        {
+            using CancellationTokenSource cleanup = new(TimeSpan.FromSeconds(10));
+
+            GrimoireMaintenanceAdmissionHarness owned = await startup.HarnessCreated
+                .WaitAsync(cleanup.Token);
+
+            bool disposedByTimeoutCleanup = owned.IsDisposed;
+
+            if (!disposedByTimeoutCleanup)
+            {
+                await owned.DisposeAsync();
+            }
+
+            try
+            {
+                _ = await starting.WaitAsync(cleanup.Token);
+            }
+            catch when (!cleanup.IsCancellationRequested)
+            {
+                // The recovery host is owned and the startup failure is observed.
+            }
+
+            Assert.True(starting.IsCompleted);
+
+            Assert.True(disposedByTimeoutCleanup);
+
+            return;
+        }
+
+        if (rowDriftBeforeRetirement)
+        {
+            Assert.Null(second);
+
+            Assert.False(startup.Readiness.IsReady);
+
+            Assert.False(startup.FinalHostedServiceStarted.IsCompleted);
+
+            Assert.Equal(0, adoption.Calls);
+
+            Assert.Null(startup.AuthorityLoad);
+
+            Assert.Null(startup.AuthorityConsume);
+
+            Assert.Equal(0, Volatile.Read(ref startup.DispatchCalls));
+
+            Assert.Empty(startup.Operations.Transitions);
+
+            Assert.True(File.Exists(publication.Raw.Location.JournalPath));
+
+            Assert.Equal(
+                GrimoireOfflineTransitionState.RetirementPending,
+                startup.Journal.Publications.Last().Payload.Lifecycle.State);
+
+            Assert.DoesNotContain(
+                startup.Journal.Steps,
+                step => string.Equals(step, "file:retiring-moved", StringComparison.Ordinal));
+
+            return;
+        }
+
+        Assert.NotNull(second);
 
         await using (second)
         {
@@ -620,22 +759,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             if (second is null)
             {
-                try
-                {
-                    Task ownerBoundary = await Task.WhenAny(startup.HarnessCreated, starting);
-
-                    if (ReferenceEquals(ownerBoundary, startup.HarnessCreated))
-                    {
-                        await (await startup.HarnessCreated).DisposeAsync();
-                    }
-
-                    _ = await starting;
-                }
-                catch
-                {
-                    // The owned factory is disposed and startup failure is observed.
-                }
+                await RecoveryHostStartupObservation.DisposeAndObserveStartupAsync(
+                    starting,
+                    startup);
             }
+
         }
 
         await using (second)
@@ -827,17 +955,36 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
     private static async Task AssertTerminalRefusalAsync(string mutation)
     {
-        GrimoireOfflineTransitionTerminalSuffixBoundary boundary =
-            mutation is "recorded-winner-drift"
-                ? GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalWinner
-                : GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalized;
+        GrimoireOfflineTransitionTerminalSuffixBoundary boundary = mutation switch
+        {
+            "recorded-winner-drift"
+                or "winner-journal-with-running-row"
+                or "parked-winner-journal-with-running-row" =>
+                GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalWinner,
+            "retirement-journal-with-running-row" =>
+                GrimoireOfflineTransitionTerminalSuffixBoundary.RetirementPending,
+            _ => GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalized,
+        };
 
         OneShotTerminalSuffixFault fault = new(boundary);
+
+        OneShotOutcomeFault? outcomeFault = mutation is "launch-target-drift"
+            ? new OneShotOutcomeFault(
+                CovenantErasureFaultBoundary.BeforePhaseBegin,
+                CovenantResetPhase.CanonicalApplied)
+            : null;
+
+        CovenantErasureFaultSeam? outcomeSeam = outcomeFault is null
+            ? null
+            : outcomeFault.RaiseAsync;
 
         await using RestartableArcanumProfileFixture profile = new();
 
         await using GrimoireMaintenanceAdmissionHarness first = await GrimoireMaintenanceAdmissionHarness
-            .StartAsync(profile, terminalSuffixFaultSeam: fault.RaiseAsync);
+            .StartAsync(
+                profile,
+                faultSeam: outcomeSeam,
+                terminalSuffixFaultSeam: fault.RaiseAsync);
 
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(45));
 
@@ -857,10 +1004,22 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.True(fault.Fired);
 
         LongRunningOperation terminal = Assert.IsType<LongRunningOperation>(first.Operations.Reads
-            .Last(read => read.Operation?.State == LongRunningOperationState.Completed)
+            .Last(read => read.Operation?.State is LongRunningOperationState.Completed
+                or LongRunningOperationState.Failed)
             .Operation);
 
         RecordedMaintenancePublication publication = first.Journal.Publications.Last();
+
+        if (mutation is "launch-target-drift")
+        {
+            Assert.True(outcomeFault!.Fired);
+
+            Assert.Equal(LongRunningOperationState.Failed, terminal.State);
+
+            Assert.Equal(
+                GrimoireOfflineTransitionTerminalIntent.RollbackAndReopen,
+                publication.Payload.Lifecycle.TerminalIntent);
+        }
 
         await first.DisposeAsync();
 
@@ -873,6 +1032,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         await MutateTerminalCandidateAsync(
             profile,
             databasePath,
+            publication.Raw.Location.GuardedDirectory,
             publication.Raw.Location.JournalPath,
             terminal.Id,
             mutation,
@@ -887,7 +1047,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         MaintenanceAdoptionObservation adoption = new();
 
-        RecoveryHostStartupObservation startup = new();
+        RecoveryHostStartupObservation startup = new()
+        {
+            TerminalFreshnessMutation = mutation switch
+            {
+                "nonfresh-covenant-gate" => TerminalFreshnessMutation.CovenantReadiness,
+                "nonfresh-grimoire-gate" => TerminalFreshnessMutation.GrimoireRequestLease,
+                _ => TerminalFreshnessMutation.None,
+            },
+        };
 
         GrimoireMaintenanceAdmissionHarness? unexpected = null;
 
@@ -919,22 +1087,12 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             if (!starting.IsCompleted)
             {
-                Task ownerBoundary = await Task.WhenAny(startup.HarnessCreated, starting);
-
-                if (ReferenceEquals(ownerBoundary, startup.HarnessCreated))
-                {
-                    await (await startup.HarnessCreated).DisposeAsync();
-                }
-
-                try
-                {
-                    _ = await starting;
-                }
-                catch
-                {
-                    // The owned factory is disposed and startup failure is observed.
-                }
+                await RecoveryHostStartupObservation.DisposeAndObserveStartupAsync(
+                    starting,
+                    startup);
             }
+
+            await startup.ReleaseTerminalFreshnessMutationAsync();
         }
 
         if (unexpected is not null)
@@ -947,6 +1105,12 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.False(startup.Readiness.IsReady);
 
         Assert.False(startup.FinalHostedServiceStarted.IsCompleted);
+
+        Assert.Equal(
+            mutation is "corrupt-journal" or "terminal-nonfinal-phase" or "terminal-inflight-phase"
+                ? 0
+                : 1,
+            Volatile.Read(ref startup.TerminalSuffixCalls));
 
         Assert.Equal(0, adoption.Calls);
 
@@ -961,6 +1125,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.Equal(default, startup.OrdinaryMutations.Snapshot);
 
         Assert.Empty(startup.Journal.ParentResolutions);
+
+        Assert.Empty(startup.Journal.Publications);
 
         Assert.Empty(startup.AdmissionOrNull?.Effects ?? []);
 
@@ -1126,11 +1292,22 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     private static async Task MutateTerminalCandidateAsync(
         RestartableArcanumProfileFixture profile,
         string databasePath,
+        string guardedDirectory,
         string journalPath,
         Guid operationId,
         string mutation,
         CancellationToken cancellationToken)
     {
+        if (mutation is "parked-winner-journal-with-running-row")
+        {
+            await ParkTerminalJournalAsync(
+                profile,
+                databasePath,
+                guardedDirectory,
+                operationId,
+                cancellationToken);
+        }
+
         if (mutation is "corrupt-journal")
         {
             byte[] bytes = await File.ReadAllBytesAsync(journalPath, cancellationToken);
@@ -1142,11 +1319,34 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             return;
         }
 
+        if (mutation is "launch-binding-digest-drift"
+            or "terminal-nonfinal-phase"
+            or "terminal-inflight-phase")
+        {
+            await MutateTerminalJournalAsync(
+                profile,
+                guardedDirectory,
+                mutation,
+                cancellationToken);
+
+            return;
+        }
+
+        if (mutation is "nonfresh-covenant-gate" or "nonfresh-grimoire-gate")
+        {
+            return;
+        }
+
         await using SqliteConnection connection = TerminalRecoveryConnection(profile, databasePath);
 
         await connection.OpenAsync(cancellationToken);
 
         await using SqliteCommand command = connection.CreateCommand();
+
+        byte[]? launchPayload = mutation is
+            "launch-effect-drift" or "launch-source-drift" or "launch-target-drift"
+                ? await MutatedLaunchPayloadAsync(connection, operationId, mutation, cancellationToken)
+                : null;
 
         command.CommandText = mutation switch
         {
@@ -1162,6 +1362,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 "UPDATE LongRunningOperations SET CheckpointReference = 'foreign:' || Id WHERE Id = @id;",
             "payload-whitespace" =>
                 "UPDATE LongRunningOperations SET CheckpointPayload = CAST(CAST(CheckpointPayload AS TEXT) || ' ' AS BLOB) WHERE Id = @id;",
+            "launch-effect-drift" or "launch-source-drift" or "launch-target-drift" =>
+                "UPDATE LongRunningOperations SET CheckpointPayload = @payload WHERE Id = @id;",
             "revision-below-floor" =>
                 "UPDATE LongRunningOperations SET Revision = 0 WHERE Id = @id;",
             "abandoned" =>
@@ -1190,8 +1392,28 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     TerminalErrorCode = 'grimoire.offline_transition_not_applied'
                 WHERE Id = @id;
                 """,
+            "winner-journal-with-running-row"
+                or "parked-winner-journal-with-running-row"
+                or "retirement-journal-with-running-row" =>
+                $"""
+                UPDATE LongRunningOperations
+                SET State = {(int)LongRunningOperationState.Running},
+                    CompletedAt = NULL,
+                    TerminalErrorCode = NULL
+                WHERE Id = @id;
+                """,
             "wrong-catalog" =>
                 "UPDATE covenant_state SET DatasetGeneration = randomblob(16) WHERE StateKey = 1;",
+            "missing-authority-table" =>
+                "DROP TABLE covenant_authority_state;",
+            "missing-authority-row" =>
+                "DELETE FROM covenant_authority_state WHERE StateKey = 1;",
+            "malformed-installation-identity" =>
+                "UPDATE covenant_authority_state SET InstallationIdentity = 'not-a-guid' WHERE StateKey = 1;",
+            "noncanonical-installation-identity" =>
+                "UPDATE covenant_authority_state SET InstallationIdentity = replace(InstallationIdentity, '-', '') WHERE StateKey = 1;",
+            "foreign-installation-identity" =>
+                "UPDATE covenant_authority_state SET InstallationIdentity = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA' WHERE StateKey = 1;",
             "recorded-winner-drift" =>
                 "UPDATE LongRunningOperations SET Revision = Revision + 1 WHERE Id = @id;",
             "noncanonical-completed-at" =>
@@ -1203,7 +1425,182 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         _ = command.Parameters.AddWithValue("@id", operationId.ToString("N"));
 
+        if (launchPayload is not null)
+        {
+            _ = command.Parameters.AddWithValue("@payload", launchPayload);
+        }
+
+        Assert.Equal(
+            mutation is "missing-authority-table" ? 0 : 1,
+            await command.ExecuteNonQueryAsync(cancellationToken));
+    }
+
+    private static async Task<byte[]> MutatedLaunchPayloadAsync(
+        SqliteConnection connection,
+        Guid operationId,
+        string mutation,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = "SELECT CheckpointPayload FROM LongRunningOperations WHERE Id = @id;";
+
+        _ = read.Parameters.AddWithValue("@id", operationId.ToString("N"));
+
+        byte[] current = Assert.IsType<byte[]>(await read.ExecuteScalarAsync(cancellationToken));
+
+        CovenantOfflineTransitionLaunchV4 launch = Assert.IsType<CovenantOfflineTransitionLaunchV4>(
+            CovenantRecoveryCheckpointCodec.DecodeCovenantOfflineTransitionLaunch(current).Value);
+
+        CovenantOfflineTransitionLaunchV4 drifted = mutation switch
+        {
+            "launch-effect-drift" => launch with
+            {
+                EffectDigest = CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
+                    new CovenantDigest(Enumerable.Repeat((byte)0xA5, 32).ToArray())),
+            },
+            "launch-source-drift" => launch with { SourceDatasetGeneration = Guid.NewGuid() },
+            "launch-target-drift" => launch with { TargetDatasetGeneration = Guid.NewGuid() },
+            _ => throw new InvalidOperationException($"Unknown launch mutation '{mutation}'."),
+        };
+
+        return CovenantRecoveryCheckpointCodec.Encode(drifted);
+    }
+
+    private static async Task MutateTerminalSummaryAsync(
+        RestartableArcanumProfileFixture profile,
+        string databasePath,
+        Guid operationId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = TerminalRecoveryConnection(profile, databasePath);
+
+        await connection.OpenAsync(cancellationToken);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            "UPDATE LongRunningOperations SET PublicSummary = PublicSummary || '-drift' WHERE Id = @id;";
+
+        _ = command.Parameters.AddWithValue("@id", operationId.ToString("N"));
+
         Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
+    }
+
+    private static async Task ParkTerminalJournalAsync(
+        RestartableArcanumProfileFixture profile,
+        string databasePath,
+        string guardedDirectory,
+        Guid operationId,
+        CancellationToken cancellationToken)
+    {
+        byte[] checkpointPayload;
+
+        int checkpointVersion;
+
+        await using (SqliteConnection connection = TerminalRecoveryConnection(profile, databasePath))
+        {
+            await connection.OpenAsync(cancellationToken);
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText =
+                "SELECT CheckpointVersion, CheckpointPayload FROM LongRunningOperations WHERE Id = @id;";
+
+            _ = command.Parameters.AddWithValue("@id", operationId.ToString("N"));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            Assert.True(await reader.ReadAsync(cancellationToken));
+
+            checkpointVersion = reader.GetInt32(0);
+
+            checkpointPayload = reader.GetFieldValue<byte[]>(1);
+
+            Assert.False(await reader.ReadAsync(cancellationToken));
+        }
+
+        Result<GrimoireOfflineTransitionLaunchBinding> launch =
+            GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                checkpointVersion,
+                checkpointPayload);
+
+        Assert.True(launch.IsSuccess, launch.IsFailure ? launch.Error.Message : null);
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedDirectory));
+
+        GrimoireOfflineTransitionLifecycleStore lifecycle = new(
+            new GrimoireOfflineTransitionJournalStore(profile.CredentialStore),
+            GrimoireOfflineTransitionHandlerRegistry.Production);
+
+        Result<GrimoireOfflineTransitionTypedRecoveryState> recovered = await lifecycle.RecoverAsync(
+            held,
+            guardedDirectory,
+            cancellationToken);
+
+        GrimoireOfflineTransitionTypedPublication publication = Assert.IsType<
+            GrimoireOfflineTransitionTypedPublication>(recovered.Value.Publication);
+
+        Result<GrimoireOfflineTransitionPhaseSession.ClosingOwner> admitted =
+            GrimoireOfflineTransitionPhaseSession.ClosingOwner.ForVerifiedPublication(
+                launch.Value,
+                publication);
+
+        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
+
+        GrimoireOfflineTransitionPhaseSession session = new(
+            lifecycle,
+            held,
+            admitted.Value,
+            parentReceipt: null);
+
+        Result parked = await session.ParkAsync(cancellationToken);
+
+        Assert.True(parked.IsSuccess, parked.IsFailure ? parked.Error.Message : null);
+    }
+
+    private static async Task MutateTerminalJournalAsync(
+        RestartableArcanumProfileFixture profile,
+        string guardedDirectory,
+        string mutation,
+        CancellationToken cancellationToken)
+    {
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(guardedDirectory));
+
+        GrimoireOfflineTransitionJournalStore store = new(profile.CredentialStore);
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Assert.IsType<
+            GrimoireOfflineTransitionJournalRecoveryState>(
+                (await store.RecoverAsync(held, guardedDirectory, cancellationToken)).Value);
+
+        GrimoireOfflineTransitionJournalPublication current = Assert.IsType<
+            GrimoireOfflineTransitionJournalPublication>(recovered.Publication);
+
+        JsonNode payload = Assert.IsAssignableFrom<JsonNode>(JsonNode.Parse(current.PayloadBytes));
+
+        if (mutation is "launch-binding-digest-drift")
+        {
+            payload["binding"]!["databaseOperationLaunchBindingDigest"]!["bytes"] =
+                Convert.ToBase64String(Enumerable.Repeat((byte)0xA6, 32).ToArray());
+        }
+        else if (mutation is "terminal-nonfinal-phase")
+        {
+            payload["lastCompletedPhase"] = nameof(CovenantResetPhase.FinalWalTruncated);
+        }
+        else
+        {
+            payload["inFlightPhase"] = nameof(CovenantResetPhase.ReopenedVerified);
+        }
+
+        Result<GrimoireOfflineTransitionJournalPublication> advanced = await store.AdvanceAsync(
+            held,
+            current,
+            Encoding.UTF8.GetBytes(payload.ToJsonString()),
+            cancellationToken);
+
+        Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
     }
 
     private static async Task<RawTerminalCandidate> ReadRawTerminalCandidateAsync(

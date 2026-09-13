@@ -122,6 +122,35 @@ V4/V2 checkpoint rows into a contradictory active-state/error shape; ordinary an
 checkpoints retain cancellation. The real bound-parent finisher test proves completed-winner re-read,
 zero parent republish, exact remaining suffix, and typed journal retirement.
 
+### Slice 3 formal review fix round 1
+
+The terminal finisher now strictly matches the catalog installation identity to the authenticated
+envelope before its first suffix write. Missing, malformed, noncanonical, or foreign authority state
+refuses without fallback or durable mutation. Terminal/nonterminal routing is jointly classified from
+the operation row and journal effective state: only pre-terminal states and the exact
+`CandidateVerified`/no-winner pre-CAS gap may continue to authenticated effect recovery, including
+when `KeepClosed` contributes its blocker resume state. Winner-bearing, parked-winner, and
+RetirementPending journals paired with a rewritten active row are absorbing refusals.
+
+The full refusal matrix now pins whether the production terminal finisher was invoked. Invalid signed
+lifecycle phase shapes are correctly identified as outer authenticated-lifecycle refusals rather than
+overclaimed as `ExactTerminal` coverage; row, identity, launch/binding/catalog, joint-state, and fresh
+gate negatives each enter the finisher once. Independent layered mutations killed effect, source,
+rollback-isolated target generation, launch-binding digest, fresh-gate, full-row-reread, joint-state,
+identity, and cleanup guarantees. Startup cleanup now owns and boundedly disposes any published
+recovery harness and observes the startup task even when disposal fails.
+
+The same verification pass exposed and corrected a stale Task 7 slice-1 architecture assertion. It
+again proves exactly two sealed owner-evidence issuers and their exact creation sites while recognizing
+the approved authenticated evidence as top-level/internal for coordinator sharing. Production is
+unchanged by that adjacent correction.
+
+Restored fix-round verification passed the 35-row refusal/route matrix, 16-row terminal-boundary
+theory, 7-row routing/rollback/finalizer/Closed cluster, 2 real fresh-gate rows, 3 parked/target/cleanup
+rows, and isolated architecture authority. The bounded Task 7 startup/authentication plus terminal,
+phase-session, cancellation, and architecture selection passed 396/396. Fresh Release builds of the
+test project and solution both completed with zero warnings and zero errors.
+
 ## Slice 2: real two-host authenticated recovery
 
 ### TDD chronology and rulings

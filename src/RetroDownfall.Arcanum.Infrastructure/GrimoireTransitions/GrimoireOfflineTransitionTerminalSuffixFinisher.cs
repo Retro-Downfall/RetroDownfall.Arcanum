@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -130,8 +131,25 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
         if (!row.Value.IsTerminal)
         {
             return ExactNonterminal(row.Value)
+                && ExactNonterminalJournal(publication.Payload)
                 ? GrimoireOfflineTransitionTerminalSuffixOutcome.Nonterminal
                 : Refusal();
+        }
+
+        try
+        {
+            await GrimoireDatabaseBootstrapper.VerifyExpectedInstallationIdentityAsync(
+                recoveryConnection,
+                evidence.InstallationId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return Refusal();
         }
 
         if (!ExactTerminal(row.Value, publication.Payload)
@@ -536,6 +554,35 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
                     or ErrorCodes.Covenant.ErasureIncomplete,
             _ => false,
         };
+
+    private static bool ExactNonterminalJournal(IGrimoireOfflineTransitionPayload payload)
+    {
+        GrimoireOfflineTransitionLifecycle lifecycle = payload.Lifecycle;
+
+        GrimoireOfflineTransitionState state = lifecycle.State
+            is GrimoireOfflineTransitionState.KeepClosed
+            ? lifecycle.Blocker?.ResumeState ?? GrimoireOfflineTransitionState.KeepClosed
+            : lifecycle.State;
+
+        return state is GrimoireOfflineTransitionState.Prepared
+            or GrimoireOfflineTransitionState.Closing
+            or GrimoireOfflineTransitionState.Applying
+            or GrimoireOfflineTransitionState.ReopenPrepared
+            or GrimoireOfflineTransitionState.Verifying
+        || state is GrimoireOfflineTransitionState.DatabaseReconciliationPending
+            && lifecycle is
+        {
+            ReconciliationEvidence:
+            {
+                Step: GrimoireOfflineTransitionReconciliationStep.CandidateVerified,
+                DatabaseTerminalWinnerDigest: null,
+                ParentReceiptNotRequired: false,
+                ParentReceiptDigest: null,
+                LaneClosed: false,
+                CovenantDispositionIntent: null,
+            },
+        };
+    }
 
     private static bool ExactCanonicalCheckpoint(
         TerminalOperationSnapshot row,

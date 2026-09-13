@@ -63,21 +63,27 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.Equal(
             [
                 "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption+AdoptedLaunchOwnerEvidence",
-                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery+AuthenticatedJournalOwnerEvidence"
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalRecoveryOwnerEvidence"
             ],
             issuers.Select(MetadataName));
 
         Assert.All(issuers, static issuer =>
         {
-            Assert.NotNull(issuer.ContainingType);
-            Assert.Equal(Accessibility.Private, issuer.DeclaredAccessibility);
             Assert.True(issuer.IsSealed);
         });
 
+        Assert.Equal(Accessibility.Private, issuers[0].DeclaredAccessibility);
+
+        Assert.NotNull(issuers[0].ContainingType);
+
+        Assert.Equal(Accessibility.Internal, issuers[1].DeclaredAccessibility);
+
+        Assert.Null(issuers[1].ContainingType);
+
         Dictionary<string, string> expectedIssuerMembers = new(StringComparer.Ordinal)
         {
-            ["RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption+AdoptedLaunchOwnerEvidence"] = "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption.ResumeBeforeReadinessAsync",
-            ["RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery+AuthenticatedJournalOwnerEvidence"] = "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.PrepareAsync"
+            ["RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption+AdoptedLaunchOwnerEvidence"] = "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantOfflineTransitionLaunchGapResumption.Evidence",
+            ["RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalRecoveryOwnerEvidence"] = "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.PrepareAsync"
         };
 
         IMethodSymbol[] issuerCreationMembers = issuers
