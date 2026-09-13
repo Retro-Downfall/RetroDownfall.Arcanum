@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Operations;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -147,12 +149,15 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
             terminalErrorCode: null,
             Token));
 
+        LongRunningOperation terminal = Assert.IsType<LongRunningOperation>(
+            await _store.GetAsync(crashed.Id, Token));
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         LongRunningOperationLeaseResult adopted = await Adoption().AdoptUnderInstallationLockAsync(
             _lock!,
             _root,
-            Fingerprint(crashed),
+            Fingerprint(terminal),
             "recovery-owner",
             now,
             now.AddMinutes(2),
@@ -161,6 +166,81 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
         Assert.False(adopted.Acquired);
 
         Assert.Equal(LongRunningOperationState.Completed, adopted.Operation.State);
+    }
+
+    [SkippableTheory]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset)]
+    public async Task Exact_lock_held_adoption_reclaims_an_authenticated_erasure_attention_row_only(
+        string kind)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperation crashed = await SeedLeasedAsync(kind);
+
+        Assert.True(await _store.TryTransitionAsync(
+            crashed.Id,
+            crashed.Revision,
+            "crashed-owner",
+            LongRunningOperationState.ReconciliationRequired,
+            DateTimeOffset.UtcNow,
+            ErrorCodes.Covenant.ErasureIncomplete,
+            Token));
+
+        LongRunningOperation parked = Assert.IsType<LongRunningOperation>(
+            await _store.GetAsync(crashed.Id, Token));
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperationLeaseResult ordinary = await _store.TryAcquireLeaseAsync(
+            parked.Id,
+            "ordinary-owner",
+            now,
+            now.AddMinutes(2),
+            Token);
+
+        Assert.False(ordinary.Acquired);
+
+        LongRunningOperationLeaseResult classified = await _store.TryAcquireClassifiedRecoveryLeaseAsync(
+            Fingerprint(parked),
+            "classified-owner",
+            now,
+            now.AddMinutes(2),
+            Token);
+
+        Assert.False(classified.Acquired);
+
+        DateTimeOffset afterCrashedLeaseExpiry = now.AddHours(1);
+
+        Assert.DoesNotContain(
+            parked.Id,
+            (await _store.FindExpiredAsync(afterCrashedLeaseExpiry, 100, Token))
+                .Select(item => item.Id));
+
+        Assert.DoesNotContain(parked.Id,
+            (await _store.FindExpiredForGenericRecoveryAsync(
+                afterCrashedLeaseExpiry,
+                100,
+                Token)).Select(item => item.Id));
+
+        LongRunningOperationLeaseResult adopted = await Adoption().AdoptUnderInstallationLockAsync(
+            _lock!,
+            _root,
+            Fingerprint(parked),
+            "recovery-owner",
+            now,
+            now.AddMinutes(2),
+            Token);
+
+        Assert.True(adopted.Acquired);
+
+        Assert.Equal("recovery-owner", adopted.Operation.LeaseOwner);
+
+        Assert.Equal(LongRunningOperationState.Running, adopted.Operation.State);
+
+        Assert.Null(adopted.Operation.TerminalErrorCode);
+
+        Assert.Equal(parked.Revision + 1, adopted.Operation.Revision);
     }
 
     [SkippableFact]
@@ -188,6 +268,62 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
                 Token));
     }
 
+    [SkippableTheory]
+    [InlineData("fingerprint")]
+    [InlineData("code")]
+    [InlineData("kind")]
+    public async Task Authenticated_erasure_attention_adoption_refuses_every_near_miss_unchanged(
+        string nearMiss)
+    {
+        RequireSqlCipher();
+
+        string kind = nearMiss == "kind"
+            ? LongRunningOperationKinds.DataRetentionPrune
+            : LongRunningOperationKinds.DataRetentionMutation;
+
+        LongRunningOperation crashed = await SeedLeasedAsync(kind);
+
+        Assert.True(await _store.TryTransitionAsync(
+            crashed.Id,
+            crashed.Revision,
+            "crashed-owner",
+            LongRunningOperationState.ReconciliationRequired,
+            DateTimeOffset.UtcNow,
+            nearMiss == "code"
+                ? ErrorCodes.Covenant.IntegrityFailure
+                : ErrorCodes.Covenant.ErasureIncomplete,
+            Token));
+
+        LongRunningOperation parked = Assert.IsType<LongRunningOperation>(
+            await _store.GetAsync(crashed.Id, Token));
+
+        LongRunningOperationRecoveryFingerprint fingerprint = Fingerprint(parked);
+
+        if (nearMiss == "fingerprint")
+        {
+            fingerprint = fingerprint with { Revision = fingerprint.Revision - 1 };
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperationLeaseResult adopted = await Adoption().AdoptUnderInstallationLockAsync(
+            _lock!,
+            _root,
+            fingerprint,
+            "recovery-owner",
+            now,
+            now.AddMinutes(2),
+            Token);
+
+        Assert.False(adopted.Acquired);
+
+        AssertOperationUnchanged(parked, adopted.Operation);
+
+        AssertOperationUnchanged(
+            parked,
+            Assert.IsType<LongRunningOperation>(await _store.GetAsync(parked.Id, Token)));
+    }
+
     private ILongRunningOperationMaintenanceLeaseAdoption Adoption() => _store;
 
     private static LongRunningOperationRecoveryFingerprint Fingerprint(LongRunningOperation operation) =>
@@ -197,12 +333,13 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
             operation.CheckpointVersion,
             operation.Revision);
 
-    private async Task<LongRunningOperation> SeedLeasedAsync()
+    private async Task<LongRunningOperation> SeedLeasedAsync(
+        string kind = LongRunningOperationKinds.DataRetentionMutation)
     {
         LongRunningOperation created = await _store.CreateAsync(
             new LongRunningOperationCreateRequest(
-                LongRunningOperationKinds.DataRetentionMutation,
-                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                kind,
+                LongRunningOperationRecoveryRegistry.Descriptors[kind].Policy,
                 "Interrupted Covenant erasure.",
                 DateTimeOffset.UtcNow));
 
@@ -215,9 +352,44 @@ public sealed class LongRunningOperationMaintenanceLeaseAdoptionTests : IAsyncLi
 
         Assert.True(leased.Acquired);
 
-        return leased.Operation;
+        int checkpointVersion = kind is LongRunningOperationKinds.DataRetentionFactoryReset
+            or LongRunningOperationKinds.DataRetentionPrune
+            ? 2
+            : 4;
+
+        Assert.True(await _store.SaveCheckpointAsync(
+            leased.Operation.Id,
+            "crashed-owner",
+            expectedCheckpointVersion: 0,
+            checkpointVersion,
+            [1],
+            "authenticated-transition-launch",
+            leased.Operation.PublicSummary,
+            DateTimeOffset.UtcNow,
+            Token));
+
+        return Assert.IsType<LongRunningOperation>(await _store.GetAsync(leased.Operation.Id, Token));
     }
 
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+    private static void AssertOperationUnchanged(
+        LongRunningOperation expected,
+        LongRunningOperation actual)
+    {
+        Assert.Equal(expected.Id, actual.Id);
+        Assert.Equal(expected.Kind, actual.Kind);
+        Assert.Equal(expected.State, actual.State);
+        Assert.Equal(expected.RecoveryPolicy, actual.RecoveryPolicy);
+        Assert.Equal(expected.LeaseOwner, actual.LeaseOwner);
+        Assert.Equal(expected.LeaseExpiresAt, actual.LeaseExpiresAt);
+        Assert.Equal(expected.AttemptCount, actual.AttemptCount);
+        Assert.Equal(expected.CheckpointVersion, actual.CheckpointVersion);
+        Assert.Equal(expected.CheckpointPayload, actual.CheckpointPayload);
+        Assert.Equal(expected.CheckpointReference, actual.CheckpointReference);
+        Assert.Equal(expected.TerminalErrorCode, actual.TerminalErrorCode);
+        Assert.Equal(expected.CompletedAt, actual.CompletedAt);
+        Assert.Equal(expected.Revision, actual.Revision);
+    }
 }

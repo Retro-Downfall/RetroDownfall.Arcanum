@@ -320,6 +320,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             new GrimoireRecoveryOnlyUnlock(
                 new TestApiKeySecretStore(GrimoireFixture.TestApiKey),
                 new GrimoireDbPassphraseSource()),
+            PermittedRecoveryHostToolsClassifier.Instance,
             new CovenantRecoveryAuthorityBootstrapper(
                 composition.Gate,
                 composition.Runtime,
@@ -427,6 +428,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
                 effect),
             new GrimoireOfflineTransitionRecoveryEvidence(
                 journal,
+                await InstallationIdentityAsync(),
                 SlotEpoch: 1,
                 Revision: 3,
                 new CovenantDigest(Convert.FromHexString(new string('d', 64)))));
@@ -451,6 +453,16 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             (ulong)reader.GetInt64(1),
             (ulong)reader.GetInt64(2),
             (ulong)reader.GetInt64(3));
+    }
+
+    private async Task<Guid> InstallationIdentityAsync()
+    {
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT InstallationIdentity FROM covenant_authority_state WHERE StateKey = 1;";
+
+        return Guid.Parse(Assert.IsType<string>(await command.ExecuteScalarAsync(Token)));
     }
 
     private static T Value<T>(Result<T> result)
@@ -501,6 +513,22 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryChainTests : IAsyncL
             HostProcessToolsMarkerPairDisposition.Clean;
 
         public HostProcessToolsStartupBlocker Blocker => HostProcessToolsStartupBlocker.None;
+    }
+
+    private sealed class PermittedRecoveryHostToolsClassifier : IHostProcessToolsRecoveryStartupClassifier
+    {
+        internal static PermittedRecoveryHostToolsClassifier Instance { get; } = new();
+
+        public Result<HostProcessToolsRecoveryMarkerSnapshot> CaptureMarker() =>
+            new HostProcessToolsRecoveryMarkerSnapshot(
+                new HostProcessToolsMarkerReadResult(HostProcessToolsMarkerReadStatus.Absent, null));
+
+        public Task<Result<IHostProcessToolsRuntimePolicy>> ClassifyAsync(
+            SqliteConnection recoveryConnection,
+            Guid expectedInstallationId,
+            HostProcessToolsRecoveryMarkerSnapshot marker,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<IHostProcessToolsRuntimePolicy>.Success(PermittedHostTools.Instance));
     }
 
     private sealed class RecordingDispatch(LongRunningOperationSettlementOutcome verdict)

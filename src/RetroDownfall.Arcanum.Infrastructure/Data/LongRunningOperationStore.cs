@@ -734,9 +734,10 @@ internal sealed class LongRunningOperationStore(
     /// dead process's and waiting out its remainder would only delay a startup that has to finish
     /// before readiness.
     ///
-    /// <para>Nothing else moves. A terminal row is still unadoptable and the flagged states that may
-    /// be reclaimed are the ones the ordinary path admits, because both arms run the one statement
-    /// below rather than two copies of it.</para>
+    /// <para>Nothing else moves. A terminal row is still unadoptable. The statement retains every
+    /// flagged state the ordinary path admits and adds only the two Covenant-erasure kinds carrying
+    /// <c>Covenant.ErasureIncomplete</c> when this held-lock entry point explicitly enables that arm;
+    /// ordinary and classified recovery leave it disabled.</para>
     /// </remarks>
     public Task<LongRunningOperationLeaseResult> AdoptUnderInstallationLockAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -760,7 +761,8 @@ internal sealed class LongRunningOperationStore(
             leaseExpiresAt,
             requireExpiredLease: false,
             cancellationToken,
-            expected);
+            expected,
+            allowAuthenticatedErasureIncomplete: true);
     }
 
     public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
@@ -849,7 +851,8 @@ internal sealed class LongRunningOperationStore(
         DateTimeOffset leaseExpiresAt,
         bool requireExpiredLease,
         CancellationToken cancellationToken,
-        LongRunningOperationRecoveryFingerprint? expected = null)
+        LongRunningOperationRecoveryFingerprint? expected = null,
+        bool allowAuthenticatedErasureIncomplete = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         if (leaseExpiresAt <= utcNow)
@@ -887,8 +890,21 @@ internal sealed class LongRunningOperationStore(
                           OR (
                               "State" = @attention
                               AND "Kind" = @a2aInbound
-                              AND "TerminalErrorCode" = @a2aParked))
+                              AND "TerminalErrorCode" = @a2aParked)
                     """
+                    + (allowAuthenticatedErasureIncomplete
+                        ? """
+
+                              OR (
+                                  "State" = @attention
+                                  AND "Kind" IN (@retentionMutation, @retentionFactory)
+                                  AND "TerminalErrorCode" = @covenantErasureIncomplete)
+                          """
+                        : string.Empty)
+                    + """
+
+                        )
+                      """
                     + (requireExpiredLease
                         ? """
                             AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
@@ -916,6 +932,10 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
                 Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
                 Add(cmd, "@covenantMaintenanceError", ErrorCodes.Covenant.MaintenanceFailed);
+                if (allowAuthenticatedErasureIncomplete)
+                {
+                    Add(cmd, "@covenantErasureIncomplete", ErrorCodes.Covenant.ErasureIncomplete);
+                }
 
                 // A Sending parked awaiting a peer's answer is flagged rather than closed, and the answer
                 // may arrive processes later — so that flagged row has to stay claimable, or the record

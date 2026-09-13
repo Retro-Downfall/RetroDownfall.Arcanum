@@ -52,6 +52,10 @@ internal sealed class MaintenanceJournalObservations
 
     internal bool PublishedExactCandidate { get; set; }
 
+    internal Result? PublishResult { get; set; }
+
+    internal CovenantRuntimeGenerationState? RuntimeBeforePublish { get; set; }
+
     internal byte[]? InitialJournalKeyFingerprint { get; set; }
 
     internal List<int> DispositionsAtRetirementSteps { get; } = [];
@@ -242,7 +246,11 @@ internal sealed class ObservingMaintenanceTransition(CovenantErasureTransition i
 
         observations.PublishedExactCandidate = ReferenceEquals(observations.VerifiedCandidate, candidate);
 
+        observations.RuntimeBeforePublish = runtime.Current;
+
         var result = await inner.PublishCommittedAsync(lease, candidate, token);
+
+        observations.PublishResult = result;
 
         if (result.IsSuccess)
         {

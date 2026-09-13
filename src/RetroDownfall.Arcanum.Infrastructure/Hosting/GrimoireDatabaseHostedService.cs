@@ -291,6 +291,8 @@ public sealed class GrimoireDatabaseHostedService(
 
             GrimoireOfflineTransitionRecoveryEvidence? transitionJournal = null;
 
+            bool restoreDisclosureWriterAfterAuthenticatedTransition = false;
+
             if (_startupRecovery is not null)
             {
                 Result<InstallationResetStartupRecoveryState> recovered = await _startupRecovery
@@ -357,6 +359,9 @@ public sealed class GrimoireDatabaseHostedService(
                     throw new InvalidOperationException(
                         "An offline Grimoire transition is active. Resume it before starting the host.");
                 }
+
+                restoreDisclosureWriterAfterAuthenticatedTransition =
+                    resumed.Value is GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed;
             }
             else if (InstallationResetHostStartupAdmission
                 .LeavesTransitionUnfinished(nestedTransitionEvidence))
@@ -387,6 +392,7 @@ public sealed class GrimoireDatabaseHostedService(
                     token => ActivatePostRestoreTopologyAsync(
                         heldInstallationLock,
                         token),
+                    restoreDisclosureWriterAfterAuthenticatedTransition,
                     cancellationToken)
                 .ConfigureAwait(false);
 

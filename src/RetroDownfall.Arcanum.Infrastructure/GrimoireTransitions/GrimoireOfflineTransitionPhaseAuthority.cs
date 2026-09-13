@@ -186,6 +186,7 @@ internal sealed class GrimoireOfflineTransitionPhaseAuthority(
             || recovered.Value.Outcome != GrimoireOfflineTransitionTypedRecoveryOutcome.Authenticated
             || recovered.Value.Publication is not { } publication
             || publication.Payload.Binding != expected.Binding
+            || publication.Raw.Envelope.InstallationId != expected.InstallationId
             || publication.Raw.Envelope.SlotEpoch != expected.SlotEpoch
             || publication.Raw.Envelope.Revision != expected.Revision
             || publication.Raw.EnvelopeDigest != expected.EnvelopeDigest

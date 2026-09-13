@@ -2032,9 +2032,19 @@ public sealed class CovenantErasureSameProcessTests
 
         RouteOperationWriteObserver operationWrites = new();
 
+        RecordingDisclosureWriterLifecycle disclosureWriter = new();
+
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             operationWrites: operationWrites,
-            faultSeam: fault.RaiseAsync);
+            faultSeam: fault.RaiseAsync,
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                services.AddSingleton<ICovenantDisclosureWriterLifecycle>(provider =>
+                    disclosureWriter.Attach(
+                        provider.GetRequiredService<CovenantDisclosureWriter>()));
+            });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
 
@@ -2054,8 +2064,12 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(fault.Fired, at);
 
+        disclosureWriter.Reset();
+
         LongRunningOperationRecoveryResult recovered = await harness.AdoptAndRecoverResetAsync(
             operationWrites.LastSuccessfulWrite);
+
+        Assert.Equal(0, disclosureWriter.ReopenCalls);
 
         bool provedRollbackBeforeFirstEffect = phase == CovenantResetPhase.CanonicalApplied
             && boundary == CovenantErasureFaultBoundary.BeforePhaseBegin;
@@ -3468,6 +3482,7 @@ public sealed class CovenantErasureSameProcessTests
 
                 GrimoireOfflineTransitionRecoveryEvidence journal = new(
                     publication.Payload.Binding,
+                    publication.Raw.Envelope.InstallationId,
                     publication.Raw.Envelope.SlotEpoch,
                     publication.Raw.Envelope.Revision,
                     publication.Raw.EnvelopeDigest);
@@ -3640,6 +3655,7 @@ public sealed class CovenantErasureSameProcessTests
 
             GrimoireOfflineTransitionRecoveryEvidence journal = new(
                 publication.Payload.Binding,
+                publication.Raw.Envelope.InstallationId,
                 publication.Raw.Envelope.SlotEpoch,
                 publication.Raw.Envelope.Revision,
                 publication.Raw.EnvelopeDigest);
@@ -5760,6 +5776,36 @@ public sealed class CovenantErasureSameProcessTests
 
         }
 
+    }
+
+    private sealed class RecordingDisclosureWriterLifecycle : ICovenantDisclosureWriterLifecycle
+    {
+        private ICovenantDisclosureWriterLifecycle? _inner;
+
+        private int _reopenCalls;
+
+        internal int ReopenCalls => Volatile.Read(ref _reopenCalls);
+
+        internal RecordingDisclosureWriterLifecycle Attach(ICovenantDisclosureWriterLifecycle inner)
+        {
+            _inner = inner;
+
+            return this;
+        }
+
+        internal void Reset() => Volatile.Write(ref _reopenCalls, 0);
+
+        public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
+            Assert.IsAssignableFrom<ICovenantDisclosureWriterLifecycle>(_inner)
+                .QuiesceAsync(cancellationToken);
+
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken)
+        {
+            _ = Interlocked.Increment(ref _reopenCalls);
+
+            return Assert.IsAssignableFrom<ICovenantDisclosureWriterLifecycle>(_inner)
+                .ReopenAsync(cancellationToken);
+        }
     }
 
     private sealed class RecoveryGrimoireDispositionObservations

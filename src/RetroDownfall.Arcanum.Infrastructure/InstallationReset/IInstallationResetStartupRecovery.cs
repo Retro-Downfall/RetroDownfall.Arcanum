@@ -185,6 +185,7 @@ internal sealed class InstallationResetStartupRecovery(
         journal.Publication is { } publication
             ? new GrimoireOfflineTransitionRecoveryEvidence(
                 publication.Payload.Binding,
+                publication.Raw.Envelope.InstallationId,
                 publication.Raw.Envelope.SlotEpoch,
                 publication.Raw.Envelope.Revision,
                 publication.Raw.EnvelopeDigest)

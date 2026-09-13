@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -34,6 +35,7 @@ internal sealed class RecordingRecoveryDispatchSeam(
     LongRunningOperationSettlementOutcome settlement,
     CovenantExclusiveOperation exclusiveOperation = CovenantExclusiveOperation.CovenantReset)
     : IGrimoireRecoveryOnlyUnlock,
+        IHostProcessToolsRecoveryStartupClassifier,
         ICovenantRecoveryAuthorityBootstrapper,
         ICovenantClosedRecoveryHandoff,
         IGrimoireOfflineTransitionHandlerDispatch
@@ -59,6 +61,16 @@ internal sealed class RecordingRecoveryDispatchSeam(
         Revision: 7);
 
     internal LongRunningRecoveryOwnerEvidence? CapturedOwnerEvidence { get; private set; }
+
+    public Result<HostProcessToolsRecoveryMarkerSnapshot> CaptureMarker()
+    {
+        steps.Add("marker");
+
+        return failAt == "marker"
+            ? Result<HostProcessToolsRecoveryMarkerSnapshot>.Failure(Refusal)
+            : new HostProcessToolsRecoveryMarkerSnapshot(
+                new HostProcessToolsMarkerReadResult(HostProcessToolsMarkerReadStatus.Absent, null));
+    }
 
     public async Task<Result<GrimoireRecoveryUnlockedCatalog>> OpenExistingAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -90,11 +102,33 @@ internal sealed class RecordingRecoveryDispatchSeam(
         return new GrimoireRecoveryUnlockedCatalog(_connection);
     }
 
+    public Task<Result<IHostProcessToolsRuntimePolicy>> ClassifyAsync(
+        SqliteConnection recoveryConnection,
+        Guid expectedInstallationId,
+        HostProcessToolsRecoveryMarkerSnapshot marker,
+        CancellationToken cancellationToken)
+    {
+        steps.Add("classify");
+
+        Assert.Equal(ConnectionState.Open, recoveryConnection.State);
+
+        if (failAt == "classify-throw")
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        return Task.FromResult(
+            failAt == "classify"
+                ? Result<IHostProcessToolsRuntimePolicy>.Failure(Refusal)
+                : Result<IHostProcessToolsRuntimePolicy>.Success(PermittedPolicy.Instance));
+    }
+
     public Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         SqliteConnection recoveryConnection,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken)
     {
         steps.Add("load");
@@ -112,6 +146,7 @@ internal sealed class RecordingRecoveryDispatchSeam(
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         SqliteConnection recoveryConnection,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken)
     {
         steps.Add("consume");
@@ -146,4 +181,20 @@ internal sealed class RecordingRecoveryDispatchSeam(
 
     private static Error Refusal =>
         new(ErrorCodes.Covenant.ManualRecoveryRequired, "Recording seam refusal.");
+
+    private sealed class PermittedPolicy : IHostProcessToolsRuntimePolicy
+    {
+        internal static PermittedPolicy Instance { get; } = new();
+
+        public bool IsPublished => true;
+
+        public bool CovenantPermitted => true;
+
+        public bool HostProcessToolsPermitted => false;
+
+        public HostProcessToolsMarkerPairDisposition? Disposition =>
+            HostProcessToolsMarkerPairDisposition.Clean;
+
+        public HostProcessToolsStartupBlocker Blocker => HostProcessToolsStartupBlocker.None;
+    }
 }

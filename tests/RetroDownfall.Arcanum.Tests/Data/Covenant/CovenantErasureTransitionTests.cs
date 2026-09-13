@@ -249,6 +249,76 @@ public sealed class CovenantErasureTransitionTests
 
     }
 
+    [Fact]
+    public async Task Fresh_recovery_runtime_projects_a_verified_candidate_without_inventing_schema_health()
+    {
+
+        CovenantVerifiedCandidateState candidate = TransitionHarness.CandidateState();
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantRuntimeGenerationState source = runtime.Current;
+
+        _ = runtime.PublishAvailability(current => current with
+        {
+
+            DatasetGeneration = Guid.Parse("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"),
+
+            CanonicalSequence = 101,
+
+            CoreCampaignDeletionSequence = 102,
+
+            AcceleratorEpoch = 103,
+
+        });
+
+        ResultRecordingPublisher publisher = new();
+
+        CovenantErasureTransition subject = new(
+            new RecordingCanonical(candidate.Dataset.DatasetGeneration),
+            new RecordingStorage(candidate),
+            runtime,
+            publisher);
+
+        Result published = await subject.PublishCommittedAsync(
+            new NullExclusiveLease(),
+            candidate,
+            CancellationToken.None);
+
+        Assert.True(published.IsSuccess, published.Error.Message);
+
+        Assert.NotSame(source, publisher.Expected);
+
+        Assert.NotNull(publisher.Transition);
+
+        Assert.True(publisher.Transition!.IsSuccess, publisher.Transition.Error.Message);
+
+        CovenantCommittedAuthorityTransition projected = publisher.Transition.Value;
+
+        Assert.Equal(CovenantCapabilityState.Unavailable, projected.Capability.Canonical);
+
+        Assert.Null(projected.Capability.CanonicalSchemaVersion);
+
+        Assert.Null(projected.Capability.CanonicalInstalledFingerprint);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, projected.Capability.CanonicalDiagnosticCode);
+
+        Assert.Equal(CovenantCapabilityState.Unavailable, projected.Capability.Accelerator);
+
+        Assert.Null(projected.Capability.AcceleratorSchemaVersion);
+
+        Assert.Null(projected.Capability.AcceleratorInstalledFingerprint);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, projected.Capability.AcceleratorDiagnosticCode);
+
+        Assert.Equal(candidate.Dataset.DatasetGeneration, projected.Capability.DatasetGeneration);
+
+        Assert.Equal(candidate.Dataset.EnvelopeKeyEpoch, projected.CanonicalEnvelopeEpoch);
+
+        Assert.Equal(candidate.Authority.RecoveryEnvelopeEpoch, projected.RecoveryEnvelopeEpoch);
+
+    }
+
     [Theory]
     [InlineData(CovenantCapabilityState.Degraded)]
     [InlineData(CovenantCapabilityState.Unavailable)]
@@ -815,6 +885,32 @@ public sealed class CovenantErasureTransitionTests
             Expected = expected;
 
             return ValueTask.FromResult(Result.Success());
+
+        }
+
+    }
+
+    private sealed class ResultRecordingPublisher : ICovenantCommittedTransitionPublisher
+    {
+
+        internal CovenantRuntimeGenerationState? Expected { get; private set; }
+
+        internal Result<CovenantCommittedAuthorityTransition>? Transition { get; private set; }
+
+        public ValueTask<Result> PublishCommittedAsync(
+            Result<CovenantCommittedAuthorityTransition> transition,
+            ICovenantExclusiveOperationLease lease,
+            CovenantRuntimeGenerationState expected,
+            CancellationToken cancellationToken)
+        {
+
+            Transition = transition;
+
+            Expected = expected;
+
+            return ValueTask.FromResult(transition.IsSuccess
+                ? Result.Success()
+                : Result.Failure(transition.Error));
 
         }
 

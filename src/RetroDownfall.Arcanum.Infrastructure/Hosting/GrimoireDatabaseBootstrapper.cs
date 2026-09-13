@@ -172,6 +172,30 @@ public static class GrimoireDatabaseBootstrapper
             heldInstallationLock,
             expectedInstallationId,
             postRestoreTopology: null,
+            restoreDisclosureWriterAfterAuthenticatedTransition: false,
+            cancellationToken);
+
+    internal static Task EnsureInitializedAsync(
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        IServiceScopeFactory scopeFactory,
+        string dbPath,
+        string grimoireDirectory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        Guid? expectedInstallationId,
+        Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
+            postRestoreTopology,
+        CancellationToken cancellationToken) =>
+        EnsureInitializedAsync(
+            secretStore,
+            passphraseSource,
+            scopeFactory,
+            dbPath,
+            grimoireDirectory,
+            heldInstallationLock,
+            expectedInstallationId,
+            postRestoreTopology,
+            restoreDisclosureWriterAfterAuthenticatedTransition: false,
             cancellationToken);
 
     internal static async Task EnsureInitializedAsync(
@@ -184,6 +208,7 @@ public static class GrimoireDatabaseBootstrapper
         Guid? expectedInstallationId,
         Func<CancellationToken, Task<MasterApiKeyBootstrapResult?>>?
             postRestoreTopology,
+        bool restoreDisclosureWriterAfterAuthenticatedTransition,
         CancellationToken cancellationToken)
     {
         SqliteNativeRuntime.Instance.Initialize();
@@ -313,6 +338,15 @@ public static class GrimoireDatabaseBootstrapper
             protectedRecovery.AdoptedErasureOwner,
             cancellationToken).ConfigureAwait(false);
 
+        if (restoreDisclosureWriterAfterAuthenticatedTransition)
+        {
+
+            await RestoreAuthenticatedTransitionDisclosureWriterAsync(
+                scopeFactory,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
         if (File.Exists(dbPath))
         {
             SecureFilePermissions.ApplyOwnerOnlyFile(dbPath);
@@ -326,6 +360,49 @@ public static class GrimoireDatabaseBootstrapper
 
             readiness.MarkReady();
         }
+    }
+
+    /// <summary>
+    /// Restores the exact disclosure-writer singleton an authenticated startup transition quiesced.
+    /// </summary>
+    /// <remarks>
+    /// Recovery itself cannot do this honestly: it runs before schema health is classified. Normal
+    /// bootstrap calls here only after schema and authority publication, protected recovery, physical
+    /// install-handle closure, and launch-gap recovery, while Covenant and Grimoire readiness are both
+    /// still unpublished. A failure therefore aborts startup without changing the already-terminal
+    /// operation or retired offline journal.
+    /// </remarks>
+    private static async Task RestoreAuthenticatedTransitionDisclosureWriterAsync(
+        IServiceScopeFactory scopeFactory,
+        CancellationToken cancellationToken)
+    {
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        CovenantDisclosureWriter writer = scope.ServiceProvider
+            .GetRequiredService<CovenantDisclosureWriter>();
+
+        ICovenantDisclosureWriterLifecycle lifecycle = scope.ServiceProvider
+            .GetRequiredService<ICovenantDisclosureWriterLifecycle>();
+
+        if (!ReferenceEquals(writer, lifecycle))
+        {
+
+            throw new GrimoireDatabaseUnavailableException(
+                "Authenticated transition recovery did not resolve the process disclosure writer safely.");
+
+        }
+
+        Result reopened = await lifecycle.ReopenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (reopened.IsFailure)
+        {
+
+            throw new GrimoireDatabaseUnavailableException(
+                "Authenticated transition recovery could not restore the Covenant disclosure writer.");
+
+        }
+
     }
 
     /// <summary>

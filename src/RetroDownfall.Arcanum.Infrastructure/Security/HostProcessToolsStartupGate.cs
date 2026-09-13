@@ -87,6 +87,25 @@ internal sealed class HostProcessToolsStartupGate(
 
         HostProcessToolsMarkerReadResult marker = markers.Read();
 
+        return await ClassifyAndPublishAsync(marker, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Classifies one marker snapshot captured before a recovery-only database open.
+    /// </summary>
+    /// <remarks>
+    /// Recovery cannot reread the independent marker after opening the catalog: that would let the
+    /// two halves be sampled on opposite sides of an operating-system change. Ordinary bootstrap
+    /// keeps using the parameterless overload, which captures its own one snapshot here.
+    /// </remarks>
+    internal async Task<Result<HostProcessToolsStartupDecision>> ClassifyAndPublishAsync(
+        HostProcessToolsMarkerReadResult marker,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(marker);
+
         if (marker.Status is HostProcessToolsMarkerReadStatus.Unavailable
             or HostProcessToolsMarkerReadStatus.Malformed)
         {

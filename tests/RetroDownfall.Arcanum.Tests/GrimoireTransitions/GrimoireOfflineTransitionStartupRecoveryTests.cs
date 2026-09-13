@@ -96,7 +96,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         Assert.Equal(GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed, recovered.Value);
 
         Assert.Equal(
-            ["unlock", "load", "consume", "close", "dispatch"],
+            ["marker", "unlock", "classify", "load", "consume", "close", "dispatch"],
             harness.Steps);
     }
 
@@ -166,13 +166,17 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
 
     [Theory]
 
-    [InlineData("unlock", new[] { "unlock" })]
+    [InlineData("marker", new[] { "marker" })]
 
-    [InlineData("load", new[] { "unlock", "load", "close" })]
+    [InlineData("unlock", new[] { "marker", "unlock" })]
 
-    [InlineData("consume", new[] { "unlock", "load", "consume", "close" })]
+    [InlineData("classify", new[] { "marker", "unlock", "classify", "close" })]
 
-    [InlineData("dispatch", new[] { "unlock", "load", "consume", "close", "dispatch" })]
+    [InlineData("load", new[] { "marker", "unlock", "classify", "load", "close" })]
+
+    [InlineData("consume", new[] { "marker", "unlock", "classify", "load", "consume", "close" })]
+
+    [InlineData("dispatch", new[] { "marker", "unlock", "classify", "load", "consume", "close", "dispatch" })]
     public async Task A_refusal_at_any_step_stops_the_pass_there(string failing, string[] expected)
     {
         using Harness harness = Create("short-circuit-" + failing, failAt: failing);
@@ -191,6 +195,25 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
         // The probe is closed on every path that opened it, including the failing ones. A refusal that
         // leaked the handle would leave the sidecars a later attempt has to prove absent.
         Assert.Equal(expected, harness.Steps);
+    }
+
+    [Fact]
+    public async Task A_classifier_exception_still_physically_closes_the_recovery_probe()
+    {
+        using Harness harness = Create("classifier-exception", failAt: "classify-throw");
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => harness.Recovery
+            .RecoverBeforeBootstrapAsync(
+                harness.Lock,
+                harness.Root,
+                harness.DatabasePath,
+                InstallationResetNestedTransitionEvidenceOutcome.NestedBound,
+                harness.Journal,
+                Token));
+
+        Assert.Equal(["marker", "unlock", "classify", "close"], harness.Steps);
+
+        Assert.True(harness.Unlock.Disposed);
     }
 
     /// <summary>
@@ -320,7 +343,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
             steps,
             seam,
             Journal(exclusiveOperation),
-            new GrimoireOfflineTransitionStartupRecovery(seam, seam, seam));
+            new GrimoireOfflineTransitionStartupRecovery(seam, seam, seam, seam));
     }
 
     private static GrimoireOfflineTransitionRecoveryEvidence Journal(
@@ -344,6 +367,7 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
                 digest,
                 ExpectedDatabaseOperationRevision: 2,
                 ParentReceiptBindingDigest: null),
+            Guid.Parse("44444444-4444-4444-8444-444444444444"),
             SlotEpoch: 1,
             Revision: 3,
             digest);

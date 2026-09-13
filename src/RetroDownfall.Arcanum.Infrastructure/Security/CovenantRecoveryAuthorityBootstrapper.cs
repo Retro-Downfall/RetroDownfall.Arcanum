@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
@@ -24,6 +25,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 internal sealed record GrimoireOfflineTransitionRecoveryEvidence(
     GrimoireOfflineTransitionBinding Binding,
+    Guid InstallationId,
     ulong SlotEpoch,
     ulong Revision,
     CovenantDigest EnvelopeDigest);
@@ -43,6 +45,7 @@ internal interface ICovenantRecoveryAuthorityBootstrapper
         string guardedDirectory,
         SqliteConnection recoveryConnection,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken);
 }
 
@@ -68,6 +71,7 @@ internal interface ICovenantClosedRecoveryHandoff
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         SqliteConnection recoveryConnection,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken);
 }
 
@@ -94,11 +98,15 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
 
     private readonly IHostProcessToolsRuntimePolicy _hostToolsPolicy;
 
+    private readonly IHostProcessToolsRuntimePolicy _provisionalHostToolsPolicy;
+
     private readonly ISecretStore _secretStore;
 
     private readonly string _guardedDirectory;
 
     private readonly ulong _journalSlotEpoch;
+
+    private readonly Guid _installationId;
 
     private readonly ulong _journalRevision;
 
@@ -112,6 +120,7 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         CovenantEnvelopeMasterKeyProvider keys,
         CovenantAvailability availability,
         IHostProcessToolsRuntimePolicy hostToolsPolicy,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         ISecretStore secretStore,
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
@@ -129,11 +138,15 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
 
         _hostToolsPolicy = hostToolsPolicy;
 
+        _provisionalHostToolsPolicy = provisionalHostToolsPolicy;
+
         _secretStore = secretStore;
 
         _guardedDirectory = guardedDirectory;
 
         _journalSlotEpoch = evidence.SlotEpoch;
+
+        _installationId = evidence.InstallationId;
 
         _journalRevision = evidence.Revision;
 
@@ -178,6 +191,7 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         SqliteConnection recoveryConnection,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -186,9 +200,16 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
 
         ArgumentNullException.ThrowIfNull(recoveryConnection);
 
+        ArgumentNullException.ThrowIfNull(provisionalHostToolsPolicy);
+
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
         if (!string.Equals(guardedDirectory, _guardedDirectory, StringComparison.Ordinal)
+            || !ReferenceEquals(provisionalHostToolsPolicy, _provisionalHostToolsPolicy)
+            || !provisionalHostToolsPolicy.IsPublished
+            || !provisionalHostToolsPolicy.CovenantPermitted
+            || (_hostToolsPolicy.IsPublished && !_hostToolsPolicy.CovenantPermitted)
+            || evidence.InstallationId != _installationId
             || evidence.SlotEpoch != _journalSlotEpoch
             || evidence.Revision != _journalRevision
             || evidence.EnvelopeDigest != _journalEnvelopeDigest
@@ -205,6 +226,16 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
         string? masterApiKey = await _secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(masterApiKey))
+        {
+            return CovenantRecoveryAuthorityBootstrapper.Refusal();
+        }
+
+        // The real process policy is a deny-only veto during this provisional pass. It may be
+        // published by another startup owner while the secret read yields; recheck immediately
+        // before publishing any availability or envelope authority.
+        if ((_hostToolsPolicy.IsPublished && !_hostToolsPolicy.CovenantPermitted)
+            || !provisionalHostToolsPolicy.IsPublished
+            || !provisionalHostToolsPolicy.CovenantPermitted)
         {
             return CovenantRecoveryAuthorityBootstrapper.Refusal();
         }
@@ -230,7 +261,7 @@ internal sealed class CovenantClosedRecoveryHandoff : ICovenantClosedRecoveryHan
                 _runtime,
                 _keys,
                 _availability.Current,
-                _hostToolsPolicy,
+                provisionalHostToolsPolicy,
                 masterApiKey,
                 cancellationToken).ConfigureAwait(false))
         {
@@ -293,6 +324,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         string guardedDirectory,
         SqliteConnection recoveryConnection,
         GrimoireOfflineTransitionRecoveryEvidence evidence,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
@@ -303,12 +335,30 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
 
         ArgumentNullException.ThrowIfNull(evidence);
 
+        ArgumentNullException.ThrowIfNull(provisionalHostToolsPolicy);
+
         heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        try
+        {
+            await GrimoireDatabaseBootstrapper.VerifyExpectedInstallationIdentityAsync(
+                recoveryConnection, evidence.InstallationId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
+        }
 
         // Consulted first and not advisory. A process the startup gate has not permitted derives no
         // envelope key and publishes no authority, and here that is a refusal rather than a warning:
         // everything after this point exists to obtain authority a handler then spends.
-        if (!_hostToolsPolicy.CovenantPermitted)
+        if (!provisionalHostToolsPolicy.IsPublished
+            || !provisionalHostToolsPolicy.CovenantPermitted
+            || (_hostToolsPolicy.IsPublished && !_hostToolsPolicy.CovenantPermitted))
         {
             return Result<ICovenantClosedRecoveryHandoff>.Failure(Refusal().Error);
         }
@@ -375,6 +425,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
             _keys,
             _availability,
             _hostToolsPolicy,
+            provisionalHostToolsPolicy,
             _secretStore,
             guardedDirectory,
             evidence,

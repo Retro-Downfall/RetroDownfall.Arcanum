@@ -6,6 +6,10 @@ using Microsoft.Extensions.Options;
 
 using Microsoft.Extensions.Logging;
 
+using Microsoft.Extensions.Hosting;
+
+using Microsoft.Data.Sqlite;
+
 using System.Net.Http.Json;
 
 using System.Net;
@@ -48,7 +52,13 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 using RetroDownfall.Arcanum.Core.Operations;
+
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -94,13 +104,22 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
     private int _disposed;
 
     private GrimoireMaintenanceAdmissionHarness(RestartableArcanumProfileFixture profile, bool ownsProfile,
-        MaintenanceAdoptionObservation? adoption, CovenantErasureFaultSeam? faultSeam)
+        MaintenanceAdoptionObservation? adoption, CovenantErasureFaultSeam? faultSeam,
+        RecoveryHostStartupObservation? startupObservation)
     {
         _profile = profile;
 
         _ownsProfile = ownsProfile;
 
         Adoption = adoption ?? new MaintenanceAdoptionObservation();
+
+        OrdinaryMutations = startupObservation?.OrdinaryMutations ?? new OrdinaryMutationObservations();
+
+        Operations = startupObservation?.Operations ?? new MaintenanceOperationObservations();
+
+        Journal = startupObservation?.Journal ?? new MaintenanceJournalObservations();
+
+        HostLogs = startupObservation?.HostLogs ?? new MaintenanceHostLogCapture();
 
         Factory = _profile.CreateFactory();
 
@@ -167,6 +186,36 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Factory.ServiceOverrides = services =>
         {
+            if (startupObservation is not null)
+            {
+                services.RemoveAll<GrimoireDbReadiness>();
+
+                services.RemoveAll<IGrimoireDbReadiness>();
+
+                services.AddSingleton(startupObservation.Readiness);
+
+                services.AddSingleton<IGrimoireDbReadiness>(startupObservation.Readiness);
+
+                ServiceDescriptor authority = services.Single(descriptor =>
+                    descriptor.ServiceType == typeof(ICovenantRecoveryAuthorityBootstrapper));
+
+                services.RemoveAll<ICovenantRecoveryAuthorityBootstrapper>();
+
+                services.AddSingleton<ICovenantRecoveryAuthorityBootstrapper>(sp =>
+                {
+                    IHostProcessToolsRuntimePolicy actualHostTools = sp
+                        .GetRequiredService<IHostProcessToolsRuntimePolicy>();
+
+                    startupObservation.ActualHostToolsPolicy = actualHostTools;
+
+                    startupObservation.CovenantPermitted = actualHostTools.CovenantPermitted;
+
+                    return new ObservingCovenantRecoveryAuthorityBootstrapper(
+                        (ICovenantRecoveryAuthorityBootstrapper)authority.ImplementationFactory!(sp),
+                        startupObservation);
+                });
+            }
+
             // The production Serilog factory does not forward added providers. Match the existing
             // host-test logging pattern so every normal ILogger category reaches this capture.
             services.RemoveAll<ILoggerFactory>();
@@ -283,7 +332,20 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.RemoveAll<IGrimoireConnectionAdmissionGate>();
 
             services.AddSingleton<IGrimoireConnectionAdmissionGate>(sp =>
-                new GrimoireMaintenanceAdmissionObserver(sp.GetRequiredService<GrimoireConnectionAdmissionGate>()));
+            {
+                GrimoireMaintenanceAdmissionObserver admission = new(
+                    sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
+
+                return startupObservation?.ObserveAdmission(admission) ?? admission;
+            });
+
+            if (startupObservation is not null)
+            {
+                services.RemoveAll<ICovenantOperationGate>();
+
+                services.AddSingleton<ICovenantOperationGate>(sp => startupObservation.ObserveCovenant(
+                    sp.GetRequiredService<CovenantOperationGate>()));
+            }
 
             services.AddSingleton(sp => new ControlledEventBus(sp.GetRequiredService<InMemoryEventBus>(), _shutdown.Token));
 
@@ -313,7 +375,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             services.AddScoped<IContextPreviewService>(sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
-            services.AddSingleton<ControlledChatClientFactory>();
+            services.AddSingleton(_ => startupObservation?.ObserveChat(new ControlledChatClientFactory())
+                ?? new ControlledChatClientFactory());
 
             services.RemoveAll<IChatClientFactory>();
 
@@ -321,7 +384,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             services.AddSingleton<WeaveService>();
 
-            services.AddSingleton<ControlledWeaveService>();
+            services.AddSingleton(sp => startupObservation?.ObserveWeave(new ControlledWeaveService(
+                    sp.GetRequiredService<WeaveService>()))
+                ?? new ControlledWeaveService(sp.GetRequiredService<WeaveService>()));
 
             services.RemoveAll<IWeaveService>();
 
@@ -331,7 +396,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
             services.AddSingleton<Microsoft.Extensions.Logging.ILogger<SessionAttachmentIndexingService>>(sp => sp.GetRequiredService<ObservingIndexingLogger>());
 
-            services.AddSingleton<ObservingWorkerScopeFactory>();
+            services.AddSingleton(sp => startupObservation?.ObserveWorkers(new ObservingWorkerScopeFactory(
+                    sp.GetRequiredService<IServiceScopeFactory>()))
+                ?? new ObservingWorkerScopeFactory(sp.GetRequiredService<IServiceScopeFactory>()));
 
             // Preserve the production worker and every hosted-service/queue alias. Only its
             // injected scope factory observes construction and completed disposal independently.
@@ -343,6 +410,20 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SessionAttachmentIndexingService>>()));
+
+            if (startupObservation is not null)
+            {
+                if (startupObservation.FailDisclosureWriterRestore)
+                {
+                    services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                    services.AddSingleton<ICovenantDisclosureWriterLifecycle>(provider =>
+                        new ForwardingDisclosureWriterLifecycle(
+                            provider.GetRequiredService<CovenantDisclosureWriter>()));
+                }
+
+                services.AddSingleton<IHostedService>(new RecoveryFinalHostedServiceSentinel(startupObservation));
+            }
         };
     }
 
@@ -369,15 +450,15 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
     internal PausingEfOpenInterceptor EfOpen { get; } = new();
 
-    internal OrdinaryMutationObservations OrdinaryMutations { get; } = new();
+    internal OrdinaryMutationObservations OrdinaryMutations { get; }
 
     internal PausingOrdinaryConnectionFactoryTestSeam RawOpen { get; } = new();
 
-    internal MaintenanceOperationObservations Operations { get; } = new();
+    internal MaintenanceOperationObservations Operations { get; }
 
-    internal MaintenanceJournalObservations Journal { get; } = new();
+    internal MaintenanceJournalObservations Journal { get; }
 
-    internal MaintenanceHostLogCapture HostLogs { get; } = new();
+    internal MaintenanceHostLogCapture HostLogs { get; }
 
     internal MaintenanceAdoptionObservation Adoption { get; }
 
@@ -433,12 +514,14 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             throw new InvalidOperationException("This profile's participant seed is one-shot. Use StartRecoveryAsync to reopen its retained identities.");
         }
 
-        return StartHostAsync(profile, ownsProfile, registration, seedParticipants: true, adoption, faultSeam);
+        return StartHostAsync(profile, ownsProfile, registration, seedParticipants: true, adoption, faultSeam,
+            startupObservation: null);
     }
 
     internal static Task<GrimoireMaintenanceAdmissionHarness> StartRecoveryAsync(
         RestartableArcanumProfileFixture profile,
-        MaintenanceAdoptionObservation? adoption = null)
+        MaintenanceAdoptionObservation? adoption = null,
+        RecoveryHostStartupObservation? startupObservation = null)
     {
         if (!ParticipantSeeds.TryGetValue(profile, out ParticipantSeedRegistration? registration)
             || registration.Seed is null)
@@ -446,7 +529,8 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             throw new InvalidOperationException("Recovery requires this profile's completed first-host participant seed.");
         }
 
-        return StartHostAsync(profile, ownsProfile: false, registration, seedParticipants: false, adoption, faultSeam: null);
+        return StartHostAsync(profile, ownsProfile: false, registration, seedParticipants: false, adoption,
+            faultSeam: null, startupObservation);
     }
 
     private static async Task<GrimoireMaintenanceAdmissionHarness> StartHostAsync(
@@ -455,9 +539,13 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
         ParticipantSeedRegistration registration,
         bool seedParticipants,
         MaintenanceAdoptionObservation? adoption,
-        CovenantErasureFaultSeam? faultSeam)
+        CovenantErasureFaultSeam? faultSeam,
+        RecoveryHostStartupObservation? startupObservation)
     {
-        GrimoireMaintenanceAdmissionHarness harness = new(profile, ownsProfile, adoption, faultSeam);
+        GrimoireMaintenanceAdmissionHarness harness = new(profile, ownsProfile, adoption, faultSeam,
+            startupObservation);
+
+        startupObservation?.ObserveHarness(harness);
 
         try
         {
@@ -770,6 +858,187 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         internal bool TryClaim() => Interlocked.CompareExchange(ref _claimed, 1, 0) == 0;
     }
+}
+
+// This pre-created observation surface is safe to inspect while TestServer startup is blocked.
+// It never resolves Factory.Services; DI factories publish only the real host-2 objects that
+// production startup has already requested.
+internal sealed class RecoveryHostStartupObservation
+{
+    private GrimoireMaintenanceAdmissionObserver? _admission;
+
+    private ICovenantOperationGate? _covenant;
+
+    private ControlledChatClientFactory? _chat;
+
+    private ControlledWeaveService? _weave;
+
+    private ObservingWorkerScopeFactory? _workers;
+
+    private long _initialOpenGeneration = -1;
+
+    private readonly TaskCompletionSource _finalHostedServiceStarted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly TaskCompletionSource<GrimoireMaintenanceAdmissionHarness> _harnessCreated =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal GrimoireDbReadiness Readiness { get; } = new();
+
+    internal MaintenanceJournalObservations Journal { get; } = new();
+
+    internal MaintenanceOperationObservations Operations { get; } = new();
+
+    internal OrdinaryMutationObservations OrdinaryMutations { get; } = new();
+
+    internal MaintenanceHostLogCapture HostLogs { get; } = new();
+
+    internal Result<ICovenantClosedRecoveryHandoff>? AuthorityLoad { get; set; }
+
+    internal Result? AuthorityConsume { get; set; }
+
+    internal bool? CovenantPermitted { get; set; }
+
+    internal IHostProcessToolsRuntimePolicy? ActualHostToolsPolicy { get; set; }
+
+    internal bool FailDisclosureWriterRestore { get; init; }
+
+    internal Task FinalHostedServiceStarted => _finalHostedServiceStarted.Task;
+
+    internal Task<GrimoireMaintenanceAdmissionHarness> HarnessCreated => _harnessCreated.Task;
+
+    internal long InitialOpenGeneration => Interlocked.Read(ref _initialOpenGeneration);
+
+    internal GrimoireMaintenanceAdmissionObserver Admission => Volatile.Read(ref _admission)
+        ?? throw new InvalidOperationException("The recovery host has not resolved Grimoire admission yet.");
+
+    internal GrimoireMaintenanceAdmissionObserver? AdmissionOrNull => Volatile.Read(ref _admission);
+
+    internal ICovenantOperationGate Covenant => Volatile.Read(ref _covenant)
+        ?? throw new InvalidOperationException("The recovery host has not resolved Covenant admission yet.");
+
+    internal ControlledChatClientFactory? Chat => Volatile.Read(ref _chat);
+
+    internal ControlledWeaveService? Weave => Volatile.Read(ref _weave);
+
+    internal ObservingWorkerScopeFactory? Workers => Volatile.Read(ref _workers);
+
+    internal GrimoireMaintenanceAdmissionObserver ObserveAdmission(GrimoireMaintenanceAdmissionObserver admission)
+    {
+        Interlocked.CompareExchange(ref _initialOpenGeneration, admission.CurrentGeneration, -1);
+
+        Interlocked.CompareExchange(ref _admission, admission, null);
+
+        return admission;
+    }
+
+    internal ICovenantOperationGate ObserveCovenant(ICovenantOperationGate covenant)
+    {
+        Interlocked.CompareExchange(ref _covenant, covenant, null);
+
+        return covenant;
+    }
+
+    internal ControlledChatClientFactory ObserveChat(ControlledChatClientFactory chat)
+    {
+        Interlocked.CompareExchange(ref _chat, chat, null);
+
+        return chat;
+    }
+
+    internal ControlledWeaveService ObserveWeave(ControlledWeaveService weave)
+    {
+        Interlocked.CompareExchange(ref _weave, weave, null);
+
+        return weave;
+    }
+
+    internal ObservingWorkerScopeFactory ObserveWorkers(ObservingWorkerScopeFactory workers)
+    {
+        Interlocked.CompareExchange(ref _workers, workers, null);
+
+        return workers;
+    }
+
+    internal void MarkFinalHostedServiceStarted() => _finalHostedServiceStarted.TrySetResult();
+
+    internal void ObserveHarness(GrimoireMaintenanceAdmissionHarness harness) =>
+        _harnessCreated.TrySetResult(harness);
+}
+
+internal sealed class ForwardingDisclosureWriterLifecycle(
+    ICovenantDisclosureWriterLifecycle inner) : ICovenantDisclosureWriterLifecycle
+{
+    public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
+        inner.QuiesceAsync(cancellationToken);
+
+    public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
+        inner.ReopenAsync(cancellationToken);
+}
+
+internal sealed class ObservingCovenantRecoveryAuthorityBootstrapper(
+    ICovenantRecoveryAuthorityBootstrapper inner,
+    RecoveryHostStartupObservation observation) : ICovenantRecoveryAuthorityBootstrapper
+{
+    public async Task<Result<ICovenantClosedRecoveryHandoff>> LoadAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        SqliteConnection recoveryConnection,
+        GrimoireOfflineTransitionRecoveryEvidence evidence,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
+        CancellationToken cancellationToken)
+    {
+        Result<ICovenantClosedRecoveryHandoff> result = await inner.LoadAsync(
+            heldInstallationLock, guardedDirectory, recoveryConnection, evidence,
+            provisionalHostToolsPolicy, cancellationToken);
+
+        observation.AuthorityLoad = result;
+
+        return result.IsSuccess
+            ? Result<ICovenantClosedRecoveryHandoff>.Success(
+                new ObservingCovenantClosedRecoveryHandoff(result.Value, observation))
+            : result;
+    }
+}
+
+internal sealed class ObservingCovenantClosedRecoveryHandoff(
+    ICovenantClosedRecoveryHandoff inner,
+    RecoveryHostStartupObservation observation) : ICovenantClosedRecoveryHandoff
+{
+    public Guid OperationId => inner.OperationId;
+
+    public CovenantExclusiveRecoveryOwner Owner => inner.Owner;
+
+    public LongRunningOperationRecoveryFingerprint ExpectedOperation => inner.ExpectedOperation;
+
+    public async Task<Result> ConsumeAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        GrimoireOfflineTransitionRecoveryEvidence evidence,
+        SqliteConnection recoveryConnection,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
+        CancellationToken cancellationToken)
+    {
+        Result result = await inner.ConsumeAsync(
+            heldInstallationLock, guardedDirectory, evidence, recoveryConnection,
+            provisionalHostToolsPolicy, cancellationToken);
+
+        observation.AuthorityConsume = result;
+
+        return result;
+    }
+}
+
+internal sealed class RecoveryFinalHostedServiceSentinel(RecoveryHostStartupObservation observation) : IHostedService
+{
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        observation.MarkFinalHostedServiceStarted();
+
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 internal sealed class MaintenanceSseResponse(HttpResponseMessage response, Stream stream) : IAsyncDisposable

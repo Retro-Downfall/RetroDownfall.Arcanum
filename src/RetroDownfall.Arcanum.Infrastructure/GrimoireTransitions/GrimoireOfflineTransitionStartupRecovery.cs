@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -278,6 +279,7 @@ internal sealed class GrimoireOfflineTransitionHandlerDispatch(
 /// <summary>The production pre-bootstrap recovery pass.</summary>
 internal sealed class GrimoireOfflineTransitionStartupRecovery(
     IGrimoireRecoveryOnlyUnlock unlock,
+    IHostProcessToolsRecoveryStartupClassifier hostTools,
     ICovenantRecoveryAuthorityBootstrapper authority,
     IGrimoireOfflineTransitionHandlerDispatch dispatch) : IGrimoireOfflineTransitionStartupRecovery
 {
@@ -286,6 +288,9 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
 
     private readonly ICovenantRecoveryAuthorityBootstrapper _authority =
         authority ?? throw new ArgumentNullException(nameof(authority));
+
+    private readonly IHostProcessToolsRecoveryStartupClassifier _hostTools =
+        hostTools ?? throw new ArgumentNullException(nameof(hostTools));
 
     private readonly IGrimoireOfflineTransitionHandlerDispatch _dispatch =
         dispatch ?? throw new ArgumentNullException(nameof(dispatch));
@@ -335,6 +340,13 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
         }
 
+        Result<HostProcessToolsRecoveryMarkerSnapshot> marker = _hostTools.CaptureMarker();
+
+        if (marker.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
+        }
+
         Result<GrimoireRecoveryUnlockedCatalog> unlocked = await _unlock
             .OpenExistingAsync(heldInstallationLock, guardedDirectory, databasePath, cancellationToken)
             .ConfigureAwait(false);
@@ -344,11 +356,38 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(unlocked.Error);
         }
 
+        Result<IHostProcessToolsRuntimePolicy> provisionalHostTools;
+
+        try
+        {
+            provisionalHostTools = await _hostTools
+                .ClassifyAsync(
+                    unlocked.Value.Connection,
+                    journal.InstallationId,
+                    marker.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+
+            throw;
+        }
+
+        if (provisionalHostTools.IsFailure)
+        {
+            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+
+            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(Refusal().Error);
+        }
+
         Result<LongRunningRecoveryOwnerEvidence> prepared = await PrepareAsync(
             heldInstallationLock,
             guardedDirectory,
             journal,
             unlocked.Value,
+            provisionalHostTools.Value,
             cancellationToken).ConfigureAwait(false);
 
         if (prepared.IsFailure)
@@ -391,6 +430,7 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         string guardedDirectory,
         GrimoireOfflineTransitionRecoveryEvidence journal,
         GrimoireRecoveryUnlockedCatalog catalog,
+        IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken)
     {
         await using GrimoireRecoveryUnlockedCatalog owned = catalog;
@@ -401,6 +441,7 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
                 guardedDirectory,
                 owned.Connection,
                 journal,
+                provisionalHostToolsPolicy,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -410,7 +451,8 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         }
 
         Result consumed = await handoff.Value
-            .ConsumeAsync(heldInstallationLock, guardedDirectory, journal, owned.Connection, cancellationToken)
+            .ConsumeAsync(heldInstallationLock, guardedDirectory, journal, owned.Connection,
+                provisionalHostToolsPolicy, cancellationToken)
             .ConfigureAwait(false);
 
         if (consumed.IsFailure

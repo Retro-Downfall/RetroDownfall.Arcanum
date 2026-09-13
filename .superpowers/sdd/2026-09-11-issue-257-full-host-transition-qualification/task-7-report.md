@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This report records the authenticated nonterminal-recovery slice. The two-host V4/V2 qualification, terminal-suffix finisher and matrix, retained-finalizer restart, full Task 7 authority suites, documentation closeout, and final single Task 7 commit remain pending.
+In progress. The authenticated nonterminal-recovery and real two-host V4/V2 slices are implemented. The terminal-suffix finisher and matrix, retained-finalizer restart, final Task 7 authority suites, and final Task 7 commit remain pending. Slice 2 has its standalone evidence report in `task-7-slice-2-report.md`.
 
 ## Binding rulings applied
 
@@ -103,3 +103,40 @@ These are slice checkpoints, not final Task 7 verification. All remaining Task 7
 - Launch-gap pre-closure admission remains distinct; only its already-adopted V4/V2 handler outcome shares self-settling mapping.
 - Same-process recovery explicitly qualifies retained-owner coordinator semantics. It does not claim cross-process authentication; the required real two-host tests remain pending.
 - Terminal rows remain unadoptable. No terminal-suffix behavior has been added in this slice.
+
+## Slice 2: real two-host authenticated recovery
+
+### TDD chronology and rulings
+
+1. The first real V4 second-host RED stopped before adoption: the recovery-only authority load saw the fresh process-wide `HostProcessToolsRuntimePolicy` as unpublished and denied Covenant. Normal host-tools classification could not fix that circular prerequisite because it runs later in ordinary database bootstrap.
+2. The recovery pass now captures the OS marker before opening SQLite, verifies the journal's exact `InstallationId` against the recovery catalog, joins that captured marker with the durable authority row and environment, and publishes only a fresh provisional policy. The actual process singleton remains unpublished and Covenant-denying through the post-adoption barrier. Authority load independently verifies installation identity; both Load and Consume require the provisional policy and retain an already-published real denial as a veto, including a denial that appears while the secret read is paused.
+3. The next V4 RED reached real maintenance adoption but refused the exact parked `ReconciliationRequired/Covenant.ErasureIncomplete` row. The store now exposes that arm only from held-lock, exact-fingerprint `AdoptUnderInstallationLockAsync` for current V4 mutation and V2 factory-reset kinds. Ordinary acquisition, classified recovery, both expiry discoveries, other kinds/codes, drifted fingerprints, and terminal rows are unchanged refusals.
+4. The next V4 RED reached candidate publication but the fresh runtime's unavailable Covenant tiers had null diagnostics and failed the existing structural validator. `CovenantRuntimeGenerationState.Initial` now uses the existing content-free `Covenant.Unavailable` code for both unhealthy tiers while retaining unavailable capability, null schema versions/fingerprints, and unavailable FTS. Normal schema publication remains the only healthy classifier.
+5. The next V4 RED terminalized and verified the transition but failed disclosure-writer `ReopenAsync` before schema health existed. Authenticated startup recovery now defers writer restoration for both commit and proved no-effect rollback. Only an exact `Resumed` startup outcome sets the bootstrap flag; ordinary bootstrap resolves the same concrete/lifecycle singleton and requires its cold reopen after schema, identity/authority publication, protected recovery, physical install-handle close, and launch-gap recovery, but before Covenant or Grimoire readiness.
+6. The real two-host theory now runs V4 direct reset and V2 standalone factory reset from host 1's authentic `KeepClosed` state. Host 2 starts on a `LongRunning` thread and pauses after the real maintenance lease adoption. At that barrier startup, database readiness, and the final hosted-service sentinel are incomplete; both real gates are Closed; request, work, ordinary-open, and Covenant read admission refuse; the actual host-tools policy is still unpublished/denied; ordinary providers, workers, effects, and mutation counters are zero; and retirement has not begun.
+7. Release converges both entry points through the exact self-settling handler and retirement. V4 retains ordinary rows/files while erasing protected state; V2 erases protected and ordinary catalog/files and retains null parent binding with no receipt activity. Both preserve the immutable launch bytes, requested/server identities, installation identity, master API credential, journal-key fingerprint, and host-1 waiter; host 2 publishes exactly its own baseline generation plus one and fresh request/work/open admission succeeds.
+8. The startup task is owned immediately after creation. Its cleanup always releases the artificial adoption barrier and races harness publication against task completion; a published harness is disposed before awaiting startup, while constructor failure is observed through the already-terminal task. No detached cleanup can outlive the retained profile.
+
+### Negative and mutation evidence
+
+- Marker status malformed/unavailable refuses before database open; wrong installation, clean-row/marker mismatch, and escape-hatch decisions refuse without publishing the real policy. Exact identity and normal later publication controls remain green.
+- A real-policy denial at Load, between Load and Consume, or during the secret read refuses before availability/key publication. Mutation removing the post-secret veto made the paused-denial row pass into consumption and was restored.
+- Held-lock exact V4/V2 adoption passes. Ordinary, classified, future-expiry discovery, current-terminal-fingerprint, wrong code, wrong kind, and drifted fingerprint cases all refuse without changing the row. Mutation disabling the lock-only arm made both positive rows RED and was restored.
+- Mutation returning null initial unavailable diagnostics reproduced the candidate-projection/`SidecarsVerified` failure and was restored.
+- Mutation removing exact installation verification made the wrong-installation classifier row RED and was restored.
+- Mutation disabling the provisional recovery classification made the real V4 full-host row fail before adoption with Load/Consume/adoption all zero and was restored.
+- Authenticated phase-boundary recovery records zero writer reopens across all 32 rows, including the proved rollback row; the live-host success control still reopens status, CRUD, inference, and disclosure. Mutation restoring in-coordinator authenticated commit reopen made the matrix RED and was restored.
+- Moving bootstrap writer restoration before schema and moving it after readiness each made the focused ordering guard RED with `Authenticated writer restoration moved outside the post-recovery, pre-readiness window.` Both mutations were restored.
+- The same-singleton real `CovenantDisclosureWriter.ReopenAsync` failure test aborts before either readiness signal. The full-host failure row additionally preserves a Completed terminal operation, deleted journal, accepted `CommitAndReopen`, and dark readiness.
+- The exact connection inventory caught the new `WithRequiredLedgerAsync(3)` opener and the `AcquireLeaseAsync(8)` arity drift. After adding only those identities, the full inventory passed 35/35.
+
+### Restored verification snapshot
+
+- Startup recovery, classifier, authority, adoption, runtime-transition, and hosted-service authorities: 72/72 passed.
+- Real V4/V2 two-host recovery plus failure-before-readiness: 3/3 passed; with the two writer bootstrap authorities: 5/5 passed.
+- Exact 32-row phase-boundary matrix plus live-host reopen control: 33/33 passed in 1m05s.
+- Grimoire connection acquisition inventory after the in-scope correction: 35/35 passed.
+- Combined DI aliases, CLI/full-host composition, connection inventory, typed dispatch, and phase authorities: 73/73 passed.
+- `dotnet build RetroDownfall.Arcanum.slnx -c Release --no-restore --nologo`: succeeded with 0 warnings and 0 errors after restoring the six missing isolated-worktree assets files.
+
+These are slice-2 checkpoints, not final Task 7 verification. Terminal-suffix behavior remains exclusively slice 3.

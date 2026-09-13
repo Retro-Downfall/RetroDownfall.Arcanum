@@ -496,8 +496,8 @@ internal sealed record CovenantRuntimeGenerationState(
             FtsSynchronization: CovenantFtsSynchronizationState.Unavailable,
             RebuildRequired: true,
             LastHealthTransition: CovenantHealthTransition.Bootstrap,
-            CanonicalDiagnosticCode: null,
-            AcceleratorDiagnosticCode: null));
+            CanonicalDiagnosticCode: ErrorCodes.Covenant.Unavailable,
+            AcceleratorDiagnosticCode: ErrorCodes.Covenant.Unavailable));
 
     internal CovenantAuthoritySnapshot? ActiveAuthority => AuthorityRetired ? null : AuthoritySlot;
 

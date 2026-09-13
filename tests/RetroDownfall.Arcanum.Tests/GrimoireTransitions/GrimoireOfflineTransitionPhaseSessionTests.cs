@@ -392,6 +392,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
                 payloadVersion: 1,
                 expectedDatabaseOperationRevision: row.Revision,
                 parentReceiptBindingDigest: null).Value,
+            InstallationId: Guid.Parse("44444444-4444-4444-8444-444444444444"),
             SlotEpoch: 1,
             Revision: 1,
             EnvelopeDigest: Digest(0x7f));
@@ -524,6 +525,7 @@ public sealed class GrimoireOfflineTransitionPhaseSessionTests : IDisposable
         GrimoireOfflineTransitionPhaseSession session) =>
         new(
             session.Binding,
+            session.Current.Raw.Envelope.InstallationId,
             session.Current.Raw.Envelope.SlotEpoch,
             session.Current.Raw.Envelope.Revision,
             session.Current.Raw.EnvelopeDigest);

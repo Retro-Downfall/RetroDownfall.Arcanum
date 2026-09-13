@@ -1088,6 +1088,12 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ISecretStore>(),
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
 
+        services.AddSingleton<IHostProcessToolsRecoveryStartupClassifier>(
+            static sp => new HostProcessToolsRecoveryStartupClassifier(
+                sp.GetRequiredService<IHostProcessToolsMarkerStore>(),
+                sp.GetRequiredService<IHostProcessToolsEnvironmentProbe>(),
+                sp.GetRequiredService<IHostProcessToolsMarkerPairJoiner>()));
+
         services.AddSingleton<ICovenantRecoveryAuthorityBootstrapper>(
             static sp => new CovenantRecoveryAuthorityBootstrapper(
                 sp.GetRequiredService<CovenantOperationGate>(),
@@ -1110,6 +1116,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireOfflineTransitionStartupRecovery>(
             static sp => new GrimoireOfflineTransitionStartupRecovery(
                 sp.GetRequiredService<IGrimoireRecoveryOnlyUnlock>(),
+                sp.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
                 sp.GetRequiredService<ICovenantRecoveryAuthorityBootstrapper>(),
                 sp.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()));
 

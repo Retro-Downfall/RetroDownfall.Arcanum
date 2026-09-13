@@ -126,7 +126,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         long before = await RevisionAsync(seeded.OperationId);
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
 
@@ -174,7 +174,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Seeded seeded = await SeedAsync(disagreement);
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsFailure);
 
@@ -211,7 +211,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             ])));
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsFailure);
 
@@ -238,7 +238,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             ])));
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsFailure);
 
@@ -255,7 +255,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Seeded seeded = await SeedAsync();
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper(covenantPermitted: false)
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsFailure);
 
@@ -276,12 +276,12 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         CovenantRecoveryAuthorityBootstrapper bootstrapper = Bootstrapper(composition);
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
 
         Result consumed = await loaded.Value
-            .ConsumeAsync(_lock!, _root, seeded.Evidence, Connection, Token);
+            .ConsumeAsync(_lock!, _root, seeded.Evidence, Connection, PermittedHostTools.Instance, Token);
 
         Assert.True(consumed.IsSuccess, consumed.IsFailure ? consumed.Error.Message : null);
 
@@ -294,12 +294,134 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             (await composition.Gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).IsFailure);
 
         Result second = await loaded.Value
-            .ConsumeAsync(_lock!, _root, seeded.Evidence, Connection, Token);
+            .ConsumeAsync(_lock!, _root, seeded.Evidence, Connection, PermittedHostTools.Instance, Token);
 
         Assert.True(second.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, second.Error.Code);
 
+    }
+
+    [SkippableFact]
+    public async Task A_real_policy_denied_between_load_and_consume_vetoes_every_publication()
+    {
+
+        RequireSqlCipher();
+
+        Seeded seeded = await SeedAsync();
+
+        RecoveryComposition composition = new();
+
+        HostProcessToolsRuntimePolicy actual = new();
+
+        CovenantRecoveryAuthorityBootstrapper bootstrapper = new(
+            composition.Gate,
+            composition.Runtime,
+            composition.Keys,
+            composition.Availability,
+            actual,
+            new TestApiKeySecretStore(GrimoireFixture.TestApiKey),
+            Value(GrimoireOfflineTransitionEffectHandlerRegistry.Create(
+                GrimoireOfflineTransitionEffectHandlerRegistry.Declared)));
+
+        Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper.LoadAsync(
+            _lock!,
+            _root,
+            Connection,
+            seeded.Evidence,
+            PermittedHostTools.Instance,
+            Token);
+
+        Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
+
+        Assert.True(actual.Publish(new HostProcessToolsStartupDecision(
+            HostProcessToolsMarkerPairDisposition.MismatchBlocked,
+            CovenantPermitted: false,
+            HostProcessToolsPermitted: false,
+            HostProcessToolsStartupBlocker.MarkerMismatch)).IsSuccess);
+
+        CovenantRuntimeGenerationState before = composition.Runtime.Current;
+
+        Result consumed = await loaded.Value.ConsumeAsync(
+            _lock!,
+            _root,
+            seeded.Evidence,
+            Connection,
+            PermittedHostTools.Instance,
+            Token);
+
+        Assert.True(consumed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, consumed.Error.Code);
+
+        Assert.Same(before, composition.Runtime.Current);
+
+        Assert.True((await composition.Gate.ResumeExclusiveAsync(seeded.Owner, Token)).IsFailure);
+
+    }
+
+    [SkippableFact]
+    public async Task A_real_policy_denied_during_the_secret_read_is_rechecked_before_publication()
+    {
+        RequireSqlCipher();
+
+        Seeded seeded = await SeedAsync();
+
+        RecoveryComposition composition = new();
+
+        HostProcessToolsRuntimePolicy actual = new();
+
+        PausingApiKeySecretStore secrets = new(GrimoireFixture.TestApiKey);
+
+        CovenantRecoveryAuthorityBootstrapper bootstrapper = new(
+            composition.Gate,
+            composition.Runtime,
+            composition.Keys,
+            composition.Availability,
+            actual,
+            secrets,
+            Value(GrimoireOfflineTransitionEffectHandlerRegistry.Create(
+                GrimoireOfflineTransitionEffectHandlerRegistry.Declared)));
+
+        Result<ICovenantClosedRecoveryHandoff> loaded = await bootstrapper.LoadAsync(
+            _lock!,
+            _root,
+            Connection,
+            seeded.Evidence,
+            PermittedHostTools.Instance,
+            Token);
+
+        Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
+
+        CovenantRuntimeGenerationState before = composition.Runtime.Current;
+
+        Task<Result> consuming = loaded.Value.ConsumeAsync(
+            _lock!,
+            _root,
+            seeded.Evidence,
+            Connection,
+            PermittedHostTools.Instance,
+            Token);
+
+        await secrets.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(actual.Publish(new HostProcessToolsStartupDecision(
+            HostProcessToolsMarkerPairDisposition.MismatchBlocked,
+            CovenantPermitted: false,
+            HostProcessToolsPermitted: false,
+            HostProcessToolsStartupBlocker.MarkerMismatch)).IsSuccess);
+
+        secrets.ReleaseRead();
+
+        Result consumed = await consuming.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(consumed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, consumed.Error.Code);
+
+        Assert.Same(before, composition.Runtime.Current);
+
+        Assert.True((await composition.Gate.ResumeExclusiveAsync(seeded.Owner, Token)).IsFailure);
     }
 
     [SkippableFact]
@@ -311,7 +433,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         Seeded seeded = await SeedAsync();
 
         Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
-            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, Token);
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
         Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
 
@@ -320,6 +442,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             _root,
             seeded.Evidence with { Revision = seeded.Evidence.Revision + 1 },
             Connection,
+            PermittedHostTools.Instance,
             Token);
 
         Assert.True(consumed.IsFailure);
@@ -391,6 +514,38 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         }
 
+    }
+
+    private sealed class PausingApiKeySecretStore(string apiKey) : ISecretStore
+    {
+        private readonly TaskCompletionSource _readStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReadStarted => _readStarted;
+
+        internal void ReleaseRead() => _release.TrySetResult();
+
+        public async Task<string?> GetApiKeyAsync()
+        {
+            _readStarted.TrySetResult();
+
+            await _release.Task.ConfigureAwait(false);
+
+            return apiKey;
+        }
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Ok(apiKey));
+
+        public Task SaveApiKeyAsync(string value) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() =>
+            Task.FromResult<string?>(GrimoireFixture.TestGrimoireSecret);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
     }
 
     private async Task<long> RevisionAsync(Guid operationId)
@@ -545,6 +700,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             new CovenantExclusiveRecoveryOwner(created.Id, operation, effect),
             new GrimoireOfflineTransitionRecoveryEvidence(
                 journal,
+                await InstallationIdentityAsync(),
                 SlotEpoch: 1,
                 Revision: 4,
                 new CovenantDigest(Convert.FromHexString(new string('d', 64)))));
@@ -572,6 +728,16 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             (ulong)reader.GetInt64(2),
             (ulong)reader.GetInt64(3));
 
+    }
+
+    private async Task<Guid> InstallationIdentityAsync()
+    {
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT InstallationIdentity FROM covenant_authority_state WHERE StateKey = 1;";
+
+        return Guid.Parse(Assert.IsType<string>(await command.ExecuteScalarAsync(Token)));
     }
 
     private async Task ExecuteAsync(string sql)
@@ -610,6 +776,22 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
         public HostProcessToolsStartupBlocker Blocker =>
             permitted ? HostProcessToolsStartupBlocker.None : HostProcessToolsStartupBlocker.MarkerMismatch;
 
+    }
+
+    private sealed class PermittedHostTools : IHostProcessToolsRuntimePolicy
+    {
+        internal static PermittedHostTools Instance { get; } = new();
+
+        public bool IsPublished => true;
+
+        public bool CovenantPermitted => true;
+
+        public bool HostProcessToolsPermitted => false;
+
+        public HostProcessToolsMarkerPairDisposition? Disposition =>
+            HostProcessToolsMarkerPairDisposition.Clean;
+
+        public HostProcessToolsStartupBlocker Blocker => HostProcessToolsStartupBlocker.None;
     }
 
 }

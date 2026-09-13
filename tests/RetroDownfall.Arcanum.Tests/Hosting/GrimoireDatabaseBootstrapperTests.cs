@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -2777,6 +2778,118 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(readiness.IsReady);
 
         Assert.True(readiness.AdoptionRefusedAtMarkReady);
+    }
+
+    [Fact]
+    public void Authenticated_transition_writer_restore_is_after_every_catalog_recovery_and_before_readiness()
+    {
+        ProductionSource bootstrapper = ProductionSourceInventory.Sources().Single(
+            static source => source.IsExactOwner(
+                "src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs"));
+
+        int body = bootstrapper.Text.IndexOf(
+            "bool restoreDisclosureWriterAfterAuthenticatedTransition,",
+            StringComparison.Ordinal);
+
+        int schema = bootstrapper.Text.IndexOf("await InstallSchemaAsync(", body, StringComparison.Ordinal);
+
+        int protectedRecovery = bootstrapper.Text.IndexOf(
+            "await RecoverProtectedMaintenanceAsync(",
+            schema,
+            StringComparison.Ordinal);
+
+        int physicalClose = bootstrapper.Text.IndexOf(
+            "await installConnection.CloseAsync()",
+            protectedRecovery,
+            StringComparison.Ordinal);
+
+        int launchGap = bootstrapper.Text.IndexOf(
+            "await ResumeLaunchGapAsync(",
+            physicalClose,
+            StringComparison.Ordinal);
+
+        int restore = bootstrapper.Text.IndexOf(
+            "await RestoreAuthenticatedTransitionDisclosureWriterAsync(",
+            launchGap,
+            StringComparison.Ordinal);
+
+        int covenantReadiness = restore < 0
+            ? -1
+            : bootstrapper.Text.IndexOf(
+                "protectedRecovery.Gate?.PublishReadiness()",
+                restore,
+                StringComparison.Ordinal);
+
+        int grimoireReadiness = covenantReadiness < 0
+            ? -1
+            : bootstrapper.Text.IndexOf(
+                "readiness.MarkReady()",
+                covenantReadiness,
+                StringComparison.Ordinal);
+
+        Assert.True(
+            body >= 0
+            && body < schema
+            && schema < protectedRecovery
+            && protectedRecovery < physicalClose
+            && physicalClose < launchGap
+            && launchGap < restore
+            && restore < covenantReadiness
+            && covenantReadiness < grimoireReadiness,
+            "Authenticated writer restoration moved outside the post-recovery, pre-readiness window.");
+    }
+
+    [Fact]
+    public async Task Authenticated_transition_writer_restore_failure_aborts_before_either_readiness_signal()
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        services.AddOptions();
+
+        services.Configure<ArcanumSettings>(static _ => { });
+
+        services.AddSingleton<IOsCredentialStore>(_credentialStore);
+
+        _ = services.AddArcanumGrimoireForCli();
+
+        services.RemoveAll<IGrimoireDbReadiness>();
+
+        services.AddSingleton<GrimoireDbReadiness>();
+
+        services.AddSingleton<IGrimoireDbReadiness>(
+            static provider => provider.GetRequiredService<GrimoireDbReadiness>());
+
+        // Keep the production concrete/lifecycle aliases identical, but make the writer's own
+        // availability dependency remain cold so the real ReopenAsync result branch refuses.
+        services.RemoveAll<ICovenantAvailability>();
+
+        services.AddSingleton<ICovenantAvailability>(
+            new CovenantAvailability(new CovenantRuntimeGenerationProvider()));
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.Same(
+            provider.GetRequiredService<CovenantDisclosureWriter>(),
+            provider.GetRequiredService<ICovenantDisclosureWriterLifecycle>());
+
+        await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                _secretStore,
+                _passphraseSource,
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                _dbPath,
+                _tempDir,
+                heldInstallationLock: null,
+                expectedInstallationId: null,
+                postRestoreTopology: null,
+                restoreDisclosureWriterAfterAuthenticatedTransition: true,
+                CancellationToken.None));
+
+        Assert.False(provider.GetRequiredService<GrimoireDbReadiness>().IsReady);
     }
 
     [Fact]

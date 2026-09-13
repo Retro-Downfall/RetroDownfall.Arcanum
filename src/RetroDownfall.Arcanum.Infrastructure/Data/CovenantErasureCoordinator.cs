@@ -2540,9 +2540,16 @@ internal sealed class CovenantErasureCoordinator(
         // Ready-but-cold restoration opens no ordinary handle while Grimoire is closed. A restart
         // failure lands here, before the one disposition, so it selects KeepClosed rather than
         // reversing an erasure the storage proof already earned.
-        Result writer = await RunLifecycleAsync(
-            token => _disclosureWriter.ReopenAsync(token).AsTask(),
-            publicationAndWriter.Token).ConfigureAwait(false);
+        // A live host and a launch-gap recovery already published schema health, so their writer can
+        // be made ready while this coordinator still owns the closed period. Authenticated startup
+        // recovery deliberately has not: its provisional runtime carries only the durable authority
+        // needed to finish this transition. That path defers the same singleton writer until normal
+        // bootstrap has published schema health, while both gates still block every acknowledgement.
+        Result writer = authenticatedEvidence is null
+            ? await RunLifecycleAsync(
+                token => _disclosureWriter.ReopenAsync(token).AsTask(),
+                publicationAndWriter.Token).ConfigureAwait(false)
+            : Result.Success();
 
         if (writer.IsFailure)
         {
@@ -2598,7 +2605,7 @@ internal sealed class CovenantErasureCoordinator(
             Error error)
     {
 
-        if (!authenticatedRecovery || phases is not null || closure is null)
+        if (!authenticatedRecovery)
         {
 
             return await AbortBeforeErasureAsync(
@@ -2610,6 +2617,39 @@ internal sealed class CovenantErasureCoordinator(
                 phases,
                 closure,
                 error).ConfigureAwait(false);
+
+        }
+
+        if (phases is not null && closure is not null)
+        {
+            // The journal proves this is still the no-effect rollback edge, but schema health has not
+            // been published in this fresh process. Record the exact terminal rollback without
+            // reopening the disclosure writer; normal bootstrap restores that same singleton after
+            // schema publication and before either readiness signal.
+            CovenantExclusiveLeaseDisposition disposition = CovenantExclusiveDisposition.Select(
+                new CovenantExclusiveDispositionEvidence(
+                    StorageVerified: true,
+                    AuthorityVerified: true,
+                    DurablyMutated: progress.DurablyMutated,
+                    HealthPublished: false));
+
+            return await CloseAsync(
+                operation,
+                checkpoint,
+                ownerId,
+                lease,
+                disposition,
+                progress,
+                error.Code,
+                phases,
+                closure).ConfigureAwait(false);
+
+        }
+
+        if (closure is null)
+        {
+
+            return Result<CovenantErasureCompletion>.Failure(error);
 
         }
 
