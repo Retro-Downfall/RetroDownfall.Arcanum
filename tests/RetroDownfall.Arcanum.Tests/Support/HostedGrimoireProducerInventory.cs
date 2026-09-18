@@ -2664,11 +2664,9 @@ internal static class HostedGrimoireProducerInventory
             }
             else
             {
-                environment = environmentToken is int
-                    ? EvaluationEnvironmentIdentity(
-                        member,
-                        environmentToken)
-                    : EvaluationEnvironmentIdentity(member);
+                environment = EvaluationEnvironmentIdentity(
+                    member,
+                    environmentToken);
             }
 
             if (environmentToken is not int
@@ -27173,6 +27171,45 @@ internal static class HostedGrimoireProducerInventory
                 : SelectPatternCleanupMembers(concrete, name);
         }
 
+        private static IMethodSymbol[] SelectEffectiveCleanupMembers(
+            ITypeSymbol concreteType,
+            ITypeSymbol staticType,
+            string name)
+        {
+            IMethodSymbol[] candidateMembers =
+                SelectEffectiveCleanupMembers(concreteType, name);
+
+            if (candidateMembers is not [IMethodSymbol candidate]
+                || candidate.ExplicitInterfaceImplementations.Length == 0
+                || concreteType is not INamedTypeSymbol concrete
+                || staticType is not INamedTypeSymbol
+                {
+                    TypeKind: TypeKind.Class,
+                } dispatchType)
+            {
+                return candidateMembers;
+            }
+
+            IMethodSymbol[] patternSlots = SelectPatternCleanupMembers(
+                dispatchType,
+                name);
+
+            if (patternSlots.Length == 0)
+            {
+                return candidateMembers;
+            }
+
+            if (patternSlots is not [IMethodSymbol patternSlot])
+            {
+                return [];
+            }
+
+            return [MostDerivedCleanupOverride(
+                concrete,
+                patternSlot,
+                name)];
+        }
+
         private static bool IsTrustedCleanupDispatchBase(ITypeSymbol type)
         {
             string typeName = TypeKey(type);
@@ -28374,7 +28411,10 @@ internal static class HostedGrimoireProducerInventory
 
             foreach (CleanupTypeCandidate candidate in exactCandidates)
             {
-                if (SelectEffectiveCleanupMembers(candidate.Type, name) is not
+                if (SelectEffectiveCleanupMembers(
+                        candidate.Type,
+                        staticType,
+                        name) is not
                     [IMethodSymbol cleanup])
                 {
                     exactCandidatesResolved = false;

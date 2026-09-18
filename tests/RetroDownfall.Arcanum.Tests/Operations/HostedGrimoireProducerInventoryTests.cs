@@ -13731,6 +13731,61 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void IncompleteEvaluationEnvironmentDoesNotRetryTokenRegistrationDuringFallback()
+    {
+        const string helper =
+            "internal static class IncompleteEnvironmentTarget { "
+            + "internal static void Run(System.Action? callback) { "
+            + "_ = callback; "
+            + "System.IO.File.Exists(\"incomplete-environment\"); "
+            + "System.IO.File.Delete(\"incomplete-environment\"); } }";
+
+        CSharpCompilation compilation = Compile(
+            R2Source(
+                "IncompleteEnvironmentTarget.Run(null);",
+                helper));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumMembers: 0);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code
+                == "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "IncompleteEnvironmentTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "IncompleteEnvironmentTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:IncompleteEnvironmentTarget.Run(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(4, metric.InternerRequests);
+
+        Assert.Equal(4, metric.InternerContextBuilds);
+
+        Assert.Equal(4, metric.InternerTraversalIdentityBuilds);
+
+        Assert.Equal(0, metric.InternerRegistrations);
+
+        Assert.Equal(2, metric.FingerprintRequests);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
     public void UnrelatedSealedReceiverStateDoesNotCreateOneEvaluationEnvironmentPerCall()
     {
         string calls = string.Join(
@@ -20846,6 +20901,46 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && diagnostic.Detail.StartsWith(
                 "System.Threading.Lock.Scope.Dispose;",
                 StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("stream", "System.IO.File.Delete", "System.IO.File.Exists")]
+    [InlineData("interface", "System.IO.File.Exists", "System.IO.File.Delete")]
+    public void AwaitUsingPreservesStaticCleanupSlotForSplitStreamDispatch(
+        string staticType,
+        string expectedCleanup,
+        string rejectedCleanup)
+    {
+        string declaration = staticType switch
+        {
+            "stream" => "System.IO.Stream cleanup = new SplitStream()",
+            "interface" =>
+                "System.IAsyncDisposable cleanup = new SplitStream()",
+            _ => throw new ArgumentOutOfRangeException(nameof(staticType)),
+        };
+
+        const string helper =
+            "internal sealed class SplitStream : System.IO.MemoryStream, System.IAsyncDisposable { "
+            + "public override System.Threading.Tasks.ValueTask DisposeAsync() { "
+            + "System.IO.File.Delete(\"virtual-stream-cleanup\"); return default; } "
+            + "System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { "
+            + "System.IO.File.Exists(\"explicit-interface-cleanup\"); return default; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission + "await using " + declaration + ";",
+                helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, site =>
+            site.EnclosingType == "SplitStream"
+            && site.Callee == expectedCleanup);
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.EnclosingType == "SplitStream"
+            && site.Callee == rejectedCleanup);
     }
 
     [Fact]
