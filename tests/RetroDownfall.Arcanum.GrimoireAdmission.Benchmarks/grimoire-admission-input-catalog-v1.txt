@@ -759,6 +759,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactor
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionLifecycle.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireRequestAdmissionScope.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireSqlCommandFactory.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/IAuthenticatedCovenantErasureRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/ISqliteNativeRuntime.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyClaimStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyStore.cs
@@ -1296,6 +1297,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTr
 R	src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionPhaseAuthority.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionPhaseSession.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionStartupRecovery.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionTerminalSuffixFinisher.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/AdmissionGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/ApprenticeConcurrencyGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/ApprenticePromptBuilder.cs
@@ -1579,6 +1581,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsEnvironmentP
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsMarkerMutationGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsMarkerStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsPorts.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsRecoveryStartupClassifier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsStartupGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsTaintVersionStorage.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsTransitionService.cs

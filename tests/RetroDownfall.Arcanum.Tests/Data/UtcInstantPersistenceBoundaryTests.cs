@@ -539,6 +539,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Data/UtcInstantTypeMappings.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/UtcInstantSql.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/OperationDiagnostics.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionTerminalSuffixFinisher.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnBegin.cs",
