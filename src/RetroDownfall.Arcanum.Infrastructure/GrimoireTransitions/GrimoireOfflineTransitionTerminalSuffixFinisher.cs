@@ -644,20 +644,35 @@ internal sealed class GrimoireOfflineTransitionTerminalSuffixFinisher(
     private sealed record TerminalOperationSnapshot(LongRunningOperation Operation)
     {
         internal Guid Id => Operation.Id;
+
         internal string Kind => Operation.Kind;
+
         internal LongRunningOperationState State => Operation.State;
+
         internal LongRunningOperationRecoveryPolicy RecoveryPolicy => Operation.RecoveryPolicy;
+
         internal DateTimeOffset CreatedAt => Operation.CreatedAt;
+
         internal DateTimeOffset? StartedAt => Operation.StartedAt;
+
         internal DateTimeOffset? HeartbeatAt => Operation.HeartbeatAt;
+
         internal DateTimeOffset? CompletedAt => Operation.CompletedAt;
+
         internal string? LeaseOwner => Operation.LeaseOwner;
+
         internal DateTimeOffset? LeaseExpiresAt => Operation.LeaseExpiresAt;
+
         internal int AttemptCount => Operation.AttemptCount;
+
         internal int CheckpointVersion => Operation.CheckpointVersion;
+
         internal byte[] CheckpointPayload => Operation.CheckpointPayload!;
+
         internal string? CheckpointReference => Operation.CheckpointReference;
+
         internal string? TerminalErrorCode => Operation.TerminalErrorCode;
+
         internal long Revision => Operation.Revision;
 
         internal bool IsTerminal => State is LongRunningOperationState.Completed
