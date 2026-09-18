@@ -23417,6 +23417,32 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
     }
 
+    [Theory]
+    [InlineData("direct")]
+    [InlineData("callback")]
+    [InlineData("local-function")]
+    public void FrameworkCollectionIndexerRejectsLoopCarriedReplacementAfterLexicalUse(string replacement)
+    {
+        string mutation = replacement switch
+        {
+            "direct" => "values = new EvilList();",
+            "callback" => "Action replace = () => values = new EvilList(); replace();",
+            _ => "Replace();",
+        };
+
+        string body = "IReadOnlyList<string> values = new List<string> { \"safe\" }; "
+            + "for (int i = 0; i < 2; i++) { _ = values[0]; " + mutation + " }"
+            + (replacement == "local-function" ? "void Replace() { values = new EvilList(); }" : "");
+
+        string fixture = "using System.Collections.Generic; " + FixtureSource(body,
+            "sealed class EvilList : List<string>, IReadOnlyList<string> { string IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }");
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Contains(Discover(fixture).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
     [Fact]
     public void FrameworkCollectionIndexerRejectsUnprovenVirtualExceptionData()
     {

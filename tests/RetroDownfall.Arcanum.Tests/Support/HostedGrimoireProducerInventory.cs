@@ -31020,11 +31020,13 @@ internal static class HostedGrimoireProducerInventory
             {
                 ISymbol? storage = member.Model.GetSymbolInfo(expression).Symbol;
 
+                // Lexically later writes can reach this use through loop back-edges,
+                // including writes in invoked callbacks and local functions.
                 if (storage is IParameterSymbol parameter
                     && (parameter.RefKind != RefKind.None
                         || HasCollectionValueReplacement(member, parameter))
                     || storage is ILocalSymbol collectionLocal
-                        && HasCollectionValueReplacement(member, collectionLocal, rejectSimpleAssignment: false))
+                        && HasCollectionValueReplacement(member, collectionLocal, rejectElementWrites: false))
                 {
                     return new([], false, true);
                 }
@@ -31311,7 +31313,8 @@ internal static class HostedGrimoireProducerInventory
         private static bool HasCollectionValueReplacement(
             AuthoredMember member,
             ISymbol symbol,
-            bool rejectSimpleAssignment = true)
+            bool rejectSimpleAssignment = true,
+            bool rejectElementWrites = true)
         {
             bool RefersTo(SyntaxNode node) => node.DescendantNodesAndSelf()
                 .OfType<ExpressionSyntax>()
@@ -31320,7 +31323,8 @@ internal static class HostedGrimoireProducerInventory
 
             return member.Model.SyntaxTree.GetRoot().DescendantNodes().Any(node => node switch
             {
-                AssignmentExpressionSyntax assignment => RefersTo(assignment.Left)
+                AssignmentExpressionSyntax assignment
+                    when rejectElementWrites || assignment.Left is not ElementAccessExpressionSyntax => RefersTo(assignment.Left)
                     && (rejectSimpleAssignment
                         || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
                         || assignment.Left is TupleExpressionSyntax),
