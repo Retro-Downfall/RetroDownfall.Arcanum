@@ -229,16 +229,19 @@ internal sealed class BatchRecoveryService(
         while (true)
 
         {
-            IReadOnlyList<BatchLineCheckpoint> page = await batches.ListLineCheckpointsAsync(
-                batchId,
+            List<BatchLineCheckpoint> page =
+            [
+                .. await batches.ListLineCheckpointsAsync(
+                    batchId,
 
-                BatchLineCheckpointState.Dispatched,
+                    BatchLineCheckpointState.Dispatched,
 
-                afterLine,
+                    afterLine,
 
-                CheckpointPageSize,
+                    CheckpointPageSize,
 
-                cancellationToken).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false),
+            ];
 
             if (page.Count == 0)
 

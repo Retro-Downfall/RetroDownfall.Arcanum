@@ -103,4 +103,4 @@ internal static class UtcInstantColumnInventory
     ];
 }
 
-internal sealed record UtcInstantTable(string TableName, IReadOnlyList<string> Columns);
+internal sealed record UtcInstantTable(string TableName, List<string> Columns);

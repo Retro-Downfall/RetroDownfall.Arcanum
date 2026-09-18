@@ -25,7 +25,7 @@ internal sealed record GrimoireExpectedIndex(
     string Origin,
     bool IsPartial,
     string NormalizedSql,
-    IReadOnlyList<GrimoireExpectedIndexColumn> Columns);
+    List<GrimoireExpectedIndexColumn> Columns);
 
 /// <summary>
 /// One column position within an index, as <c>PRAGMA index_xinfo</c> reports it.

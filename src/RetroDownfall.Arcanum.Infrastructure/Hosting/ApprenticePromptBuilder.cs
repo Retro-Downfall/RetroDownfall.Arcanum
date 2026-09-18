@@ -23,7 +23,7 @@ internal static class ApprenticePromptBuilder
 
     public static string BuildStepExecutionPrompt(
         Apprentice apprentice,
-        IReadOnlyList<PlanStep> plan,
+        List<PlanStep> plan,
         int currentStepIndex,
         ApprenticeCheckpoint? checkpoint = null)
     {
@@ -83,7 +83,7 @@ internal static class ApprenticePromptBuilder
 
     public static string BuildWeaveEvaluationPrompt(
         Apprentice apprentice,
-        IReadOnlyList<PlanStep> plan,
+        List<PlanStep> plan,
         int completedStepIndex)
     {
         StringBuilder sb = new();

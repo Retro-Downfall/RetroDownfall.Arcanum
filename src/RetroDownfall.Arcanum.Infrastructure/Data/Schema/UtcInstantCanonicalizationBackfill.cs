@@ -19,8 +19,8 @@ internal sealed class UtcInstantCanonicalizationBackfill(
 {
     private const string CursorVersion = "v1";
 
-    private readonly IReadOnlyList<UtcInstantTable> _tables =
-        tables ?? throw new ArgumentNullException(nameof(tables));
+    private readonly List<UtcInstantTable> _tables =
+        tables?.ToList() ?? throw new ArgumentNullException(nameof(tables));
 
     public string Name { get; } = string.IsNullOrWhiteSpace(name)
         ? throw new ArgumentException("A UTC instant backfill needs a stable name.", nameof(name))
@@ -219,7 +219,7 @@ internal sealed class UtcInstantCanonicalizationBackfill(
         update.CommandText =
             $"UPDATE {QuoteIdentifier(table.TableName)} SET {assignments} WHERE rowid = $rowid;";
 
-        for (int index = 0; index < row.Values.Count; index++)
+        for (int index = 0; index < row.Values.Length; index++)
         {
             _ = update.Parameters.AddWithValue(
                 $"$instant{index}",
@@ -368,7 +368,7 @@ internal sealed class UtcInstantCanonicalizationBackfill(
 
     private sealed record BackfillPosition(int TableIndex, long? AfterRowId);
 
-    private sealed record CanonicalRow(long RowId, IReadOnlyList<string?> Values, bool RequiresWrite);
+    private sealed record CanonicalRow(long RowId, string?[] Values, bool RequiresWrite);
 
     private sealed record InstalledTrigger(string Name, string Sql);
 }

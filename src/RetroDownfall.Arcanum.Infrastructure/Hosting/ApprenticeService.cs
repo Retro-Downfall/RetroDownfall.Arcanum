@@ -2423,7 +2423,7 @@ internal sealed class ApprenticeService(
         return apprentice;
     }
 
-    private static int ComputeParallelGroupEnd(IReadOnlyList<PlanStep> plan, int start)
+    private static int ComputeParallelGroupEnd(List<PlanStep> plan, int start)
     {
         if (start >= plan.Count || !plan[start].IsParallel)
         {
@@ -2778,7 +2778,7 @@ internal sealed class ApprenticeService(
     private async Task<SingleStepResult> RunSimulacrumBranchAsync(
         SemaphoreSlim gate,
         Apprentice snapshot,
-        IReadOnlyList<PlanStep> planSnapshot,
+        List<PlanStep> planSnapshot,
         int stepIndex,
         ApprenticeSettings settings,
         Guid apprenticeId,
@@ -2798,7 +2798,7 @@ internal sealed class ApprenticeService(
     private async Task<SingleStepResult> RunSimulacrumBranchWithSettlementAsync(
         SemaphoreSlim gate,
         Apprentice snapshot,
-        IReadOnlyList<PlanStep> planSnapshot,
+        List<PlanStep> planSnapshot,
         int stepIndex,
         ApprenticeSettings settings,
         Guid apprenticeId,
@@ -2869,7 +2869,7 @@ internal sealed class ApprenticeService(
     private async Task<SingleStepResult> RunStepAttemptsAsync(
         IArcanumIntelligenceProvider intelligence,
         Apprentice snapshot,
-        IReadOnlyList<PlanStep> planSnapshot,
+        List<PlanStep> planSnapshot,
         int stepIndex,
         bool stateless,
         ApprenticeSettings settings,

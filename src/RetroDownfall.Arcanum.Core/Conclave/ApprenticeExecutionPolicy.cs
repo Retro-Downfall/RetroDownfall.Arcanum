@@ -107,19 +107,23 @@ public static class ApprenticeExecutionPolicy
         IReadOnlyList<PlanStep> revisedTail)
     {
 
-        List<PlanStep> merged = new(currentStepIndex + revisedTail.Count);
+        List<PlanStep> currentPlanSnapshot = [.. currentPlan];
 
-        for (int i = 0; i < currentStepIndex && i < currentPlan.Count; i++)
+        List<PlanStep> revisedTailSnapshot = [.. revisedTail];
+
+        List<PlanStep> merged = new(currentStepIndex + revisedTailSnapshot.Count);
+
+        for (int i = 0; i < currentStepIndex && i < currentPlanSnapshot.Count; i++)
         {
 
-            merged.Add(currentPlan[i]);
+            merged.Add(currentPlanSnapshot[i]);
 
         }
 
-        for (int i = 0; i < revisedTail.Count; i++)
+        for (int i = 0; i < revisedTailSnapshot.Count; i++)
         {
 
-            PlanStep step = revisedTail[i];
+            PlanStep step = revisedTailSnapshot[i];
 
             merged.Add(step with
             {

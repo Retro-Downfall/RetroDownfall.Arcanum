@@ -14255,6 +14255,20 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
     }
 
+    [Fact]
+    public void ProductionGraphsRetainExactCollectionIndexerProvenance()
+    {
+        HostedProducerDiscovery<HostedProducerSite> discovery =
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
+
+        Assert.DoesNotContain(
+            discovery.Diagnostics,
+            static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail.StartsWith(
+                    "System.Collections.Generic.IReadOnlyList`1.this[]",
+                    StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("BackupCommands", "Create")]
     [InlineData("BackupRestoreService", "RestoreAsync")]

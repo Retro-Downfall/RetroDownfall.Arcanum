@@ -28,12 +28,12 @@ internal readonly struct PortablePath
 
     private readonly string? _root;
 
-    private readonly IReadOnlyList<string>? _segments;
+    private readonly string[]? _segments;
 
     private PortablePath(
         PortablePathFlavour flavour,
         string root,
-        IReadOnlyList<string> segments,
+        string[] segments,
         bool hasTraversal)
     {
 
@@ -171,7 +171,7 @@ internal readonly struct PortablePath
 
         }
 
-        parsed = new PortablePath(flavour, root, segments, hasTraversal);
+        parsed = new PortablePath(flavour, root, segments.ToArray(), hasTraversal);
 
         return true;
 
@@ -180,23 +180,27 @@ internal readonly struct PortablePath
     public bool Equals(PortablePath other, bool caseInsensitive)
     {
 
+        string[] segments = _segments ?? [];
+
+        string[] otherSegments = other._segments ?? [];
+
         StringComparison comparison = caseInsensitive
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
         if (Flavour != other.Flavour
             || !string.Equals(Root, other.Root, comparison)
-            || Segments.Count != other.Segments.Count)
+            || segments.Length != otherSegments.Length)
         {
 
             return false;
 
         }
 
-        for (int index = 0; index < Segments.Count; index++)
+        for (int index = 0; index < segments.Length; index++)
         {
 
-            if (!string.Equals(Segments[index], other.Segments[index], comparison))
+            if (!string.Equals(segments[index], otherSegments[index], comparison))
             {
 
                 return false;
@@ -213,23 +217,27 @@ internal readonly struct PortablePath
     public bool IsUnder(PortablePath root, bool caseInsensitive)
     {
 
+        string[] segments = _segments ?? [];
+
+        string[] rootSegments = root._segments ?? [];
+
         StringComparison comparison = caseInsensitive
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
         if (Flavour != root.Flavour
             || !string.Equals(Root, root.Root, comparison)
-            || Segments.Count < root.Segments.Count)
+            || segments.Length < rootSegments.Length)
         {
 
             return false;
 
         }
 
-        for (int index = 0; index < root.Segments.Count; index++)
+        for (int index = 0; index < rootSegments.Length; index++)
         {
 
-            if (!string.Equals(Segments[index], root.Segments[index], comparison))
+            if (!string.Equals(segments[index], rootSegments[index], comparison))
             {
 
                 return false;
