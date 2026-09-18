@@ -440,7 +440,7 @@ internal sealed class ApprenticeService(
         IReadOnlyList<PlanStep> steps,
         CancellationToken cancellationToken = default)
     {
-        List<PlanStep> stableSteps = [.. steps];
+        List<PlanStep>? stableSteps = steps is null ? null : [.. steps];
 
         Result<List<PlanStep>> validated = ApprenticeExecutionPolicy.ValidateReweaveSteps(stableSteps);
 

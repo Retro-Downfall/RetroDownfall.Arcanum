@@ -57,6 +57,24 @@ public sealed class ApprenticeServiceReliabilityTests
     }
 
     [Fact]
+    public async Task ReweaveAsync_NullPlanReturnsTypedInvalidPlanFailure()
+    {
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>());
+
+        Result<ApprenticeDetailDto> result = await service.ReweaveAsync(
+            Guid.NewGuid(),
+            null!,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Apprentice.InvalidPlan, result.Error.Code);
+    }
+
+    [Fact]
     public async Task ExecuteStepStream_StructuredToolDenial_FailsRegardlessOfWording()
     {
         Guid apprenticeId = Guid.NewGuid();
