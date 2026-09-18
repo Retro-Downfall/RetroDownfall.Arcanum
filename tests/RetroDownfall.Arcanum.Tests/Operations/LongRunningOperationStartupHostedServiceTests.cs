@@ -229,7 +229,9 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             OnSecondDisposalAsync = async () =>
             {
                 scopeCleanupStarted.TrySetResult();
-                await releaseScopeCleanup.Task.ConfigureAwait(false);
+                await releaseScopeCleanup.Task
+                    .WaitAsync(TimeSpan.FromSeconds(30))
+                    .ConfigureAwait(false);
             },
         };
         LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
@@ -239,17 +241,30 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             "background-owner",
             CancellationToken.None);
 
-        await scopeCleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            Task first = await Task.WhenAny(scopeCleanupStarted.Task, pass)
+                .WaitAsync(TimeSpan.FromSeconds(30));
 
-        Assert.False(pass.IsCompleted);
-        Assert.Equal(1, gate.ActiveGroups);
-        Assert.Equal(1, gate.ActiveLeases);
-        Assert.DoesNotContain("group-dispose", order);
+            if (first == pass)
+            {
+                _ = await pass;
 
-        releaseScopeCleanup.TrySetResult();
+                Assert.Fail("The reconciliation pass completed before async scope cleanup started.");
+            }
+
+            Assert.False(pass.IsCompleted);
+            Assert.Equal(1, gate.ActiveGroups);
+            Assert.Equal(1, gate.ActiveLeases);
+            Assert.DoesNotContain("group-dispose", order);
+        }
+        finally
+        {
+            releaseScopeCleanup.TrySetResult();
+        }
 
         LongRunningOperationReconciliationSummary summary = await pass.WaitAsync(
-            TimeSpan.FromSeconds(2));
+            TimeSpan.FromSeconds(30));
 
         Assert.Equal(1, summary.Completed);
         Assert.Equal(0, gate.ActiveGroups);
