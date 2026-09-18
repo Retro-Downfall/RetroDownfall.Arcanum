@@ -23033,6 +23033,70 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void FrameworkCollectionIndexerRejectsAuthoredSubclassThroughFrameworkBaseAlias()
+    {
+        const string body =
+            "System.Collections.Generic.List<string> backing = new EvilList { \"one\" }; "
+            + "System.Collections.Generic.IReadOnlyList<string> values = backing; "
+            + "_ = values[0];";
+
+        const string helpers =
+            "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { "
+            + "string System.Collections.Generic.IReadOnlyList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Fact]
+    public void FrameworkCollectionIndexerRejectsAuthoredHashtableSubclassThroughFrameworkBaseAlias()
+    {
+        const string body =
+            "System.Collections.Hashtable backing = new EvilHashtable(); "
+            + "System.Collections.IDictionary values = backing; "
+            + "values[\"key\"] = \"value\";";
+
+        const string helpers =
+            "internal sealed class EvilHashtable : System.Collections.Hashtable { "
+            + "public override object? this[object key] { get => null; set { System.IO.File.Delete(\"evil-indexer\"); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.IDictionary.this[] setter");
+    }
+
+    [Fact]
+    public void FrameworkCollectionIndexerRejectsUnboundFrameworkBaseParameter()
+    {
+        const string body =
+            "FrameworkBaseIndexerConsumer.Read(UnknownFrameworkList.Value);";
+
+        const string helpers =
+            "internal static class FrameworkBaseIndexerConsumer { "
+            + "internal static void Read(System.Collections.Generic.List<string> backing) { "
+            + "System.Collections.Generic.IReadOnlyList<string> values = backing; _ = values[0]; } } "
+            + "internal static class UnknownFrameworkList { "
+            + "internal static System.Collections.Generic.List<string> Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Fact]
     public void SameNamedFrameworkCollectionIndexerSpoofsRemainUnclassified()
     {
         CSharpCompilation foreign = Compile(

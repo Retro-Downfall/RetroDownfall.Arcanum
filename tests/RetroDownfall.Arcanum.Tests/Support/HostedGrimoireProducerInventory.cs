@@ -21017,7 +21017,10 @@ internal static class HostedGrimoireProducerInventory
                             == "System.Collections.Immutable.ImmutableArray`1"
                                 ? typeof(System.Collections.Immutable.ImmutableArray<>).Assembly
                                     .GetName()
-                                : typeof(List<>).Assembly.GetName()))
+                                : typeof(List<>).Assembly.GetName())
+                && (named.IsValueType
+                    || named.IsSealed
+                    || expression is BaseObjectCreationExpressionSyntax))
             {
                 return true;
             }
