@@ -23409,7 +23409,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         string consumerSource = "public sealed partial class Consumer { public Consumer() { } public void Read() { _ = "
             + (throughProperty ? "Values" : "values") + "[0]; } }";
 
-        CSharpCompilation compilation = Compile(separateAssembly ? consumerSource : FixtureSource("new Consumer().Read();", consumerSource))
+        string body = throughProperty ? "_ = new Consumer().Values[0];" : "new Consumer().Read();";
+
+        CSharpCompilation compilation = Compile(separateAssembly ? consumerSource : FixtureSource(body, consumerSource))
             .AddSyntaxTrees(CSharpSyntaxTree.ParseText(
                 "public sealed partial class Consumer { private readonly System.Collections.Generic.IReadOnlyList<string> values = "
                     + initializer + "; public System.Collections.Generic.IReadOnlyList<string> Values => values; } public sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int index] => \"evil\"; }",
@@ -23418,7 +23420,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
         CSharpCompilation[] compilations = separateAssembly
-            ? [compilation, Compile(FixtureSource("new Consumer().Read();"))
+            ? [compilation, Compile(FixtureSource(body))
                 .WithAssemblyName("InventoryConsumer")
                 .AddReferences(compilation.ToMetadataReference())]
             : [compilation];
@@ -23428,6 +23430,59 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
             compilations, HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(compilations), [], []);
+
+        Assert.Equal(evil, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerKeepsEqualSpanPartialInitializersDistinct(bool reverse)
+    {
+        string branches = reverse ? "evil : safe" : "safe : evil";
+
+        CSharpCompilation compilation = Compile(FixtureSource("new Consumer().Read(token.IsCancellationRequested);",
+            "public sealed partial class Consumer { public Consumer() { } public void Read(bool flag) { var values = flag ? "
+                + branches + "; _ = values[0]; } } public sealed class Evil : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int index] => \"evil\"; }"))
+            .AddSyntaxTrees(new[] { "safe", "evil" }.Select(field => CSharpSyntaxTree.ParseText(
+                "using List = System.Collections.Generic.List<string>; public sealed partial class Consumer { private readonly System.Collections.Generic.IReadOnlyList<string> "
+                    + field + " = new " + (field == "safe" ? "List" : "Evil") + "(); }",
+                path: "src/Consumer." + field + ".cs")));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Microsoft.CodeAnalysis.Text.TextSpan[] initializerSpans = compilation.SyntaxTrees.Skip(1)
+            .Select(tree => tree.GetRoot().DescendantNodes().OfType<VariableDeclaratorSyntax>().Single().Initializer!.Value.Span)
+            .ToArray();
+
+        Assert.Equal(initializerSpans[0], initializerSpans[1]);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]), [], []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerRetainsPrimaryConstructorBindingsAcrossPartialInitializer(bool evil)
+    {
+        string initializer = evil ? "new Evil()" : "new System.Collections.Generic.List<string>()";
+
+        CSharpCompilation compilation = Compile(FixtureSource("new Consumer(" + initializer + ").Read();",
+            "public sealed partial class Consumer(System.Collections.Generic.IReadOnlyList<string> input) { public void Read() { _ = values[0]; } } "
+                + "public sealed class Evil : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int index] => \"evil\"; }"))
+            .AddSyntaxTrees(CSharpSyntaxTree.ParseText(
+                "public sealed partial class Consumer { private readonly System.Collections.Generic.IReadOnlyList<string> values = input; }",
+                path: "src/Consumer.Values.cs"));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]), [], []);
 
         Assert.Equal(evil, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));

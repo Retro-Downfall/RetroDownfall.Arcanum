@@ -23576,16 +23576,7 @@ internal static class HostedGrimoireProducerInventory
 
                 if (value is not null)
                 {
-                    // A partial type may declare this initializer in another file.
-                    // Preserve the constructor bindings, but query the value in its own tree.
-                    AuthoredMember valueContext = value.SyntaxTree == constructor.Model.SyntaxTree
-                        ? constructor
-                        : constructor with
-                        {
-                            Model = constructor.Model.Compilation.GetSemanticModel(value.SyntaxTree),
-                        };
-
-                    values[field] = new(valueContext, value);
+                    values[field] = new(ValueExpressionContext(constructor, value), value);
                 }
                 else if (assignments.Length != 0)
                 {
@@ -23596,6 +23587,25 @@ internal static class HostedGrimoireProducerInventory
             return constructor with
             {
                 ValueBindings = values,
+            };
+        }
+
+        private static AuthoredMember ValueExpressionContext(
+            AuthoredMember member,
+            ExpressionSyntax expression)
+        {
+            if (expression.SyntaxTree == member.Model.SyntaxTree
+                && expression.SyntaxTree == member.Syntax.SyntaxTree)
+            {
+                return member;
+            }
+
+            // Partial-type initializers must carry both their semantic model and
+            // syntax identity, while retaining the constructor's bound arguments.
+            return member with
+            {
+                Syntax = expression,
+                Model = member.Model.Compilation.GetSemanticModel(expression.SyntaxTree),
             };
         }
 
@@ -30547,7 +30557,7 @@ internal static class HostedGrimoireProducerInventory
             }
 
             CleanupValueFlow fieldValue = CleanupValueFlowOf(
-                boundConstructor,
+                ValueExpressionContext(boundConstructor, fieldValueExpression),
                 fieldValueExpression,
                 context);
 
