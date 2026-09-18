@@ -23576,7 +23576,16 @@ internal static class HostedGrimoireProducerInventory
 
                 if (value is not null)
                 {
-                    values[field] = new(constructor, value);
+                    // A partial type may declare this initializer in another file.
+                    // Preserve the constructor bindings, but query the value in its own tree.
+                    AuthoredMember valueContext = value.SyntaxTree == constructor.Model.SyntaxTree
+                        ? constructor
+                        : constructor with
+                        {
+                            Model = constructor.Model.Compilation.GetSemanticModel(value.SyntaxTree),
+                        };
+
+                    values[field] = new(valueContext, value);
                 }
                 else if (assignments.Length != 0)
                 {

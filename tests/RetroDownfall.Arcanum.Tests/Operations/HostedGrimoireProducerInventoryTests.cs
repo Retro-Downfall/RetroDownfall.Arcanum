@@ -23391,6 +23391,49 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public void FrameworkCollectionIndexerPreservesInitializerTreeAcrossPartialConstruction(
+        bool evil,
+        bool separateAssembly,
+        bool throughProperty)
+    {
+        string initializer = evil ? "new EvilList()" : "new System.Collections.Generic.List<string>()";
+
+        string consumerSource = "public sealed partial class Consumer { public Consumer() { } public void Read() { _ = "
+            + (throughProperty ? "Values" : "values") + "[0]; } }";
+
+        CSharpCompilation compilation = Compile(separateAssembly ? consumerSource : FixtureSource("new Consumer().Read();", consumerSource))
+            .AddSyntaxTrees(CSharpSyntaxTree.ParseText(
+                "public sealed partial class Consumer { private readonly System.Collections.Generic.IReadOnlyList<string> values = "
+                    + initializer + "; public System.Collections.Generic.IReadOnlyList<string> Values => values; } public sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int index] => \"evil\"; }",
+                path: "src/Consumer.Values.cs"));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        CSharpCompilation[] compilations = separateAssembly
+            ? [compilation, Compile(FixtureSource("new Consumer().Read();"))
+                .WithAssemblyName("InventoryConsumer")
+                .AddReferences(compilation.ToMetadataReference())]
+            : [compilation];
+
+        Assert.All(compilations, static candidate => Assert.Empty(candidate.GetDiagnostics()
+            .Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            compilations, HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(compilations), [], []);
+
+        Assert.Equal(evil, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
     [InlineData("collection", false)]
     [InlineData("sync", false)]
     [InlineData("async", false)]
