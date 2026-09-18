@@ -140,6 +140,16 @@ internal sealed record InventoryFailure(
 
 internal static class GrimoireConnectionAcquisitionScanner
 {
+    private sealed record CompilationScope(
+        UsingDirectiveSyntax[] GlobalAliases,
+        SourceDeclarationIndex Declarations);
+
+    private sealed record SourceDeclarationIndex(
+        Dictionary<string, HashSet<string>> NamespaceMembers,
+        Dictionary<string, HashSet<string>> TypeMembers,
+        Dictionary<SyntaxTree, Dictionary<string, HashSet<string>>> FileNamespaceMembers,
+        Dictionary<SyntaxTree, Dictionary<string, HashSet<string>>> FileTypeMembers);
+
     private static readonly HashSet<string> ProviderOpenNames =
     [
         "Open",
@@ -166,6 +176,19 @@ internal static class GrimoireConnectionAcquisitionScanner
     internal static IReadOnlyList<AcquisitionIdentity> Discover(IEnumerable<AcquisitionSource> sources)
     {
         List<(AcquisitionSource Source, CompilationUnitSyntax Root)> parsed = Parse(sources);
+
+        Dictionary<string, CompilationScope> compilationScopes = parsed
+            .GroupBy(item => CompilationIdentity(item.Source.RelativePath), StringComparer.Ordinal)
+            .ToDictionary(
+                static group => group.Key,
+                static group => new CompilationScope(
+                    [
+                        .. group.SelectMany(static item => item.Root.Usings)
+                            .Where(static directive => directive.GlobalKeyword.RawKind != 0
+                                && directive.Alias is not null),
+                    ],
+                    BuildSourceDeclarationIndex(group)),
+                StringComparer.Ordinal);
 
         List<AcquisitionIdentity> identities = [];
 
@@ -204,6 +227,9 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         foreach ((AcquisitionSource source, CompilationUnitSyntax root) in parsed)
         {
+            CompilationScope compilationScope =
+                compilationScopes[CompilationIdentity(source.RelativePath)];
+
             foreach (InvocationExpressionSyntax invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
             {
                 string terminalName = TerminalName(invocation.Expression);
@@ -254,9 +280,12 @@ internal static class GrimoireConnectionAcquisitionScanner
 
             foreach (ObjectCreationExpressionSyntax creation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
             {
-                string typeName = TerminalName(creation.Type);
-
-                if (typeName is "DbConnection" or "SqliteConnection")
+                if (IsProviderConnectionType(
+                        creation.Type,
+                        creation,
+                        root,
+                        compilationScope.GlobalAliases,
+                        compilationScope.Declarations))
                 {
                     identities.Add(Identity(
                         source.RelativePath,
@@ -279,9 +308,12 @@ internal static class GrimoireConnectionAcquisitionScanner
 
                 VariableDeclarationSyntax declaration = (VariableDeclarationSyntax)target.Parent!;
 
-                string typeName = TerminalName(declaration.Type);
-
-                if (typeName is "DbConnection" or "SqliteConnection")
+                if (IsProviderConnectionType(
+                        declaration.Type,
+                        creation,
+                        root,
+                        compilationScope.GlobalAliases,
+                        compilationScope.Declarations))
                 {
                     identities.Add(ImplicitObjectCreationIdentity(
                         source.RelativePath,
@@ -294,6 +326,567 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         return identities;
     }
+
+    private static bool IsProviderConnectionType(
+        TypeSyntax type,
+        SyntaxNode use,
+        CompilationUnitSyntax root,
+        IReadOnlyList<UsingDirectiveSyntax> globalAliases,
+        SourceDeclarationIndex declarations)
+    {
+        TypeSyntax exactType = type is NullableTypeSyntax nullable
+            ? nullable.ElementType
+            : type;
+
+        return IsExactProviderTypeSyntax(
+            exactType,
+            use,
+            root,
+            globalAliases,
+            declarations);
+    }
+
+    private static (bool Declared, UsingDirectiveSyntax? Alias) VisibleAlias(
+        SyntaxNode use,
+        CompilationUnitSyntax root,
+        string name,
+        IReadOnlyList<UsingDirectiveSyntax> globalAliases)
+    {
+        foreach (BaseNamespaceDeclarationSyntax namespaceDeclaration in use.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>())
+        {
+            (bool declared, UsingDirectiveSyntax? alias) = Alias(
+                namespaceDeclaration.Usings,
+                name);
+
+            if (declared)
+            {
+                return (true, alias);
+            }
+        }
+
+        (bool localDeclared, UsingDirectiveSyntax? localAlias) = Alias(
+            root.Usings.Where(static directive => directive.GlobalKeyword.RawKind == 0),
+            name);
+
+        (bool globalDeclared, UsingDirectiveSyntax? globalAlias) = Alias(
+            globalAliases,
+            name);
+
+        return (localDeclared, globalDeclared) switch
+        {
+            (true, true) => (true, null),
+            (true, false) => (true, localAlias),
+            (false, true) => (true, globalAlias),
+            _ => (false, null),
+        };
+    }
+
+    private static (bool Declared, UsingDirectiveSyntax? Alias) Alias(
+        IEnumerable<UsingDirectiveSyntax> directives,
+        string name)
+    {
+        UsingDirectiveSyntax[] matches =
+        [
+            .. directives.Where(directive =>
+                directive.Alias?.Name.Identifier.ValueText == name),
+        ];
+
+        return matches switch
+        {
+            [UsingDirectiveSyntax match] => (true, match),
+            [] => (false, null),
+            _ => (true, null),
+        };
+    }
+
+    private static bool IsExactProviderTypeSyntax(
+        TypeSyntax type,
+        SyntaxNode use,
+        CompilationUnitSyntax root,
+        IReadOnlyList<UsingDirectiveSyntax> globalAliases,
+        SourceDeclarationIndex declarations)
+    {
+        if (!TryProviderTypePath(
+                type,
+                out string? qualifier,
+                out string[] segments)
+            || segments.Length == 0)
+        {
+            return false;
+        }
+
+        if (qualifier == "global")
+        {
+            return IsExactProviderPath(segments);
+        }
+
+        string aliasName = qualifier ?? segments[0];
+
+        (bool declared, UsingDirectiveSyntax? alias) = VisibleAlias(
+            use,
+            root,
+            aliasName,
+            globalAliases);
+
+        if (declared)
+        {
+            return alias is not null
+                && (qualifier is not null
+                    || !SourceDeclarationShadows(
+                        use,
+                        aliasName,
+                        declarations,
+                        NamespaceName(alias)))
+                && AliasTargetsExactProvider(
+                    alias,
+                    qualifier is null ? segments[1..] : segments,
+                    globalAliases,
+                    declarations);
+        }
+
+        if (qualifier is not null)
+        {
+            return false;
+        }
+
+        return !SourceDeclarationShadows(use, segments[0], declarations)
+            && (IsExactProviderPath(segments)
+                || segments is ["DbConnection" or "SqliteConnection"]);
+    }
+
+    private static bool AliasTargetsExactProvider(
+        UsingDirectiveSyntax alias,
+        IReadOnlyList<string> suffix,
+        IReadOnlyList<UsingDirectiveSyntax> globalAliases,
+        SourceDeclarationIndex declarations)
+    {
+        HashSet<UsingDirectiveSyntax> visited = [];
+
+        return AliasTargetsExactProvider(
+            alias,
+            suffix,
+            globalAliases,
+            declarations,
+            visited);
+    }
+
+    private static bool AliasTargetsExactProvider(
+        UsingDirectiveSyntax alias,
+        IReadOnlyList<string> suffix,
+        IReadOnlyList<UsingDirectiveSyntax> globalAliases,
+        SourceDeclarationIndex declarations,
+        HashSet<UsingDirectiveSyntax> visited)
+    {
+        if (!visited.Add(alias)
+            || alias.NamespaceOrType is not { } target
+            || !TryProviderTypePath(
+                target,
+                out string? qualifier,
+                out string[] segments))
+        {
+            return false;
+        }
+
+        if (qualifier == "global")
+        {
+            return IsExactProviderPath([.. segments, .. suffix]);
+        }
+
+        string aliasName = qualifier ?? segments[0];
+
+        (bool declared, UsingDirectiveSyntax? outerAlias) = VisibleOuterAlias(
+            alias,
+            aliasName,
+            globalAliases);
+
+        if (declared)
+        {
+            return outerAlias is not null
+                && (qualifier is not null
+                    || !SourceDeclarationShadows(
+                        target,
+                        aliasName,
+                        declarations,
+                        NamespaceName(outerAlias)))
+                && AliasTargetsExactProvider(
+                    outerAlias,
+                    [
+                        .. (qualifier is null ? segments[1..] : segments),
+                        .. suffix,
+                    ],
+                    globalAliases,
+                    declarations,
+                    visited);
+        }
+
+        return qualifier is null
+            && IsExactProviderPath([.. segments, .. suffix])
+            && !SourceDeclarationShadows(
+                target,
+                segments[0],
+                declarations);
+    }
+
+    private static (bool Declared, UsingDirectiveSyntax? Alias) VisibleOuterAlias(
+        UsingDirectiveSyntax directive,
+        string name,
+        IReadOnlyList<UsingDirectiveSyntax> globalAliases)
+    {
+        if (directive.Parent is not BaseNamespaceDeclarationSyntax containingNamespace)
+        {
+            return (false, null);
+        }
+
+        foreach (BaseNamespaceDeclarationSyntax outerNamespace in containingNamespace
+            .Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>())
+        {
+            (bool declared, UsingDirectiveSyntax? alias) = Alias(
+                outerNamespace.Usings,
+                name);
+
+            if (declared)
+            {
+                return (true, alias);
+            }
+        }
+
+        CompilationUnitSyntax root = directive.SyntaxTree.GetCompilationUnitRoot();
+
+        (bool localDeclared, UsingDirectiveSyntax? localAlias) = Alias(
+            root.Usings.Where(static candidate => candidate.GlobalKeyword.RawKind == 0),
+            name);
+
+        (bool globalDeclared, UsingDirectiveSyntax? globalAlias) = Alias(
+            globalAliases,
+            name);
+
+        return (localDeclared, globalDeclared) switch
+        {
+            (true, true) => (true, null),
+            (true, false) => (true, localAlias),
+            (false, true) => (true, globalAlias),
+            _ => (false, null),
+        };
+    }
+
+    private static bool IsExactProviderPath(IReadOnlyList<string> segments) =>
+        segments is ["Microsoft", "Data", "Sqlite", "SqliteConnection"]
+            or ["System", "Data", "Common", "DbConnection"];
+
+    private static bool TryProviderTypePath(
+        TypeSyntax type,
+        out string? qualifier,
+        out string[] segments)
+    {
+        string? parsedQualifier = null;
+
+        List<string> parsedSegments = [];
+
+        bool Append(NameSyntax name)
+        {
+            switch (name)
+            {
+                case IdentifierNameSyntax identifier:
+                    parsedSegments.Add(identifier.Identifier.ValueText);
+
+                    return true;
+                case QualifiedNameSyntax qualified:
+                    return Append(qualified.Left)
+                        && Append(qualified.Right);
+                case AliasQualifiedNameSyntax aliasQualified
+                    when parsedQualifier is null:
+                    parsedQualifier = aliasQualified.Alias.Identifier.ValueText;
+
+                    return Append(aliasQualified.Name);
+                default:
+                    return false;
+            }
+        }
+
+        if (type is not NameSyntax name || !Append(name))
+        {
+            qualifier = null;
+            segments = [];
+
+            return false;
+        }
+
+        qualifier = parsedQualifier;
+        segments = [.. parsedSegments];
+
+        return true;
+    }
+
+    private static SourceDeclarationIndex BuildSourceDeclarationIndex(
+        IEnumerable<(AcquisitionSource Source, CompilationUnitSyntax Root)> parsed)
+    {
+        Dictionary<string, HashSet<string>> namespaceMembers =
+            new(StringComparer.Ordinal);
+
+        Dictionary<string, HashSet<string>> typeMembers =
+            new(StringComparer.Ordinal);
+
+        Dictionary<SyntaxTree, Dictionary<string, HashSet<string>>> fileNamespaceMembers = [];
+
+        Dictionary<SyntaxTree, Dictionary<string, HashSet<string>>> fileTypeMembers = [];
+
+        static void Add(
+            Dictionary<string, HashSet<string>> index,
+            string scope,
+            string name)
+        {
+            if (!index.TryGetValue(scope, out HashSet<string>? names))
+            {
+                names = new(StringComparer.Ordinal);
+
+                index.Add(scope, names);
+            }
+
+            _ = names.Add(name);
+        }
+
+        static void AddFile(
+            Dictionary<SyntaxTree, Dictionary<string, HashSet<string>>> index,
+            SyntaxTree tree,
+            string scope,
+            string name)
+        {
+            if (!index.TryGetValue(
+                    tree,
+                    out Dictionary<string, HashSet<string>>? members))
+            {
+                members = new(StringComparer.Ordinal);
+
+                index.Add(tree, members);
+            }
+
+            Add(members, scope, name);
+        }
+
+        foreach ((_, CompilationUnitSyntax root) in parsed)
+        {
+            foreach (BaseNamespaceDeclarationSyntax declaration in root.DescendantNodes()
+                .OfType<BaseNamespaceDeclarationSyntax>())
+            {
+                string scope = NamespaceName(declaration.Parent!);
+
+                foreach (string segment in NamespaceSegments(declaration.Name))
+                {
+                    Add(namespaceMembers, scope, segment);
+
+                    scope = Qualify(scope, segment);
+                }
+            }
+
+            foreach (MemberDeclarationSyntax declaration in root.DescendantNodes()
+                .OfType<MemberDeclarationSyntax>())
+            {
+                string? name = declaration switch
+                {
+                    BaseTypeDeclarationSyntax type => type.Identifier.ValueText,
+                    DelegateDeclarationSyntax @delegate => @delegate.Identifier.ValueText,
+                    _ => null,
+                };
+
+                if (name is null)
+                {
+                    continue;
+                }
+
+                bool fileLocal = declaration switch
+                {
+                    BaseTypeDeclarationSyntax type => type.Modifiers.Any(SyntaxKind.FileKeyword)
+                        || type.Ancestors().OfType<BaseTypeDeclarationSyntax>().Any(
+                            static ancestor => ancestor.Modifiers.Any(SyntaxKind.FileKeyword)),
+                    DelegateDeclarationSyntax @delegate => @delegate.Modifiers.Any(
+                            SyntaxKind.FileKeyword)
+                        || @delegate.Ancestors().OfType<BaseTypeDeclarationSyntax>().Any(
+                            static ancestor => ancestor.Modifiers.Any(SyntaxKind.FileKeyword)),
+                    _ => false,
+                };
+
+                if (declaration.Parent is CompilationUnitSyntax
+                    or BaseNamespaceDeclarationSyntax)
+                {
+                    if (fileLocal)
+                    {
+                        AddFile(
+                            fileNamespaceMembers,
+                            declaration.SyntaxTree,
+                            NamespaceName(declaration),
+                            name);
+                    }
+                    else
+                    {
+                        Add(namespaceMembers, NamespaceName(declaration), name);
+                    }
+                }
+                else if (declaration.Parent is TypeDeclarationSyntax containingType)
+                {
+                    if (fileLocal)
+                    {
+                        AddFile(
+                            fileTypeMembers,
+                            declaration.SyntaxTree,
+                            TypeScopeKey(containingType),
+                            name);
+                    }
+                    else
+                    {
+                        Add(typeMembers, TypeScopeKey(containingType), name);
+                    }
+                }
+            }
+        }
+
+        return new(
+            namespaceMembers,
+            typeMembers,
+            fileNamespaceMembers,
+            fileTypeMembers);
+    }
+
+    private static string CompilationIdentity(string relativePath)
+    {
+        string normalized = relativePath.Replace('\\', '/').Trim('/');
+
+        string[] components = normalized.Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries);
+
+        if (components is ["src" or "tests", string project, ..])
+        {
+            return components[0] + "/" + project;
+        }
+
+        return components.Length > 1
+            ? components[0]
+            : "file:" + normalized;
+    }
+
+    private static bool SourceDeclarationShadows(
+        SyntaxNode use,
+        string name,
+        SourceDeclarationIndex declarations,
+        string? boundaryNamespace = null)
+    {
+        foreach (SyntaxNode ancestor in use.Ancestors())
+        {
+            TypeParameterListSyntax? parameters = ancestor switch
+            {
+                TypeDeclarationSyntax type => type.TypeParameterList,
+                MethodDeclarationSyntax method => method.TypeParameterList,
+                LocalFunctionStatementSyntax localFunction => localFunction.TypeParameterList,
+                DelegateDeclarationSyntax @delegate => @delegate.TypeParameterList,
+                _ => null,
+            };
+
+            if (parameters?.Parameters.Any(parameter =>
+                    parameter.Identifier.ValueText == name) == true)
+            {
+                return true;
+            }
+        }
+
+        foreach (TypeDeclarationSyntax type in use.Ancestors()
+            .OfType<TypeDeclarationSyntax>())
+        {
+            if (type.Identifier.ValueText == name
+                || declarations.TypeMembers.TryGetValue(
+                        TypeScopeKey(type),
+                        out HashSet<string>? members)
+                    && members.Contains(name))
+            {
+                return true;
+            }
+
+            if (declarations.FileTypeMembers.TryGetValue(
+                    use.SyntaxTree,
+                    out Dictionary<string, HashSet<string>>? fileMembers)
+                && fileMembers.TryGetValue(
+                    TypeScopeKey(type),
+                    out HashSet<string>? fileTypeNames)
+                && fileTypeNames.Contains(name))
+            {
+                return true;
+            }
+        }
+
+        string scope = NamespaceName(use);
+
+        declarations.FileNamespaceMembers.TryGetValue(
+            use.SyntaxTree,
+            out Dictionary<string, HashSet<string>>? fileNamespaceMembers);
+
+        while (true)
+        {
+            if (declarations.NamespaceMembers.TryGetValue(
+                    scope,
+                    out HashSet<string>? members)
+                && members.Contains(name))
+            {
+                return true;
+            }
+
+            if (fileNamespaceMembers?.TryGetValue(
+                    scope,
+                    out HashSet<string>? fileMembers) == true
+                && fileMembers.Contains(name))
+            {
+                return true;
+            }
+
+            if (boundaryNamespace is not null
+                && scope == boundaryNamespace)
+            {
+                return false;
+            }
+
+            int separator = scope.LastIndexOf('.');
+
+            if (separator < 0)
+            {
+                if (scope.Length == 0)
+                {
+                    return false;
+                }
+
+                scope = string.Empty;
+
+                continue;
+            }
+
+            scope = scope[..separator];
+        }
+    }
+
+    private static string NamespaceName(SyntaxNode node) =>
+        string.Join(
+            '.',
+            node.AncestorsAndSelf()
+                .OfType<BaseNamespaceDeclarationSyntax>()
+                .Reverse()
+                .SelectMany(static declaration => NamespaceSegments(declaration.Name)));
+
+    private static IEnumerable<string> NamespaceSegments(NameSyntax name) =>
+        name.DescendantTokens()
+            .Where(static token => token.IsKind(SyntaxKind.IdentifierToken))
+            .Select(static token => token.ValueText);
+
+    private static string TypeScopeKey(TypeDeclarationSyntax type) =>
+        NamespaceName(type)
+        + "|"
+        + string.Join(
+            '.',
+            type.AncestorsAndSelf()
+                .OfType<TypeDeclarationSyntax>()
+                .Reverse()
+                .Select(static declaration => declaration.Identifier.ValueText));
+
+    private static string Qualify(string prefix, string name) =>
+        prefix.Length == 0 ? name : prefix + "." + name;
 
     internal static IReadOnlyList<InventoryFailure> Validate(
         IReadOnlyList<AcquisitionIdentity> discoveries,
@@ -3297,7 +3890,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "_connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOrdinarySnapshotAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "_connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

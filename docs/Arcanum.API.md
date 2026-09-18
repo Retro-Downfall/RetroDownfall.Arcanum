@@ -206,8 +206,8 @@ The established §8 contract numbers are retained in this extracted reference so
 | GET | `/api/guardrails/audit` | Persisted guardrails violation audit log query (`ApiResponse<GuardrailAuditRecord[]>`; optional `from`, `to`, `stage`, `violationType`, `sessionId`, `limit` up to the 1,000-record page, and opaque `cursor`; continue with `X-Arcanum-Next-Cursor`; §8.27). |
 | GET | `/api/operations` | List durable operations with optional `kind`, `state`, `limit`, and `offset` filters. Returns safe summaries only; encrypted checkpoint payloads and references are never serialized (DESIGN §10.8). |
 | GET | `/api/operations/{id}` | Show one durable operation's lifecycle, links, lease, attempt, checkpoint version/presence, safe summary, and terminal error code. |
-| POST | `/api/operations/{id}/cancel` | CAS-protected transition to `Cancelling`; **404** unknown, **409** stale/terminal. |
-| POST | `/api/operations/{id}/retry` | CAS-protected reset of `Failed`, `Abandoned`, or `ReconciliationRequired` to `Pending`; checkpoint remains available to the recovery policy. |
+| POST | `/api/operations/{id}/cancel` | CAS-protected transition to `Cancelling`; **404** unknown. Current owner-bound `data-retention-mutation` V4 and `data-retention-factory-reset` V2 checkpoints return **409** `Operation.StateConflict` and remain unchanged for authenticated recovery; ordinary operations and older retention checkpoint versions retain CAS cancellation. Other stale or terminal transitions also return **409** `Operation.StateConflict`. |
+| POST | `/api/operations/{id}/retry` | CAS-protected reset of eligible `Failed`, `Abandoned`, or `ReconciliationRequired` operations to `Pending`; **404** unknown. Current owner-bound `data-retention-mutation` V4 and `data-retention-factory-reset` V2 checkpoints cannot be retried: they return **409** `Operation.StateConflict` and remain unchanged for authenticated recovery. Ordinary operations and older retention checkpoint versions retain CAS retry with their checkpoint intact. Other stale or ineligible transitions also return **409** `Operation.StateConflict`. |
 | POST | `/api/operations/reconcile` | Run a bounded authenticated recovery pass and return `LongRunningOperationReconciliationSummary`. |
 | GET | `/api/events/daemon` | SSE stream of `DaemonEvent` frames (daemon job lifecycle for scheduled and on-demand runs; CLI `watch daemons`); **not** wrapped in `ApiResponse<T>`. |
 | GET | `/api/events/mcp` | SSE stream of `McpServerEvent` frames (MCP server lifecycle; CLI `watch mcp`); **not** wrapped in `ApiResponse<T>`. |
@@ -831,7 +831,7 @@ The same pair is written for a request that was already running when admission c
 
 **What it guarantees.** Every matched, non-exempt `/api` or `/v1` request either owns an admission lease for the whole of its request scope — held past the pooled database context and past every response-completion writer — or receives the refusal above before any endpoint work happens, with **zero bytes of the request body read**. Both bodies serialize through explicit source-generated `JsonTypeInfo`, so neither adds a reflection path.
 
-No route, request or response shape, CLI verb, configuration key, or database schema changed to deliver this.
+No route, wire DTO, CLI verb or option, configuration key, schema/DDL, or migration changed to deliver this.
 
 ---
 

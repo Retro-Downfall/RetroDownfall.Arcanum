@@ -149,6 +149,83 @@ public sealed class CovenantConnectionSourceTests(GrimoireFixture fixture)
 {
 
     [SkippableFact]
+    public async Task Source_rejects_an_already_open_derived_provider_connection()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string path = fixture.CopyDatabase();
+
+        await using ArcanumDbContext db = fixture.CreateContext(path);
+
+        string connectionString = db.Database.GetConnectionString()!;
+
+        await db.Database.CloseConnectionAsync();
+
+        await using DerivedSqliteConnection derived = new(connectionString);
+
+        db.Database.SetDbConnection(derived, contextOwnsConnection: false);
+
+        await derived.OpenAsync();
+
+        using CovenantConnectionSource source = new(
+            db,
+            new RecordingScopedOrdinaryConnectionFactory());
+
+        InvalidOperationException rejected = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => source.GetOpenCoreConnectionAsync(CancellationToken.None).AsTask());
+
+        Assert.Contains("exact SQLCipher provider connection", rejected.Message, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task Source_rejects_and_releases_a_derived_connection_returned_by_the_ordinary_factory()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string path = fixture.CopyDatabase();
+
+        await using ArcanumDbContext db = fixture.CreateContext(path);
+
+        string connectionString = db.Database.GetConnectionString()!;
+
+        await db.Database.CloseConnectionAsync();
+
+        await using DerivedSqliteConnection derived = new(connectionString);
+
+        RecordingDerivedLease invalidLease = new(derived);
+
+        CovenantConnectionSource source = new(
+            db,
+            new DerivedLeaseOrdinaryConnectionFactory(invalidLease));
+
+        try
+        {
+
+            InvalidOperationException rejected = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => source.GetOpenCoreConnectionAsync(CancellationToken.None).AsTask());
+
+            Assert.Contains("exact SQLCipher provider connection", rejected.Message, StringComparison.Ordinal);
+
+            Assert.Equal(1, invalidLease.DisposeCount);
+
+            source.Dispose();
+
+            Assert.Equal(1, invalidLease.DisposeCount);
+
+        }
+        finally
+        {
+
+            source.Dispose();
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task Source_retains_its_lease_after_an_independent_borrow_until_source_disposal()
     {
 
@@ -200,6 +277,53 @@ public sealed class CovenantConnectionSourceTests(GrimoireFixture fixture)
         Assert.Equal(0, connections.LiveLeaseCount);
 
         Assert.Equal(0, connections.LiveOwnerLeaseCount);
+
+    }
+
+    private sealed class DerivedSqliteConnection(string connectionString)
+        : SqliteConnection(connectionString);
+
+    private sealed class DerivedLeaseOrdinaryConnectionFactory(
+        IGrimoireOrdinaryConnectionLease lease) : IGrimoireOrdinaryConnectionFactory
+    {
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                Result<IGrimoireOrdinaryConnectionLease>.Success(lease));
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+    }
+
+    private sealed class RecordingDerivedLease(SqliteConnection connection)
+        : IGrimoireOrdinaryConnectionLease
+    {
+
+        public SqliteConnection Connection { get; } = connection;
+
+        internal int DisposeCount { get; private set; }
+
+        public void Dispose()
+        {
+
+            DisposeCount++;
+
+        }
+
+        public ValueTask DisposeAsync()
+        {
+
+            Dispose();
+
+            return ValueTask.CompletedTask;
+
+        }
 
     }
 

@@ -8,8 +8,10 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -506,6 +508,210 @@ public sealed class CovenantSchemaRepairTests
             await fixture.ScalarAsync("SELECT PhaseCode FROM covenant_schema_repair_intents;"));
 
     }
+
+    [Fact]
+    public async Task Schema_repair_rejects_a_non_exact_connection_before_inspection_gate_or_journal()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        FakeCovenantAvailability availability = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            availability,
+            drainTimeout: TimeSpan.FromMilliseconds(25));
+
+        await using CovenantInstallationReadLease read =
+            (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        await using DerivedSqliteConnection derived = new(fixture.Connection.ConnectionString);
+
+        await derived.OpenAsync(Token);
+
+        FixedConnectionSource connections = new(derived);
+
+        StubSchemaRepairExecutor executor = new();
+
+        CovenantMaintenanceService service = CreateMaintenanceService(
+            connections,
+            gate,
+            executor,
+            availability);
+
+        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service
+                .RepairSchemaAsync(
+                    new CovenantSchemaRepairRequest(CovenantSchemaRepairAction.RepairExistingFamily),
+                    Token)
+                .AsTask());
+
+        Assert.Equal("Schema repair requires an exact SQLite connection.", refused.Message);
+
+        Assert.Equal(0, executor.InspectCalls);
+
+        Assert.False(read.Revocation.IsCancellationRequested);
+
+        Assert.Equal(
+            0,
+            await fixture.ScalarAsync("SELECT COUNT(*) FROM covenant_schema_repair_intents;"));
+
+        connections.Connection = fixture.Connection;
+
+        Result<CovenantSchemaRepairResultDto> exact = await service.RepairSchemaAsync(
+            new CovenantSchemaRepairRequest(CovenantSchemaRepairAction.RepairExistingFamily),
+            Token);
+
+        Assert.True(exact.IsFailure);
+
+        Assert.Equal(1, executor.InspectCalls);
+
+        Assert.False(read.Revocation.IsCancellationRequested);
+
+        Assert.Equal(
+            0,
+            await fixture.ScalarAsync("SELECT COUNT(*) FROM covenant_schema_repair_intents;"));
+
+    }
+
+    [Fact]
+    public async Task Recovery_rejects_a_non_exact_connection_before_inspection_resume_or_journal_mutation()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        CovenantSchemaRepairIntent intent = await fixture.CommitAsync();
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        StubSchemaRepairExecutor executor = new()
+        {
+            Inspection = fixture.Inspection(intent.InspectedCatalogDigest, canonicalValid: true),
+
+            Mutated = false,
+        };
+
+        CovenantSchemaRepairStartupRecovery recovery = fixture.Recovery(executor);
+
+        Result<CovenantSchemaRepairStartupRecoveryPreparation> prepared = await recovery
+            .PrepareBeforeEffectsAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+
+        Assert.True(prepared.IsSuccess);
+
+        long phaseBefore = await fixture.ScalarAsync(
+            "SELECT PhaseCode FROM covenant_schema_repair_intents;");
+
+        long revisionBefore = await fixture.ScalarAsync(
+            "SELECT Revision FROM covenant_schema_repair_intents;");
+
+        await using DerivedSqliteConnection derived = new(fixture.Connection.ConnectionString);
+
+        await derived.OpenAsync(Token);
+
+        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            recovery.RecoverPreparedAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                derived,
+                prepared.Value,
+                Token));
+
+        Assert.Equal("Schema repair recovery requires an exact SQLite connection.", refused.Message);
+
+        Assert.Equal(0, executor.InspectCalls);
+
+        Assert.Equal(0, executor.RepairCalls);
+
+        Assert.Equal(
+            phaseBefore,
+            await fixture.ScalarAsync("SELECT PhaseCode FROM covenant_schema_repair_intents;"));
+
+        Assert.Equal(
+            revisionBefore,
+            await fixture.ScalarAsync("SELECT Revision FROM covenant_schema_repair_intents;"));
+
+        Result<CovenantSchemaRepairStartupRecoveryOutcome> exact = await recovery
+            .RecoverPreparedAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                fixture.Connection,
+                prepared.Value,
+                Token);
+
+        Assert.True(exact.IsSuccess);
+
+        Assert.Equal(CovenantSchemaRepairStartupRecoveryOutcome.RecoveredReady, exact.Value);
+
+        Assert.Equal(1, executor.InspectCalls);
+
+        Assert.Equal(1, executor.RepairCalls);
+
+    }
+
+    [Fact]
+    public async Task Recovery_validates_a_null_connection_before_reading_its_runtime_type()
+    {
+
+        await using RepairFixture fixture = await RepairFixture.CreateAsync();
+
+        using MaintenanceLockScope heldLock = fixture.AcquireLock();
+
+        CovenantSchemaRepairStartupRecovery recovery = fixture.Recovery(new StubSchemaRepairExecutor());
+
+        ArgumentNullException refused = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            recovery.RecoverPreparedAsync(
+                heldLock.Lock,
+                heldLock.Directory,
+                null!,
+                new CovenantSchemaRepairStartupRecoveryPreparation(Intent: null),
+                Token));
+
+        Assert.Equal("connection", refused.ParamName);
+
+    }
+
+    private static CovenantMaintenanceService CreateMaintenanceService(
+        ICovenantConnectionSource connections,
+        CovenantOperationGate gate,
+        ICovenantSchemaRepairExecutor executor,
+        ICovenantAvailability availability)
+    {
+
+        TimeProvider time = TimeProvider.System;
+
+        FakeLongRunningOperationStore store = new(time);
+
+        CovenantIndexRebuildCoordinator indexRebuild = new(
+            new LongRunningOperationCoordinator(store, time),
+            store,
+            gate,
+            new CovenantIndexRebuilder(connections),
+            time);
+
+        return new CovenantMaintenanceService(
+            connections,
+            gate,
+            executor,
+            CovenantSqliteConnectionInitializer.Instance,
+            availability,
+            indexRebuild,
+            time);
+
+    }
+
+    private sealed class FixedConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
+    {
+
+        internal SqliteConnection Connection { get; set; } = connection;
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Connection);
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Connection);
+
+    }
+
+    private sealed class DerivedSqliteConnection(string connectionString) : SqliteConnection(connectionString);
 
     private sealed class StubSchemaRepairExecutor : ICovenantSchemaRepairExecutor
     {

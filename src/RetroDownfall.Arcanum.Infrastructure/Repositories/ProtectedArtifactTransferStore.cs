@@ -322,6 +322,8 @@ internal sealed class ProtectedArtifactTransferStore(
     {
         ImmutableArray<StagedBlob> blobs = PlanBlobs(request, sourceLease, destination, graph);
 
+        TransferJournalFinalizer finalizer;
+
         // The owner and every blob child are durable before the first filesystem byte. That ordering
         // is the entire recovery story: afterwards, a restart can enumerate and compare-delete every
         // file this operation could possibly have created.
@@ -350,6 +352,12 @@ internal sealed class ProtectedArtifactTransferStore(
                 return Refused(prepared.Error);
             }
 
+            finalizer = new TransferJournalFinalizer(
+                journal,
+                destination.Connection,
+                request.OperationId,
+                timeProvider);
+
             // An exact replay that already committed is answered from the journal rather than run a
             // second time. Idempotency is keyed only to the import operation identity, so a retried
             // request never produces a second destination Session.
@@ -367,7 +375,7 @@ internal sealed class ProtectedArtifactTransferStore(
                         0,
                         graph.Finalizations.Length),
                     prepared.Value.PendingDisposition ?? CovenantExclusiveLeaseDisposition.CommitAndReopen,
-                    new TransferJournalFinalizer(journal, destination.Connection, request.OperationId, timeProvider));
+                    finalizer);
             }
 
             if (prepared.Value.Phase == ProtectedSessionTransferPhase.Prepared
@@ -502,7 +510,7 @@ internal sealed class ProtectedArtifactTransferStore(
                 deduplicated,
                 graph.Finalizations.Length),
             CovenantExclusiveLeaseDisposition.CommitAndReopen,
-            new TransferJournalFinalizer(journal, destination.Connection, request.OperationId, timeProvider));
+            finalizer);
     }
 
     private static ImmutableArray<StagedBlob> PlanBlobs(

@@ -57,5 +57,7 @@ public sealed class InMemoryOsCredentialStore :
         return OsCredentialStoreResult.Ok(string.Empty);
     }
 
+    internal void Clear() => _secrets.Clear();
+
     private static string Key(string service, string account) => service + "\0" + account;
 }

@@ -394,7 +394,7 @@ internal sealed class CovenantRecoveryAuthorityBootstrapper(
         }
 
         Result<CovenantOfflineTransitionSourceState> observed = await CovenantErasureInventorySource
-            .ReadOfflineTransitionSourceStateAsync(recoveryConnection, transaction: null, cancellationToken)
+            .ReadOfflineTransitionObservedStateAsync(recoveryConnection, transaction: null, cancellationToken)
             .ConfigureAwait(false);
 
         if (observed.IsFailure)

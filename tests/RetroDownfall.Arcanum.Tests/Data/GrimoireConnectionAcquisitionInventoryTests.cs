@@ -34,7 +34,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadReceiptOnFreshConnectionAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs", "CovenantDisclosureWriter", "OpenVerifiedAsync(2)"),
-        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOwnedSnapshotAsync(3)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOrdinarySnapshotAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
     ];
 
@@ -111,6 +111,732 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
             failures,
             failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery
                 && failure.Identity == identity);
+    }
+
+    [Theory]
+    [InlineData("file")]
+    [InlineData("block-namespace")]
+    [InlineData("file-scoped-namespace")]
+    [InlineData("global")]
+    public void Injected_unlisted_explicit_aliased_acquisition_fails_independently(
+        string aliasScope)
+    {
+        IReadOnlyList<AcquisitionSource> sources = AliasedConstructionSources(
+            aliasScope,
+            "_ = new Conn(\"Data Source=fixture.db\");");
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover(sources));
+
+        Assert.Equal(
+            new(
+                "Fixtures/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                "Conn",
+                1,
+                "newConn(\"Data Source=fixture.db\")"),
+            identity);
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [identity],
+            []);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery
+                && failure.Identity == identity);
+    }
+
+    [Theory]
+    [InlineData("file")]
+    [InlineData("block-namespace")]
+    [InlineData("file-scoped-namespace")]
+    [InlineData("global")]
+    public void Injected_unlisted_target_typed_aliased_acquisition_fails_independently(
+        string aliasScope)
+    {
+        IReadOnlyList<AcquisitionSource> sources = AliasedConstructionSources(
+            aliasScope,
+            "Conn connection = new(\"Data Source=fixture.db\");");
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover(sources));
+
+        Assert.Equal(
+            new(
+                "Fixtures/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                "Conn",
+                1,
+                "connection=newConn(\"Data Source=fixture.db\")"),
+            identity);
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [identity],
+            []);
+
+        Assert.Contains(
+            failures,
+            failure => failure.Code == InventoryFailureCode.UncataloguedDiscovery
+                && failure.Identity == identity);
+    }
+
+    [Fact]
+    public void Unrelated_alias_named_sqlite_connection_is_not_a_provider_acquisition()
+    {
+        AcquisitionSource unrelated = Source("""
+            using SqliteConnection = System.Text.StringBuilder;
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new SqliteConnection();
+
+                    SqliteConnection builder = new();
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover([unrelated]));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Conflicting_global_aliases_do_not_resolve_to_a_provider(bool providerFirst)
+    {
+        AcquisitionSource provider = new(
+            "Fixtures/ProviderAlias.cs",
+            "global using Conn = Microsoft.Data.Sqlite.SqliteConnection;");
+
+        AcquisitionSource unrelated = new(
+            "Fixtures/UnrelatedAlias.cs",
+            "global using Conn = System.Text.StringBuilder;");
+
+        AcquisitionSource consumer = Source("""
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Conn("Data Source=fixture.db");
+
+                    Conn connection = new("Data Source=fixture.db");
+                }
+            }
+            """);
+
+        IReadOnlyList<AcquisitionSource> sources = providerFirst
+            ? [provider, unrelated, consumer]
+            : [unrelated, provider, consumer];
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover(sources));
+    }
+
+    [Fact]
+    public void Global_provider_alias_shadowed_by_a_nearer_type_is_not_a_provider_acquisition()
+    {
+        AcquisitionSource alias = new(
+            "Fixtures/GlobalAliases.cs",
+            "global using Conn = global::Microsoft.Data.Sqlite.SqliteConnection;");
+
+        AcquisitionSource consumer = Source("""
+            namespace FixtureScope
+            {
+                sealed class Conn
+                {
+                    internal Conn(string connectionString) { }
+                }
+
+                sealed class Fixture
+                {
+                    void Open()
+                    {
+                        _ = new Conn("Data Source=explicit.db");
+
+                        Conn connection = new("Data Source=implicit.db");
+                    }
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover([alias, consumer]));
+    }
+
+    [Fact]
+    public void Namespace_relative_provider_alias_shadowed_by_a_nearer_namespace_is_not_a_provider_acquisition()
+    {
+        AcquisitionSource shadowed = Source("""
+            namespace FixtureScope
+            {
+                using Conn = Microsoft.Data.Sqlite.SqliteConnection;
+
+                namespace Microsoft.Data.Sqlite
+                {
+                    sealed class SqliteConnection
+                    {
+                        internal SqliteConnection(string connectionString) { }
+                    }
+                }
+
+                sealed class Fixture
+                {
+                    void Open()
+                    {
+                        _ = new Conn("Data Source=explicit.db");
+
+                        Conn connection = new("Data Source=implicit.db");
+                    }
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover([shadowed]));
+    }
+
+    [Fact]
+    public void Global_qualified_provider_type_ignores_nearer_namespace_shadowing()
+    {
+        AcquisitionSource qualified = Source("""
+            namespace FixtureScope
+            {
+                namespace Microsoft.Data.Sqlite
+                {
+                    sealed class SqliteConnection
+                    {
+                        internal SqliteConnection(string connectionString) { }
+                    }
+                }
+
+                sealed class Fixture
+                {
+                    void Open()
+                    {
+                        _ = new global::Microsoft.Data.Sqlite.SqliteConnection("Data Source=explicit.db");
+
+                        global::Microsoft.Data.Sqlite.SqliteConnection connection = new("Data Source=implicit.db");
+                    }
+                }
+            }
+            """);
+
+        Assert.Collection(
+            GrimoireConnectionAcquisitionScanner.Discover([qualified]),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "global::Microsoft.Data.Sqlite.SqliteConnection",
+                    1,
+                    "newglobal::Microsoft.Data.Sqlite.SqliteConnection(\"Data Source=explicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "global::Microsoft.Data.Sqlite.SqliteConnection",
+                    1,
+                    "connection=newglobal::Microsoft.Data.Sqlite.SqliteConnection(\"Data Source=implicit.db\")"),
+                identity));
+    }
+
+    [Theory]
+    [InlineData(
+        "using Conn = global::Microsoft.Data.Sqlite.SqliteConnection;",
+        "Conn?")]
+    [InlineData(
+        "using Microsoft.Data.Sqlite;",
+        "SqliteConnection?")]
+    public void Nullable_provider_target_type_is_a_provider_acquisition(
+        string imports,
+        string targetType)
+    {
+        AcquisitionSource nullable = Source("""
+            #nullable enable
+
+            IMPORTS
+
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    TARGET_TYPE connection = new("Data Source=fixture.db");
+                }
+            }
+            """
+            .Replace("IMPORTS", imports, StringComparison.Ordinal)
+            .Replace("TARGET_TYPE", targetType, StringComparison.Ordinal));
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover([nullable]));
+
+        Assert.Equal(
+            new(
+                "Fixtures/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                targetType,
+                1,
+                "connection=new" + targetType + "(\"Data Source=fixture.db\")"),
+            identity);
+    }
+
+    [Theory]
+    [InlineData("file")]
+    [InlineData("block-namespace")]
+    [InlineData("file-scoped-namespace")]
+    [InlineData("global")]
+    [InlineData("relative")]
+    public void Namespace_alias_provider_acquisitions_retain_exact_identities(
+        string aliasScope)
+    {
+        IReadOnlyList<AcquisitionSource> sources = NamespaceAliasedConstructionSources(
+            aliasScope);
+
+        Assert.Collection(
+            GrimoireConnectionAcquisitionScanner.Discover(sources),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite.SqliteConnection",
+                    1,
+                    "newSqlite.SqliteConnection(\"Data Source=explicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite.SqliteConnection",
+                    1,
+                    "connection=newSqlite.SqliteConnection(\"Data Source=implicit.db\")"),
+                identity));
+    }
+
+    [Fact]
+    public void Qualified_namespace_alias_provider_acquisitions_retain_exact_identities()
+    {
+        AcquisitionSource qualified = Source("""
+            using Sqlite = global::Microsoft.Data.Sqlite;
+
+            sealed class Sqlite { }
+
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Sqlite::SqliteConnection("Data Source=explicit.db");
+
+                    Sqlite::SqliteConnection connection = new("Data Source=implicit.db");
+                }
+            }
+            """);
+
+        Assert.Collection(
+            GrimoireConnectionAcquisitionScanner.Discover([qualified]),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite::SqliteConnection",
+                    1,
+                    "newSqlite::SqliteConnection(\"Data Source=explicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite::SqliteConnection",
+                    1,
+                    "connection=newSqlite::SqliteConnection(\"Data Source=implicit.db\")"),
+                identity));
+    }
+
+    [Fact]
+    public void Inner_namespace_alias_hides_an_outer_same_name_declaration()
+    {
+        AcquisitionSource innerAlias = Source("""
+            namespace Outer
+            {
+                sealed class Sqlite { }
+
+                namespace Inner
+                {
+                    using Sqlite = global::Microsoft.Data.Sqlite;
+
+                    sealed class Fixture
+                    {
+                        void Open()
+                        {
+                            _ = new Sqlite.SqliteConnection("Data Source=explicit.db");
+
+                            Sqlite.SqliteConnection connection = new("Data Source=implicit.db");
+                        }
+                    }
+                }
+            }
+            """);
+
+        Assert.Collection(
+            GrimoireConnectionAcquisitionScanner.Discover([innerAlias]),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite.SqliteConnection",
+                    1,
+                    "newSqlite.SqliteConnection(\"Data Source=explicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite.SqliteConnection",
+                    1,
+                    "connection=newSqlite.SqliteConnection(\"Data Source=implicit.db\")"),
+                identity));
+    }
+
+    [Fact]
+    public void Enclosing_aliases_can_compose_provider_aliases()
+    {
+        AcquisitionSource composed = Source("""
+            using Provider = global::Microsoft.Data.Sqlite;
+
+            namespace FixtureScope
+            {
+                using Sqlite = Provider;
+                using Conn = Provider::SqliteConnection;
+
+                sealed class Fixture
+                {
+                    void Open()
+                    {
+                        _ = new Sqlite.SqliteConnection("Data Source=namespace-explicit.db");
+
+                        Sqlite.SqliteConnection namespaceConnection = new(
+                            "Data Source=namespace-implicit.db");
+
+                        _ = new Conn("Data Source=type-explicit.db");
+
+                        Conn typeConnection = new("Data Source=type-implicit.db");
+                    }
+                }
+            }
+            """);
+
+        Assert.Collection(
+            GrimoireConnectionAcquisitionScanner.Discover([composed]),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite.SqliteConnection",
+                    1,
+                    "newSqlite.SqliteConnection(\"Data Source=namespace-explicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Conn",
+                    1,
+                    "newConn(\"Data Source=type-explicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Sqlite.SqliteConnection",
+                    1,
+                    "namespaceConnection=newSqlite.SqliteConnection(\"Data Source=namespace-implicit.db\")"),
+                identity),
+            identity => Assert.Equal(
+                new(
+                    "Fixtures/Fixture.cs",
+                    "Fixture",
+                    "Open(0)",
+                    AcquisitionConstructKind.ProviderObjectCreation,
+                    "Conn",
+                    1,
+                    "typeConnection=newConn(\"Data Source=type-implicit.db\")"),
+                identity));
+    }
+
+    [Fact]
+    public void Peer_and_cyclic_using_aliases_do_not_resolve_provider_types()
+    {
+        AcquisitionSource unsupported = Source("""
+            using Provider = global::Microsoft.Data.Sqlite;
+            using Conn = Provider.SqliteConnection;
+            using Left = Right;
+            using Right = Left;
+
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Conn("Data Source=peer.db");
+                    _ = new Left.SqliteConnection("Data Source=cycle.db");
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover([unsupported]));
+    }
+
+    [Fact]
+    public void Namespace_alias_shadowed_by_a_nearer_type_is_not_a_provider_acquisition()
+    {
+        AcquisitionSource shadowed = Source("""
+            namespace FixtureScope
+            {
+                using Sqlite = global::Microsoft.Data.Sqlite;
+
+                sealed class Sqlite
+                {
+                    internal sealed class SqliteConnection
+                    {
+                        internal SqliteConnection(string connectionString) { }
+                    }
+                }
+
+                sealed class Fixture
+                {
+                    void Open()
+                    {
+                        _ = new Sqlite.SqliteConnection("Data Source=explicit.db");
+
+                        Sqlite.SqliteConnection connection = new("Data Source=implicit.db");
+                    }
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover([shadowed]));
+    }
+
+    [Fact]
+    public void Global_provider_alias_does_not_cross_project_boundaries()
+    {
+        AcquisitionSource projectAAlias = new(
+            "src/ProjectA/GlobalAliases.cs",
+            "global using Conn = global::Microsoft.Data.Sqlite.SqliteConnection;");
+
+        AcquisitionSource projectBConsumer = new(
+            "src/ProjectB/Fixture.cs",
+            """
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Conn("Data Source=project-b.db");
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover(
+            [projectAAlias, projectBConsumer]));
+    }
+
+    [Fact]
+    public void Cross_project_alias_conflicts_do_not_suppress_provider_acquisitions()
+    {
+        AcquisitionSource projectAUnrelatedAlias = new(
+            "tests\\ProjectA\\GlobalAliases.cs",
+            "global using Conn = global::System.Text.StringBuilder;");
+
+        AcquisitionSource projectBProviderAlias = new(
+            "tests\\ProjectB\\GlobalAliases.cs",
+            "global using Conn = global::Microsoft.Data.Sqlite.SqliteConnection;");
+
+        AcquisitionSource projectBConsumer = new(
+            "tests\\ProjectB\\Fixture.cs",
+            """
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Conn("Data Source=project-b.db");
+                }
+            }
+            """);
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover(
+                [projectAUnrelatedAlias, projectBProviderAlias, projectBConsumer]));
+
+        Assert.Equal(
+            new(
+                "tests/ProjectB/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                "Conn",
+                1,
+                "newConn(\"Data Source=project-b.db\")"),
+            identity);
+    }
+
+    [Fact]
+    public void Cross_project_source_declarations_do_not_shadow_provider_types()
+    {
+        AcquisitionSource projectADeclaration = new(
+            "ProjectA/Declarations.cs",
+            "namespace Microsoft { internal sealed class Marker { } }");
+
+        AcquisitionSource projectBConsumer = new(
+            "ProjectB/Fixture.cs",
+            """
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Microsoft.Data.Sqlite.SqliteConnection(
+                        "Data Source=project-b.db");
+                }
+            }
+            """);
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover(
+                [projectADeclaration, projectBConsumer]));
+
+        Assert.Equal(
+            new(
+                "ProjectB/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                "Microsoft.Data.Sqlite.SqliteConnection",
+                1,
+                "newMicrosoft.Data.Sqlite.SqliteConnection(\"Data Source=project-b.db\")"),
+            identity);
+    }
+
+    [Fact]
+    public void File_local_declarations_do_not_shadow_aliases_in_other_files()
+    {
+        AcquisitionSource fileLocalDeclaration = new(
+            "tests/ProjectA/FileLocal.cs",
+            "file sealed class Sqlite { }");
+
+        AcquisitionSource providerConsumer = new(
+            "tests/ProjectA/Fixture.cs",
+            """
+            using Sqlite = global::Microsoft.Data.Sqlite;
+
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Sqlite.SqliteConnection("Data Source=project-a.db");
+                }
+            }
+            """);
+
+        AcquisitionIdentity identity = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Discover(
+                [fileLocalDeclaration, providerConsumer]));
+
+        Assert.Equal(
+            new(
+                "tests/ProjectA/Fixture.cs",
+                "Fixture",
+                "Open(0)",
+                AcquisitionConstructKind.ProviderObjectCreation,
+                "Sqlite.SqliteConnection",
+                1,
+                "newSqlite.SqliteConnection(\"Data Source=project-a.db\")"),
+            identity);
+    }
+
+    [Fact]
+    public void File_local_declaration_shadows_a_global_alias_only_in_its_file()
+    {
+        AcquisitionSource globalAlias = new(
+            "tests/ProjectA/GlobalAliases.cs",
+            "global using Sqlite = global::Microsoft.Data.Sqlite;");
+
+        AcquisitionSource fileLocalConsumer = new(
+            "tests/ProjectA/Fixture.cs",
+            """
+            file sealed class Sqlite
+            {
+                internal sealed class SqliteConnection
+                {
+                    internal SqliteConnection(string connectionString) { }
+                }
+            }
+
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Sqlite.SqliteConnection("Data Source=local.db");
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover(
+            [globalAlias, fileLocalConsumer]));
+    }
+
+    [Fact]
+    public void Global_file_local_declaration_shadows_an_alias_from_a_nested_namespace()
+    {
+        AcquisitionSource shadowed = new(
+            "tests/ProjectA/Fixture.cs",
+            """
+            global using Sqlite = global::Microsoft.Data.Sqlite;
+
+            file sealed class Sqlite
+            {
+                internal sealed class SqliteConnection
+                {
+                    internal SqliteConnection(string connectionString) { }
+                }
+            }
+
+            namespace FixtureScope
+            {
+                sealed class Fixture
+                {
+                    void Open()
+                    {
+                        _ = new Sqlite.SqliteConnection("Data Source=local.db");
+                    }
+                }
+            }
+            """);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Discover([shadowed]));
     }
 
     [Fact]
@@ -1262,6 +1988,129 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
     }
 
     private static AcquisitionSource Source(string text) => new("Fixtures/Fixture.cs", text);
+
+    private static IReadOnlyList<AcquisitionSource> AliasedConstructionSources(
+        string aliasScope,
+        string statement)
+    {
+        string fixture = $$"""
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    {{statement}}
+                }
+            }
+            """;
+
+        return aliasScope switch
+        {
+            "file" =>
+            [
+                Source("""
+                    using Conn = Microsoft.Data.Sqlite.SqliteConnection;
+
+                    """ + fixture),
+            ],
+
+            "block-namespace" =>
+            [
+                Source("""
+                    namespace FixtureScope
+                    {
+                        using Conn = Microsoft.Data.Sqlite.SqliteConnection;
+
+                    """ + fixture + "}"),
+            ],
+
+            "file-scoped-namespace" =>
+            [
+                Source("""
+                    namespace FixtureScope;
+
+                    using Conn = Microsoft.Data.Sqlite.SqliteConnection;
+
+                    """ + fixture),
+            ],
+
+            "global" =>
+            [
+                new(
+                    "Fixtures/GlobalAliases.cs",
+                    "global using Conn = Microsoft.Data.Sqlite.SqliteConnection;"),
+                Source(fixture),
+            ],
+
+            _ => throw new ArgumentOutOfRangeException(nameof(aliasScope)),
+        };
+    }
+
+    private static IReadOnlyList<AcquisitionSource> NamespaceAliasedConstructionSources(
+        string aliasScope)
+    {
+        const string fixture = """
+            sealed class Fixture
+            {
+                void Open()
+                {
+                    _ = new Sqlite.SqliteConnection("Data Source=explicit.db");
+
+                    Sqlite.SqliteConnection connection = new("Data Source=implicit.db");
+                }
+            }
+            """;
+
+        return aliasScope switch
+        {
+            "file" =>
+            [
+                Source("""
+                    using Sqlite = global::Microsoft.Data.Sqlite;
+
+                    """ + fixture),
+            ],
+
+            "block-namespace" =>
+            [
+                Source("""
+                    namespace FixtureScope
+                    {
+                        using Sqlite = global::Microsoft.Data.Sqlite;
+
+                    """ + fixture + "}"),
+            ],
+
+            "file-scoped-namespace" =>
+            [
+                Source("""
+                    namespace FixtureScope;
+
+                    using Sqlite = global::Microsoft.Data.Sqlite;
+
+                    """ + fixture),
+            ],
+
+            "global" =>
+            [
+                new(
+                    "Fixtures/GlobalAliases.cs",
+                    "global using Sqlite = global::Microsoft.Data.Sqlite;"),
+                Source(fixture),
+            ],
+
+            "relative" =>
+            [
+                Source("""
+                    namespace FixtureScope
+                    {
+                        using Sqlite = Microsoft.Data.Sqlite;
+
+                    """ + fixture + "}"),
+            ],
+
+            _ => throw new ArgumentOutOfRangeException(nameof(aliasScope)),
+        };
+    }
 
     private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> ProductionServingRawDiscoveries()
     {

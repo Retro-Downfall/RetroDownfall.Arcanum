@@ -31,6 +31,22 @@ public sealed class InstallationResetCredentialCatalogTests
         string transitionAnchorAccount =
             ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(profileSuffix);
 
+        HashSet<string> reservedAccounts = new(StringComparer.Ordinal)
+        {
+            transitionKeyAccount,
+            transitionAnchorAccount,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(otherProfileSuffix),
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(otherProfileSuffix),
+            ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(profileSuffix),
+            ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(profileSuffix),
+            ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount(profileSuffix),
+            keyAccount,
+            anchorAccount,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            ArcanumCredentialIdentity.FileEncryptionKeyAccount,
+            ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
+        };
+
         Assert.Equal("installation-reset-active-key-" + profileSuffix, keyAccount);
 
         Assert.Equal("installation-reset-active-anchor-" + profileSuffix, anchorAccount);
@@ -46,6 +62,8 @@ public sealed class InstallationResetCredentialCatalogTests
         Assert.True(ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(transitionKeyAccount));
 
         Assert.True(ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(transitionAnchorAccount));
+
+        Assert.Equal(12, reservedAccounts.Count);
 
         Assert.NotEqual(
             keyAccount,

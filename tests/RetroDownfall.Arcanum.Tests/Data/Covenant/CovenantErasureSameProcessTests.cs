@@ -27,6 +27,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -2460,6 +2461,121 @@ public sealed class CovenantErasureSameProcessTests
     }
 
     [SkippableTheory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Authenticated_dispatch_requires_exactly_one_matching_handler(
+        int matchingHandlerCount)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        OneShotPhaseFault fault = new(
+            CovenantResetPhase.CanonicalApplied,
+            CovenantErasureFaultBoundary.AfterPhaseBegin);
+
+        RouteOperationWriteObserver operationWrites = new();
+
+        MaintenanceAdoptionObservation adoption = new();
+
+        AuthenticatedHandlerCardinalityObservation handlerCalls = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            operationWrites: operationWrites,
+            faultSeam: fault.RaiseAsync,
+            serviceOverrides: services =>
+            {
+                services.AddSingleton(adoption);
+
+                services.RemoveAll<ILongRunningOperationMaintenanceLeaseAdoption>();
+
+                services.AddScoped<
+                    ILongRunningOperationMaintenanceLeaseAdoption,
+                    PausingMaintenanceLeaseAdoption>();
+
+                services.RemoveAll<ILongRunningOperationRecoveryHandler>();
+
+                services.AddSingleton<ILongRunningOperationRecoveryHandler>(
+                    new RecordingGenericRecoveryHandler(handlerCalls));
+
+                services.RemoveAll<IAuthenticatedCovenantErasureRecoveryHandler>();
+
+                for (int index = 0; index < matchingHandlerCount; index++)
+                {
+                    services.AddSingleton<IAuthenticatedCovenantErasureRecoveryHandler>(
+                        new RecordingAuthenticatedRecoveryHandler(handlerCalls));
+                }
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Assert.True((await harness.ApplyResetAsync(confirmed.PlanId)).IsFailure);
+
+        LongRunningOperation parked = operationWrites.LastSuccessfulWrite;
+
+        Result<LongRunningOperationSettlementOutcome> dispatched =
+            await harness.DispatchAuthenticatedResetAsync(parked);
+
+        Assert.True(dispatched.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, dispatched.Error.Code);
+
+        Assert.Equal(
+            "The authenticated offline Grimoire transition could not be recovered before bootstrap.",
+            dispatched.Error.Message);
+
+        Assert.Equal(1, adoption.Calls);
+
+        LongRunningOperationLeaseResult adoptedResult = Assert.IsType<
+            LongRunningOperationLeaseResult>(adoption.Result);
+
+        Assert.True(adoptedResult.Acquired);
+
+        LongRunningOperation adopted = adoptedResult.Operation;
+
+        Assert.False(string.IsNullOrWhiteSpace(adopted.LeaseOwner));
+
+        Assert.NotNull(adopted.LeaseExpiresAt);
+
+        Assert.Equal(parked.CheckpointPayload, adopted.CheckpointPayload);
+
+        Assert.Equal(
+            parked with
+            {
+                State = LongRunningOperationState.Running,
+                HeartbeatAt = adopted.HeartbeatAt,
+                LeaseOwner = adopted.LeaseOwner,
+                LeaseExpiresAt = adopted.LeaseExpiresAt,
+                AttemptCount = checked(parked.AttemptCount + 1),
+                CheckpointPayload = adopted.CheckpointPayload,
+                TerminalErrorCode = null,
+                Revision = checked(parked.Revision + 1),
+            },
+            adopted);
+
+        Assert.Equal(0, handlerCalls.AuthenticatedInvocations);
+
+        Assert.Equal(0, handlerCalls.GenericInvocations);
+
+        Assert.Equal(
+            [CovenantExclusiveLeaseDisposition.KeepClosed],
+            harness.RouteGate.SuccessfulRecoveryDispositions);
+
+        await AssertBothAdmissionsClosedAsync(harness);
+
+        LongRunningOperation durable = await harness
+            .ReadOperationUnderHeldRecoveryLockAsync(adopted.Id);
+
+        Assert.Equal(adopted.CheckpointPayload, durable.CheckpointPayload);
+
+        Assert.Equal(adopted with { CheckpointPayload = durable.CheckpointPayload }, durable);
+
+        await AssertBothAdmissionsClosedAsync(harness);
+    }
+
+    [SkippableTheory]
     [InlineData("resume")]
     [InlineData("quiesce")]
     public async Task Authenticated_pre_session_failure_preserves_the_exact_row_and_journal_keep_closed(
@@ -3610,6 +3726,87 @@ public sealed class CovenantErasureSameProcessTests
                 .GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()
                 .DispatchAsync(held.Value, LogsRoot, evidence, CancellationToken.None);
         }
+
+        internal async Task<LongRunningOperation> ReadOperationUnderHeldRecoveryLockAsync(
+            Guid operationId)
+        {
+            Result<ArcanumMaintenanceLock> held = Services
+                .GetRequiredService<IInstallationResetMaintenanceLockAccessor>()
+                .BorrowHeldLock(LogsRoot);
+
+            Assert.True(held.IsSuccess, held.Error.Message);
+
+            Result<GrimoireRecoveryUnlockedCatalog> unlocked = await Services
+                .GetRequiredService<IGrimoireRecoveryOnlyUnlock>()
+                .OpenExistingAsync(
+                    held.Value,
+                    LogsRoot,
+                    _fixture.DatabasePath,
+                    CancellationToken.None);
+
+            Assert.True(unlocked.IsSuccess, unlocked.Error.Message);
+
+            await using GrimoireRecoveryUnlockedCatalog catalog = unlocked.Value;
+
+            await using SqliteCommand command = catalog.Connection.CreateCommand();
+
+            command.CommandText =
+                """
+                SELECT
+                    "Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
+                    "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
+                    "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
+                    "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
+                    "PublicSummary", "TerminalErrorCode", "Revision"
+                FROM "LongRunningOperations"
+                WHERE "Id" = $id;
+                """;
+
+            _ = command.Parameters.AddWithValue("$id", operationId.ToString("N"));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+            Assert.True(await reader.ReadAsync());
+
+            LongRunningOperation operation = ReadOperation(reader);
+
+            Assert.False(await reader.ReadAsync());
+
+            return operation;
+        }
+
+        private static LongRunningOperation ReadOperation(SqliteDataReader reader) =>
+            new(
+                Guid.Parse(reader.GetString(0)),
+                reader.GetString(1),
+                (LongRunningOperationState)reader.GetInt32(2),
+                (LongRunningOperationRecoveryPolicy)reader.GetInt32(3),
+                ReadGuid(reader, 4),
+                ReadGuid(reader, 5),
+                ReadGuid(reader, 6),
+                ReadGuid(reader, 7),
+                ReadGuid(reader, 8),
+                ReadGuid(reader, 9),
+                ReadGuid(reader, 10),
+                UtcInstantText.Parse(reader.GetString(11)),
+                ReadInstant(reader, 12),
+                ReadInstant(reader, 13),
+                ReadInstant(reader, 14),
+                reader.IsDBNull(15) ? null : reader.GetString(15),
+                ReadInstant(reader, 16),
+                reader.GetInt32(17),
+                reader.GetInt32(18),
+                reader.IsDBNull(19) ? null : (byte[])reader.GetValue(19),
+                reader.IsDBNull(20) ? null : reader.GetString(20),
+                reader.GetString(21),
+                reader.IsDBNull(22) ? null : reader.GetString(22),
+                reader.GetInt64(23));
+
+        private static Guid? ReadGuid(SqliteDataReader reader, int ordinal) =>
+            reader.IsDBNull(ordinal) ? null : Guid.Parse(reader.GetString(ordinal));
+
+        private static DateTimeOffset? ReadInstant(SqliteDataReader reader, int ordinal) =>
+            reader.IsDBNull(ordinal) ? null : UtcInstantText.Parse(reader.GetString(ordinal));
 
         internal async Task<GrimoireOfflineTransitionRecoveryEvidence>
             ReadAuthenticatedJournalEvidenceAsync(LongRunningOperation current)
@@ -5474,6 +5671,69 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperation Operation,
         CovenantErasureCheckpointState Checkpoint,
         string OwnerId);
+
+    private sealed class AuthenticatedHandlerCardinalityObservation
+    {
+        private int _authenticatedInvocations;
+
+        private int _genericInvocations;
+
+        internal int AuthenticatedInvocations => Volatile.Read(ref _authenticatedInvocations);
+
+        internal int GenericInvocations => Volatile.Read(ref _genericInvocations);
+
+        internal void RecordAuthenticatedInvocation() =>
+            Interlocked.Increment(ref _authenticatedInvocations);
+
+        internal void RecordGenericInvocation() =>
+            Interlocked.Increment(ref _genericInvocations);
+    }
+
+    private sealed class RecordingAuthenticatedRecoveryHandler(
+        AuthenticatedHandlerCardinalityObservation observation)
+        : IAuthenticatedCovenantErasureRecoveryHandler
+    {
+        public string Kind => LongRunningOperationKinds.DataRetentionMutation;
+
+        public int SupportedCheckpointVersion => CovenantOfflineTransitionLaunchV4.CurrentVersion;
+
+        public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+            LongRunningOperation operation,
+            CancellationToken cancellationToken)
+        {
+            observation.RecordAuthenticatedInvocation();
+
+            return Task.FromResult(LongRunningOperationRecoveryResult.Completed());
+        }
+
+        public Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
+            LongRunningOperation operation,
+            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+            CancellationToken cancellationToken)
+        {
+            observation.RecordAuthenticatedInvocation();
+
+            return Task.FromResult(LongRunningOperationRecoveryResult.Completed());
+        }
+    }
+
+    private sealed class RecordingGenericRecoveryHandler(
+        AuthenticatedHandlerCardinalityObservation observation)
+        : ILongRunningOperationRecoveryHandler
+    {
+        public string Kind => LongRunningOperationKinds.DataRetentionMutation;
+
+        public int SupportedCheckpointVersion => CovenantOfflineTransitionLaunchV4.CurrentVersion;
+
+        public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+            LongRunningOperation operation,
+            CancellationToken cancellationToken)
+        {
+            observation.RecordGenericInvocation();
+
+            return Task.FromResult(LongRunningOperationRecoveryResult.Completed());
+        }
+    }
 
     private sealed class ExactPoolClearFailure
     {

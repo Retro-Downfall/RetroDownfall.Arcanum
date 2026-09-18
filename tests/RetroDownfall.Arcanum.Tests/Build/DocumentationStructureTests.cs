@@ -34,6 +34,166 @@ public sealed class DocumentationStructureTests
         Assert.Contains(anchor, document, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Full_host_Grimoire_transition_contract_is_published_by_owning_documents()
+    {
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string readme = File.ReadAllText(Path.Combine(root, "README.md"));
+        string design = File.ReadAllText(Path.Combine(root, "docs", "Arcanum.DESIGN.md"));
+        string api = File.ReadAllText(Path.Combine(root, "docs", "Arcanum.API.md"));
+
+        string transition = DocumentSection(
+            design,
+            "#### 10.20.3 A phase vocabulary before there is anything to phase",
+            "#### 10.20.5 One transaction for the family, and the evidence it may not take");
+
+        string requestAdmission = DocumentSection(
+            api,
+            "### 8.31 Grimoire request admission and the maintenance `503`",
+            "### 8.32 Streaming routes in a maintenance window");
+
+        string streaming = DocumentSection(
+            api,
+            "### 8.32 Streaming routes in a maintenance window",
+            "*End of API reference.*");
+
+        string streamingProse = Regex.Replace(
+            streaming,
+            @"\s+",
+            " ",
+            RegexOptions.CultureInvariant);
+
+        Assert.DoesNotContain(
+            "not yet wired into startup or a migration handler",
+            design,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Ordinary background work stays on the queue-free fast path.",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Ordinary background work stays on the queue-free fast path. A destructive Grimoire "
+            + "transition closes host-wide admission and drains work already admitted before it takes "
+            + "exclusive control.",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Each catalogued operation is classified as ordinary hosted work with an exact closed "
+            + "`GrimoireWorkKind`",
+            design,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "startup resumes only from authenticated durable evidence; evidence it cannot verify keeps "
+            + "the Grimoire closed instead of guessing.",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "The lifecycle has exactly three legal endings:",
+            transition,
+            StringComparison.Ordinal);
+        Assert.Contains("`CommitAndReopen`", transition, StringComparison.Ordinal);
+        Assert.Contains("`RollbackAndReopen`", transition, StringComparison.Ordinal);
+        Assert.Contains("`KeepClosed`", transition, StringComparison.Ordinal);
+        Assert.Contains(
+            "Stage 2 resolves every outstanding native-open attempt only after an explicit opened, failed, "
+            + "or refused-after-open terminal outcome; disposing a ticket cannot manufacture terminality.",
+            transition,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "A refused or post-open race-losing ordinary connection is closed and its exact provider pool "
+            + "is cleared before its ticket becomes terminal.",
+            transition,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Production startup authenticates that slot before readiness and reaches a transition only "
+            + "through the closed typed recovery-handler registry",
+            transition,
+            StringComparison.Ordinal);
+        Assert.Contains("immutable feature SHA", transition, StringComparison.Ordinal);
+        Assert.Contains(
+            "Current V4/V2 offline-transition checkpoints are journal-owned operations",
+            transition,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "offers authenticated terminal-suffix completion before marker validation",
+            transition,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "marker validation remains mandatory before any nonterminal or effect recovery",
+            transition,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Immediately after the authentication stage and before installation-reset admission, Covenant "
+            + "pre-binding, body-size enforcement, binding, and the endpoint.",
+            requestAdmission,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Exactly `GET /api/presence`, `GET /api/health`, and `POST /api/server/quit`.",
+            requestAdmission,
+            StringComparison.Ordinal);
+        Assert.Contains("Grimoire.MaintenanceUnavailable", requestAdmission, StringComparison.Ordinal);
+        Assert.Contains("service_unavailable", requestAdmission, StringComparison.Ordinal);
+        Assert.Contains("grimoire_maintenance", requestAdmission, StringComparison.Ordinal);
+
+        foreach (string routeRow in (string[])
+                 [
+                     "| `GET /api/events/daemon` | quiesceable | none | SSE |",
+                     "| `GET /api/events/mcp` | quiesceable | none | SSE |",
+                     "| `GET /api/events/logs` | quiesceable | none | SSE |",
+                     "| `GET /api/sessions/{id}/stream` | quiesceable | live | SSE |",
+                     "| `GET /api/apprentices/{id}/chronicle` | quiesceable | live | SSE |",
+                 ])
+        {
+            Assert.Contains(routeRow, streaming, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(
+            "The five quiesceable routes stop at a complete frame boundary.",
+            streaming,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "the body ends with the terminal `data: [DONE]` frame.",
+            streamingProse,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "a stream that stopped early still ends on the one terminal frame the writer owns",
+            streaming,
+            StringComparison.Ordinal);
+        Assert.Contains("billable drain", streaming, StringComparison.Ordinal);
+        Assert.Contains("finite drain", streaming, StringComparison.Ordinal);
+        Assert.Contains(
+            "No route, wire DTO, CLI verb or option, configuration key, schema/DDL, or migration changed",
+            requestAdmission,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Current owner-bound `data-retention-mutation` V4 and `data-retention-factory-reset` V2 checkpoints",
+            api,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "checkpoints cannot be retried: they return **409** `Operation.StateConflict` and remain unchanged",
+            api,
+            StringComparison.Ordinal);
+        Assert.Contains("**409** `Operation.StateConflict`", api, StringComparison.Ordinal);
+    }
+
+    private static string DocumentSection(
+        string document,
+        string startHeading,
+        string endHeading)
+    {
+        int start = document.IndexOf(startHeading, StringComparison.Ordinal);
+
+        Assert.True(start >= 0, $"Missing documentation heading: {startHeading}");
+
+        int end = document.IndexOf(endHeading, start, StringComparison.Ordinal);
+
+        Assert.True(end > start, $"Missing documentation heading after {startHeading}: {endHeading}");
+
+        return document[start..end];
+    }
+
     private static readonly Regex NumberedHeading = new(
         @"^(?<hashes>\#{2,6}) (?<number>\d+(?:\.\d+)*)\.? ",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);

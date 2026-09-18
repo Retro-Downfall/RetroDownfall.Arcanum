@@ -523,7 +523,7 @@ public sealed class CovenantErasureInventorySourceTests
         CovenantErasureInventorySource source = fixture.CreateOrdinarySource(connections);
 
         using ScopedConsumerPause pause = new(
-            "CovenantErasureInventorySource.WithOwnedSnapshotAsync");
+            "CovenantErasureInventorySource.WithOrdinarySnapshotAsync");
 
         // The launch-time source read, for the same reason the cancellation test above uses it: it is
         // the one remaining caller of the ordinary owned snapshot whose lease lifetime this asserts.

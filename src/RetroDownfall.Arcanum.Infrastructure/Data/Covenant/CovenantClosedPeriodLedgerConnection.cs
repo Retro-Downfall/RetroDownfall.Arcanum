@@ -78,6 +78,15 @@ internal sealed class CovenantClosedPeriodLedgerConnection(
 
         DbConnection connection = Connection;
 
+        if (connection is not SqliteConnection sqlite
+            || sqlite.GetType() != typeof(SqliteConnection))
+        {
+
+            throw new InvalidOperationException(
+                "The closed-period ledger connection must be an exact SQLite connection.");
+
+        }
+
         if (connection.State is System.Data.ConnectionState.Open)
         {
 
@@ -87,15 +96,10 @@ internal sealed class CovenantClosedPeriodLedgerConnection(
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        if (connection is SqliteConnection sqlite)
-        {
-
-            await _initializer.InitializeAsync(
-                sqlite,
-                CovenantSqliteConnectionMode.ReadWrite,
-                cancellationToken).ConfigureAwait(false);
-
-        }
+        await _initializer.InitializeAsync(
+            sqlite,
+            CovenantSqliteConnectionMode.ReadWrite,
+            cancellationToken).ConfigureAwait(false);
 
     }
 

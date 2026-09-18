@@ -11,4 +11,7 @@ public sealed class GrimoireDbPassphraseSource : IGrimoireDbPassphraseSource
         ArgumentException.ThrowIfNullOrEmpty(passphrase);
         _passphrase = passphrase;
     }
+
+    internal void Clear() =>
+        _ = Interlocked.Exchange(ref _passphrase, null);
 }

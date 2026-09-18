@@ -49,6 +49,9 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
     private static readonly CancellationToken Token = CancellationToken.None;
 
+    private static readonly Guid TargetDatasetGeneration =
+        Guid.Parse("55555555-5555-4555-8555-555555555555");
+
     private readonly GrimoireFixture _fixture;
 
     private readonly TempWorkspace _workspace = new();
@@ -125,6 +128,8 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
 
         long before = await RevisionAsync(seeded.OperationId);
 
+        long changesBefore = await TotalChangesAsync();
+
         Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
             .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
 
@@ -142,6 +147,100 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             handoff.ObservedDatabaseState);
 
         Assert.Equal(before, await RevisionAsync(seeded.OperationId));
+
+        Assert.Equal(changesBefore, await TotalChangesAsync());
+
+    }
+
+    /// <summary>
+    /// A valid launch may advance its source epochs onto the signed storage ceiling. Recovery reads
+    /// that exact target as an observed fact; it does not require the already-applied target to have
+    /// another successor.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_exactly_applied_saturated_target_loads_and_writes_nothing()
+    {
+
+        RequireSqlCipher();
+
+        CovenantOfflineTransitionSourceState current = await CurrentSourceAsync();
+
+        await SetCanonicalTupleAsync(
+            current.DatasetGeneration,
+            long.MaxValue - 1,
+            long.MaxValue - 1,
+            long.MaxValue - 1);
+
+        Seeded seeded = await SeedAsync();
+
+        await SetCanonicalTupleAsync(
+            TargetDatasetGeneration,
+            long.MaxValue,
+            long.MaxValue,
+            long.MaxValue);
+
+        long before = await RevisionAsync(seeded.OperationId);
+
+        long changesBefore = await TotalChangesAsync();
+
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
+
+        Assert.True(loaded.IsSuccess, loaded.IsFailure ? loaded.Error.Message : null);
+
+        CovenantClosedRecoveryHandoff handoff =
+            Assert.IsType<CovenantClosedRecoveryHandoff>(loaded.Value);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionObservedState.ExactlyApplied,
+            handoff.ObservedDatabaseState);
+
+        Assert.Equal(before, await RevisionAsync(seeded.OperationId));
+
+        Assert.Equal(changesBefore, await TotalChangesAsync());
+
+    }
+
+    /// <summary>
+    /// Accepting a saturated target does not weaken exact tuple agreement. A catalog that carries the
+    /// target generation but only two of its three target epochs belongs to neither side of the launch.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_divergent_saturated_target_tuple_refuses_and_writes_nothing()
+    {
+
+        RequireSqlCipher();
+
+        CovenantOfflineTransitionSourceState current = await CurrentSourceAsync();
+
+        await SetCanonicalTupleAsync(
+            current.DatasetGeneration,
+            long.MaxValue - 1,
+            long.MaxValue - 1,
+            long.MaxValue - 1);
+
+        Seeded seeded = await SeedAsync();
+
+        await SetCanonicalTupleAsync(
+            TargetDatasetGeneration,
+            long.MaxValue - 1,
+            long.MaxValue,
+            long.MaxValue);
+
+        long before = await RevisionAsync(seeded.OperationId);
+
+        long changesBefore = await TotalChangesAsync();
+
+        Result<ICovenantClosedRecoveryHandoff> loaded = await Bootstrapper()
+            .LoadAsync(_lock!, _root, Connection, seeded.Evidence, PermittedHostTools.Instance, Token);
+
+        Assert.True(loaded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, loaded.Error.Code);
+
+        Assert.Equal(before, await RevisionAsync(seeded.OperationId));
+
+        Assert.Equal(changesBefore, await TotalChangesAsync());
 
     }
 
@@ -624,7 +723,7 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             operation,
             CovenantRecoveryCheckpointCodec.EncodeEffectDigest(effect),
             sourceGeneration,
-            Guid.Parse("55555555-5555-4555-8555-555555555555"),
+            TargetDatasetGeneration,
             sourceEpochs,
             targetEpochs,
             leased.Operation.Revision);
@@ -738,6 +837,47 @@ public sealed class CovenantRecoveryAuthorityBootstrapperTests : IAsyncLifetime
             "SELECT InstallationIdentity FROM covenant_authority_state WHERE StateKey = 1;";
 
         return Guid.Parse(Assert.IsType<string>(await command.ExecuteScalarAsync(Token)));
+    }
+
+    private async Task<long> TotalChangesAsync()
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = "SELECT total_changes();";
+
+        return Convert.ToInt64(await command.ExecuteScalarAsync(Token));
+
+    }
+
+    private async Task SetCanonicalTupleAsync(
+        Guid datasetGeneration,
+        long acceleratorEpoch,
+        long keyReclamationEpoch,
+        long envelopeKeyEpoch)
+    {
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            UPDATE covenant_state
+            SET DatasetGeneration = $datasetGeneration,
+                AcceleratorEpoch = $acceleratorEpoch,
+                KeyReclamationEpoch = $keyReclamationEpoch,
+                EnvelopeKeyEpoch = $envelopeKeyEpoch
+            WHERE StateKey = 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$datasetGeneration", datasetGeneration.ToByteArray());
+
+        _ = command.Parameters.AddWithValue("$acceleratorEpoch", acceleratorEpoch);
+
+        _ = command.Parameters.AddWithValue("$keyReclamationEpoch", keyReclamationEpoch);
+
+        _ = command.Parameters.AddWithValue("$envelopeKeyEpoch", envelopeKeyEpoch);
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync(Token));
+
     }
 
     private async Task ExecuteAsync(string sql)

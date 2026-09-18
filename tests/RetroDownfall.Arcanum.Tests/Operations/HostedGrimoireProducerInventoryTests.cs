@@ -37,6 +37,52 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         return HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", roots.Length == 0 ? [OrdinaryRoot()] : roots)], []);
     }
 
+    private static string[] RenderRootTraversalMetrics(
+        IReadOnlyList<HostedProducerRootTraversalMetric> metrics) =>
+        metrics
+            .OrderByDescending(static metric => metric.Elapsed)
+            .ThenBy(static metric => metric.RootType, StringComparer.Ordinal)
+            .ThenBy(static metric => metric.RootOperation, StringComparer.Ordinal)
+            .Select(static metric => FormattableString.Invariant(
+                $"HOSTED_ROOT_TRAVERSAL\telapsed_ms={metric.Elapsed.TotalMilliseconds:F3}\tstates={metric.AnalyzedStates}\tcalls={metric.TraversalCalls}\troot_type={metric.RootType}\troot={metric.RootOperation}"))
+            .ToArray();
+
+    private static string[] RenderLargestAnalysisCounters(
+        HostedProducerAnalysisMetrics metrics) =>
+        metrics.EvaluationEnvironments
+            .OrderByDescending(static metric => metric.FingerprintRequests)
+            .ThenBy(static metric => metric.Member, StringComparer.Ordinal)
+            .Take(5)
+            .Select(static metric =>
+                $"HOSTED_ANALYSIS_COUNTER\tkind=evaluation-environment\trequests={metric.FingerprintRequests}\tbuilds={metric.FingerprintBuilds}\tmember={metric.Member}")
+            .Concat(metrics.RetainedAdmissions
+                .OrderByDescending(static metric => metric.AuthorityQueries)
+                .ThenBy(static metric => metric.Member, StringComparer.Ordinal)
+                .Take(5)
+                .Select(static metric =>
+                    $"HOSTED_ANALYSIS_COUNTER\tkind=retained-admission\trequests={metric.AuthorityQueries}\tbuilds={metric.SourceIndexBuilds}\tmember={metric.Member}"))
+            .Concat(metrics.TraversalRecoveryProjections
+                .OrderByDescending(static metric => metric.Requests)
+                .ThenBy(static metric => metric.Member, StringComparer.Ordinal)
+                .Take(5)
+                .Select(static metric =>
+                    $"HOSTED_ANALYSIS_COUNTER\tkind=recovery-projection\trequests={metric.Requests}\tbuilds={metric.Builds}\tmember={metric.Member}"))
+            .Concat(metrics.CleanupCaches
+                .OrderByDescending(static metric =>
+                    metric.ProvenanceStableHits
+                        + metric.ValueFlowStableHits)
+                .ThenBy(static metric => metric.Member, StringComparer.Ordinal)
+                .Take(5)
+                .Select(static metric =>
+                    $"HOSTED_ANALYSIS_COUNTER\tkind=cleanup-cache\tprovenance_requests={metric.ProvenanceRequests}\tprovenance_builds={metric.ProvenanceBuilds}\tprovenance_hits={metric.ProvenanceStableHits}\tvalue_requests={metric.ValueFlowRequests}\tvalue_builds={metric.ValueFlowBuilds}\tvalue_hits={metric.ValueFlowStableHits}\tmember={metric.Member}"))
+            .ToArray();
+
+    private const string RecoveryServingRoot =
+        " namespace RetroDownfall.Arcanum.Api { public static class ApiBootstrapper { "
+        + "public static Microsoft.Extensions.DependencyInjection.IServiceCollection "
+        + "AddArcanumApiServices(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { "
+        + "global::Composition.Configure(services); return services; } } }";
+
     private static string RecoveryMatrixFixture() =>
         RegistrationSource(
                 "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.DbRecoveryHandler>(); "
@@ -151,7 +197,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
                             if (before.Kind is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner)
                             {
-                                return;
+                                throw new InvalidOperationException();
                             }
 
                             LongRunningRecoveryAdmissionDecision after =
@@ -281,9 +327,17 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         }
                     }
 
-                    internal static class StoppedHostComposition
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
+                    using RetroDownfall.Arcanum.Infrastructure.Operations;
+
+                    internal static class ServiceCollectionExtensions
                     {
-                        internal static void Configure(Microsoft.Extensions.DependencyInjection.IServiceCollection services)
+                        internal static void AddArcanumGrimoireForCli(
+                            Microsoft.Extensions.DependencyInjection.IServiceCollection services)
                         {
                             services.AddScoped<ILongRunningOperationRecoveryHandler, CliOwnerRecoveryHandler>();
 
@@ -292,7 +346,20 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                                 classifiedLeaseAcquisition: null,
                                 scopeFactory: null);
                         }
+
                     }
+
+                    internal static class StoppedComposition
+                    {
+                        internal static void Configure(
+                            Microsoft.Extensions.DependencyInjection.IServiceCollection services) =>
+                            ServiceCollectionExtensions.AddArcanumGrimoireForCli(services);
+                    }
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.Operations
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
 
                     internal static class OwnerRecoveryRoot
                     {
@@ -304,17 +371,1526 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         }
                     }
                 }
-                """;
+                """
+            + RecoveryServingRoot;
 
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverRecoveryMatrixFixture(
-        string source,
-        bool includeOwnerRoot = true,
-        HostedProducerAuthorityKind hostedAuthority = HostedProducerAuthorityKind.OrdinaryHostedWork)
+    private static string RecoveryFactoryAliasFixture() =>
+        RecoveryMatrixFixture()
+            .Replace(
+                "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.DbRecoveryHandler>();",
+                "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.DbRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.DbRecoveryHandler>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+                "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryHandler>();",
+                "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryHandler>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.UnsupportedRecoveryHandler>();",
+                "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.UnsupportedRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.UnsupportedRecoveryHandler>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "services.AddScoped<ILongRunningOperationRecoveryHandler, CliOwnerRecoveryHandler>();",
+                "services.AddScoped<CliOwnerRecoveryHandler>(); services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<CliOwnerRecoveryHandler>());",
+                StringComparison.Ordinal);
+
+    private static string OfflineTransitionDispatchFixture() =>
+        "using System.Linq; using Microsoft.Extensions.DependencyInjection.Extensions; using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;"
+            + RegistrationSource(
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>(); "
+                + "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>()); "
+                + "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.IAuthenticatedCovenantErasureRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>()); "
+                + "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ServingFactoryRecoveryHandler>(); "
+                + "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ServingFactoryRecoveryHandler>()); "
+                + "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.IAuthenticatedCovenantErasureRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ServingFactoryRecoveryHandler>()); "
+                + "services.AddGrimoireOfflineTransitionHandlerDispatch();")
+            + """
+                namespace RetroDownfall.Arcanum.Core.Operations
+                {
+                    public sealed record LongRunningOperation(string Kind, int CheckpointVersion);
+
+                    public sealed record LongRunningOperationRecoveryDescriptor(
+                        string Kind,
+                        int MinCheckpointVersion,
+                        int MaxCheckpointVersion);
+
+                    public interface ILongRunningOperationRecoveryHandler
+                    {
+                        string Kind { get; }
+
+                        int SupportedCheckpointVersion { get; }
+
+                        Task RecoverAsync(
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken);
+                    }
+
+                    public static class LongRunningOperationKinds
+                    {
+                        public const string DataRetentionMutation = "mutation";
+
+                        public const string DataRetentionFactoryReset = "factory-reset";
+                    }
+
+                    public static class LongRunningOperationRecoveryRegistry
+                    {
+                        private static readonly LongRunningOperationRecoveryDescriptor[] Matrix =
+                        [
+                            new(LongRunningOperationKinds.DataRetentionMutation, 0, 4),
+                            new(LongRunningOperationKinds.DataRetentionFactoryReset, 0, 2),
+                        ];
+                    }
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.Data
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
+
+                    internal interface IAuthenticatedCovenantErasureRecoveryHandler :
+                        ILongRunningOperationRecoveryHandler
+                    {
+                        Task RecoverAuthenticatedAsync(
+                            LongRunningOperation operation,
+                            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+                            CancellationToken cancellationToken);
+                    }
+
+                    internal sealed class CovenantErasureCoordinator
+                    {
+                        internal sealed class AuthenticatedCovenantErasureRecoveryAdmission { }
+
+                        internal Task RunMutationAuthenticatedAsync(
+                            LongRunningOperation operation)
+                        {
+                            System.IO.File.Delete("authenticated-mutation-owner");
+
+                            return Task.CompletedTask;
+                        }
+
+                        internal Task RunFactoryAuthenticatedAsync(
+                            LongRunningOperation operation)
+                        {
+                            System.IO.File.Delete("authenticated-factory-owner");
+
+                            return Task.CompletedTask;
+                        }
+                    }
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.Operations
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
+                    using RetroDownfall.Arcanum.Infrastructure.Data;
+
+                    internal class LongRunningRecoveryOwnerEvidence { }
+
+                    internal enum LongRunningRecoveryAdmissionKind : byte
+                    {
+                        OwnerBoundOffline = 1,
+
+                        OwnerBoundAwaitingExactOwner = 2,
+
+                        UnsupportedCheckpointVersion = 3,
+                    }
+
+                    internal readonly record struct LongRunningRecoveryAdmissionDecision(
+                        LongRunningRecoveryAdmissionKind Kind);
+
+                    internal static class LongRunningOperationRecoveryAdmission
+                    {
+                        internal static LongRunningRecoveryAdmissionDecision Classify(
+                            LongRunningOperation operation,
+                            LongRunningRecoveryOwnerEvidence? ownerEvidence)
+                        {
+                            LongRunningRecoveryAdmissionKind kind =
+                                (operation.Kind, operation.CheckpointVersion) switch
+                                {
+                                    (LongRunningOperationKinds.DataRetentionMutation, 4) =>
+                                        OwnerBoundKind(ownerEvidence),
+                                    (LongRunningOperationKinds.DataRetentionFactoryReset, 2) =>
+                                        OwnerBoundKind(ownerEvidence),
+                                    _ => LongRunningRecoveryAdmissionKind
+                                        .UnsupportedCheckpointVersion,
+                                };
+
+                            return new(kind);
+                        }
+
+                        private static LongRunningRecoveryAdmissionKind OwnerBoundKind(
+                            object? evidence) =>
+                            evidence is null
+                                ? LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner
+                                : LongRunningRecoveryAdmissionKind.OwnerBoundOffline;
+                    }
+
+                    internal sealed class LongRunningOperationReconciler(
+                        object? discovery = null,
+                        object? classifiedLeaseAcquisition = null,
+                        object? scopeFactory = null)
+                    {
+                        /*reconciler-fields*/
+                        /*owner-settle-signature*/ internal async Task SettleExactlyAsync(
+                            LongRunningOperation operation,
+                            LongRunningRecoveryOwnerEvidence ownerEvidence)
+                        {
+                            LongRunningRecoveryAdmissionDecision decision =
+                                LongRunningOperationRecoveryAdmission.Classify(
+                                    operation,
+                                    ownerEvidence);
+
+                            if (decision.Kind is not
+                                LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+                            {
+                                return;
+                            }
+
+                            await SettleLeasedAsync(operation);
+                        }
+
+                        private static async Task SettleLeasedAsync(
+                            LongRunningOperation operation)
+                        {
+                            ILongRunningOperationRecoveryHandler handler = null!;
+
+                            await handler.RecoverAsync(
+                                operation,
+                                CancellationToken.None);
+                        }
+                    }
+
+                    internal sealed class ServingMutationRecoveryHandler :
+                        IAuthenticatedCovenantErasureRecoveryHandler
+                    {
+                        public string Kind => LongRunningOperationKinds.DataRetentionMutation;
+
+                        public int SupportedCheckpointVersion => 4;
+
+                        public Task RecoverAsync(
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Exists("serving-mutation");
+
+                            return Task.CompletedTask;
+                        }
+
+                        public Task RecoverAuthenticatedAsync(
+                            LongRunningOperation operation,
+                            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Exists("serving-authenticated-mutation");
+
+                            return Task.CompletedTask;
+                        }
+                    }
+
+                    internal sealed class ServingFactoryRecoveryHandler :
+                        IAuthenticatedCovenantErasureRecoveryHandler
+                    {
+                        public string Kind => LongRunningOperationKinds.DataRetentionFactoryReset;
+
+                        public int SupportedCheckpointVersion => 2;
+
+                        public Task RecoverAsync(
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Exists("serving-factory");
+
+                            return Task.CompletedTask;
+                        }
+
+                        public Task RecoverAuthenticatedAsync(
+                            LongRunningOperation operation,
+                            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Exists("serving-authenticated-factory");
+
+                            return Task.CompletedTask;
+                        }
+                    }
+
+                    internal sealed class StoppedMutationRecoveryHandler :
+                        IAuthenticatedCovenantErasureRecoveryHandler
+                    {
+                        public string Kind => LongRunningOperationKinds.DataRetentionMutation;
+
+                        public int SupportedCheckpointVersion => 4;
+
+                        public Task RecoverAsync(
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Delete("launch-gap-mutation");
+
+                            return Task.CompletedTask;
+                        }
+
+                        public Task RecoverAuthenticatedAsync(
+                            LongRunningOperation operation,
+                            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+                            CancellationToken cancellationToken) =>
+                            new CovenantErasureCoordinator()
+                                .RunMutationAuthenticatedAsync(operation);
+                    }
+
+                    internal sealed class StoppedFactoryRecoveryHandler :
+                        IAuthenticatedCovenantErasureRecoveryHandler
+                    {
+                        public string Kind => LongRunningOperationKinds.DataRetentionFactoryReset;
+
+                        public int SupportedCheckpointVersion => 2;
+
+                        public Task RecoverAsync(
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Delete("launch-gap-factory");
+
+                            return Task.CompletedTask;
+                        }
+
+                        public Task RecoverAuthenticatedAsync(
+                            LongRunningOperation operation,
+                            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+                            CancellationToken cancellationToken) =>
+                            new CovenantErasureCoordinator()
+                                .RunFactoryAuthenticatedAsync(operation);
+                    }
+
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
+                    using RetroDownfall.Arcanum.Infrastructure.Data;
+                    using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+                    using RetroDownfall.Arcanum.Infrastructure.Operations;
+
+                    internal static class ServiceCollectionExtensions
+                    {
+                        internal static void AddArcanumGrimoireForCli(
+                            IServiceCollection services)
+                        {
+                            services.AddScoped<StoppedMutationRecoveryHandler>();
+                            services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
+                                sp.GetRequiredService<StoppedMutationRecoveryHandler>());
+                            services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+                                sp.GetRequiredService<StoppedMutationRecoveryHandler>());
+                            services.AddScoped<StoppedFactoryRecoveryHandler>();
+                            services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
+                                sp.GetRequiredService<StoppedFactoryRecoveryHandler>());
+                            services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
+                                sp.GetRequiredService<StoppedFactoryRecoveryHandler>());
+
+                            _ = new LongRunningOperationReconciler(
+                                discovery: null,
+                                classifiedLeaseAcquisition: null,
+                                scopeFactory: null);
+
+                            services.AddGrimoireOfflineTransitionHandlerDispatch();
+                        }
+
+                        internal static void AddGrimoireOfflineTransitionHandlerDispatch(
+                            this IServiceCollection services)
+                        {
+                            services.TryAddSingleton<IGrimoireOfflineTransitionHandlerDispatch>(
+                                static sp => new GrimoireOfflineTransitionHandlerDispatch(
+                                    sp.GetRequiredService<IServiceScopeFactory>()));
+                        }
+                    }
+
+                    internal static class StoppedComposition
+                    {
+                        internal static void Configure(IServiceCollection services) =>
+                            ServiceCollectionExtensions.AddArcanumGrimoireForCli(services);
+                    }
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
+                    using RetroDownfall.Arcanum.Infrastructure.Data;
+                    using RetroDownfall.Arcanum.Infrastructure.Operations;
+
+                    internal sealed class AuthenticatedJournalRecoveryOwnerEvidence :
+                        LongRunningRecoveryOwnerEvidence { }
+
+                    internal interface IGrimoireOfflineTransitionHandlerDispatch
+                    {
+                        Task DispatchAsync(
+                            LongRunningRecoveryOwnerEvidence ownerEvidence,
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken,
+                            object? heldInstallationLock = null,
+                            string guardedDirectory = "directory");
+                    }
+
+                    internal sealed class GrimoireOfflineTransitionHandlerDispatch(
+                        IServiceScopeFactory scopeFactory) :
+                        IGrimoireOfflineTransitionHandlerDispatch
+                    {
+                        /*dispatch-fields*/
+                        private readonly IServiceScopeFactory _scopeFactory =
+                            scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
+
+                        public async Task DispatchAsync(
+                            LongRunningRecoveryOwnerEvidence ownerEvidence,
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken,
+                            object? heldInstallationLock = null,
+                            string guardedDirectory = "directory")
+                        {
+                            await using AsyncServiceScope scope =
+                                _scopeFactory.CreateAsyncScope();
+
+                            await using AsyncServiceScope rogueScope =
+                                new RogueScopeFactory().CreateAsyncScope();
+
+                            if (/*authenticated-owner*/ ownerEvidence is
+                                AuthenticatedJournalRecoveryOwnerEvidence authenticated)
+                            {
+                                IAuthenticatedCovenantErasureRecoveryHandler[] handlers =
+                                [
+                                    .. /*authenticated-source*/ scope.ServiceProvider
+                                    .GetServices<IAuthenticatedCovenantErasureRecoveryHandler>()
+                                    .Where(candidate =>
+                                        /*current-tuples*/ candidate.Kind == operation.Kind
+                                        && /*current-version*/ candidate.SupportedCheckpointVersion ==
+                                            operation.CheckpointVersion)
+                                    /*exact-chain*/ .Take(2),
+                                ];
+
+                                /*exact-cardinality*/ if (handlers.Length != 1)
+                                {
+                                    throw new InvalidOperationException();
+                                }
+
+                                /*authenticated-invoke*/ await handlers[0]
+                                    .RecoverAuthenticatedAsync(
+                                    operation,
+                                    new CovenantErasureCoordinator
+                                        .AuthenticatedCovenantErasureRecoveryAdmission(),
+                                    cancellationToken);
+
+                                return;
+                            }
+
+                            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling =
+                            [
+                                .. /*launch-gap-source*/ scope.ServiceProvider
+                                .GetServices<IAuthenticatedCovenantErasureRecoveryHandler>()
+                                .Where(candidate =>
+                                    /*launch-gap-tuples*/ candidate.Kind == operation.Kind
+                                    && /*launch-gap-version*/ candidate.SupportedCheckpointVersion ==
+                                        /*launch-gap-operation*/ operation.CheckpointVersion)
+                                /*launch-gap-chain*/ .Take(2),
+                            ];
+
+                            /*launch-gap-duplicate-refusal*/ if (selfSettling.Length > 1)
+                            {
+                                throw new InvalidOperationException();
+                            }
+
+                            if (selfSettling.Length == 1)
+                            {
+                                /*launch-gap-direct*/ await selfSettling[0]
+                                    .RecoverAsync(
+                                        /*launch-gap-operation-argument*/ operation,
+                                        cancellationToken);
+
+                                return;
+                            }
+
+                            /*fallback-await*/ await new LongRunningOperationReconciler().SettleExactlyAsync(
+                                operation,
+                                ownerEvidence);
+                        }
+                    }
+
+                    internal sealed class RogueScopeFactory : IServiceScopeFactory
+                    {
+                        public IServiceScope CreateScope() => null!;
+                    }
+
+                    internal sealed class RogueDispatch :
+                        IGrimoireOfflineTransitionHandlerDispatch
+                    {
+                        public Task DispatchAsync(
+                            LongRunningRecoveryOwnerEvidence ownerEvidence,
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken,
+                            object? heldInstallationLock = null,
+                            string guardedDirectory = "directory") =>
+                            Task.CompletedTask;
+                    }
+
+                    internal static class AuthenticatedJournalOwnerRoot
+                    {
+                        internal static async Task Run()
+                        {
+                            IGrimoireOfflineTransitionHandlerDispatch dispatch =
+                                null!;
+
+                            await dispatch.DispatchAsync(
+                                new AuthenticatedJournalRecoveryOwnerEvidence(),
+                                new LongRunningOperation(
+                                    LongRunningOperationKinds.DataRetentionMutation,
+                                    4),
+                                CancellationToken.None);
+
+                            /*factory-owner-call*/ await dispatch.DispatchAsync(
+                                new AuthenticatedJournalRecoveryOwnerEvidence(),
+                                new LongRunningOperation(
+                                    LongRunningOperationKinds.DataRetentionFactoryReset,
+                                    2),
+                                CancellationToken.None);
+                        }
+
+                        private static LongRunningOperation CreateOperation() =>
+                            new(
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                4);
+
+                        private static LongRunningOperation CreateUnknownOperation() =>
+                            UnknownOperation;
+
+                        private static LongRunningOperation UnknownOperation =>
+                            new(
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                4);
+
+                        private static void Change(
+                            ref LongRunningOperation operation) =>
+                            operation = new(
+                                LongRunningOperationKinds.DataRetentionFactoryReset,
+                                2);
+
+                        private static LongRunningOperation CreateAmbiguousOperation(
+                            bool exact)
+                        {
+                            if (exact)
+                            {
+                                return new(
+                                    LongRunningOperationKinds.DataRetentionMutation,
+                                    4);
+                            }
+
+                            return UnknownOperation;
+                        }
+                    }
+
+                    internal static class LaunchGapOwnerRoot
+                    {
+                        internal static async Task Run()
+                        {
+                            IGrimoireOfflineTransitionHandlerDispatch dispatch =
+                                null!;
+
+                            await dispatch.DispatchAsync(
+                                new LongRunningRecoveryOwnerEvidence(),
+                                new LongRunningOperation(
+                                    LongRunningOperationKinds.DataRetentionMutation,
+                                    4),
+                                CancellationToken.None);
+
+                            /*factory-launch-gap-call*/ await dispatch.DispatchAsync(
+                                new LongRunningRecoveryOwnerEvidence(),
+                                new LongRunningOperation(
+                                    LongRunningOperationKinds.DataRetentionFactoryReset,
+                                    2),
+                                CancellationToken.None);
+                        }
+
+                        private static LongRunningOperation CreateOperation() =>
+                            new(
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                4);
+
+                        private static LongRunningOperation CreateUnknownOperation() =>
+                            UnknownOperation;
+
+                        private static LongRunningOperation UnknownOperation =>
+                            new(
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                4);
+
+                        private static void Change(
+                            ref LongRunningOperation operation) =>
+                            operation = new(
+                                LongRunningOperationKinds.DataRetentionFactoryReset,
+                                2);
+
+                        private static LongRunningOperation CreateAmbiguousOperation(
+                            bool exact)
+                        {
+                            if (exact)
+                            {
+                                return new(
+                                    LongRunningOperationKinds.DataRetentionMutation,
+                                    4);
+                            }
+
+                            return UnknownOperation;
+                        }
+                    }
+                }
+                """
+            + RecoveryServingRoot;
+
+    private static string ProductionProjectedOfflineTransitionDispatchFixtureCore()
+    {
+        string source = OfflineTransitionDispatchFixture()
+            .Replace(
+                "namespace RetroDownfall.Arcanum.Infrastructure.Data\n{\n    using RetroDownfall.Arcanum.Core.Operations;",
+                "namespace RetroDownfall.Arcanum.Infrastructure.Backup { internal sealed class ArcanumMaintenanceLock { } }\n\nnamespace RetroDownfall.Arcanum.Infrastructure.Data\n{\n    using RetroDownfall.Arcanum.Core.Operations;\n    using RetroDownfall.Arcanum.Infrastructure.Backup;\n    using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;\n    using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;\n    using RetroDownfall.Arcanum.Infrastructure.Operations;",
+                StringComparison.Ordinal)
+            .Replace(
+                "object? heldInstallationLock = null",
+                "RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock? heldInstallationLock = null",
+                StringComparison.Ordinal)
+            .Replace(
+                "public sealed record LongRunningOperation(string Kind, int CheckpointVersion);",
+                """
+                public sealed record LongRunningOperation(string Kind, int CheckpointVersion)
+                {
+                    public Guid Id { get; } = Guid.Empty;
+
+                    public byte[]? CheckpointPayload { get; } = [];
+
+                    public string CheckpointReference { get; } = "checkpoint";
+
+                    public LongRunningOperationRecoveryPolicy RecoveryPolicy { get; } =
+                        LongRunningOperationRecoveryPolicy.ReconcileAndComplete;
+
+                    public long Revision { get; init; } = 1;
+
+                    public string LeaseOwner { get; } = "owner";
+
+                    public LongRunningOperationState State { get; } =
+                        LongRunningOperationState.Running;
+                }
+
+                public enum LongRunningOperationState : byte
+                {
+                    Running = 1,
+
+                    Completed = 2,
+
+                    Failed = 3,
+
+                    Abandoned = 4,
+                }
+
+                public enum LongRunningOperationRecoveryPolicy : byte
+                {
+                    RestartIdempotently = 1,
+
+                    ReconcileAndComplete = 2,
+                }
+
+                public sealed record LongRunningOperationLeaseResult(
+                    bool Acquired,
+                    LongRunningOperation Operation)
+                {
+                    public bool IsFailure => !Acquired;
+                }
+
+                public interface ILongRunningOperationStore
+                {
+                    Task<LongRunningOperation?> GetAsync(
+                        Guid operationId,
+                        CancellationToken cancellationToken);
+                }
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "internal sealed class AuthenticatedCovenantErasureRecoveryAdmission { }",
+                """
+                internal sealed class AuthenticatedCovenantErasureRecoveryAdmission :
+                    IAsyncDisposable
+                {
+                    internal AuthenticatedCovenantErasureRecoveryAdmission(
+                        LongRunningOperation adoptedOperation,
+                        AuthenticatedJournalRecoveryOwnerEvidence evidence,
+                        string ownerId)
+                    {
+                        AdoptedOperation = adoptedOperation;
+                        Evidence = evidence;
+                        OwnerId = ownerId;
+                    }
+
+                    internal LongRunningOperation AdoptedOperation { get; }
+
+                    internal AuthenticatedJournalRecoveryOwnerEvidence Evidence { get; }
+
+                    internal string OwnerId { get; }
+
+                    public ValueTask DisposeAsync() => default;
+                }
+
+                internal readonly record struct PreparedAdmission(
+                    bool IsFailure,
+                    AuthenticatedCovenantErasureRecoveryAdmission Value);
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "internal sealed class CovenantErasureCoordinator\n    {\n        internal sealed class AuthenticatedCovenantErasureRecoveryAdmission",
+                """
+                internal sealed class CovenantErasureCoordinator
+                {
+                    internal sealed class AuthenticatedCovenantErasureRecoveryAdmission
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "internal Task RunMutationAuthenticatedAsync(",
+                """
+                    internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(
+                        ArcanumMaintenanceLock heldInstallationLock,
+                        /*prepared-formal-directory*/ string guardedDirectory,
+                        AuthenticatedJournalRecoveryOwnerEvidence evidence,
+                        ILongRunningOperationMaintenanceLeaseAdoption adoption,
+                        string ownerId,
+                        DateTimeOffset utcNow,
+                        DateTimeOffset leaseExpiresAt,
+                        CancellationToken cancellationToken)
+                    {
+                        /*authenticated-factory-entry*/
+                        LongRunningOperationLeaseResult adopted = await adoption
+                            .AdoptUnderInstallationLockAsync(
+                                heldInstallationLock,
+                                guardedDirectory,
+                                evidence.ExpectedOperation,
+                                ownerId,
+                                utcNow,
+                                leaseExpiresAt,
+                                cancellationToken);
+
+                        /*authenticated-before-guard*/
+                        if (/*authenticated-failure*/ adopted.IsFailure
+                            || /*authenticated-acquired*/ !adopted.Value.Acquired
+                            || /*authenticated-operation-refusal*/ !ExactAdoptedOperation(
+                                /*authenticated-verified-operation*/ adopted.Value.Operation,
+                                /*authenticated-verified-evidence*/ evidence,
+                                /*authenticated-verified-owner*/ ownerId))
+                        {
+                            return new(true, null!);
+                        }
+
+                        /*authenticated-after-guard*/
+                        /*authenticated-success-start*/ return new(
+                            false,
+                            new AuthenticatedCovenantErasureRecoveryAdmission(
+                                /*authenticated-return-operation*/ adopted.Value.Operation,
+                                /*authenticated-return-evidence*/ evidence,
+                                /*authenticated-return-owner*/ ownerId));
+                        /*authenticated-success-end*/
+                    }
+
+                    private static bool ExactAdoptedOperation(
+                        LongRunningOperation operation,
+                        AuthenticatedJournalRecoveryOwnerEvidence evidence,
+                        string ownerId)
+                    {
+                        /*authenticated-adopted-before-return*/
+                        return /*authenticated-adopted-start*/ ExactAuthenticatedCandidate(
+                            operation with
+                            {
+                                Revision = evidence.ExpectedOperation.Revision,
+                            },
+                            evidence)
+                        /*authenticated-adopted-and*/ && operation.Revision == evidence.ExpectedOperation.Revision + 1
+                        && operation.State == LongRunningOperationState.Running
+                        && string.Equals(
+                            operation.LeaseOwner,
+                            ownerId,
+                            StringComparison.Ordinal)/*authenticated-adopted-extra*/;
+                    }
+
+                    private static bool ExactAuthenticatedCandidate(
+                        LongRunningOperation operation,
+                        AuthenticatedJournalRecoveryOwnerEvidence evidence)
+                    {
+                        LongRunningOperationRecoveryFingerprint expected =
+                            evidence.ExpectedOperation;
+
+                        GrimoireOfflineTransitionBinding binding =
+                            evidence.Journal.Binding;
+
+                        GrimoireOfflineTransitionLaunchResult launch =
+                            GrimoireOfflineTransitionLaunch.FromCommittedCheckpoint(
+                                operation.CheckpointVersion,
+                                operation.CheckpointPayload ?? []);
+
+                        /*authenticated-candidate-before-return*/
+                        return /*authenticated-candidate-launch*/ launch.IsSuccess
+                        && /*authenticated-candidate-start*/ operation.Id == expected.OperationId
+                        && string.Equals(
+                            operation.Kind,
+                            expected.Kind,
+                            StringComparison.Ordinal)
+                        /*authenticated-candidate-and*/ && operation.CheckpointVersion ==
+                            expected.CheckpointVersion
+                        && operation.Revision == expected.Revision
+                        && operation.RecoveryPolicy == (string.Equals(
+                                operation.Kind,
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                StringComparison.Ordinal)
+                            ? LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+                            : LongRunningOperationRecoveryPolicy.RestartIdempotently)
+                        && string.Equals(
+                            operation.CheckpointReference,
+                            CovenantResetCheckpointInitiator.CheckpointReference(
+                                operation.Kind,
+                                operation.Id),
+                            StringComparison.Ordinal)
+                        && operation.State is not LongRunningOperationState.Completed
+                            and not LongRunningOperationState.Failed
+                            and not LongRunningOperationState.Abandoned
+                        && LongRunningOperationRecoveryAdmission.Classify(
+                            operation,
+                            evidence).Kind is
+                                /*authenticated-classification*/ LongRunningRecoveryAdmissionKind.OwnerBoundOffline
+                        && launch.Value.OperationId == binding.OperationId
+                        && launch.Value.Kind == binding.Kind
+                        && launch.Value.EffectDigest == binding.EffectDigest
+                        && launch.Value.SourceDatasetGeneration ==
+                            binding.SourceDatasetGeneration
+                        && launch.Value.TargetDatasetGeneration ==
+                            binding.TargetDatasetGeneration
+                        && launch.Value.SourceEpochs == binding.SourceEpochs
+                        && launch.Value.TargetEpochs == binding.TargetEpochs
+                        && /*authenticated-binding-digest*/ launch.Value.Digest ==
+                            binding.DatabaseOperationLaunchBindingDigest
+                        && binding.SlotEpoch == evidence.Journal.SlotEpoch
+                        && /*authenticated-starting-revision*/ binding.ExpectedDatabaseOperationRevision > (ulong)launch.Value.StartingRevision
+                        && /*authenticated-current-revision*/ binding.ExpectedDatabaseOperationRevision <= (ulong)operation.Revision/*authenticated-candidate-extra*/;
+                    }
+
+                    internal Task RunMutationAuthenticatedAsync(
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "internal class LongRunningRecoveryOwnerEvidence { }",
+                """
+                internal sealed record LongRunningOperationRecoveryFingerprint(
+                    Guid OperationId,
+                    string Kind,
+                    int CheckpointVersion,
+                    long Revision);
+
+                internal interface ILongRunningOperationMaintenanceLeaseAdoption
+                {
+                    Task<LongRunningOperationLeaseResult> AdoptUnderInstallationLockAsync(
+                        object heldInstallationLock,
+                        string guardedDirectory,
+                        LongRunningOperationRecoveryFingerprint expected,
+                        string ownerId,
+                        DateTimeOffset utcNow,
+                        DateTimeOffset leaseExpiresAt,
+                        CancellationToken cancellationToken);
+                }
+
+                internal class LongRunningRecoveryOwnerEvidence
+                {
+                    internal LongRunningOperationRecoveryFingerprint ExpectedOperation { get; } =
+                        new(
+                            Guid.Empty,
+                            LongRunningOperationKinds.DataRetentionMutation,
+                            4,
+                            0);
+                }
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "internal sealed class AuthenticatedJournalRecoveryOwnerEvidence :\n        LongRunningRecoveryOwnerEvidence { }",
+                """
+                internal sealed record GrimoireOfflineTransitionBinding(
+                    Guid OperationId,
+                    string Kind,
+                    string EffectDigest,
+                    Guid SourceDatasetGeneration,
+                    Guid TargetDatasetGeneration,
+                    string SourceEpochs,
+                    string TargetEpochs,
+                    string DatabaseOperationLaunchBindingDigest,
+                    ulong SlotEpoch,
+                    ulong ExpectedDatabaseOperationRevision);
+
+                internal sealed record GrimoireOfflineTransitionJournal(
+                    GrimoireOfflineTransitionBinding Binding,
+                    ulong SlotEpoch);
+
+                internal sealed record GrimoireOfflineTransitionLaunchBinding(
+                    Guid OperationId,
+                    string Kind,
+                    string EffectDigest,
+                    Guid SourceDatasetGeneration,
+                    Guid TargetDatasetGeneration,
+                    string SourceEpochs,
+                    string TargetEpochs,
+                    string Digest,
+                    long StartingRevision);
+
+                internal readonly record struct GrimoireOfflineTransitionLaunchResult(
+                    bool IsSuccess,
+                    GrimoireOfflineTransitionLaunchBinding Value);
+
+                internal static class GrimoireOfflineTransitionLaunch
+                {
+                    internal static GrimoireOfflineTransitionLaunchResult
+                        FromCommittedCheckpoint(
+                            int checkpointVersion,
+                            byte[] checkpointPayload) =>
+                        new(
+                            true,
+                            new(
+                                Guid.Empty,
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                "effect",
+                                Guid.Empty,
+                                Guid.Empty,
+                                "source",
+                                "target",
+                                "digest",
+                                0));
+                }
+
+                internal sealed class AuthenticatedJournalRecoveryOwnerEvidence :
+                    LongRunningRecoveryOwnerEvidence
+                {
+                    internal GrimoireOfflineTransitionJournal Journal { get; } =
+                        new(
+                            new(
+                                Guid.Empty,
+                                LongRunningOperationKinds.DataRetentionMutation,
+                                "effect",
+                                Guid.Empty,
+                                Guid.Empty,
+                                "source",
+                                "target",
+                                "digest",
+                                0,
+                                1),
+                            0);
+                }
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions\n{",
+                """
+                namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant
+                {
+                    internal static class CovenantResetCheckpointInitiator
+                    {
+                        internal static string CheckpointReference(
+                            string kind,
+                            Guid operationId) => "checkpoint";
+                    }
+                }
+
+                namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions
+                {
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                            if (/*authenticated-owner*/ ownerEvidence is
+                                AuthenticatedJournalRecoveryOwnerEvidence authenticated)
+                            {
+                                IAuthenticatedCovenantErasureRecoveryHandler[] handlers =
+                """,
+                """
+                            if (/*authenticated-owner*/ ownerEvidence is
+                                AuthenticatedJournalRecoveryOwnerEvidence authenticated)
+                            {
+                                CovenantErasureCoordinator coordinator =
+                                    scope.ServiceProvider.GetRequiredService<
+                                        CovenantErasureCoordinator>();
+                                ILongRunningOperationMaintenanceLeaseAdoption authenticatedAdoption =
+                                    scope.ServiceProvider.GetRequiredService<
+                                        ILongRunningOperationMaintenanceLeaseAdoption>();
+                                string authenticatedOwnerId = "owner";
+                                DateTimeOffset authenticatedNow =
+                                    TimeProvider.System.GetUtcNow();
+                                /*prepared-before-call*/
+                                CovenantErasureCoordinator.PreparedAdmission prepared =
+                                    /*prepared-initializer*/ await coordinator
+                                    .PrepareAuthenticatedRecoveryAsync(
+                                        /*prepared-lock*/ heldInstallationLock!,
+                                        /*prepared-directory*/ guardedDirectory,
+                                        /*prepared-evidence*/ authenticated,
+                                        /*prepared-adoption*/ authenticatedAdoption,
+                                        /*prepared-owner*/ authenticatedOwnerId,
+                                        /*prepared-now*/ authenticatedNow,
+                                        /*prepared-expiry*/ authenticatedNow.Add(RecoveryLease),
+                                        /*prepared-token*/ cancellationToken)/*prepared-initializer-end*/;
+
+                                if (/*prepared-failure*/ prepared.IsFailure)
+                                {
+                                    throw new InvalidOperationException();
+                                }
+
+                                /*prepared-after-refusal*/
+                                await using CovenantErasureCoordinator
+                                    .AuthenticatedCovenantErasureRecoveryAdmission admission =
+                                        prepared.Value;
+
+                                IAuthenticatedCovenantErasureRecoveryHandler[] handlers =
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*current-tuples*/ candidate.Kind == operation.Kind",
+                "/*current-tuples*/ string.Equals(candidate.Kind, admission.AdoptedOperation.Kind, StringComparison.Ordinal)",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*current-version*/ candidate.SupportedCheckpointVersion ==\n                            operation.CheckpointVersion",
+                "/*current-version*/ candidate.SupportedCheckpointVersion ==\n                            admission.AdoptedOperation.CheckpointVersion",
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                                    operation,
+                                    new CovenantErasureCoordinator
+                                        .AuthenticatedCovenantErasureRecoveryAdmission(),
+                                    cancellationToken);
+                """,
+                """
+                                    admission.AdoptedOperation,
+                                    admission,
+                                    cancellationToken);
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling =
+                """,
+                """
+                            LongRunningOperationRecoveryFingerprint expected =
+                                ownerEvidence.ExpectedOperation;
+                            LongRunningOperation? candidate = await /*store-scope*/ scope.ServiceProvider
+                                .GetRequiredService<ILongRunningOperationStore>()
+                                .GetAsync(
+                                    /*store-operation-id*/ expected.OperationId,
+                                    /*store-token*/ cancellationToken);
+
+                            /*launch-before-candidate-refusal*/
+                            if (/*launch-candidate-null*/ candidate is null
+                                /*launch-candidate-or-id*/ || /*launch-candidate-id*/ candidate.Id != expected.OperationId
+                                || /*launch-candidate-kind*/ !string.Equals(
+                                    candidate.Kind,
+                                    expected.Kind,
+                                    StringComparison.Ordinal)
+                                || /*launch-candidate-version*/ candidate.CheckpointVersion != expected.CheckpointVersion
+                                || /*launch-candidate-revision*/ candidate.Revision != expected.Revision
+                                || /*launch-candidate-classification*/ LongRunningOperationRecoveryAdmission.Classify(
+                                    /*launch-classified-operation*/ candidate,
+                                    ownerEvidence).Kind is not
+                                        LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+                            {
+                                throw new InvalidOperationException();
+                            }
+                            /*launch-after-candidate-refusal*/
+
+                            ILongRunningOperationMaintenanceLeaseAdoption adoption =
+                                /*adoption-scope*/ scope.ServiceProvider.GetRequiredService<
+                                    ILongRunningOperationMaintenanceLeaseAdoption>();
+                            string ownerId = "owner";
+                            DateTimeOffset now = TimeProvider.System.GetUtcNow();
+                            /*adoption-service-stability*/
+                            LongRunningOperationLeaseResult adopted =
+                                /*adopted-initializer*/ await adoption
+                                .AdoptUnderInstallationLockAsync(
+                                    /*adoption-lock*/ heldInstallationLock!,
+                                    /*adoption-directory*/ guardedDirectory,
+                                    expected,
+                                    ownerId,
+                                    /*adoption-now*/ now,
+                                    /*adoption-expiry*/ now.AddMinutes(1),
+                                    /*adoption-token*/ cancellationToken)/*adopted-initializer-end*/;
+
+                            /*launch-before-acquired-refusal*/
+                            if (/*launch-acquired*/ !adopted.Acquired)
+                            {
+                                throw new InvalidOperationException();
+                            }
+                            /*launch-after-acquired-refusal*/
+
+                            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling =
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*launch-gap-tuples*/ candidate.Kind == operation.Kind",
+                "/*launch-gap-tuples*/ candidate.Kind == adopted.Operation.Kind",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*launch-gap-operation*/ operation.CheckpointVersion",
+                "/*launch-gap-operation*/ adopted.Operation.CheckpointVersion",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*launch-gap-operation-argument*/ operation",
+                "/*launch-gap-operation-argument*/ adopted.Operation",
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                            /*fallback-await*/ await new LongRunningOperationReconciler().SettleExactlyAsync(
+                                operation,
+                                ownerEvidence);
+                """,
+                """
+                            /*fallback-stability*/
+                            /*fallback-statement*/ /*fallback-await*/ await /*fallback-scope*/ scope.ServiceProvider
+                                .GetRequiredService<LongRunningOperationReconciler>()
+                                .SettleExactlyAsync(
+                                /*fallback-operation-id*/ expected.OperationId,
+                                /*fallback-owner-id*/ ownerId,
+                                /*fallback-evidence*/ ownerEvidence,
+                                /*fallback-token*/ cancellationToken)/*fallback-statement-end*/;
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*dispatch-fields*/",
+                """
+                /*recovery-lease-field*/ private static readonly TimeSpan RecoveryLease =
+                    TimeSpan.FromMinutes(1); /*recovery-lease-field-end*/
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*reconciler-fields*/",
+                """
+                private readonly ILongRunningOperationStore _store = null!;
+
+                private readonly System.Collections.Generic.IReadOnlyDictionary<
+                    string,
+                    ILongRunningOperationRecoveryHandler> _handlers = null!;
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                        /*owner-settle-signature*/ internal async Task SettleExactlyAsync(
+                            LongRunningOperation operation,
+                            LongRunningRecoveryOwnerEvidence ownerEvidence)
+                        {
+                            LongRunningRecoveryAdmissionDecision decision =
+                                LongRunningOperationRecoveryAdmission.Classify(
+                                    operation,
+                                    ownerEvidence);
+
+                            if (decision.Kind is not
+                                LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+                            {
+                                return;
+                            }
+
+                            await SettleLeasedAsync(operation);
+                        }
+                """,
+                """
+                        /*owner-settle-signature*/ internal async Task SettleExactlyAsync(
+                            Guid operationId,
+                            string ownerId,
+                            LongRunningRecoveryOwnerEvidence ownerEvidence,
+                            CancellationToken cancellationToken)
+                        {
+                            LongRunningOperation? leased = await _store
+                                .GetAsync(
+                                    /*reread-operation-id*/ operationId,
+                                    /*reread-token*/ cancellationToken);
+
+                            if (/*reread-null*/ leased is null)
+                            {
+                                return;
+                            }
+                            /*reread-after-null*/
+
+                            LongRunningOperationRecoveryFingerprint expected =
+                                ownerEvidence.ExpectedOperation;
+                            LongRunningRecoveryAdmissionDecision decision =
+                                LongRunningOperationRecoveryAdmission.Classify(
+                                    leased,
+                                    ownerEvidence);
+
+                            if (/*reread-id*/ leased.Id != expected.OperationId
+                                /*reread-or-kind*/ || /*reread-kind*/ !string.Equals(
+                                    leased.Kind,
+                                    expected.Kind,
+                                    StringComparison.Ordinal)
+                                || /*reread-version*/ leased.CheckpointVersion != expected.CheckpointVersion
+                                || /*reread-revision*/ leased.Revision != expected.Revision + 1
+                                || /*reread-owner*/ !string.Equals(
+                                    leased.LeaseOwner,
+                                    ownerId,
+                                    StringComparison.Ordinal)
+                                || /*reread-classification*/ decision.Kind is not
+                                    LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+                            {
+                                return;
+                            }
+
+                            await SettleLeasedAsync(
+                                /*settle-store*/ _store,
+                                /*settle-handlers*/ _handlers,
+                                /*settle-operation*/ leased,
+                                /*settle-owner*/ ownerId,
+                                /*settle-token*/ cancellationToken);
+                        }
+
+                        private static async Task SettleLeasedAsync(
+                            ILongRunningOperationStore operationStore,
+                            System.Collections.Generic.IReadOnlyDictionary<
+                                string,
+                                ILongRunningOperationRecoveryHandler> operationHandlers,
+                            LongRunningOperation operation,
+                            string ownerId,
+                            CancellationToken cancellationToken)
+                        {
+                            /*settle-forward-stability*/
+                            await RecoverOneAsync(
+                                /*recover-handlers*/ operationHandlers,
+                                /*recover-operation*/ operation,
+                                /*recover-token*/ cancellationToken);
+                        }
+
+                        private static async Task RecoverOneAsync(
+                            System.Collections.Generic.IReadOnlyDictionary<
+                                string,
+                                ILongRunningOperationRecoveryHandler> handlersForOperation,
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken)
+                        {
+                            /*recover-forward-stability*/
+                            if (/*handler-refusal*/ !handlersForOperation.TryGetValue(
+                                /*handler-key*/ operation.Kind,
+                                out ILongRunningOperationRecoveryHandler? handler))
+                            {
+                                return;
+                            }
+
+                            ILongRunningOperationRecoveryHandler rogue =
+                                new ServingMutationRecoveryHandler();
+
+                            /*handler-stability*/
+                            await /*handler-receiver*/ handler.RecoverAsync(
+                                /*handler-operation*/ operation,
+                                /*handler-token*/ cancellationToken);
+                        }
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                        private static async Task SettleLeasedAsync(
+                            LongRunningOperation operation)
+                        {
+                            ILongRunningOperationRecoveryHandler handler = null!;
+
+                            await handler.RecoverAsync(
+                                operation,
+                                CancellationToken.None);
+                        }
+                """,
+                string.Empty,
+                StringComparison.Ordinal);
+
+        return source;
+    }
+
+    private static string ProductionShapedAuthenticatedAdmissionFixture()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixtureCore();
+
+        const string constructor =
+            "internal AuthenticatedCovenantErasureRecoveryAdmission(";
+
+        string overload =
+            "internal sealed class LedgerState { internal System.Data.ConnectionState State => System.Data.ConnectionState.Closed; } "
+            + "internal sealed class LedgerConnection { internal LedgerState Connection { get; } = new(); } "
+            + "internal sealed class CovenantHandle { internal Task<bool> CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition disposition, CancellationToken token) => Task.FromResult(true); internal ValueTask DisposeAsync() => default; } "
+            + "internal sealed class GrimoireHandle { internal Task<bool> ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition disposition, CancellationToken token) => Task.FromResult(true); } "
+            + "private readonly object _creator; private readonly LedgerConnection _ledger; "
+            + "private readonly CovenantHandle _covenant; private readonly GrimoireHandle _grimoire; "
+            + "private const int Available = 0; private const int Consumed = 1; private const int Released = 2; private int _state; "
+            + "internal AuthenticatedCovenantErasureRecoveryAdmission("
+            + "object creator, LedgerConnection ledger, "
+            + "AuthenticatedJournalRecoveryOwnerEvidence evidence, "
+            + "LongRunningOperation adoptedOperation, string ownerId, "
+            + "CovenantHandle covenant, GrimoireHandle grimoire) { "
+            + "_creator = creator; _ledger = ledger; _covenant = covenant; _grimoire = grimoire; "
+            + "Evidence = evidence; AdoptedOperation = adoptedOperation; OwnerId = ownerId; } "
+            + "internal CovenantHandle Covenant => _covenant; internal GrimoireHandle Grimoire => _grimoire; "
+            + "internal bool TryConsume(object creator, LedgerConnection ledger) => "
+            + "object.ReferenceEquals(_creator, creator) && object.ReferenceEquals(_ledger, ledger) "
+            + "&& _ledger.Connection.State == System.Data.ConnectionState.Closed "
+            + "&& Interlocked.CompareExchange(ref _state, Consumed, Available) == Available; "
+            + "internal ValueTask KeepClosedAfterConsumptionAsync() => ReleaseKeepClosedAsync(Consumed); "
+            + "private async ValueTask ReleaseKeepClosedAsync(int expectedState) { "
+            + "if (Interlocked.CompareExchange(ref _state, Released, expectedState) != expectedState) return; "
+            + "_ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); "
+            + "_ = await _covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); "
+            + "await _covenant.DisposeAsync(); } ";
+
+        source = source.Replace(
+            constructor,
+            overload + constructor,
+            StringComparison.Ordinal);
+
+        source = System.Text.RegularExpressions.Regex.Replace(
+            source,
+            @"new AuthenticatedCovenantErasureRecoveryAdmission\(\s*/\*authenticated-return-operation\*/ adopted\.Value\.Operation,\s*/\*authenticated-return-evidence\*/ evidence,\s*/\*authenticated-return-owner\*/ ownerId\)",
+            "new AuthenticatedCovenantErasureRecoveryAdmission(this, _ledgerConnection, /*authenticated-return-evidence*/ evidence, /*authenticated-return-operation*/ adopted.Value.Operation, /*authenticated-return-owner*/ ownerId, covenant, grimoire!)");
+
+        return source.Replace(
+                "internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                "private readonly AuthenticatedCovenantErasureRecoveryAdmission.LedgerConnection _ledgerConnection = new(); "
+                    + "private readonly record struct ResumedCovenant(bool IsFailure, AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle Value); "
+                    + "private readonly record struct ClosedGrimoire(bool IsFailure, AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle Value); "
+                    + "private readonly record struct CandidateResult(bool IsFailure, LongRunningOperation Value); "
+                    + "private sealed class Gate { internal Task<ResumedCovenant> ResumeExclusiveAsync(AuthenticatedJournalRecoveryOwnerEvidence evidence, CancellationToken cancellationToken) => Task.FromResult(new ResumedCovenant(false, new())); } private readonly Gate _gate = new(); "
+                    + "private Task<ClosedGrimoire> CloseGrimoireAsync(AuthenticatedJournalRecoveryOwnerEvidence evidence, AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant, CancellationToken cancellationToken, bool keepClosedOnFailure) => Task.FromResult(new ClosedGrimoire(false, new())); "
+                    + "private static async Task<RetroDownfall.Arcanum.Core.Primitives.Result<T>> WithRequiredLedgerAsync<T>(AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle grimoire, Func<CancellationToken, Task<RetroDownfall.Arcanum.Core.Primitives.Result<T>>> work, CancellationToken cancellationToken) => await work(cancellationToken); "
+                    + "private static async Task KeepCovenantClosedAsync(AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant) { _ = await covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await covenant.DisposeAsync(); } "
+                    + "private static async Task KeepRecoveryClosedAsync(AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant, AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle grimoire) { _ = await grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await KeepCovenantClosedAsync(covenant); } "
+                    + "private static Task KeepRecoveryClosedAsync(int covenant, int grimoire) => Task.CompletedTask; internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                StringComparison.Ordinal)
+            .Replace(
+                "public ValueTask DisposeAsync() => default;",
+                "public ValueTask DisposeAsync() => ReleaseKeepClosedAsync(Available);",
+                StringComparison.Ordinal)
+            .Replace(
+                "return new(true, null!);",
+                "await KeepRecoveryClosedAsync(covenant, grimoire!); return new(true, null!);",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-factory-entry*/",
+                "/*authenticated-factory-entry*/ "
+                    + "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken); "
+                    + "if (resumed.IsFailure) { return new(true, null!); } "
+                    + "var covenant = resumed.Value; AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle? grimoire = null; try { "
+                    + "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true); "
+                    + "if (closed.IsFailure) { await KeepCovenantClosedAsync(covenant); return new(true, null!); } "
+                    + "grimoire = closed.Value; "
+                    + "var candidate = await WithRequiredLedgerAsync(grimoire, token => Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperation>.Success(new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4))), cancellationToken); "
+                    + "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepRecoveryClosedAsync(covenant, grimoire); return new(true, null!); }",
+                StringComparison.Ordinal)
+            .Replace(
+                """
+                        LongRunningOperationLeaseResult adopted = await adoption
+                            .AdoptUnderInstallationLockAsync(
+                                heldInstallationLock,
+                                guardedDirectory,
+                                evidence.ExpectedOperation,
+                                ownerId,
+                                utcNow,
+                                leaseExpiresAt,
+                                cancellationToken);
+                """,
+                """
+                        RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult> adopted = await WithRequiredLedgerAsync(
+                            grimoire,
+                            async token => RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(
+                                await adoption.AdoptUnderInstallationLockAsync(
+                                        heldInstallationLock,
+                                        guardedDirectory,
+                                        evidence.ExpectedOperation,
+                                        ownerId,
+                                        utcNow,
+                                        leaseExpiresAt,
+                                        token)),
+                            cancellationToken);
+                """,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-success-end*/",
+                "/*authenticated-success-end*/ } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { "
+                    + "if (grimoire is null) { await KeepCovenantClosedAsync(covenant); } "
+                    + "else { await KeepRecoveryClosedAsync(covenant, grimoire); } throw; } "
+                    + "catch (Exception) { "
+                    + "if (grimoire is null) { await KeepCovenantClosedAsync(covenant); } "
+                    + "else { await KeepRecoveryClosedAsync(covenant, grimoire); } "
+                    + "return new(true, null!); }",
+                StringComparison.Ordinal)
+            + " namespace RetroDownfall.Arcanum.Core.Primitives { internal sealed record Error(string Code); internal sealed class Result<T> { private Result(T value, Error error) { Value = value; Error = error; } internal T Value { get; } internal Error Error { get; } internal bool IsFailure => !string.IsNullOrEmpty(Error.Code); internal static Result<T> Success(T value) => new(value, new Error(string.Empty)); internal static Result<T> Failure(Error error) => new(default!, error); } }"
+            + " namespace RetroDownfall.Arcanum.Core.Covenant { internal enum CovenantExclusiveLeaseDisposition : byte { RollbackAndReopen = 1, CommitAndReopen = 2, KeepClosed = 3 } }";
+    }
+
+    private static string ProductionProjectedOfflineTransitionDispatchFixture() =>
+        ProductionShapedAuthenticatedAdmissionFixture();
+
+    private static string ResultReturningOfflineTransitionDispatchFixture()
+    {
+        const string resultType =
+            "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationSettlementOutcome>";
+
+        const string failure =
+            "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationSettlementOutcome>.Failure(GrimoireOfflineTransitionStartupRecovery.Refusal().Error)";
+
+        const string success =
+            "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationSettlementOutcome>.Success(LongRunningOperationSettlementOutcome.Completed)";
+
+        static string ReplaceNext(
+            string source,
+            string marker,
+            string target,
+            string replacement)
+        {
+            int markerIndex = source.IndexOf(marker, StringComparison.Ordinal);
+
+            int targetIndex = source.IndexOf(
+                target,
+                markerIndex,
+                StringComparison.Ordinal);
+
+            Assert.True(markerIndex >= 0 && targetIndex >= 0, marker);
+
+            return source.Remove(targetIndex, target.Length)
+                .Insert(targetIndex, replacement);
+        }
+
+        string source = OfflineTransitionDispatchFixture()
+            .Replace(
+                "internal interface IGrimoireOfflineTransitionHandlerDispatch",
+                "internal enum LongRunningOperationSettlementOutcome : byte { Completed = 1 } internal static class GrimoireOfflineTransitionStartupRecovery { internal static RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationSettlementOutcome> Refusal() => RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationSettlementOutcome>.Failure(new RetroDownfall.Arcanum.Core.Primitives.Error(\"refusal\")); } internal interface IGrimoireOfflineTransitionHandlerDispatch",
+                StringComparison.Ordinal)
+            .Replace(
+                "Task DispatchAsync(",
+                "Task<" + resultType + "> DispatchAsync(",
+                StringComparison.Ordinal)
+            + " namespace RetroDownfall.Arcanum.Core.Primitives { internal sealed record Error(string Code); internal sealed class Result<T> { private Result(T value, Error error) { Value = value; Error = error; } internal T Value { get; } internal Error Error { get; } internal static Result<T> Success(T value) => new(value, new Error(string.Empty)); internal static Result<T> Failure(Error error) => new(default!, error); } }";
+
+        source = ReplaceNext(
+            source,
+            "/*exact-cardinality*/",
+            "throw new InvalidOperationException();",
+            "return " + failure + ";");
+
+        source = ReplaceNext(
+            source,
+            "/*authenticated-invoke*/",
+            "return;",
+            "return " + success + ";");
+
+        source = ReplaceNext(
+            source,
+            "/*launch-gap-duplicate-refusal*/",
+            "throw new InvalidOperationException();",
+            "return " + failure + ";");
+
+        source = ReplaceNext(
+            source,
+            "/*launch-gap-direct*/",
+            "return;",
+            "return " + success + ";");
+
+        source = ReplaceNext(
+            source,
+            "/*fallback-await*/",
+            "ownerEvidence);",
+            "ownerEvidence); return " + success + ";");
+
+        source = ReplaceNext(
+            source,
+            "internal sealed class RogueDispatch",
+            "Task.CompletedTask",
+            "Task.FromResult(" + failure + ")");
+
+        return source;
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite>
+        DiscoverOfflineTransitionDispatchFixture(
+            string source,
+            bool includeAuthenticatedRoot,
+            bool includeLaunchGapRoot,
+            HostedProducerAuthorityKind launchGapAuthority =
+                HostedProducerAuthorityKind.OwnerBoundRecovery)
     {
         CSharpCompilation compilation = Compile(source);
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
             diagnostic.Severity == DiagnosticSeverity.Error));
+
+        return DiscoverOfflineTransitionDispatchFixture(
+            [compilation],
+            includeAuthenticatedRoot,
+            includeLaunchGapRoot,
+            launchGapAuthority);
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite>
+        DiscoverOfflineTransitionDispatchFixture(
+            IReadOnlyList<CSharpCompilation> compilations,
+            bool includeAuthenticatedRoot,
+            bool includeLaunchGapRoot,
+            HostedProducerAuthorityKind launchGapAuthority =
+                HostedProducerAuthorityKind.OwnerBoundRecovery)
+    {
+        Assert.All(compilations, static compilation =>
+            Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        List<NonHostedProducerChainEntry> ownerRoots = [];
+
+        if (includeAuthenticatedRoot)
+        {
+            ownerRoots.Add(new(
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalOwnerRoot.Run",
+                "src/Fixture.cs",
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalOwnerRoot",
+                "Run",
+                HostedProducerAuthorityKind.OwnerBoundRecovery,
+                "authenticated journal owner fixture",
+                []));
+        }
+
+        if (includeLaunchGapRoot)
+        {
+            ownerRoots.Add(new(
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.LaunchGapOwnerRoot.Run",
+                "src/Fixture.cs",
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.LaunchGapOwnerRoot",
+                "Run",
+                launchGapAuthority,
+                "launch-gap owner fixture",
+                []));
+        }
+
+        return HostedGrimoireProducerInventory.DiscoverProducerSites(
+            compilations,
+            new(["Worker"], []),
+            [new("Worker", [OrdinaryRoot()])],
+            ownerRoots);
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverRecoveryMatrixFixture(
+        string source,
+        bool includeOwnerRoot = true,
+        HostedProducerAuthorityKind hostedAuthority = HostedProducerAuthorityKind.OrdinaryHostedWork,
+        HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null,
+        int? evaluationEnvironmentMaximumMembers = null)
+    {
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        return DiscoverRecoveryMatrixFixture(
+            [compilation],
+            includeOwnerRoot,
+            hostedAuthority,
+            recoverySelectionProbe,
+            evaluationEnvironmentMaximumMembers);
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverRecoveryMatrixFixture(
+        IReadOnlyList<CSharpCompilation> compilations,
+        bool includeOwnerRoot = true,
+        HostedProducerAuthorityKind hostedAuthority = HostedProducerAuthorityKind.OrdinaryHostedWork,
+        HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null,
+        int? evaluationEnvironmentMaximumMembers = null)
+    {
 
         HostedProducerOperationEntry hosted = OrdinaryRoot() with
         {
@@ -341,11 +1917,67 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             ]
             : [];
 
-        return HostedGrimoireProducerInventory.DiscoverProducerSites(
-            [compilation],
-            new(["Worker"], []),
-            [new("Worker", [hosted])],
-            ownerRoots);
+        return evaluationEnvironmentMaximumMembers is int maximumMembers
+            ? HostedGrimoireProducerInventory.DiscoverProducerSites(
+                compilations,
+                new(["Worker"], []),
+                [new("Worker", [hosted])],
+                ownerRoots,
+                evaluationEnvironmentMaximumMembers: maximumMembers,
+                recoverySelectionProbe: recoverySelectionProbe)
+            : HostedGrimoireProducerInventory.DiscoverProducerSites(
+                compilations,
+                new(["Worker"], []),
+                [new("Worker", [hosted])],
+                ownerRoots,
+                recoverySelectionProbe: recoverySelectionProbe);
+    }
+
+    [Fact]
+    public void OwnerRecoveryValidationDoesNotDisappearWhenStateCapPrecedesDispatch()
+    {
+        CSharpCompilation compilation = Compile(RecoveryMatrixFixture());
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        const string ownerRootOperation =
+            "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot.Run";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [new(
+                    ownerRootOperation,
+                    "src/Fixture.cs",
+                    "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot",
+                    "Run",
+                    HostedProducerAuthorityKind.OwnerBoundRecovery,
+                    "exact owner fixture",
+                    [])],
+                maximumAnalyzedStatesPerRoot: 0);
+
+        Assert.Contains(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED"
+            && diagnostic.Identity == ownerRootOperation);
+
+        HostedProducerInventoryDiagnostic[] missingOwners = result.Diagnostics
+            .Where(static diagnostic => diagnostic.Code
+                == "HOSTED_RECOVERY_OWNER_ROOT_UNPROVEN")
+            .ToArray();
+
+        Assert.Equal(2, missingOwners.Length);
+
+        Assert.Contains(missingOwners, static diagnostic =>
+            diagnostic.Identity == "owner:0");
+
+        Assert.Contains(missingOwners, diagnostic =>
+            diagnostic.Identity == ownerRootOperation);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
     }
 
     [Fact]
@@ -381,6 +2013,4216 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && site.EnclosingType
                 == "RetroDownfall.Arcanum.Infrastructure.Operations.CliOwnerRecoveryHandler"
             && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryHandlerFactoryAliasRetainsExactServingAndStoppedHostClassification()
+    {
+        string exactSource = RecoveryFactoryAliasFixture();
+
+        HostedProducerDiscovery<HostedProducerSite> exact =
+            DiscoverRecoveryMatrixFixture(exactSource);
+
+        Assert.DoesNotContain(exact.Diagnostics, static diagnostic =>
+            diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal));
+
+        Assert.Single(exact.Items, static site =>
+            site.RootType == "Worker"
+            && site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(exact.Items, static site =>
+            site.RootType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot"
+            && site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.CliOwnerRecoveryHandler"
+            && site.Callee == "System.IO.File.Delete");
+
+        string crossProjectInfrastructureSource = exactSource
+            .Replace(
+                RecoveryServingRoot,
+                string.Empty,
+                StringComparison.Ordinal)
+            .Replace(
+                "public static class Composition",
+                "public static class InfrastructureComposition",
+                StringComparison.Ordinal)
+            .Replace(
+                "internal static class ServiceCollectionExtensions",
+                "internal static partial class ServiceCollectionExtensions",
+                StringComparison.Ordinal)
+            .Replace(
+                "public static void Configure(IServiceCollection services)",
+                "public static void AddArcanumInfrastructure(this IServiceCollection services)",
+                StringComparison.Ordinal)
+            + """
+                namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection
+                {
+                    internal static partial class ServiceCollectionExtensions
+                    {
+                        internal static void AddArcanumCliClientStack(
+                            Microsoft.Extensions.DependencyInjection.IServiceCollection services) =>
+                            AddArcanumGrimoireForCli(services);
+                    }
+                }
+                """;
+
+        Assert.NotEqual(exactSource, crossProjectInfrastructureSource);
+
+        CSharpCompilation crossProjectInfrastructure =
+            Compile(crossProjectInfrastructureSource)
+                .WithAssemblyName("Recovery.CrossProject.Infrastructure");
+
+        CSharpCompilation crossProjectApi = Compile(
+                """
+                using Microsoft.Extensions.DependencyInjection;
+
+                namespace RetroDownfall.Arcanum.Api;
+
+                public static class ApiBootstrapper
+                {
+                    public static IServiceCollection AddArcanumApiServices(
+                        this IServiceCollection services)
+                    {
+                        services.AddArcanumInfrastructure();
+
+                        return services;
+                    }
+                }
+                """)
+            .AddReferences(crossProjectInfrastructure.ToMetadataReference())
+            .WithAssemblyName("Recovery.CrossProject.Api");
+
+        Assert.All(
+            new[] { crossProjectInfrastructure, crossProjectApi },
+            static compilation => Assert.Empty(compilation.GetDiagnostics().Where(
+                static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> crossProject =
+            DiscoverRecoveryMatrixFixture(
+                [crossProjectInfrastructure, crossProjectApi]);
+
+        Assert.DoesNotContain(crossProject.Diagnostics, static diagnostic =>
+            diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal));
+
+        string sharedOrdinaryRegistration = exactSource.Replace(
+            "services.AddScoped<CliOwnerRecoveryHandler>(); services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<CliOwnerRecoveryHandler>());",
+            "services.AddScoped<ExternalRecoveryHandler>(); services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<ExternalRecoveryHandler>()); services.AddScoped<CliOwnerRecoveryHandler>(); services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<CliOwnerRecoveryHandler>());",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, sharedOrdinaryRegistration);
+
+        HostedProducerDiscovery<HostedProducerSite> sharedOrdinary =
+            DiscoverRecoveryMatrixFixture(sharedOrdinaryRegistration);
+
+        Assert.DoesNotContain(sharedOrdinary.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler; a stopped-host-only",
+                StringComparison.Ordinal));
+
+        string wrongAlias = exactSource.Replace(
+            "sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>()",
+            "sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.DbRecoveryHandler>()",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> mutated =
+            DiscoverRecoveryMatrixFixture(wrongAlias);
+
+        Assert.Contains(mutated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        string mutuallyExclusiveRegistration = exactSource.Replace(
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());",
+            "if (DateTime.UtcNow.Ticks > 0) { services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); } else { services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>()); }",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> mutuallyExclusive =
+            DiscoverRecoveryMatrixFixture(mutuallyExclusiveRegistration);
+
+        Assert.Contains(mutuallyExclusive.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        string bypassedConcreteRegistration = exactSource.Replace(
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());",
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>()); if (DateTime.UtcNow.Ticks > 0) { return; } services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, bypassedConcreteRegistration);
+
+        HostedProducerDiscovery<HostedProducerSite> bypassedConcrete =
+            DiscoverRecoveryMatrixFixture(bypassedConcreteRegistration);
+
+        Assert.Contains(bypassedConcrete.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        const string externalRegistration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string neverCalledRegistration = exactSource.Replace(
+                externalRegistration,
+                string.Empty,
+                StringComparison.Ordinal)
+            + " internal static class NeverCalledRecoveryComposition { internal static void Register(Microsoft.Extensions.DependencyInjection.IServiceCollection services) { "
+            + externalRegistration
+            + " } }";
+
+        Assert.NotEqual(exactSource, neverCalledRegistration);
+
+        HostedProducerDiscovery<HostedProducerSite> neverCalled =
+            DiscoverRecoveryMatrixFixture(neverCalledRegistration);
+
+        Assert.Contains(neverCalled.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        string unreachableServingRegistration = exactSource.Replace(
+            externalRegistration,
+            "if (false) { " + externalRegistration + " }",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, unreachableServingRegistration);
+
+        HostedProducerDiscovery<HostedProducerSite> unreachableServing =
+            DiscoverRecoveryMatrixFixture(unreachableServingRegistration);
+
+        Assert.Contains(unreachableServing.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        string deadServingExpressionArms = exactSource.Replace(
+            externalRegistration,
+            "_ = true ? services : services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, deadServingExpressionArms);
+
+        HostedProducerDiscovery<HostedProducerSite> deadServingExpressions =
+            DiscoverRecoveryMatrixFixture(deadServingExpressionArms);
+
+        Assert.Contains(deadServingExpressions.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        const string stoppedOwnerRegistration =
+            "services.AddScoped<CliOwnerRecoveryHandler>(); services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<CliOwnerRecoveryHandler>());";
+
+        string unreachableStoppedRegistration = exactSource.Replace(
+            stoppedOwnerRegistration,
+            "if (false) { " + stoppedOwnerRegistration + " }",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, unreachableStoppedRegistration);
+
+        HostedProducerDiscovery<HostedProducerSite> unreachableStoppedHandler =
+            DiscoverRecoveryMatrixFixture(unreachableStoppedRegistration);
+
+        Assert.Contains(unreachableStoppedHandler.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && (diagnostic.Detail.StartsWith(
+                    "RetroDownfall.Arcanum.Infrastructure.Operations.CliOwnerRecoveryHandler;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.Contains(
+                    "owner-bound checkpoint",
+                    StringComparison.Ordinal)));
+
+        string unreachableStoppedComposition = exactSource.Replace(
+            "ServiceCollectionExtensions.AddArcanumGrimoireForCli(services);",
+            "_ = services;",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, unreachableStoppedComposition);
+
+        HostedProducerDiscovery<HostedProducerSite> unreachableStopped =
+            DiscoverRecoveryMatrixFixture(unreachableStoppedComposition);
+
+        Assert.Contains(unreachableStopped.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && (diagnostic.Detail.StartsWith(
+                    "RetroDownfall.Arcanum.Infrastructure.Operations.CliOwnerRecoveryHandler;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.Contains(
+                    "owner-bound checkpoint",
+                    StringComparison.Ordinal)));
+
+        string alternateStoppedSource = exactSource
+            .Replace(
+                "internal static class ServiceCollectionExtensions",
+                "public static class ServiceCollectionExtensions",
+                StringComparison.Ordinal)
+            .Replace(
+                "internal static void AddArcanumGrimoireForCli",
+                "public static void AddArcanumGrimoireForCli",
+                StringComparison.Ordinal)
+            .Replace(
+                "internal static class StoppedComposition",
+                "internal static class DisconnectedStoppedComposition",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, alternateStoppedSource);
+
+        CSharpCompilation disconnectedStopped = Compile(alternateStoppedSource)
+            .WithAssemblyName("Recovery.DisconnectedStopped");
+
+        MetadataReference disconnectedStoppedReference = disconnectedStopped
+            .ToMetadataReference(ImmutableArray.Create("disconnected"));
+
+        CSharpCompilation alternateStoppedRoot = Compile(
+                """
+                extern alias disconnected;
+
+                using Microsoft.Extensions.DependencyInjection;
+
+                namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection
+                {
+                    internal static class StoppedComposition
+                    {
+                        internal static void Configure(IServiceCollection services) =>
+                            disconnected::RetroDownfall.Arcanum.Infrastructure
+                                .DependencyInjection.ServiceCollectionExtensions
+                                .AddArcanumGrimoireForCli(services);
+                    }
+                }
+                """)
+            .AddReferences(disconnectedStoppedReference)
+            .WithAssemblyName("Recovery.AlternateStoppedRoot");
+
+        Assert.All(
+            new[] { disconnectedStopped, alternateStoppedRoot },
+            static compilation => Assert.Empty(compilation.GetDiagnostics().Where(
+                static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> alternateStopped =
+            DiscoverRecoveryMatrixFixture(
+                [disconnectedStopped, alternateStoppedRoot]);
+
+        Assert.Contains(alternateStopped.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && (diagnostic.Detail.StartsWith(
+                    "RetroDownfall.Arcanum.Infrastructure.Operations.CliOwnerRecoveryHandler;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.Contains(
+                    "owner-bound checkpoint",
+                    StringComparison.Ordinal)));
+
+        string shadowedRegistration = exactSource.Replace(
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());",
+            "Microsoft.Extensions.DependencyInjection.RogueRegistrations.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); Microsoft.Extensions.DependencyInjection.RogueRegistrations.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());",
+            StringComparison.Ordinal)
+            + """
+
+                namespace Microsoft.Extensions.DependencyInjection
+                {
+                    internal sealed class RogueProvider
+                    {
+                        internal T GetRequiredService<T>() => default!;
+                    }
+
+                    internal static class RogueRegistrations
+                    {
+                        internal static void AddScoped<T>() { }
+
+                        internal static void AddScoped<T>(
+                            System.Func<RogueProvider, T> factory) { }
+                    }
+                }
+                """;
+
+        Assert.NotEqual(exactSource, shadowedRegistration);
+
+        HostedProducerDiscovery<HostedProducerSite> shadowed =
+            DiscoverRecoveryMatrixFixture(shadowedRegistration);
+
+        Assert.Contains(shadowed.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        string stoppedMarkerDecoy = exactSource
+            .Replace(
+                "internal static class ServiceCollectionExtensions",
+                "internal static class ServingComposition",
+                StringComparison.Ordinal)
+            .Replace(
+                "internal static void AddArcanumGrimoireForCli",
+                "internal static void ConfigureServing",
+                StringComparison.Ordinal)
+            .Replace(
+                "_ = new LongRunningOperationReconciler(\n                    discovery: null,\n                    classifiedLeaseAcquisition: null,\n                    scopeFactory: null);",
+                "if (false)\n                    {\n                        _ = new LongRunningOperationReconciler(\n                            discovery: null,\n                            classifiedLeaseAcquisition: null,\n                            scopeFactory: null);\n                    }",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, stoppedMarkerDecoy);
+
+        HostedProducerDiscovery<HostedProducerSite> decoyClassification =
+            DiscoverRecoveryMatrixFixture(stoppedMarkerDecoy);
+
+        Assert.Contains(decoyClassification.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "owner-bound checkpoint",
+                StringComparison.Ordinal));
+
+        string unregisteredAuthoredSource = RecoveryMatrixFixture()
+            .Replace(
+                "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); ",
+                string.Empty,
+                StringComparison.Ordinal)
+            .Replace(
+                "internal sealed class ExternalRecoveryHandler",
+                "public sealed class ExternalRecoveryHandler",
+                StringComparison.Ordinal);
+
+        CSharpCompilation authored = Compile(unregisteredAuthoredSource)
+            .WithAssemblyName("Recovery.Collision.Authored");
+
+        Assert.Empty(authored.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        MetadataReference authoredReference = authored.ToMetadataReference(
+            ImmutableArray.Create("contract"));
+
+        CSharpCompilation runtime = Compile(
+            """
+            extern alias contract;
+
+            namespace RetroDownfall.Arcanum.Infrastructure.Operations
+            {
+                public sealed class ExternalRecoveryHandler :
+                    contract::RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler
+                {
+                    public string Kind =>
+                        contract::RetroDownfall.Arcanum.Core.Operations.LongRunningOperationKinds.External;
+
+                    public int SupportedCheckpointVersion => 0;
+
+                    public System.Threading.Tasks.Task RecoverAsync(
+                        contract::RetroDownfall.Arcanum.Core.Operations.LongRunningOperation operation,
+                        System.Threading.CancellationToken cancellationToken)
+                    {
+                        System.IO.File.Delete("runtime-collision");
+
+                        return System.Threading.Tasks.Task.CompletedTask;
+                    }
+                }
+            }
+            """)
+            .AddReferences(authoredReference)
+            .WithAssemblyName("Recovery.Collision.Runtime");
+
+        Assert.Empty(runtime.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        MetadataReference runtimeReference = runtime.ToMetadataReference(
+            ImmutableArray.Create("runtime"));
+
+        CSharpCompilation collisionComposition = Compile(
+            """
+            extern alias contract;
+            extern alias runtime;
+
+            using Microsoft.Extensions.DependencyInjection;
+
+            internal static class CollisionComposition
+            {
+                internal static void Configure(IServiceCollection services)
+                {
+                    services.AddScoped<
+                        contract::RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler,
+                        runtime::RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();
+                }
+            }
+            """)
+            .AddReferences(authoredReference, runtimeReference)
+            .WithAssemblyName("Recovery.Collision.Composition");
+
+        Assert.Empty(collisionComposition.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> registrationCollision =
+            DiscoverRecoveryMatrixFixture(
+                [authored, collisionComposition]);
+
+        Assert.Contains(registrationCollision.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        CSharpCompilation alternateDi = Compile(
+            """
+            namespace Microsoft.Extensions.DependencyInjection
+            {
+                public interface IServiceCollection { }
+
+                public interface IServiceProvider { }
+
+                public static class ServiceCollectionServiceExtensions
+                {
+                    public static IServiceCollection AddScoped<TContract, TImplementation>(
+                        this IServiceCollection services) => services;
+                }
+            }
+            """)
+            .WithAssemblyName(
+                "Microsoft.Extensions.DependencyInjection.Abstractions");
+
+        Assert.Empty(alternateDi.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        using MemoryStream alternateDiImage = new();
+
+        Assert.True(alternateDi.Emit(alternateDiImage).Success);
+
+        MetadataReference alternateDiReference = MetadataReference.CreateFromImage(
+            alternateDiImage.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("alternate_di")));
+
+        CSharpCompilation alternateDiComposition = Compile(
+            """
+            extern alias alternate_di;
+            extern alias contract;
+
+            using alternate_di::Microsoft.Extensions.DependencyInjection;
+
+            internal static class AlternateDiComposition
+            {
+                internal static void Configure(IServiceCollection services)
+                {
+                    services.AddScoped<
+                        contract::RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler,
+                        contract::RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();
+                }
+            }
+            """)
+            .AddReferences(authoredReference, alternateDiReference)
+            .WithAssemblyName("Recovery.AlternateDiComposition");
+
+        Assert.Empty(alternateDiComposition.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> alternateDiRegistration =
+            DiscoverRecoveryMatrixFixture(
+                [authored, alternateDiComposition]);
+
+        Assert.Contains(alternateDiRegistration.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+
+        const string cacheProtocolSource = """
+            namespace RetroDownfall.Arcanum.Core.Operations
+            {
+                public sealed record LongRunningOperation(
+                    string Kind,
+                    int CheckpointVersion);
+
+                public sealed record LongRunningOperationRecoveryDescriptor(
+                    string Kind,
+                    int MinCheckpointVersion,
+                    int MaxCheckpointVersion);
+
+                public static class LongRunningOperationKinds
+                {
+                    public const string External = "external";
+                }
+
+                public static class LongRunningOperationRecoveryRegistry
+                {
+                    private static readonly LongRunningOperationRecoveryDescriptor[] Matrix =
+                    [
+                        new(LongRunningOperationKinds.External, 0, 0),
+                    ];
+                }
+            }
+
+            namespace RetroDownfall.Arcanum.Infrastructure.Operations
+            {
+                using RetroDownfall.Arcanum.Core.Operations;
+
+                public sealed class LongRunningRecoveryOwnerEvidence { }
+
+                public enum LongRunningRecoveryAdmissionKind : byte
+                {
+                    OrdinaryExternalEffect = 2,
+
+                    OwnerBoundAwaitingExactOwner = 4,
+
+                    UnsupportedCheckpointVersion = 5,
+                }
+
+                public readonly record struct LongRunningRecoveryAdmissionDecision(
+                    LongRunningRecoveryAdmissionKind Kind);
+
+                public static class LongRunningOperationRecoveryAdmission
+                {
+                    public static LongRunningRecoveryAdmissionDecision Classify(
+                        LongRunningOperation operation,
+                        LongRunningRecoveryOwnerEvidence? ownerEvidence)
+                    {
+                        LongRunningRecoveryAdmissionKind kind =
+                            (operation.Kind, operation.CheckpointVersion) switch
+                            {
+                                (LongRunningOperationKinds.External, 0) =>
+                                    LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
+                                _ => LongRunningRecoveryAdmissionKind
+                                    .UnsupportedCheckpointVersion,
+                            };
+
+                        return new(kind);
+                    }
+                }
+            }
+            """;
+
+        string CacheTwinSource(string worker, string effect) => $$"""
+            extern alias protocol;
+
+            using System;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Microsoft.Extensions.DependencyInjection;
+            using Microsoft.Extensions.Hosting;
+
+            public sealed class {{worker}} : IHostedService
+            {
+                public async Task StartAsync(CancellationToken token)
+                {
+                    RetroDownfall.Arcanum.Infrastructure.Data
+                        .IGrimoireConnectionAdmissionGate gate = null!;
+
+                    if (!gate.TryAcquireWorkLease(
+                            RetroDownfall.Arcanum.Infrastructure.Data
+                                .GrimoireWorkKind.WorkspaceIndexing,
+                            out var work))
+                    {
+                        return;
+                    }
+
+                    using var lease = work;
+
+                    var operation = new protocol::RetroDownfall.Arcanum.Core
+                        .Operations.LongRunningOperation(
+                        protocol::RetroDownfall.Arcanum.Core.Operations
+                            .LongRunningOperationKinds.External,
+                        0);
+
+                    var decision = protocol::RetroDownfall.Arcanum.Infrastructure
+                        .Operations.LongRunningOperationRecoveryAdmission.Classify(
+                        operation,
+                        null);
+
+                    IDisposable effectGroup = null!;
+
+                    try
+                    {
+                        if (decision.Kind is protocol::RetroDownfall.Arcanum
+                                .Infrastructure.Operations
+                                .LongRunningRecoveryAdmissionKind
+                                .OrdinaryExternalEffect
+                            && !lease.TryBeginExternalEffectGroup(out effectGroup))
+                        {
+                            return;
+                        }
+                        else
+                        {
+                            await new RetroDownfall.Arcanum.Infrastructure.Operations
+                                .LongRunningOperationReconciler()
+                                .SettleDiscoveredRuntimeAsync(operation);
+                        }
+                    }
+                    finally
+                    {
+                        if (effectGroup is not null)
+                        {
+                            effectGroup.Dispose();
+                        }
+                    }
+                }
+
+                public Task StopAsync(CancellationToken token) =>
+                    Task.CompletedTask;
+            }
+
+            namespace {{worker}}Registration
+            {
+                public static class Composition
+                {
+                    public static void Configure(IServiceCollection services) =>
+                        services.AddScoped<
+                            RetroDownfall.Arcanum.Core.Operations
+                                .ILongRunningOperationRecoveryHandler,
+                            RetroDownfall.Arcanum.Infrastructure.Operations
+                                .ExternalRecoveryHandler>();
+                }
+            }
+
+            namespace RetroDownfall.Arcanum.Api
+            {
+                public static class ApiBootstrapper
+                {
+                    public static IServiceCollection AddArcanumApiServices(
+                        this IServiceCollection services)
+                    {
+                        {{worker}}Registration.Composition.Configure(services);
+
+                        return services;
+                    }
+                }
+            }
+
+            namespace RetroDownfall.Arcanum.Core.Operations
+            {
+                public interface ILongRunningOperationRecoveryHandler
+                {
+                    string Kind { get; }
+
+                    int SupportedCheckpointVersion { get; }
+
+                    Task RecoverAsync(
+                        protocol::RetroDownfall.Arcanum.Core.Operations
+                            .LongRunningOperation operation,
+                        CancellationToken cancellationToken);
+                }
+            }
+
+            namespace RetroDownfall.Arcanum.Infrastructure.Operations
+            {
+                using RetroDownfall.Arcanum.Core.Operations;
+
+                internal sealed class LongRunningOperationReconciler
+                {
+                    internal async Task SettleDiscoveredRuntimeAsync(
+                        protocol::RetroDownfall.Arcanum.Core.Operations
+                            .LongRunningOperation discovered)
+                    {
+                        var before = protocol::RetroDownfall.Arcanum.Infrastructure
+                            .Operations.LongRunningOperationRecoveryAdmission.Classify(
+                            discovered,
+                            null);
+
+                        if (before.Kind is protocol::RetroDownfall.Arcanum
+                            .Infrastructure.Operations.LongRunningRecoveryAdmissionKind
+                            .OwnerBoundAwaitingExactOwner)
+                        {
+                            return;
+                        }
+
+                        var after = protocol::RetroDownfall.Arcanum.Infrastructure
+                            .Operations.LongRunningOperationRecoveryAdmission.Classify(
+                            discovered,
+                            null);
+
+                        if (after.Kind is protocol::RetroDownfall.Arcanum
+                            .Infrastructure.Operations.LongRunningRecoveryAdmissionKind
+                            .UnsupportedCheckpointVersion)
+                        {
+                            return;
+                        }
+
+                        await SettleLeasedAsync(discovered);
+                    }
+
+                    private static async Task SettleLeasedAsync(
+                        protocol::RetroDownfall.Arcanum.Core.Operations
+                            .LongRunningOperation operation) =>
+                        await RecoverOneAsync(operation);
+
+                    private static async Task RecoverOneAsync(
+                        protocol::RetroDownfall.Arcanum.Core.Operations
+                            .LongRunningOperation operation)
+                    {
+                        ILongRunningOperationRecoveryHandler handler = null!;
+
+                        await handler.RecoverAsync(
+                            operation,
+                            CancellationToken.None);
+                    }
+                }
+
+                internal sealed class ExternalRecoveryHandler :
+                    ILongRunningOperationRecoveryHandler
+                {
+                    public string Kind => protocol::RetroDownfall.Arcanum.Core
+                        .Operations.LongRunningOperationKinds.External;
+
+                    public int SupportedCheckpointVersion => 0;
+
+                    public Task RecoverAsync(
+                        protocol::RetroDownfall.Arcanum.Core.Operations
+                            .LongRunningOperation operation,
+                        CancellationToken cancellationToken)
+                    {
+                        System.IO.{{effect}}("external");
+
+                        return Task.CompletedTask;
+                    }
+                }
+            }
+            """ + AdmissionTypes;
+
+        CSharpCompilation cacheProtocol = Compile(cacheProtocolSource)
+            .WithAssemblyName("Recovery.CacheProtocol");
+
+        MetadataReference cacheProtocolReference = cacheProtocol
+            .ToMetadataReference(ImmutableArray.Create("protocol"));
+
+        CSharpCompilation firstTwin = Compile(CacheTwinSource(
+                "WorkerA",
+                "File.Delete"))
+            .AddReferences(cacheProtocolReference)
+            .WithAssemblyName("Recovery.CacheTwin");
+
+        CSharpCompilation secondTwin = Compile(CacheTwinSource(
+                "WorkerB",
+                "Directory.Delete"))
+            .AddReferences(cacheProtocolReference)
+            .WithAssemblyName("Recovery.CacheTwin");
+
+        Assert.All(
+            new[] { cacheProtocol, firstTwin, secondTwin },
+            static compilation => Assert.Empty(compilation.GetDiagnostics().Where(
+                static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerOperationEntry TwinRoot(string worker) => new(
+            worker + ".StartAsync",
+            "src/Fixture.cs",
+            worker,
+            "StartAsync",
+            HostedProducerAuthorityKind.OrdinaryHostedWork,
+            GrimoireWorkKind.WorkspaceIndexing,
+            "cache-isolated recovery fixture",
+            []);
+
+        foreach (bool reverse in new[] { false, true })
+        {
+            CSharpCompilation[] orderedCompilations = reverse
+                ? [cacheProtocol, secondTwin, firstTwin]
+                : [cacheProtocol, firstTwin, secondTwin];
+
+            HostedProducerServiceEntry[] orderedCatalog = reverse
+                ?
+                [
+                    new("WorkerB", [TwinRoot("WorkerB")]),
+                    new("WorkerA", [TwinRoot("WorkerA")]),
+                ]
+                :
+                [
+                    new("WorkerA", [TwinRoot("WorkerA")]),
+                    new("WorkerB", [TwinRoot("WorkerB")]),
+                ];
+
+            HostedProducerDiscovery<HostedProducerSite> twinResult =
+                HostedGrimoireProducerInventory.DiscoverProducerSites(
+                    orderedCompilations,
+                    new(["WorkerA", "WorkerB"], []),
+                    orderedCatalog,
+                    []);
+
+            Assert.DoesNotContain(twinResult.Diagnostics, static diagnostic =>
+                diagnostic.Code.StartsWith(
+                    "HOSTED_RECOVERY_",
+                    StringComparison.Ordinal));
+
+            Assert.Single(twinResult.Items, static site =>
+                site.RootType == "WorkerA"
+                && site.Callee == "System.IO.File.Delete");
+
+            Assert.DoesNotContain(twinResult.Items, static site =>
+                site.RootType == "WorkerA"
+                && site.Callee == "System.IO.Directory.Delete");
+
+            Assert.Single(twinResult.Items, static site =>
+                site.RootType == "WorkerB"
+                && site.Callee == "System.IO.Directory.Delete");
+
+            Assert.DoesNotContain(twinResult.Items, static site =>
+                site.RootType == "WorkerB"
+                && site.Callee == "System.IO.File.Delete");
+        }
+    }
+
+    [Fact]
+    public void RecoveryRegistrationsRequireAReachableServingComposition()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(
+                RecoveryServingRoot,
+                string.Empty,
+                StringComparison.Ordinal)
+            .Replace(registration, string.Empty, StringComparison.Ordinal)
+            .Replace(
+                "public static class Composition",
+                "public static class ServingComposition",
+                StringComparison.Ordinal)
+            + " namespace RetroDownfall.Arcanum.Api { public static class ApiBootstrapper { "
+            + "public static Microsoft.Extensions.DependencyInjection.IServiceCollection "
+            + "AddArcanumApiServices(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { "
+            + "global::ServingComposition.Configure(services); return services; } } } "
+            + "public static class Composition { public static void Configure("
+            + "Microsoft.Extensions.DependencyInjection.IServiceCollection services) { "
+            + registration
+            + " } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("composition")]
+    [InlineData("registration")]
+    public void RecoveryRegistrationsMustExecuteOnEveryServingPath(string shape)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = shape == "composition"
+            ? RecoveryFactoryAliasFixture().Replace(
+                "global::Composition.Configure(services); return services;",
+                "if (DateTime.UtcNow.Ticks > 0) global::Composition.Configure(services); return services;",
+                StringComparison.Ordinal)
+            : RecoveryFactoryAliasFixture().Replace(
+                registration,
+                "if (DateTime.UtcNow.Ticks > 0) { " + registration + " }",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DuplicateRecoveryHandlerFactoryAliasesAreRejected()
+    {
+        const string concrete =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();";
+
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            concrete + " " + alias,
+            concrete + " " + alias + " " + alias,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("singleton")]
+    [InlineData("transient")]
+    [InlineData("descriptor")]
+    public void UnsupportedRecoveryHandlerLifetimeDuplicatesAreRejected(
+        string shape)
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string duplicate = shape switch
+        {
+            "singleton" =>
+                "services.AddSingleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+            "transient" =>
+                "services.AddTransient<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+            _ =>
+                "services.Add(Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());",
+        };
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            alias,
+            alias + " " + duplicate,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("services.Clear();")]
+    [InlineData("services.Remove(services[0]);")]
+    [InlineData("services.RemoveAt(0);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(services);")]
+    [InlineData("services[0] = Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<object>(new object());")]
+    public void RecoveryRegistrationCollectionMustPreserveItsFinalState(
+        string mutation)
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            alias,
+            alias + " " + mutation,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Fact]
+    public void ConditionalCompetingRecoveryRegistrationIsRejected()
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            alias,
+            alias + " if (DateTime.UtcNow.Ticks > 0) services.AddSingleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData("services.AddSingleton<RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch>(static _ => null!);")]
+    [InlineData("services.AddScoped<RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch, RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.RogueDispatch>();")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch, RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.RogueDispatch>(services);")]
+    [InlineData("services.Add(Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped<RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch, RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.RogueDispatch>());")]
+    public void PriorCompetingDispatcherRegistrationInvalidatesTryAdd(
+        string competing)
+    {
+        string source = OfflineTransitionDispatchFixture().Replace(
+            "services.AddGrimoireOfflineTransitionHandlerDispatch();",
+            competing + " services.AddGrimoireOfflineTransitionHandlerDispatch();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_DISPATCH_UNPROVEN"
+            || diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void CanonicalDispatcherRegistrationMustExecuteOnEveryPath()
+    {
+        string source = OfflineTransitionDispatchFixture().Replace(
+            "services.TryAddSingleton<IGrimoireOfflineTransitionHandlerDispatch>(",
+            "if (DateTime.UtcNow.Ticks > 0) services.TryAddSingleton<IGrimoireOfflineTransitionHandlerDispatch>(",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_DISPATCH_UNPROVEN"
+            || diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void RecoveryRegistrationCollectionEscapeIsRejected()
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "private static void Mutate(IServiceCollection services) => services.Clear(); static Worker Factory(IServiceProvider provider) => new Worker();",
+                StringComparison.Ordinal)
+            .Replace(alias, alias + " Mutate(services);", StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData("helper-twice")]
+    [InlineData("do-loop")]
+    public void RecoveryRegistrationMustExecuteExactlyOncePerComposition(
+        string shape)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string replacement = shape == "helper-twice"
+            ? "RegisterExternal(services); RegisterExternal(services);"
+            : "do { " + registration + " } while (DateTime.UtcNow.Ticks > 0);";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(registration, replacement, StringComparison.Ordinal);
+
+        if (shape == "helper-twice")
+        {
+            source = source.Replace(
+                "public static void Configure(IServiceCollection services)",
+                "private static void RegisterExternal(IServiceCollection services) { "
+                    + registration
+                    + " } public static void Configure(IServiceCollection services)",
+                StringComparison.Ordinal);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveryCompositionRootCycleIsRejected()
+    {
+        string baselineSource = RecoveryFactoryAliasFixture().Replace(
+            "public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddArcanumApiServices(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { global::Composition.Configure(services); return services; }",
+            "public static void AddArcanumApiServices(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { global::Composition.Configure(services); }",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> baseline =
+            DiscoverRecoveryMatrixFixture(baselineSource);
+
+        Assert.DoesNotContain(baseline.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+
+        string source = baselineSource.Replace(
+            "global::Composition.Configure(services); }",
+            "global::Composition.Configure(services); Reenter(services); } private static void Reenter(Microsoft.Extensions.DependencyInjection.IServiceCollection services) { services.AddArcanumApiServices(); }",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AuthoredFluentRecoveryCompositionHelperIsTraversed()
+    {
+        string source = RecoveryFactoryAliasFixture().Replace(
+                "global::Composition.Configure(services); return services;",
+                "global::ProductionComposition.Configure(services); return services;",
+                StringComparison.Ordinal)
+            + " public static class ProductionComposition { public static Microsoft.Extensions.DependencyInjection.IServiceCollection Configure(Microsoft.Extensions.DependencyInjection.IServiceCollection services) { global::Composition.Configure(services); return services; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void AuthoredReducedExtensionRecoveryCompositionHelperIsTraversed(
+        bool generic,
+        bool mutatesCollection)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string call = generic
+            ? "services.AddProductionHelper<object>();"
+            : "services.AddProductionHelper();";
+
+        string helperBody = mutatesCollection
+            ? "services.Clear();"
+            : generic
+                ? "services.AddSingleton<TService>();"
+                : "services.AddSingleton<object>();";
+
+        string helper = generic
+            ? "private static Microsoft.Extensions.DependencyInjection.IServiceCollection AddProductionHelper<TService>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) where TService : class { "
+                + helperBody
+                + " return services; }"
+            : "private static Microsoft.Extensions.DependencyInjection.IServiceCollection AddProductionHelper(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { "
+                + helperBody
+                + " return services; }";
+
+        string priorCallbacks = string.Join(
+            " ",
+            Enumerable.Range(0, 257).Select(static _ =>
+                "services.AddSingleton<object>(static _ => new object());"));
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(
+                registration,
+                priorCallbacks + " " + registration + " " + call,
+                StringComparison.Ordinal)
+            .Replace(
+                "public static class Composition",
+                "public static partial class Composition",
+                StringComparison.Ordinal)
+            + " public static partial class Composition { "
+            + helper
+            + " }";
+
+        string infrastructureSource = source.Replace(
+            RecoveryServingRoot,
+            string.Empty,
+            StringComparison.Ordinal);
+
+        CSharpCompilation infrastructure = Compile(infrastructureSource)
+            .WithAssemblyName("RetroDownfall.Arcanum.Infrastructure");
+
+        MetadataReference[] apiReferences =
+        [
+            .. infrastructure.References.Where(reference =>
+                !string.Equals(
+                    Path.GetFileNameWithoutExtension(reference.Display),
+                    infrastructure.AssemblyName,
+                    StringComparison.Ordinal)),
+            infrastructure.ToMetadataReference(),
+        ];
+
+        CSharpCompilation api = CSharpCompilation.Create(
+            "RetroDownfall.Arcanum.Api",
+            [CSharpSyntaxTree.ParseText(
+                RecoveryServingRoot,
+                path: "src/ApiBootstrapper.cs")],
+            apiReferences,
+            (CSharpCompilationOptions)infrastructure.Options);
+
+        Assert.Empty(infrastructure.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(api.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture([infrastructure, api]);
+
+        if (mutatesCollection)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+                && diagnostic.Detail.Contains(
+                    "mutate or compete with the final service registration set",
+                    StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+        }
+    }
+
+    [Fact]
+    public void ExactTryAddEnumerableRecoveryDescriptorRemainsSupported()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        const string tryAddEnumerable =
+            "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddEnumerable(services, Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            tryAddEnumerable,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("Microsoft.Extensions.DependencyInjection.ExceptionHandlerServiceCollectionExtensions.AddExceptionHandler(services, static _ => { });")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.ProblemDetailsServiceCollectionExtensions.AddProblemDetails(services);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.CorsServiceCollectionExtensions.AddCors(services);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.OpenApiServiceCollectionExtensions.AddOpenApi(services);")]
+    [InlineData("Microsoft.AspNetCore.Builder.RateLimiterServiceCollectionExtensions.AddRateLimiter(services);")]
+    [InlineData("Microsoft.AspNetCore.Builder.ResponseCompressionServicesExtensions.AddResponseCompression(services);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.HttpJsonServiceExtensions.ConfigureHttpJsonOptions(services, static _ => { });")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.DataProtectionServiceCollectionExtensions.AddDataProtection(services);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.HttpClientFactoryServiceCollectionExtensions.AddHttpClient(services);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.ServiceCollectionHostedServiceExtensions.AddHostedService<Worker>(services);")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.Configure<object>(services, static _ => { });")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions.AddDbContext<FixtureDbContext>(services, static _ => { });")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions.AddDbContextPool<FixtureDbContext>(services, static _ => { });")]
+    [InlineData("Serilog.SerilogServiceCollectionExtensions.AddSerilog(services, static (_, _) => { });")]
+    public void ExactProductionFrameworkServiceBuilderDoesNotPoisonRecoveryComposition(
+        string builder)
+    {
+        const string concreteRegistration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();";
+
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+                concreteRegistration + " " + registration,
+                builder + " " + concreteRegistration + " " + registration,
+                StringComparison.Ordinal)
+            + " public sealed class FixtureDbContext : Microsoft.EntityFrameworkCore.DbContext { }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Fact]
+    public void ExactlyOnceRecoveryRegistrationHelperRemainsSupported()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(
+                registration,
+                "RegisterExternal(services);",
+                StringComparison.Ordinal)
+            .Replace(
+                "public static void Configure(IServiceCollection services)",
+                "private static void RegisterExternal(IServiceCollection services) { "
+                    + registration
+                    + " } public static void Configure(IServiceCollection services)",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();")]
+    [InlineData("services.AddSingleton<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();")]
+    [InlineData("services.AddTransient<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();")]
+    public void CompetingConcreteRecoveryRegistrationIsRejected(
+        string competing)
+    {
+        const string concrete =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            concrete,
+            concrete + " " + competing,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData("IServiceCollection alias = services;")]
+    [InlineData("var alias = services;")]
+    [InlineData("var alias = services.AddSingleton<object>();")]
+    public void StableRecoveryCollectionAliasesCanOwnExactRegistrations(
+        string declaration)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            declaration
+                + " "
+                + registration.Replace(
+                    "services.",
+                    "alias.",
+                    StringComparison.Ordinal),
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("IServiceCollection alias = services; alias.Clear();")]
+    [InlineData("var alias = services; alias.AddSingleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();")]
+    [InlineData("var alias = services.AddSingleton<object>(); alias.Clear();")]
+    [InlineData("IServiceCollection alias = services; External.Mutate(alias);")]
+    public void RecoveryCollectionAliasesRemainProtected(string mutation)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+                registration,
+                registration + " " + mutation,
+                StringComparison.Ordinal)
+            + " public static class External { public static void Mutate(IServiceCollection services) { services.Clear(); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(
+        "private static void Mutate(System.Collections.Generic.IList<Microsoft.Extensions.DependencyInjection.ServiceDescriptor> descriptors) => descriptors.Clear();",
+        "Mutate(services);")]
+    [InlineData(
+        "private static System.Collections.Generic.IList<Microsoft.Extensions.DependencyInjection.ServiceDescriptor> Identity(System.Collections.Generic.IList<Microsoft.Extensions.DependencyInjection.ServiceDescriptor> descriptors) => descriptors;",
+        "Identity(services).Clear();")]
+    [InlineData(
+        "",
+        "System.Collections.Generic.IList<Microsoft.Extensions.DependencyInjection.ServiceDescriptor> descriptors = services; descriptors.Clear();")]
+    [InlineData(
+        "private sealed class Holder { internal Holder(System.Collections.Generic.IList<Microsoft.Extensions.DependencyInjection.ServiceDescriptor> descriptors) { } }",
+        "_ = new Holder(services);")]
+    public void CompatibleDescriptorCollectionAliasesAndEscapesRemainProtected(
+        string declaration,
+        string mutation)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(
+                "public static void Configure(IServiceCollection services)",
+                declaration
+                    + " public static void Configure(IServiceCollection services)",
+                StringComparison.Ordinal)
+            .Replace(
+                registration,
+                registration + " " + mutation,
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("static _ => new RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler()")]
+    [InlineData("static _ => null!")]
+    public void RawProtectedDescriptorFactoryRegistrationIsRejected(
+        string factory)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string competing =
+            "services.Add(Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>("
+                + factory
+                + "));";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            registration + " " + competing,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>()")]
+    [InlineData("Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>())")]
+    public void ExactRawProtectedDescriptorRegistrationRemainsSupported(
+        string descriptor)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            "services.Add(" + descriptor + ");",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CapturedRecoveryCollectionMutationIsRejected()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            registration
+                + " System.Action mutate = () => services.Clear(); mutate();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void UnresolvedRecoveryCollectionEscapeInAnyArgumentIsRejected()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            registration + " _ = object.ReferenceEquals(null, services);",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("insert")]
+    [InlineData("replace")]
+    [InlineData("try-add")]
+    [InlineData("try-add-enumerable")]
+    [InlineData("remove-all")]
+    public void AliasedFrameworkRecoveryCollectionMutationIsRejected(
+        string shape)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        const string descriptorDeclaration =
+            "Microsoft.Extensions.DependencyInjection.ServiceDescriptor descriptor = Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();";
+
+        string mutation = shape switch
+        {
+            "insert" => descriptorDeclaration + " services.Insert(0, descriptor);",
+            "replace" => descriptorDeclaration + " Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.Replace(services, descriptor);",
+            "try-add" => descriptorDeclaration + " Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAdd(services, descriptor);",
+            "try-add-enumerable" => descriptorDeclaration + " Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddEnumerable(services, descriptor);",
+            _ => "Type contract = typeof(RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler); Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll(services, contract);",
+        };
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            registration + " " + mutation,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("insert")]
+    [InlineData("replace")]
+    [InlineData("try-add")]
+    [InlineData("try-add-enumerable")]
+    [InlineData("remove-all")]
+    public void AliasedFrameworkUnrelatedCollectionMutationRemainsSupported(
+        string shape)
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        const string descriptorDeclaration =
+            "Microsoft.Extensions.DependencyInjection.ServiceDescriptor descriptor = Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<object>(new object());";
+
+        string mutation = shape switch
+        {
+            "insert" => descriptorDeclaration + " services.Insert(0, descriptor);",
+            "replace" => descriptorDeclaration + " Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.Replace(services, descriptor);",
+            "try-add" => descriptorDeclaration + " Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAdd(services, descriptor);",
+            "try-add-enumerable" => descriptorDeclaration + " Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddEnumerable(services, descriptor);",
+            _ => "Type contract = typeof(object); Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll(services, contract);",
+        };
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            registration + " " + mutation,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Fact]
+    public void ConditionalAliasedDispatcherCompetitorInvalidatesCanonicalTryAdd()
+    {
+        const string competitor =
+            "Microsoft.Extensions.DependencyInjection.ServiceDescriptor descriptor = Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch, RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.RogueDispatch>(); if (DateTime.UtcNow.Ticks > 0) Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAdd(services, descriptor);";
+
+        string source = OfflineTransitionDispatchFixture().Replace(
+            "services.AddGrimoireOfflineTransitionHandlerDispatch();",
+            competitor + " services.AddGrimoireOfflineTransitionHandlerDispatch();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_DISPATCH_UNPROVEN"
+            || diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData("Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(services);")]
+    [InlineData("services.AddSingleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static _ => new RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler());")]
+    [InlineData("services.AddSingleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(new RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler());")]
+    [InlineData("services.AddSingleton(typeof(RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler), typeof(RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler));")]
+    [InlineData("services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static _ => new RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler());")]
+    [InlineData("services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static _ => null!);")]
+    [InlineData("services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>();")]
+    public void EveryCompetingRecoveryRegistrationShapeIsRejected(
+        string competing)
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            alias,
+            alias + " " + competing,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData(
+        "Microsoft.Extensions.DependencyInjection.ServiceDescriptor competing = Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>();",
+        "services.Add(competing);")]
+    [InlineData(
+        "Type service = typeof(RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler); Type implementation = typeof(RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler);",
+        "services.AddSingleton(service, implementation);")]
+    public void AliasedRecoveryRegistrationShapesFailClosed(
+        string declaration,
+        string competing)
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            alias,
+            declaration + " " + alias + " " + competing,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.Contains(
+                "mutate or compete with the final service registration set",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AuthoredDescriptorAddCannotMasqueradeAsCompositionRegistration()
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        const string rogue =
+            "Rogue.Add(services, Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(alias, rogue, StringComparison.Ordinal)
+            + " public static class Rogue { public static void Add(Microsoft.Extensions.DependencyInjection.IServiceCollection services, Microsoft.Extensions.DependencyInjection.ServiceDescriptor descriptor) { } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void UnrelatedServiceRegistrationDoesNotPoisonRecoveryComposition()
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            alias,
+            alias + " services.AddSingleton<object>();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedRecoveryRegistrationRejectsCompetingLifetime()
+    {
+        const string alias =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.IAuthenticatedCovenantErasureRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>());";
+
+        string source = OfflineTransitionDispatchFixture().Replace(
+            alias,
+            alias + " services.AddTransient<RetroDownfall.Arcanum.Infrastructure.Data.IAuthenticatedCovenantErasureRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>());",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN"
+            || diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN");
+    }
+
+    [Fact]
+    public void RecoveryCompositionControlFlowPlanIsBuiltOncePerMember()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(RecoveryFactoryAliasFixture());
+
+        HostedProducerInvocationExecutionMetric metric = Assert.Single(
+            result.AnalysisMetrics!.InvocationExecutions,
+            static candidate => candidate.Member == "Composition.Configure");
+
+        Assert.True(metric.PlanRequests > 1);
+
+        Assert.Equal(1, metric.PlanBuilds);
+    }
+
+    [Fact]
+    public void RecoveryRegistrationCollectionMustRemainStable()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture().Replace(
+            registration,
+            "services = new Microsoft.Extensions.DependencyInjection.ServiceCollection(); "
+                + registration,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveryRegistrationCollectionCannotBeForwardedByReference()
+    {
+        const string registration =
+            "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler>());";
+
+        string source = RecoveryFactoryAliasFixture()
+            .Replace(
+                "public static void Configure(IServiceCollection services)",
+                "private static void Forward(ref IServiceCollection forwarded) { "
+                    + registration.Replace(
+                        "services.",
+                        "forwarded.",
+                        StringComparison.Ordinal)
+                    + " } public static void Configure(IServiceCollection services)",
+                StringComparison.Ordinal)
+            .Replace(
+                registration,
+                "Forward(ref services);",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionRejectsAlternateExecutableSuccessReturn()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixture()
+            .Replace(
+                "internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                "private static AuthenticatedCovenantErasureRecoveryAdmission AlternateAdmission => null!; internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-before-guard*/",
+                "/*authenticated-before-guard*/ if (DateTime.UtcNow.Ticks > 0) return new(false, AlternateAdmission);",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionRefusalMustReturnFailure()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixture()
+            .Replace(
+                "internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                "private static AuthenticatedCovenantErasureRecoveryAdmission AlternateAdmission => null!; internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                StringComparison.Ordinal)
+            .Replace(
+                "return new(true, null!);",
+                "return new(false, AlternateAdmission);",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionCarrierPreservesExactConstructorMapping()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixture()
+            .Replace(
+                "AdoptedOperation = adoptedOperation;",
+                "AdoptedOperation = adoptedOperation with { CheckpointVersion = adoptedOperation.CheckpointVersion + 1 };",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionCarrierAcceptsProductionShapedConstructorMapping()
+    {
+        string source = ProductionShapedAuthenticatedAdmissionFixture();
+
+        Assert.Contains(
+            "object creator, LedgerConnection ledger",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "ownerId, covenant, grimoire!)",
+            source,
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionCarrierCannotDropFourAuthorities()
+    {
+        string exact = ProductionShapedAuthenticatedAdmissionFixture();
+
+        string source = exact.Replace(
+            "new AuthenticatedCovenantErasureRecoveryAdmission(this, _ledgerConnection, /*authenticated-return-evidence*/ evidence, /*authenticated-return-operation*/ adopted.Value.Operation, /*authenticated-return-owner*/ ownerId, covenant, grimoire!)",
+            "new AuthenticatedCovenantErasureRecoveryAdmission(/*authenticated-return-operation*/ adopted.Value.Operation, /*authenticated-return-evidence*/ evidence, /*authenticated-return-owner*/ ownerId)",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exact, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData("_creator = creator;", "_creator = new object();")]
+    [InlineData("_ledger = ledger;", "_ledger = null!;")]
+    [InlineData("_covenant = covenant;", "_covenant = null!;")]
+    [InlineData("_grimoire = grimoire;", "_grimoire = null!;")]
+    [InlineData("internal CovenantHandle Covenant => _covenant;", "internal CovenantHandle Covenant => null!;")]
+    [InlineData("internal GrimoireHandle Grimoire => _grimoire;", "internal GrimoireHandle Grimoire => null!;")]
+    [InlineData("object.ReferenceEquals(_creator, creator)", "object.ReferenceEquals(_creator, new object())")]
+    [InlineData("object.ReferenceEquals(_ledger, ledger)", "object.ReferenceEquals(_ledger, new object())")]
+    [InlineData("object.ReferenceEquals(_creator, creator) &&", "true || object.ReferenceEquals(_creator, creator) &&")]
+    [InlineData("ReleaseKeepClosedAsync(Available)", "ReleaseKeepClosedAsync(Consumed)")]
+    [InlineData("ReleaseKeepClosedAsync(Consumed)", "ReleaseKeepClosedAsync(Available)")]
+    [InlineData(
+        "_grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed",
+        "_grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.RollbackAndReopen")]
+    [InlineData("await _covenant.DisposeAsync();", "_ = _covenant.DisposeAsync();")]
+    [InlineData("await _grimoire.ReleaseAsync", "_grimoire.ReleaseAsync")]
+    [InlineData(
+        "internal ValueTask KeepClosedAfterConsumptionAsync() => ReleaseKeepClosedAsync(Consumed);",
+        "internal ValueTask KeepClosedAfterConsumptionAsync() { _ = ReleaseKeepClosedAsync(Consumed); return default; }")]
+    [InlineData(
+        "public ValueTask DisposeAsync() => ReleaseKeepClosedAsync(Available);",
+        "public ValueTask DisposeAsync() { _ = ReleaseKeepClosedAsync(Available); return default; }")]
+    [InlineData(
+        "_ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); _ = await _covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);",
+        "_ = await _covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); _ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);")]
+    [InlineData(
+        "if (Interlocked.CompareExchange(ref _state, Released, expectedState) != expectedState) return;",
+        "if (false) { if (Interlocked.CompareExchange(ref _state, Released, expectedState) != expectedState) return; }")]
+    [InlineData(
+        "private int _state;",
+        "private int _state; internal void Reset() => _state = Available;")]
+    [InlineData("private int _state;", "private static int _state;")]
+    [InlineData(
+        "private int _state;",
+        "private int _state; internal void Reset() => Interlocked.Exchange(ref _state, Available);")]
+    [InlineData(
+        "_ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);",
+        "_ = await Task.WhenAny(_grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None), Task.FromResult(false));")]
+    [InlineData(
+        "_ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);",
+        "_ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); _ = await _grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);")]
+    [InlineData(
+        "await _covenant.DisposeAsync();",
+        "await (false ? _covenant.DisposeAsync() : default(ValueTask));")]
+    public void AuthenticatedAdmissionCarrierPreservesEveryAuthority(
+        string exact,
+        string mutation)
+    {
+        string source = ProductionShapedAuthenticatedAdmissionFixture()
+            .Replace(exact, mutation, StringComparison.Ordinal);
+
+        Assert.NotEqual(ProductionShapedAuthenticatedAdmissionFixture(), source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData(
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepRecoveryClosedAsync(covenant, grimoire); return new(true, null!); }",
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { return new(true, null!); }")]
+    [InlineData(
+        "if (closed.IsFailure) { await KeepCovenantClosedAsync(covenant); return new(true, null!); }",
+        "if (closed.IsFailure) { await KeepRecoveryClosedAsync(covenant, grimoire!); return new(true, null!); }")]
+    [InlineData(
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepRecoveryClosedAsync(covenant, grimoire); return new(true, null!); }",
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepCovenantClosedAsync(covenant); return new(true, null!); }")]
+    [InlineData(
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepRecoveryClosedAsync(covenant, grimoire); return new(true, null!); }",
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { if (false) await KeepRecoveryClosedAsync(covenant, grimoire); return new(true, null!); }")]
+    [InlineData(
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepRecoveryClosedAsync(covenant, grimoire); return new(true, null!); }",
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence)) { await KeepRecoveryClosedAsync(0, 0); return new(true, null!); }")]
+    [InlineData(
+        "if (grimoire is null) { await KeepCovenantClosedAsync(covenant); } else { await KeepRecoveryClosedAsync(covenant, grimoire); }",
+        "if (ownerId is null) { await KeepCovenantClosedAsync(covenant); } else { await KeepRecoveryClosedAsync(covenant, grimoire); }")]
+    [InlineData(
+        "catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)",
+        "catch (OperationCanceledException) when (DateTime.UtcNow.Ticks > 0)")]
+    [InlineData(
+        "else { await KeepRecoveryClosedAsync(covenant, grimoire); } throw;",
+        "else { } throw;")]
+    [InlineData(
+        "await covenant.DisposeAsync(); } private static async Task KeepRecoveryClosedAsync",
+        "_ = covenant.DisposeAsync(); } private static async Task KeepRecoveryClosedAsync")]
+    [InlineData(
+        "await KeepCovenantClosedAsync(covenant); } private static Task KeepRecoveryClosedAsync(int",
+        "_ = KeepCovenantClosedAsync(covenant); } private static Task KeepRecoveryClosedAsync(int")]
+    [InlineData(
+        "_ = await grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await KeepCovenantClosedAsync(covenant);",
+        "await KeepCovenantClosedAsync(covenant); _ = await grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);")]
+    [InlineData(
+        "_ = await grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None);",
+        "_ = await Task.WhenAny(grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None), Task.FromResult(false));")]
+    [InlineData(
+        "await covenant.DisposeAsync(); } private static async Task KeepRecoveryClosedAsync",
+        "await (false ? covenant.DisposeAsync() : default(ValueTask)); } private static async Task KeepRecoveryClosedAsync")]
+    [InlineData(
+        "_ = await covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await covenant.DisposeAsync();",
+        "_ = await covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); _ = await covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await covenant.DisposeAsync();")]
+    public void AuthenticatedAdmissionProductionFailuresRequireExactClosure(
+        string exact,
+        string mutation)
+    {
+        string source = ProductionShapedAuthenticatedAdmissionFixture()
+            .Replace(exact, mutation, StringComparison.Ordinal);
+
+        Assert.NotEqual(ProductionShapedAuthenticatedAdmissionFixture(), source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionPreflightFailureMustPrecedeAuthorityAcquisition()
+    {
+        string source = ProductionShapedAuthenticatedAdmissionFixture()
+            .Replace(
+                "if (resumed.IsFailure) { return new(true, null!); } var covenant = resumed.Value;",
+                "var covenant = resumed.Value; if (resumed.IsFailure) { return new(true, null!); }",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(ProductionShapedAuthenticatedAdmissionFixture(), source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData(
+        "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken);",
+        "var resumed = true ? new ResumedCovenant(false, new()) : await _gate.ResumeExclusiveAsync(evidence, cancellationToken);")]
+    [InlineData(
+        "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken);",
+        "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken); resumed = new ResumedCovenant(false, new());")]
+    [InlineData(
+        "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken);",
+        "var resumed = await new Gate().ResumeExclusiveAsync(evidence, cancellationToken);")]
+    [InlineData(
+        "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken);",
+        "var resumed = DateTime.UtcNow.Ticks > 0 ? await _gate.ResumeExclusiveAsync(evidence, cancellationToken) : await _gate.ResumeExclusiveAsync(evidence, cancellationToken);")]
+    [InlineData(
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);",
+        "var closed = true ? new ClosedGrimoire(false, new()) : await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);")]
+    [InlineData(
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);",
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true); closed = new ClosedGrimoire(false, new());")]
+    [InlineData(
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);",
+        "var closed = DateTime.UtcNow.Ticks > 0 ? await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true) : await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);")]
+    [InlineData("keepClosedOnFailure: true", "keepClosedOnFailure: false")]
+    [InlineData(
+        "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult> adopted = await WithRequiredLedgerAsync(",
+        "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult> adopted = true ? RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new LongRunningOperationLeaseResult(true, new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4) { Revision = evidence.ExpectedOperation.Revision + 1 })) : await WithRequiredLedgerAsync(")]
+    [InlineData(
+        "async token => RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(\n                                await adoption",
+        "async token => true ? RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new LongRunningOperationLeaseResult(true, new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4) { Revision = evidence.ExpectedOperation.Revision + 1 })) : RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(\n                                await adoption")]
+    public void AuthenticatedAdmissionAuthoritiesRequireExactDirectOrigins(
+        string exact,
+        string mutation)
+    {
+        string baseline = ProductionShapedAuthenticatedAdmissionFixture();
+
+        string source = baseline.Replace(exact, mutation, StringComparison.Ordinal);
+
+        Assert.NotEqual(baseline, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Theory]
+    [InlineData("if (resumed.IsFailure)", "if (false)")]
+    [InlineData("if (closed.IsFailure)", "if (false)")]
+    [InlineData(
+        "if (candidate.IsFailure || !ExactAuthenticatedCandidate(candidate.Value, evidence))",
+        "if (false)")]
+    [InlineData(
+        "if (/*authenticated-failure*/ adopted.IsFailure",
+        "if (/*authenticated-failure*/ false")]
+    public void AuthenticatedAdmissionStageGuardsAreExact(
+        string exact,
+        string mutation)
+    {
+        string baseline = ProductionShapedAuthenticatedAdmissionFixture();
+
+        string source = baseline.Replace(exact, mutation, StringComparison.Ordinal);
+
+        Assert.NotEqual(baseline, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionCatchesMustGuardTheAuthorityOwningTry()
+    {
+        string source = ProductionShapedAuthenticatedAdmissionFixture()
+            .Replace(
+                "GrimoireHandle? grimoire = null; try {",
+                "GrimoireHandle? grimoire = null; {",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-success-end*/ } catch (OperationCanceledException)",
+                "/*authenticated-success-end*/ } try { throw new Exception(); } catch (OperationCanceledException)",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(ProductionShapedAuthenticatedAdmissionFixture(), source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionSuccessRequiresExactResultFactory()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixture()
+            .Replace(
+                "internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                "private static PreparedAdmission Success(AuthenticatedCovenantErasureRecoveryAdmission value) => new(false, null!); internal async Task<PreparedAdmission> PrepareAuthenticatedRecoveryAsync(",
+                StringComparison.Ordinal);
+
+        source = System.Text.RegularExpressions.Regex.Replace(
+            source,
+            @"/\*authenticated-success-start\*/ return new\(\s*false,\s*new AuthenticatedCovenantErasureRecoveryAdmission\(",
+            "/*authenticated-success-start*/ return Success(new AuthenticatedCovenantErasureRecoveryAdmission(");
+
+        Assert.Contains("return Success(", source, StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionCarrierRejectsSubstitutedGetter()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixture()
+            .Replace(
+                "AdoptedOperation = adoptedOperation;",
+                "_adoptedOperation = adoptedOperation;",
+                StringComparison.Ordinal)
+            .Replace(
+                "internal LongRunningOperation AdoptedOperation { get; }",
+                "private readonly LongRunningOperation _adoptedOperation; internal LongRunningOperation AdoptedOperation => _adoptedOperation with { Revision = _adoptedOperation.Revision + 1 };",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void RecoveryTupleStabilityIncludesInvokedCallbackArguments()
+    {
+        const string dispatch =
+            "await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),\n                CancellationToken.None);";
+
+        string source = OfflineTransitionDispatchFixture().Replace(
+            dispatch,
+            "LongRunningOperation mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionMutation,\n                4);\n            System.Action swap = () => mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionFactoryReset,\n                2);\n            Task.Run(swap).GetAwaiter().GetResult();\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                mutableOperation,\n                CancellationToken.None);",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(OfflineTransitionDispatchFixture(), source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedHandlerCardinalityRefusalMustReturnFailure()
+    {
+        string exact = OfflineTransitionDispatchFixture();
+
+        string source = exact.Replace(
+            "/*exact-cardinality*/ if (handlers.Length != 1)\n                {\n                    throw new InvalidOperationException();\n                }",
+            "/*exact-cardinality*/ if (handlers.Length != 1)\n                {\n                    return;\n                }",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exact, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedHandlerCardinalityRequiresExactRefusalError()
+    {
+        string exact = ResultReturningOfflineTransitionDispatchFixture();
+
+        int cardinality = exact.IndexOf(
+            "/*exact-cardinality*/",
+            StringComparison.Ordinal);
+
+        int refusal = exact.IndexOf(
+            "GrimoireOfflineTransitionStartupRecovery.Refusal().Error",
+            cardinality,
+            StringComparison.Ordinal);
+
+        Assert.True(cardinality >= 0 && refusal >= 0);
+
+        string source = exact.Remove(
+                refusal,
+                "GrimoireOfflineTransitionStartupRecovery.Refusal().Error".Length)
+            .Insert(
+                refusal,
+                "new RetroDownfall.Arcanum.Core.Primitives.Error(\"foreign\")");
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedPreparationRefusalMustReturnFailure()
+    {
+        string exact = ProductionProjectedOfflineTransitionDispatchFixture();
+
+        string source = exact.Replace(
+            "if (/*prepared-failure*/ prepared.IsFailure)\n                {\n                    throw new InvalidOperationException();\n                }",
+            "if (/*prepared-failure*/ prepared.IsFailure)\n                {\n                    return;\n                }",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(exact, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void LaunchGapDuplicateRefusalMustReturnFailure()
+    {
+        string exact = OfflineTransitionDispatchFixture();
+
+        int marker = exact.IndexOf(
+            "/*launch-gap-duplicate-refusal*/",
+            StringComparison.Ordinal);
+
+        int refusal = exact.IndexOf(
+            "throw new InvalidOperationException();",
+            marker,
+            StringComparison.Ordinal);
+
+        string source = exact.Remove(
+                refusal,
+                "throw new InvalidOperationException();".Length)
+            .Insert(refusal, "return;");
+
+        Assert.NotEqual(exact, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void LaunchGapCandidateMismatchMustReturnFailure()
+    {
+        string exact = ProductionProjectedOfflineTransitionDispatchFixture();
+
+        int marker = exact.IndexOf(
+            "/*launch-before-candidate-refusal*/",
+            StringComparison.Ordinal);
+
+        int refusal = exact.IndexOf(
+            "throw new InvalidOperationException();",
+            marker,
+            StringComparison.Ordinal);
+
+        string source = exact.Remove(
+                refusal,
+                "throw new InvalidOperationException();".Length)
+            .Insert(refusal, "return;");
+
+        Assert.NotEqual(exact, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void LaunchGapAdoptionFailureMustReturnFailure()
+    {
+        string exact = ProductionProjectedOfflineTransitionDispatchFixture();
+
+        int marker = exact.IndexOf(
+            "/*launch-before-acquired-refusal*/",
+            StringComparison.Ordinal);
+
+        int refusal = exact.IndexOf(
+            "throw new InvalidOperationException();",
+            marker,
+            StringComparison.Ordinal);
+
+        string source = exact.Remove(
+                refusal,
+                "throw new InvalidOperationException();".Length)
+            .Insert(refusal, "return;");
+
+        Assert.NotEqual(exact, source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void OfflineTransitionDispatchSeparatesAuthenticatedJournalAndLaunchGapOwnerEvidence()
+    {
+        string exactSource = OfflineTransitionDispatchFixture();
+
+        string Mutate(string target, string replacement)
+        {
+            string mutated = exactSource.Replace(
+                target,
+                replacement,
+                StringComparison.Ordinal);
+
+            Assert.NotEqual(exactSource, mutated);
+
+            return mutated;
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> authenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                exactSource,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.DoesNotContain(authenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal));
+
+        string productionProjectedSource =
+            ProductionProjectedOfflineTransitionDispatchFixture();
+
+        Assert.NotEqual(exactSource, productionProjectedSource);
+
+        HostedProducerDiscovery<HostedProducerSite> projectedAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                productionProjectedSource,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.True(
+            projectedAuthenticated.Diagnostics.All(static diagnostic =>
+                !diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)),
+            string.Join(System.Environment.NewLine, projectedAuthenticated.Diagnostics));
+
+        string wrongKeepClosedDisposition = productionProjectedSource.Replace(
+            "RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed",
+            "RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.RollbackAndReopen",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, wrongKeepClosedDisposition);
+
+        HostedProducerDiscovery<HostedProducerSite> wrongKeepClosedDispositionResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                wrongKeepClosedDisposition,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(wrongKeepClosedDispositionResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string rogueKeepClosedDisposition = productionProjectedSource.Replace(
+                "RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition",
+                "Rogue.CovenantExclusiveLeaseDisposition",
+                StringComparison.Ordinal)
+            + " namespace Rogue { internal enum CovenantExclusiveLeaseDisposition : byte { KeepClosed = 3 } }";
+
+        Assert.NotEqual(productionProjectedSource, rogueKeepClosedDisposition);
+
+        HostedProducerDiscovery<HostedProducerSite> rogueKeepClosedDispositionResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                rogueKeepClosedDisposition,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(rogueKeepClosedDispositionResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        foreach ((string target, string replacement) in new[]
+        {
+            (
+                "/*current-tuples*/ string.Equals(candidate.Kind, admission.AdoptedOperation.Kind, StringComparison.Ordinal)",
+                "/*current-tuples*/ string.Equals(candidate.Kind, admission.AdoptedOperation.Kind, StringComparison.CurrentCulture)"),
+            (
+                "internal LongRunningOperation AdoptedOperation { get; }",
+                "internal LongRunningOperation AdoptedOperation { get; set; }"),
+            (
+                "if (/*prepared-failure*/ prepared.IsFailure)",
+                "if (false)"),
+            (
+                "/*prepared-failure*/ prepared.IsFailure",
+                "/*prepared-failure*/ false || prepared.IsFailure"),
+            (
+                "/*prepared-lock*/ heldInstallationLock!",
+                "/*prepared-lock*/ new RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock()"),
+            (
+                "/*prepared-directory*/ guardedDirectory",
+                "/*prepared-directory*/ \"rogue\""),
+            (
+                "/*prepared-evidence*/ authenticated",
+                "/*prepared-evidence*/ new AuthenticatedJournalRecoveryOwnerEvidence()"),
+            (
+                "/*prepared-adoption*/ authenticatedAdoption",
+                "/*prepared-adoption*/ null!"),
+            (
+                "/*prepared-owner*/ authenticatedOwnerId",
+                "/*prepared-owner*/ authenticatedOwnerId + \"rogue\""),
+            (
+                "/*prepared-now*/ authenticatedNow",
+                "/*prepared-now*/ DateTimeOffset.UnixEpoch"),
+            (
+                "/*prepared-expiry*/ authenticatedNow.Add(RecoveryLease)",
+                "/*prepared-expiry*/ authenticatedNow"),
+            (
+                "/*prepared-token*/ cancellationToken",
+                "/*prepared-token*/ CancellationToken.None"),
+            (
+                "/*authenticated-operation-refusal*/ !ExactAdoptedOperation",
+                "/*authenticated-operation-refusal*/ ExactAdoptedOperation"),
+            (
+                "/*authenticated-verified-operation*/ adopted.Value.Operation",
+                "/*authenticated-verified-operation*/ new LongRunningOperation(LongRunningOperationKinds.DataRetentionFactoryReset, 2)"),
+            (
+                "/*authenticated-verified-evidence*/ evidence",
+                "/*authenticated-verified-evidence*/ new AuthenticatedJournalRecoveryOwnerEvidence()"),
+            (
+                "/*authenticated-verified-owner*/ ownerId",
+                "/*authenticated-verified-owner*/ ownerId + \"rogue\""),
+            (
+                "/*authenticated-return-operation*/ adopted.Value.Operation",
+                "/*authenticated-return-operation*/ new LongRunningOperation(LongRunningOperationKinds.DataRetentionFactoryReset, 2)"),
+            (
+                "/*authenticated-return-evidence*/ evidence",
+                "/*authenticated-return-evidence*/ new AuthenticatedJournalRecoveryOwnerEvidence()"),
+            (
+                "/*authenticated-return-owner*/ ownerId",
+                "/*authenticated-return-owner*/ ownerId + \"rogue\""),
+            (
+                "/*authenticated-acquired*/ !adopted.Value.Acquired",
+                "/*authenticated-acquired*/ false || !adopted.Value.Acquired"),
+            (
+                "/*authenticated-after-guard*/",
+                "/*authenticated-after-guard*/ adopted = RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new(false, adopted.Value.Operation));"),
+            (
+                "/*authenticated-after-guard*/",
+                "/*authenticated-after-guard*/ evidence = new AuthenticatedJournalRecoveryOwnerEvidence();"),
+            (
+                "/*authenticated-after-guard*/",
+                "/*authenticated-after-guard*/ ownerId = \"rogue\";"),
+            (
+                "/*authenticated-factory-entry*/",
+                "/*authenticated-factory-entry*/ evidence = new AuthenticatedJournalRecoveryOwnerEvidence();"),
+            (
+                "/*authenticated-factory-entry*/",
+                "/*authenticated-factory-entry*/ ownerId = \"rogue\";"),
+            (
+                "/*authenticated-before-guard*/",
+                "/*authenticated-before-guard*/ (adopted, evidence) = (RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new(false, adopted.Value.Operation)), new AuthenticatedJournalRecoveryOwnerEvidence());"),
+            (
+                "/*prepared-before-call*/",
+                "/*prepared-before-call*/ heldInstallationLock = new RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock();"),
+            (
+                "/*prepared-before-call*/",
+                "/*prepared-before-call*/ guardedDirectory = \"rogue\";"),
+            (
+                "/*prepared-before-call*/",
+                "/*prepared-before-call*/ authenticatedNow = DateTimeOffset.UnixEpoch;"),
+            (
+                "/*prepared-before-call*/",
+                "/*prepared-before-call*/ (heldInstallationLock, guardedDirectory) = (new RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock(), \"rogue\");"),
+            (
+                "/*authenticated-adopted-before-return*/",
+                "/*authenticated-adopted-before-return*/ operation = operation with { Kind = \"rogue\" };"),
+            (
+                "/*authenticated-adopted-before-return*/",
+                "/*authenticated-adopted-before-return*/ evidence = new AuthenticatedJournalRecoveryOwnerEvidence();"),
+            (
+                "/*authenticated-adopted-before-return*/",
+                "/*authenticated-adopted-before-return*/ ownerId = \"rogue\";"),
+            (
+                "/*authenticated-adopted-extra*/;",
+                "/*authenticated-adopted-extra*/ && ((operation = operation) is not null);"),
+            (
+                "/*authenticated-adopted-extra*/;",
+                "/*authenticated-adopted-extra*/ && true;"),
+            (
+                "/*authenticated-candidate-before-return*/",
+                "/*authenticated-candidate-before-return*/ operation = operation with { Kind = \"rogue\" };"),
+            (
+                "/*authenticated-candidate-before-return*/",
+                "/*authenticated-candidate-before-return*/ evidence = new AuthenticatedJournalRecoveryOwnerEvidence();"),
+            (
+                "/*authenticated-candidate-extra*/;",
+                "/*authenticated-candidate-extra*/ && ((evidence = evidence) is not null);"),
+            (
+                "/*authenticated-candidate-extra*/;",
+                "/*authenticated-candidate-extra*/ && true;"),
+            (
+                "/*authenticated-adopted-start*/ ExactAuthenticatedCandidate",
+                "/*authenticated-adopted-start*/ true || ExactAuthenticatedCandidate"),
+            (
+                "/*authenticated-adopted-and*/ && operation.Revision",
+                "/*authenticated-adopted-and*/ || operation.Revision"),
+            (
+                "/*authenticated-candidate-start*/ operation.Id",
+                "/*authenticated-candidate-start*/ true || operation.Id"),
+            (
+                "/*authenticated-candidate-and*/ && operation.CheckpointVersion",
+                "/*authenticated-candidate-and*/ || operation.CheckpointVersion"),
+            (
+                "/*authenticated-candidate-and*/ && operation.CheckpointVersion ==",
+                "/*authenticated-candidate-and*/ && operation.Kind.Length =="),
+            (
+                "/*authenticated-binding-digest*/ launch.Value.Digest ==\n            binding.DatabaseOperationLaunchBindingDigest",
+                "/*authenticated-binding-digest*/ true"),
+            (
+                "/*authenticated-starting-revision*/ binding.ExpectedDatabaseOperationRevision > (ulong)launch.Value.StartingRevision",
+                "/*authenticated-starting-revision*/ (ulong)launch.Value.StartingRevision > binding.ExpectedDatabaseOperationRevision"),
+            (
+                "/*authenticated-current-revision*/ binding.ExpectedDatabaseOperationRevision <= (ulong)operation.Revision",
+                "/*authenticated-current-revision*/ (ulong)operation.Revision <= binding.ExpectedDatabaseOperationRevision"),
+            (
+                "/*authenticated-adopted-and*/ && operation.Revision == evidence.ExpectedOperation.Revision + 1",
+                "/*authenticated-adopted-and*/ && true"),
+            (
+                "&& operation.State == LongRunningOperationState.Running",
+                "&& true"),
+            (
+                "operation.LeaseOwner",
+                "ownerId"),
+            (
+                "/*authenticated-classification*/ LongRunningRecoveryAdmissionKind.OwnerBoundOffline",
+                "/*authenticated-classification*/ LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion"),
+            (
+                "/*prepared-after-refusal*/",
+                "/*prepared-after-refusal*/ prepared = new(false, null!);"),
+        })
+        {
+            Assert.Contains(target, productionProjectedSource, StringComparison.Ordinal);
+
+            string malformedProjection = productionProjectedSource.Replace(
+                target,
+                replacement,
+                StringComparison.Ordinal);
+
+            Assert.NotEqual(productionProjectedSource, malformedProjection);
+
+            HostedProducerDiscovery<HostedProducerSite> unprovedProjection =
+                DiscoverOfflineTransitionDispatchFixture(
+                    malformedProjection,
+                    includeAuthenticatedRoot: true,
+                    includeLaunchGapRoot: false);
+
+            Assert.True(
+                unprovedProjection.Diagnostics.Any(static diagnostic =>
+                    diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN"),
+                target);
+        }
+
+        string reducedPreparationAuthority = productionProjectedSource
+            .Replace(
+                "/*prepared-formal-directory*/ string guardedDirectory,",
+                string.Empty,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*prepared-directory*/ guardedDirectory,",
+                string.Empty,
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-factory-entry*/",
+                "/*authenticated-factory-entry*/ string guardedDirectory = \"directory\";",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, reducedPreparationAuthority);
+
+        HostedProducerDiscovery<HostedProducerSite> reducedPreparationAuthorityResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                reducedPreparationAuthority,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(reducedPreparationAuthorityResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string reorderedAuthenticatedFailure = productionProjectedSource
+            .Replace(
+                "/*authenticated-failure*/ adopted.IsFailure",
+                "/*authenticated-failure*/ __AUTHENTICATED_FAILURE_SWAP__",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-acquired*/ !adopted.Value.Acquired",
+                "/*authenticated-acquired*/ adopted.IsFailure",
+                StringComparison.Ordinal)
+            .Replace(
+                "__AUTHENTICATED_FAILURE_SWAP__",
+                "!adopted.Value.Acquired",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, reorderedAuthenticatedFailure);
+
+        HostedProducerDiscovery<HostedProducerSite> reorderedAuthenticatedFailureResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                reorderedAuthenticatedFailure,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(reorderedAuthenticatedFailureResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string unreachableAuthenticatedSuccess = productionProjectedSource
+            .Replace(
+                "/*authenticated-success-start*/",
+                "/*authenticated-success-start*/ if (false) {",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*authenticated-success-end*/",
+                "/*authenticated-success-end*/ } return new(false, new AuthenticatedCovenantErasureRecoveryAdmission(adopted.Value.Operation, evidence, ownerId));",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, unreachableAuthenticatedSuccess);
+
+        HostedProducerDiscovery<HostedProducerSite> unreachableAuthenticatedSuccessResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                unreachableAuthenticatedSuccess,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(unreachableAuthenticatedSuccessResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string wrappedPreparation = productionProjectedSource
+            .Replace(
+                "/*prepared-initializer*/ await",
+                "/*prepared-initializer*/ await Task.FromResult(await",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*prepared-initializer-end*/;",
+                ")/*prepared-initializer-end*/;",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, wrappedPreparation);
+
+        HostedProducerDiscovery<HostedProducerSite> wrappedPreparationResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                wrappedPreparation,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(wrappedPreparationResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string authenticatedAlongsideOrdinary = exactSource
+            .Replace(
+                "public const string DataRetentionMutation = \"mutation\";",
+                "public const string Ordinary = \"ordinary\"; public const string DataRetentionMutation = \"mutation\";",
+                StringComparison.Ordinal)
+            .Replace(
+                "new(LongRunningOperationKinds.DataRetentionMutation, 0, 4),",
+                "new(LongRunningOperationKinds.Ordinary, 0, 0), new(LongRunningOperationKinds.DataRetentionMutation, 0, 4),",
+                StringComparison.Ordinal)
+            .Replace(
+                "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>();",
+                "services.AddScoped<RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler, RetroDownfall.Arcanum.Infrastructure.Operations.OrdinaryRecoveryHandler>(); services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.ServingMutationRecoveryHandler>();",
+                StringComparison.Ordinal)
+            .Replace(
+                "internal sealed class ServingMutationRecoveryHandler :",
+                "internal sealed class OrdinaryRecoveryHandler : ILongRunningOperationRecoveryHandler { public string Kind => LongRunningOperationKinds.Ordinary; public int SupportedCheckpointVersion => 0; public Task RecoverAsync(LongRunningOperation operation, CancellationToken cancellationToken) => Task.CompletedTask; } internal sealed class ServingMutationRecoveryHandler :",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(exactSource, authenticatedAlongsideOrdinary);
+
+        HostedProducerDiscovery<HostedProducerSite> authenticatedWithOrdinary =
+            DiscoverOfflineTransitionDispatchFixture(
+                authenticatedAlongsideOrdinary,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.DoesNotContain(authenticatedWithOrdinary.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_HANDLER_UNPROVEN"
+            && diagnostic.Detail.StartsWith("ordinary;", StringComparison.Ordinal));
+
+        HostedProducerSite[] authenticatedEffects = authenticated.Items
+            .Where(static site =>
+                site.RootType.EndsWith(
+                    ".AuthenticatedJournalOwnerRoot",
+                    StringComparison.Ordinal)
+                && site.Callee == "System.IO.File.Delete"
+                && site.EnclosingType.EndsWith(
+                    ".CovenantErasureCoordinator",
+                    StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(2, authenticatedEffects.Length);
+
+        Assert.Equal(
+            2,
+            authenticatedEffects
+                .Select(static site => site.CapsuleId)
+                .Distinct(StringComparer.Ordinal)
+                .Count());
+
+        Assert.Equal(
+            2,
+            authenticated.Items.Count(static site =>
+                site.EnclosingType.Contains(".Serving", StringComparison.Ordinal)
+                && site.Callee == "System.IO.File.Exists"));
+
+        Assert.DoesNotContain(authenticated.Items, static site =>
+            site.EnclosingType.Contains(".Stopped", StringComparison.Ordinal));
+
+        string servingEffectSource = Mutate(
+            "System.IO.File.Exists(\"serving-authenticated-mutation\");",
+            "System.IO.File.Delete(\"serving-authenticated-mutation\");");
+
+        HostedProducerDiscovery<HostedProducerSite> servingEffect =
+            DiscoverOfflineTransitionDispatchFixture(
+                servingEffectSource,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Single(servingEffect.Items, static site =>
+            site.RootType.EndsWith(
+                ".AuthenticatedJournalOwnerRoot",
+                StringComparison.Ordinal)
+            && site.EnclosingType.EndsWith(
+                ".ServingMutationRecoveryHandler",
+                StringComparison.Ordinal)
+            && site.Member == "RecoverAuthenticatedAsync"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerDiscovery<HostedProducerSite> launchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                exactSource,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.DoesNotContain(launchGap.Diagnostics, static diagnostic =>
+            diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal));
+
+        HostedProducerDiscovery<HostedProducerSite> projectedLaunchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                productionProjectedSource,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.True(
+            projectedLaunchGap.Diagnostics.All(static diagnostic =>
+                !diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)),
+            string.Join(
+                System.Environment.NewLine,
+                projectedLaunchGap.Diagnostics));
+
+        void AssertProjectedLaunchGapUnproven(
+            string target,
+            string replacement)
+        {
+            Assert.Contains(target, productionProjectedSource, StringComparison.Ordinal);
+
+            string malformed = productionProjectedSource.Replace(
+                target,
+                replacement,
+                StringComparison.Ordinal);
+
+            Assert.NotEqual(productionProjectedSource, malformed);
+
+            HostedProducerDiscovery<HostedProducerSite> unproved =
+                DiscoverOfflineTransitionDispatchFixture(
+                    malformed,
+                    includeAuthenticatedRoot: false,
+                    includeLaunchGapRoot: true);
+
+            Assert.True(
+                unproved.Diagnostics.Any(static diagnostic =>
+                    diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN"),
+                target);
+        }
+
+        string wrappedAdoption = productionProjectedSource
+            .Replace(
+                "/*adopted-initializer*/ await",
+                "/*adopted-initializer*/ await Task.FromResult(await",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*adopted-initializer-end*/;",
+                ")/*adopted-initializer-end*/;",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, wrappedAdoption);
+
+        HostedProducerDiscovery<HostedProducerSite> wrappedAdoptionResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                wrappedAdoption,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(wrappedAdoptionResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string unreachableExactFallback = productionProjectedSource
+            .Replace(
+                "/*fallback-statement*/",
+                "/*fallback-statement*/ if (false) {",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*fallback-statement-end*/;",
+                "/*fallback-statement-end*/; }",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, unreachableExactFallback);
+
+        HostedProducerDiscovery<HostedProducerSite> unreachableExactFallbackResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                unreachableExactFallback,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(unreachableExactFallbackResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string reorderedLaunchCandidateNull = productionProjectedSource
+            .Replace(
+                "/*launch-candidate-null*/ candidate is null",
+                "/*launch-candidate-null*/ __LAUNCH_CANDIDATE_NULL_SWAP__",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*launch-candidate-id*/ candidate.Id != expected.OperationId",
+                "/*launch-candidate-id*/ candidate is null",
+                StringComparison.Ordinal)
+            .Replace(
+                "__LAUNCH_CANDIDATE_NULL_SWAP__",
+                "candidate.Id != expected.OperationId",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, reorderedLaunchCandidateNull);
+
+        HostedProducerDiscovery<HostedProducerSite> reorderedLaunchCandidateNullResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                reorderedLaunchCandidateNull,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(reorderedLaunchCandidateNullResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string skippedCandidateRefusal = productionProjectedSource
+            .Replace(
+                "/*launch-before-candidate-refusal*/",
+                "/*launch-before-candidate-refusal*/ if (ownerEvidence is not null) goto afterCandidateRefusal;",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*launch-after-candidate-refusal*/",
+                "afterCandidateRefusal: ; /*launch-after-candidate-refusal*/",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, skippedCandidateRefusal);
+
+        HostedProducerDiscovery<HostedProducerSite> skippedCandidateRefusalResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                skippedCandidateRefusal,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(skippedCandidateRefusalResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string skippedAcquiredRefusal = productionProjectedSource
+            .Replace(
+                "/*launch-before-acquired-refusal*/",
+                "/*launch-before-acquired-refusal*/ if (ownerEvidence is not null) goto afterAcquiredRefusal;",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*launch-after-acquired-refusal*/",
+                "afterAcquiredRefusal: ; /*launch-after-acquired-refusal*/",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, skippedAcquiredRefusal);
+
+        HostedProducerDiscovery<HostedProducerSite> skippedAcquiredRefusalResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                skippedAcquiredRefusal,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(skippedAcquiredRefusalResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string nestedRereadNullGuard = productionProjectedSource
+            .Replace(
+                "if (/*reread-null*/ leased is null)",
+                "if (operationId == Guid.Empty) { if (/*reread-null*/ leased is null)",
+                StringComparison.Ordinal)
+            .Replace(
+                "/*reread-after-null*/",
+                "} /*reread-after-null*/",
+                StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, nestedRereadNullGuard);
+
+        HostedProducerDiscovery<HostedProducerSite> nestedRereadNullGuardResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                nestedRereadNullGuard,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(nestedRereadNullGuardResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string fieldExpiry = productionProjectedSource.Replace(
+            "/*adoption-expiry*/ now.AddMinutes(1)",
+            "/*adoption-expiry*/ now.Add(RecoveryLease)",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(productionProjectedSource, fieldExpiry);
+
+        HostedProducerDiscovery<HostedProducerSite> fieldExpiryResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                fieldExpiry,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.DoesNotContain(fieldExpiryResult.Diagnostics, static diagnostic =>
+            diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal));
+
+        string overwrittenFieldExpiry = fieldExpiry.Replace(
+            "/*recovery-lease-field-end*/",
+            "/*recovery-lease-field-end*/ static GrimoireOfflineTransitionHandlerDispatch() { RecoveryLease = TimeSpan.Zero; }",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(fieldExpiry, overwrittenFieldExpiry);
+
+        HostedProducerDiscovery<HostedProducerSite> overwrittenFieldExpiryResult =
+            DiscoverOfflineTransitionDispatchFixture(
+                overwrittenFieldExpiry,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(overwrittenFieldExpiryResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        foreach ((string target, string replacement) in new[]
+        {
+            (
+                "/*store-scope*/ scope.ServiceProvider",
+                "/*store-scope*/ rogueScope.ServiceProvider"),
+            (
+                "/*adoption-scope*/ scope.ServiceProvider",
+                "/*adoption-scope*/ rogueScope.ServiceProvider"),
+            (
+                "/*fallback-scope*/ scope.ServiceProvider",
+                "/*fallback-scope*/ rogueScope.ServiceProvider"),
+            (
+                "/*store-operation-id*/ expected.OperationId",
+                "/*store-operation-id*/ Guid.NewGuid()"),
+            (
+                "/*store-token*/ cancellationToken",
+                "/*store-token*/ CancellationToken.None"),
+            (
+                "/*adoption-lock*/ heldInstallationLock!",
+                "/*adoption-lock*/ new object()"),
+            (
+                "/*adoption-directory*/ guardedDirectory",
+                "/*adoption-directory*/ \"rogue\""),
+            (
+                "/*adoption-now*/ now",
+                "/*adoption-now*/ DateTimeOffset.UnixEpoch"),
+            (
+                "/*adoption-expiry*/ now.AddMinutes(1)",
+                "/*adoption-expiry*/ DateTimeOffset.UnixEpoch.AddMinutes(1)"),
+            (
+                "/*adoption-expiry*/ now.AddMinutes(1)",
+                "/*adoption-expiry*/ now.AddMinutes(0)"),
+            (
+                "/*adoption-expiry*/ now.AddMinutes(1)",
+                "/*adoption-expiry*/ now.AddMinutes(-1)"),
+            (
+                "/*adoption-expiry*/ now.AddMinutes(1)",
+                "/*adoption-expiry*/ now.AddMinutes(double.NaN)"),
+            (
+                "/*adoption-expiry*/ now.AddMinutes(1)",
+                "/*adoption-expiry*/ now.AddMinutes(double.Epsilon)"),
+            (
+                "/*adoption-expiry*/ now.AddMinutes(1)",
+                "/*adoption-expiry*/ now.AddMinutes(double.MaxValue)"),
+            (
+                "/*adoption-token*/ cancellationToken",
+                "/*adoption-token*/ CancellationToken.None"),
+            (
+                "/*adoption-service-stability*/",
+                "/*adoption-service-stability*/ adoption = null!;"),
+            (
+                "/*adoption-service-stability*/",
+                "/*adoption-service-stability*/ heldInstallationLock = new RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock();"),
+            (
+                "/*adoption-service-stability*/",
+                "/*adoption-service-stability*/ guardedDirectory = \"rogue\";"),
+            (
+                "/*adoption-service-stability*/",
+                "/*adoption-service-stability*/ now = DateTimeOffset.UnixEpoch;"),
+            (
+                "/*adoption-service-stability*/",
+                "/*adoption-service-stability*/ (heldInstallationLock, guardedDirectory) = (new RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock(), \"rogue\");"),
+            (
+                "/*launch-before-candidate-refusal*/",
+                "/*launch-before-candidate-refusal*/ _ = candidate!.Kind;"),
+            (
+                "/*launch-candidate-or-id*/ ||",
+                "/*launch-candidate-or-id*/ &&"),
+            (
+                "/*launch-acquired*/ !adopted.Acquired",
+                "/*launch-acquired*/ false || !adopted.Acquired"),
+            (
+                "/*reread-null*/ leased is null",
+                "/*reread-null*/ false && leased is null"),
+            (
+                "if (/*reread-null*/ leased is null)",
+                "_ = leased.Kind;\n\n                            if (/*reread-null*/ leased is null)"),
+            (
+                "/*reread-or-kind*/ ||",
+                "/*reread-or-kind*/ &&"),
+            (
+                "/*launch-candidate-null*/ candidate is null",
+                "/*launch-candidate-null*/ candidate is not null"),
+            (
+                "/*launch-candidate-id*/ candidate.Id != expected.OperationId",
+                "/*launch-candidate-id*/ false"),
+            (
+                "/*launch-candidate-kind*/ !string.Equals",
+                "/*launch-candidate-kind*/ string.Equals"),
+            (
+                "/*launch-candidate-version*/ candidate.CheckpointVersion != expected.CheckpointVersion",
+                "/*launch-candidate-version*/ false"),
+            (
+                "/*launch-candidate-revision*/ candidate.Revision != expected.Revision",
+                "/*launch-candidate-revision*/ false"),
+            (
+                "/*launch-classified-operation*/ candidate",
+                "/*launch-classified-operation*/ operation"),
+            (
+                "/*launch-acquired*/ !adopted.Acquired",
+                "/*launch-acquired*/ false"),
+            (
+                "/*fallback-operation-id*/ expected.OperationId",
+                "/*fallback-operation-id*/ adopted.Operation.Id"),
+            (
+                "/*fallback-owner-id*/ ownerId",
+                "/*fallback-owner-id*/ ownerId + \"rogue\""),
+            (
+                "/*fallback-evidence*/ ownerEvidence",
+                "/*fallback-evidence*/ new LongRunningRecoveryOwnerEvidence()"),
+            (
+                "/*fallback-token*/ cancellationToken",
+                "/*fallback-token*/ CancellationToken.None"),
+            (
+                "/*owner-settle-signature*/ internal async Task SettleExactlyAsync",
+                "/*owner-settle-signature*/ public async Task SettleExactlyAsync"),
+            (
+                "/*fallback-await*/ await",
+                "/*fallback-await*/"),
+            (
+                "/*fallback-stability*/",
+                "/*fallback-stability*/ expected = new(Guid.NewGuid(), \"rogue\", 0, 0);"),
+            (
+                "/*fallback-stability*/",
+                "/*fallback-stability*/ ownerId = \"rogue\";"),
+            (
+                "/*fallback-stability*/",
+                "/*fallback-stability*/ ownerEvidence = new LongRunningRecoveryOwnerEvidence();"),
+            (
+                "/*fallback-stability*/",
+                "/*fallback-stability*/ cancellationToken = new CancellationToken(true);"),
+            (
+                "/*reread-token*/ cancellationToken",
+                "/*reread-token*/ CancellationToken.None"),
+            (
+                "/*reread-null*/ leased is null",
+                "/*reread-null*/ false"),
+            (
+                "/*reread-id*/ leased.Id != expected.OperationId",
+                "/*reread-id*/ false"),
+            (
+                "/*reread-kind*/ !string.Equals",
+                "/*reread-kind*/ string.Equals"),
+            (
+                "/*reread-version*/ leased.CheckpointVersion != expected.CheckpointVersion",
+                "/*reread-version*/ false"),
+            (
+                "/*reread-revision*/ leased.Revision != expected.Revision + 1",
+                "/*reread-revision*/ false"),
+            (
+                "/*reread-owner*/ !string.Equals",
+                "/*reread-owner*/ string.Equals"),
+            (
+                "/*reread-classification*/ decision.Kind is not",
+                "/*reread-classification*/ decision.Kind is"),
+            (
+                "/*settle-token*/ cancellationToken",
+                "/*settle-token*/ CancellationToken.None"),
+            (
+                "/*settle-forward-stability*/",
+                "/*settle-forward-stability*/ operationHandlers = null!;"),
+            (
+                "/*settle-forward-stability*/",
+                "/*settle-forward-stability*/ operation = new LongRunningOperation(\"rogue\", 0);"),
+            (
+                "/*settle-forward-stability*/",
+                "/*settle-forward-stability*/ cancellationToken = new CancellationToken(true);"),
+            (
+                "/*settle-forward-stability*/",
+                "/*settle-forward-stability*/ (operation, cancellationToken) = (new LongRunningOperation(\"rogue\", 0), new CancellationToken(true));"),
+            (
+                "/*recover-operation*/ operation",
+                "/*recover-operation*/ new LongRunningOperation(\"rogue\", 0)"),
+            (
+                "/*handler-operation*/ operation",
+                "/*handler-operation*/ new LongRunningOperation(\"rogue\", 0)"),
+            (
+                "/*handler-key*/ operation.Kind",
+                "/*handler-key*/ \"rogue\""),
+            (
+                "/*handler-refusal*/ !handlersForOperation.TryGetValue",
+                "/*handler-refusal*/ handlersForOperation.TryGetValue"),
+            (
+                "/*recover-forward-stability*/",
+                "/*recover-forward-stability*/ handlersForOperation = null!;"),
+            (
+                "/*recover-forward-stability*/",
+                "/*recover-forward-stability*/ operation = new LongRunningOperation(\"rogue\", 0);"),
+            (
+                "/*recover-forward-stability*/",
+                "/*recover-forward-stability*/ cancellationToken = new CancellationToken(true);"),
+            (
+                "/*recover-forward-stability*/",
+                "/*recover-forward-stability*/ (operation, cancellationToken) = (new LongRunningOperation(\"rogue\", 0), new CancellationToken(true));"),
+            (
+                "/*handler-receiver*/ handler",
+                "/*handler-receiver*/ rogue"),
+            (
+                "/*handler-stability*/",
+                "/*handler-stability*/ handler = new ServingMutationRecoveryHandler();"),
+            (
+                "/*handler-stability*/",
+                "/*handler-stability*/ handlersForOperation = null!;"),
+            (
+                "/*handler-stability*/",
+                "/*handler-stability*/ operation = new LongRunningOperation(\"rogue\", 0);"),
+            (
+                "/*handler-stability*/",
+                "/*handler-stability*/ cancellationToken = new CancellationToken(true);"),
+        })
+        {
+            AssertProjectedLaunchGapUnproven(target, replacement);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> readinessLaunchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                productionProjectedSource,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true,
+                launchGapAuthority:
+                    HostedProducerAuthorityKind.PreReadinessStartup);
+
+        Assert.DoesNotContain(readinessLaunchGap.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_DISPATCH_UNPROVEN"
+            && diagnostic.Detail ==
+                "The readiness recovery call path must pass through the one bounded reconciliation entry.");
+
+        HostedProducerDiscovery<HostedProducerSite> legacyReadinessLaunchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                exactSource,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true,
+                launchGapAuthority:
+                    HostedProducerAuthorityKind.PreReadinessStartup);
+
+        Assert.Contains(legacyReadinessLaunchGap.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_DISPATCH_UNPROVEN"
+            && diagnostic.Detail ==
+                "The readiness recovery call path must pass through the one bounded reconciliation entry.");
+
+        Assert.Equal(
+            2,
+            launchGap.Items.Count(static site =>
+                site.RootType.EndsWith(".LaunchGapOwnerRoot", StringComparison.Ordinal)
+                && site.Callee == "System.IO.File.Delete"
+                && site.EnclosingType.Contains(
+                    ".Stopped",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(
+            2,
+            launchGap.Items.Count(static site =>
+                site.RootType.EndsWith(".LaunchGapOwnerRoot", StringComparison.Ordinal)
+                && site.Callee == "System.IO.File.Exists"
+                && site.EnclosingType.Contains(
+                    ".Serving",
+                    StringComparison.Ordinal)));
+
+        foreach ((string target, string replacement) in new[]
+        {
+            (
+                "/*launch-gap-source*/ scope.ServiceProvider\n                .GetServices<IAuthenticatedCovenantErasureRecoveryHandler>()",
+                "/*launch-gap-source*/ Array.Empty<IAuthenticatedCovenantErasureRecoveryHandler>()"),
+            (
+                "/*launch-gap-tuples*/ candidate.Kind == operation.Kind",
+                "/*launch-gap-tuples*/ true || candidate.Kind == operation.Kind"),
+            (
+                "/*launch-gap-chain*/ .Take(2)",
+                ",\n                .. Array.Empty<IAuthenticatedCovenantErasureRecoveryHandler>()\n                /*launch-gap-chain*/ .Take(2)"),
+            (
+                "/*launch-gap-duplicate-refusal*/ if (selfSettling.Length > 1)",
+                "/*launch-gap-duplicate-refusal*/ if (false)"),
+            (
+                "await new LongRunningOperationReconciler().SettleExactlyAsync(\n                operation,\n                ownerEvidence);",
+                "return;"),
+        })
+        {
+            HostedProducerDiscovery<HostedProducerSite> malformedLaunchGap =
+                DiscoverOfflineTransitionDispatchFixture(
+                    Mutate(target, replacement),
+                    includeAuthenticatedRoot: false,
+                    includeLaunchGapRoot: true);
+
+            Assert.Contains(malformedLaunchGap.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+        }
+
+        string authenticatedFallthrough = Mutate(
+            "cancellationToken);\n\n                return;\n            }\n\n            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling",
+            "cancellationToken);\n            }\n\n            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling");
+
+        HostedProducerDiscovery<HostedProducerSite> overlappingEvidence =
+            DiscoverOfflineTransitionDispatchFixture(
+                authenticatedFallthrough,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(overlappingEvidence.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string authenticatedJumpIntoGeneric = Mutate(
+            "cancellationToken);\n\n                return;\n            }\n\n            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling",
+            "cancellationToken);\n\n                if (DateTime.UtcNow.Ticks > 0) goto genericSelection;\n\n                return;\n            }\n\n        genericSelection:\n            IAuthenticatedCovenantErasureRecoveryHandler[] selfSettling");
+
+        HostedProducerDiscovery<HostedProducerSite> bypassedEvidenceSeparation =
+            DiscoverOfflineTransitionDispatchFixture(
+                authenticatedJumpIntoGeneric,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(bypassedEvidenceSeparation.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string unreachableWrongFallback = Mutate(
+            "await new LongRunningOperationReconciler().SettleExactlyAsync(\n                operation,\n                ownerEvidence);",
+            "if (false)\n            {\n                await new LongRunningOperationReconciler().SettleExactlyAsync(\n                    new LongRunningOperation(\n                        LongRunningOperationKinds.DataRetentionFactoryReset,\n                        2),\n                    new AuthenticatedJournalRecoveryOwnerEvidence());\n            }");
+
+        HostedProducerDiscovery<HostedProducerSite> invalidFallback =
+            DiscoverOfflineTransitionDispatchFixture(
+                unreachableWrongFallback,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(invalidFallback.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string missingFactoryLaunchGapCall = Mutate(
+            "/*factory-launch-gap-call*/ await dispatch.DispatchAsync(\n                new LongRunningRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionFactoryReset,\n                    2),\n                CancellationToken.None);",
+            string.Empty);
+
+        HostedProducerDiscovery<HostedProducerSite> incompleteLaunchGapAssociation =
+            DiscoverOfflineTransitionDispatchFixture(
+                missingFactoryLaunchGapCall,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(incompleteLaunchGapAssociation.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_ROOT_UNPROVEN"
+            && diagnostic.Identity.EndsWith(":2", StringComparison.Ordinal));
+
+        Assert.Single(incompleteLaunchGapAssociation.Items, static site =>
+            site.RootType.EndsWith(".LaunchGapOwnerRoot", StringComparison.Ordinal)
+            && site.Callee == "System.IO.File.Delete"
+            && site.EnclosingType.Contains(".Stopped", StringComparison.Ordinal));
+
+        string helperReturnedLaunchGap = missingFactoryLaunchGapCall.Replace(
+            "new LongRunningRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),",
+            "new LongRunningRecoveryOwnerEvidence(),\n                CreateOperation(),",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(missingFactoryLaunchGapCall, helperReturnedLaunchGap);
+
+        HostedProducerDiscovery<HostedProducerSite> helperBoundLaunchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                helperReturnedLaunchGap,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(helperBoundLaunchGap.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_ROOT_UNPROVEN"
+            && diagnostic.Identity.EndsWith(":2", StringComparison.Ordinal));
+
+        string missingEvidenceGuard = Mutate(
+            "/*authenticated-owner*/ ownerEvidence is\n                AuthenticatedJournalRecoveryOwnerEvidence authenticated",
+            "/*authenticated-owner*/ true");
+
+        HostedProducerDiscovery<HostedProducerSite> unguardedEvidence =
+            DiscoverOfflineTransitionDispatchFixture(
+                missingEvidenceGuard,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(unguardedEvidence.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string missingTupleGuard = Mutate(
+            "/*current-tuples*/ candidate.Kind == operation.Kind",
+            "/*current-tuples*/ true || candidate.Kind == operation.Kind");
+
+        HostedProducerDiscovery<HostedProducerSite> unguardedTuple =
+            DiscoverOfflineTransitionDispatchFixture(
+                missingTupleGuard,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(unguardedTuple.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string missingVersionGuard = Mutate(
+            "/*current-version*/ candidate.SupportedCheckpointVersion ==",
+            "/*current-version*/ true || candidate.SupportedCheckpointVersion ==");
+
+        HostedProducerDiscovery<HostedProducerSite> unguardedVersion =
+            DiscoverOfflineTransitionDispatchFixture(
+                missingVersionGuard,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(unguardedVersion.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string servingSource = Mutate(
+            "/*authenticated-source*/ scope.ServiceProvider\n                    .GetServices<IAuthenticatedCovenantErasureRecoveryHandler>()",
+            "/*authenticated-source*/ new IAuthenticatedCovenantErasureRecoveryHandler[]\n                    {\n                        new ServingMutationRecoveryHandler(),\n                        new ServingFactoryRecoveryHandler(),\n                    }");
+
+        HostedProducerDiscovery<HostedProducerSite> servingSelection =
+            DiscoverOfflineTransitionDispatchFixture(
+                servingSource,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(servingSelection.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string decoupledCap = Mutate(
+            "/*exact-chain*/ .Take(2)",
+            ",\n                    .. Array.Empty<IAuthenticatedCovenantErasureRecoveryHandler>()\n                    /*exact-chain*/ .Take(2)");
+
+        HostedProducerDiscovery<HostedProducerSite> decoupledSelection =
+            DiscoverOfflineTransitionDispatchFixture(
+                decoupledCap,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(decoupledSelection.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        const string shadowFramework = """
+
+            namespace System.Linq
+            {
+                public sealed class RogueSequence<T> :
+                    System.Collections.Generic.IEnumerable<T>
+                {
+                    public RogueSequence<T> Where(System.Func<T, bool> predicate) =>
+                        this;
+
+                    public RogueSequence<T> Take(int count) => this;
+
+                    public System.Collections.Generic.IEnumerator<T> GetEnumerator() =>
+                        System.Linq.Enumerable.Empty<T>().GetEnumerator();
+
+                    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+                        GetEnumerator();
+                }
+            }
+
+            namespace Microsoft.Extensions.DependencyInjection
+            {
+                public interface IServiceScopeFactory { }
+
+                public sealed class RogueProvider
+                {
+                    public System.Linq.RogueSequence<T> GetServices<T>() => new();
+                }
+
+                public readonly struct AsyncServiceScope : System.IAsyncDisposable
+                {
+                    public RogueProvider ServiceProvider => new();
+
+                    public System.Threading.Tasks.ValueTask DisposeAsync() => default;
+                }
+
+                public static class RogueScopeExtensions
+                {
+                    public static AsyncServiceScope CreateAsyncScope(
+                        this IServiceScopeFactory factory) =>
+                        default;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> shadowedSelection =
+            DiscoverOfflineTransitionDispatchFixture(
+                exactSource + shadowFramework,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(shadowedSelection.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string nonDominatingCardinality = Mutate(
+            "/*exact-cardinality*/ if (handlers.Length != 1)\n                {\n                    throw new InvalidOperationException();\n                }",
+            "if (false)\n                {\n                    /*exact-cardinality*/ if (handlers.Length != 1)\n                    {\n                        throw new InvalidOperationException();\n                    }\n                }");
+
+        HostedProducerDiscovery<HostedProducerSite> nonDominatingRefusal =
+            DiscoverOfflineTransitionDispatchFixture(
+                nonDominatingCardinality,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(nonDominatingRefusal.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string bypassedCardinality = Mutate(
+            "/*exact-cardinality*/ if (handlers.Length != 1)",
+            "goto authenticatedInvoke;\n\n                /*exact-cardinality*/ if (handlers.Length != 1)");
+
+        string labeledInvocation = bypassedCardinality.Replace(
+            "/*authenticated-invoke*/ await handlers[0]",
+            "authenticatedInvoke:\n                /*authenticated-invoke*/ await handlers[0]",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(bypassedCardinality, labeledInvocation);
+
+        HostedProducerDiscovery<HostedProducerSite> bypassedRefusal =
+            DiscoverOfflineTransitionDispatchFixture(
+                labeledInvocation,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(bypassedRefusal.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        const string rogueAuthenticatedHandler = """
+
+                namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions
+                {
+                    using RetroDownfall.Arcanum.Core.Operations;
+                    using RetroDownfall.Arcanum.Infrastructure.Data;
+
+                    internal sealed class RogueAuthenticatedHandler :
+                        IAuthenticatedCovenantErasureRecoveryHandler
+                    {
+                        public string Kind =>
+                            LongRunningOperationKinds.DataRetentionMutation;
+
+                        public int SupportedCheckpointVersion => 4;
+
+                        public Task RecoverAsync(
+                            LongRunningOperation operation,
+                            CancellationToken cancellationToken) =>
+                            Task.CompletedTask;
+
+                        public Task RecoverAuthenticatedAsync(
+                            LongRunningOperation operation,
+                            CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
+                            CancellationToken cancellationToken)
+                        {
+                            System.IO.File.Delete("rogue-authenticated");
+
+                            return Task.CompletedTask;
+                        }
+                    }
+                }
+                """;
+
+        string reassignedHandlers = Mutate(
+            "/*authenticated-invoke*/ await handlers[0]",
+            "handlers = [new RogueAuthenticatedHandler()];\n\n                /*authenticated-invoke*/ await handlers[0]")
+            + rogueAuthenticatedHandler;
+
+        HostedProducerDiscovery<HostedProducerSite> staleSelection =
+            DiscoverOfflineTransitionDispatchFixture(
+                reassignedHandlers,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(staleSelection.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string capturedHandlerWrite = Mutate(
+            "/*authenticated-invoke*/ await handlers[0]\n                    .RecoverAuthenticatedAsync(\n                    operation,\n                    new CovenantErasureCoordinator\n                        .AuthenticatedCovenantErasureRecoveryAdmission(),\n                    cancellationToken);",
+            "ReplaceHandlers();\n\n                /*authenticated-invoke*/ await handlers[0]\n                    .RecoverAuthenticatedAsync(\n                    operation,\n                    new CovenantErasureCoordinator\n                        .AuthenticatedCovenantErasureRecoveryAdmission(),\n                    cancellationToken);\n\n                void ReplaceHandlers()\n                {\n                    handlers = [new RogueAuthenticatedHandler()];\n                }")
+            + rogueAuthenticatedHandler;
+
+        HostedProducerDiscovery<HostedProducerSite> capturedMutation =
+            DiscoverOfflineTransitionDispatchFixture(
+                capturedHandlerWrite,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(capturedMutation.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string delegatedHandlerWrite = Mutate(
+            "/*authenticated-invoke*/ await handlers[0]\n                    .RecoverAuthenticatedAsync(\n                    operation,\n                    new CovenantErasureCoordinator\n                        .AuthenticatedCovenantErasureRecoveryAdmission(),\n                    cancellationToken);",
+            "System.Action replace = ReplaceHandlers;\n                replace();\n\n                /*authenticated-invoke*/ await handlers[0]\n                    .RecoverAuthenticatedAsync(\n                    operation,\n                    new CovenantErasureCoordinator\n                        .AuthenticatedCovenantErasureRecoveryAdmission(),\n                    cancellationToken);\n\n                void ReplaceHandlers()\n                {\n                    handlers = [new RogueAuthenticatedHandler()];\n                }")
+            + rogueAuthenticatedHandler;
+
+        HostedProducerDiscovery<HostedProducerSite> delegatedMutation =
+            DiscoverOfflineTransitionDispatchFixture(
+                delegatedHandlerWrite,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(delegatedMutation.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string missingFactoryOwnerCall = Mutate(
+            "/*factory-owner-call*/ await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionFactoryReset,\n                    2),\n                CancellationToken.None);",
+            string.Empty);
+
+        HostedProducerDiscovery<HostedProducerSite> incompleteTupleAssociation =
+            DiscoverOfflineTransitionDispatchFixture(
+                missingFactoryOwnerCall,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(incompleteTupleAssociation.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_ROOT_UNPROVEN"
+            && diagnostic.Identity.EndsWith(":2", StringComparison.Ordinal));
+
+        string helperReturnedAuthenticated = missingFactoryOwnerCall.Replace(
+            "new AuthenticatedJournalRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),",
+            "new AuthenticatedJournalRecoveryOwnerEvidence(),\n                CreateOperation(),",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(missingFactoryOwnerCall, helperReturnedAuthenticated);
+
+        HostedProducerDiscovery<HostedProducerSite> helperBoundAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                helperReturnedAuthenticated,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(helperBoundAuthenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_ROOT_UNPROVEN"
+            && diagnostic.Identity.EndsWith(":2", StringComparison.Ordinal));
+
+        const string authenticatedFactoryCall =
+            "/*factory-owner-call*/ await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionFactoryReset,\n                    2),\n                CancellationToken.None);";
+
+        string unknownAuthenticatedCall = Mutate(
+            authenticatedFactoryCall,
+            authenticatedFactoryCall
+                + "\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                CreateUnknownOperation(),\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> unknownAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                unknownAuthenticatedCall,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(unknownAuthenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        const string launchGapFactoryCall =
+            "/*factory-launch-gap-call*/ await dispatch.DispatchAsync(\n                new LongRunningRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionFactoryReset,\n                    2),\n                CancellationToken.None);";
+
+        string unknownLaunchGapCall = Mutate(
+            launchGapFactoryCall,
+            launchGapFactoryCall
+                + "\n\n            await dispatch.DispatchAsync(\n                new LongRunningRecoveryOwnerEvidence(),\n                CreateUnknownOperation(),\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> unknownLaunchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                unknownLaunchGapCall,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(unknownLaunchGap.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        const string authenticatedMutationCall =
+            "await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),\n                CancellationToken.None);";
+
+        string escapedAuthenticatedOperation = Mutate(
+            authenticatedMutationCall,
+            "LongRunningOperation mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionMutation,\n                4);\n            Change(ref mutableOperation);\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                mutableOperation,\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> escapedAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                escapedAuthenticatedOperation,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(escapedAuthenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string lambdaMutatedAuthenticatedOperation = Mutate(
+            authenticatedMutationCall,
+            "LongRunningOperation mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionMutation,\n                4);\n            System.Action swap = () => mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionFactoryReset,\n                2);\n            swap();\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                mutableOperation,\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> lambdaMutatedAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                lambdaMutatedAuthenticatedOperation,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(lambdaMutatedAuthenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string nestedMutatedAuthenticatedOperation = Mutate(
+            authenticatedMutationCall,
+            "LongRunningOperation mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionMutation,\n                4);\n            void Swap() => mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionFactoryReset,\n                2);\n            void InvokeSwap() => Swap();\n            InvokeSwap();\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                mutableOperation,\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> nestedMutatedAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                nestedMutatedAuthenticatedOperation,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(nestedMutatedAuthenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        const string launchGapMutationCall =
+            "await dispatch.DispatchAsync(\n                new LongRunningRecoveryOwnerEvidence(),\n                new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),\n                CancellationToken.None);";
+
+        string escapedLaunchGapOperation = Mutate(
+            launchGapMutationCall,
+            "LongRunningOperation mutableOperation = new(\n                LongRunningOperationKinds.DataRetentionMutation,\n                4);\n            Change(ref mutableOperation);\n\n            await dispatch.DispatchAsync(\n                new LongRunningRecoveryOwnerEvidence(),\n                mutableOperation,\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> escapedLaunchGap =
+            DiscoverOfflineTransitionDispatchFixture(
+                escapedLaunchGapOperation,
+                includeAuthenticatedRoot: false,
+                includeLaunchGapRoot: true);
+
+        Assert.Contains(escapedLaunchGap.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string ambiguousAuthenticatedCall = Mutate(
+            authenticatedFactoryCall,
+            authenticatedFactoryCall
+                + "\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                CreateAmbiguousOperation(DateTime.UtcNow.Ticks > 0),\n                CancellationToken.None);");
+
+        HostedProducerDiscovery<HostedProducerSite> ambiguousAuthenticated =
+            DiscoverOfflineTransitionDispatchFixture(
+                ambiguousAuthenticatedCall,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(ambiguousAuthenticated.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string reassignedOperation = Mutate(
+            "/*authenticated-invoke*/ await handlers[0]",
+            "operation = new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionFactoryReset,\n                    2);\n\n                /*authenticated-invoke*/ await handlers[0]");
+
+        HostedProducerDiscovery<HostedProducerSite> staleOperation =
+            DiscoverOfflineTransitionDispatchFixture(
+                reassignedOperation,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(staleOperation.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string rogueScopeFactory = Mutate(
+            "_scopeFactory.CreateAsyncScope()",
+            "((IServiceScopeFactory)new RogueScopeFactory()).CreateAsyncScope()");
+
+        HostedProducerDiscovery<HostedProducerSite> disconnectedScope =
+            DiscoverOfflineTransitionDispatchFixture(
+                rogueScopeFactory,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(disconnectedScope.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string rogueCompositionFactory = Mutate(
+            "sp.GetRequiredService<IServiceScopeFactory>()",
+            "((IServiceScopeFactory)new RogueScopeFactory())");
+
+        HostedProducerDiscovery<HostedProducerSite> disconnectedComposition =
+            DiscoverOfflineTransitionDispatchFixture(
+                rogueCompositionFactory,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(disconnectedComposition.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string unreachableDispatcherFactory = Mutate(
+            "static sp => new GrimoireOfflineTransitionHandlerDispatch(\n                    sp.GetRequiredService<IServiceScopeFactory>())",
+            "static sp => false\n                    ? new GrimoireOfflineTransitionHandlerDispatch(\n                        sp.GetRequiredService<IServiceScopeFactory>())\n                    : new RogueDispatch()");
+
+        HostedProducerDiscovery<HostedProducerSite> wrongDispatcherFactory =
+            DiscoverOfflineTransitionDispatchFixture(
+                unreachableDispatcherFactory,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(wrongDispatcherFactory.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        HostedProducerDiscovery<HostedProducerSite> boundedDeepTuple =
+            DiscoverOfflineTransitionDispatchFixture(
+                DeepTupleFactorySource(depth: 40),
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.DoesNotContain(boundedDeepTuple.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string concreteBoundFactoryCall = Mutate(
+            authenticatedFactoryCall,
+            authenticatedFactoryCall
+                + "\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                DateTime.UtcNow.Ticks > 0\n                    ? RecoveryConcreteFixture.OperationFactoryRoute.Create(\n                        new RecoveryConcreteFixture.MutationFactory())\n                    : RecoveryConcreteFixture.OperationFactoryRoute.Create(\n                        new RecoveryConcreteFixture.FactoryResetFactory()),\n                CancellationToken.None);")
+            + "\n\nnamespace RecoveryConcreteFixture\n{\n    using RetroDownfall.Arcanum.Core.Operations;\n\n    internal interface IOperationFactory\n    {\n        LongRunningOperation Create();\n    }\n\n    internal sealed class MutationFactory : IOperationFactory\n    {\n        public LongRunningOperation Create() => new(\n            LongRunningOperationKinds.DataRetentionMutation,\n            4);\n    }\n\n    internal sealed class FactoryResetFactory : IOperationFactory\n    {\n        public LongRunningOperation Create() => new(\n            LongRunningOperationKinds.DataRetentionFactoryReset,\n            2);\n    }\n\n    internal static class OperationFactoryRoute\n    {\n        internal static LongRunningOperation Create(IOperationFactory factory) =>\n            factory.Create();\n    }\n}";
+
+        HostedProducerDiscovery<HostedProducerSite> concreteBoundFactory =
+            DiscoverOfflineTransitionDispatchFixture(
+                concreteBoundFactoryCall,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(concreteBoundFactory.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN"
+            && diagnostic.Detail ==
+                "Every owner recovery dispatch call must bind exactly one current owner-bound kind and checkpoint version.");
+
+        string recursiveBindingSource = Mutate(
+            authenticatedFactoryCall,
+            authenticatedFactoryCall
+                + "\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                RecursiveOperation(new LongRunningOperation(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4)),\n                CancellationToken.None);\n\n            LongRunningOperation RecursiveOperation(LongRunningOperation operation) =>\n                ForwardOperation(RecursiveOperation(operation));\n\n            static LongRunningOperation ForwardOperation(\n                LongRunningOperation operation) => operation;");
+
+        HostedProducerDiscovery<HostedProducerSite> recursiveBinding =
+            DiscoverOfflineTransitionDispatchFixture(
+                recursiveBindingSource,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(recursiveBinding.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN"
+            && diagnostic.Detail ==
+                "Every owner recovery dispatch call must bind exactly one current owner-bound kind and checkpoint version.");
+
+        HostedProducerDiscovery<HostedProducerSite> exhaustedTupleBudget =
+            DiscoverOfflineTransitionDispatchFixture(
+                ExhaustedTupleFactorySource(branches: 300),
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(exhaustedTupleBudget.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN"
+            && diagnostic.Detail ==
+                "Every owner recovery dispatch call must bind exactly one current owner-bound kind and checkpoint version.");
+
+        CSharpCompilation canonicalEvidence = Compile(
+                "namespace RetroDownfall.Arcanum.Infrastructure.Operations { public class LongRunningRecoveryOwnerEvidence { } } namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions { public sealed class AuthenticatedJournalRecoveryOwnerEvidence : RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningRecoveryOwnerEvidence { } }")
+            .WithAssemblyName("Recovery.EvidenceTwin");
+
+        CSharpCompilation alternateEvidence = Compile(
+                "namespace RetroDownfall.Arcanum.Infrastructure.Operations { public class LongRunningRecoveryOwnerEvidence { } } namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions { public sealed class AuthenticatedJournalRecoveryOwnerEvidence : RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningRecoveryOwnerEvidence { } }")
+            .WithAssemblyName("Recovery.EvidenceTwin");
+
+        using MemoryStream alternateEvidenceImage = new();
+
+        Assert.True(alternateEvidence.Emit(alternateEvidenceImage).Success);
+
+        MetadataReference alternateEvidenceReference = MetadataReference.CreateFromImage(
+            alternateEvidenceImage.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("alternate_evidence")));
+
+        string alternateEvidenceSource =
+            "extern alias alternate_evidence; global using LongRunningRecoveryOwnerEvidence = alternate_evidence::RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningRecoveryOwnerEvidence; global using AuthenticatedJournalRecoveryOwnerEvidence = alternate_evidence::RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalRecoveryOwnerEvidence; "
+            + exactSource
+                .Replace(
+                    "internal class LongRunningRecoveryOwnerEvidence",
+                    "internal class UnusedLongRunningRecoveryOwnerEvidence",
+                    StringComparison.Ordinal)
+                .Replace(
+                    "internal sealed class AuthenticatedJournalRecoveryOwnerEvidence :",
+                    "internal sealed class UnusedAuthenticatedJournalRecoveryOwnerEvidence :",
+                    StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "internal class LongRunningRecoveryOwnerEvidence",
+            alternateEvidenceSource,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "internal sealed class AuthenticatedJournalRecoveryOwnerEvidence",
+            alternateEvidenceSource,
+            StringComparison.Ordinal);
+
+        CSharpCompilation alternateEvidenceProducer = Compile(
+                alternateEvidenceSource)
+            .AddReferences(alternateEvidenceReference)
+            .WithAssemblyName("Recovery.AlternateEvidenceProducer");
+
+        HostedProducerDiscovery<HostedProducerSite> alternateProtocol =
+            DiscoverOfflineTransitionDispatchFixture(
+                [alternateEvidenceProducer, canonicalEvidence],
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(alternateProtocol.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        CSharpCompilation authoredFakeEvidence = Compile(
+                "namespace RetroDownfall.Arcanum.Infrastructure.Operations { public class LongRunningRecoveryOwnerEvidence { } } namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions { public sealed class AuthenticatedJournalRecoveryOwnerEvidence : RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningRecoveryOwnerEvidence { } }")
+            .WithAssemblyName("Recovery.AuthoredFakeEvidence");
+
+        MetadataReference authoredFakeEvidenceReference = authoredFakeEvidence
+            .ToMetadataReference(ImmutableArray.Create("authored_fake_evidence"));
+
+        string authoredFakeEvidenceSource =
+            "extern alias authored_fake_evidence; global using LongRunningRecoveryOwnerEvidence = authored_fake_evidence::RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningRecoveryOwnerEvidence; global using AuthenticatedJournalRecoveryOwnerEvidence = authored_fake_evidence::RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalRecoveryOwnerEvidence; "
+            + exactSource
+                .Replace(
+                    "internal class LongRunningRecoveryOwnerEvidence",
+                    "internal class UnusedLongRunningRecoveryOwnerEvidence",
+                    StringComparison.Ordinal)
+                .Replace(
+                    "internal sealed class AuthenticatedJournalRecoveryOwnerEvidence :",
+                    "internal sealed class UnusedAuthenticatedJournalRecoveryOwnerEvidence :",
+                    StringComparison.Ordinal);
+
+        CSharpCompilation authoredFakeEvidenceProducer = Compile(
+                authoredFakeEvidenceSource)
+            .AddReferences(authoredFakeEvidenceReference)
+            .WithAssemblyName("Recovery.AuthoredFakeEvidenceProducer");
+
+        Assert.All(
+            new[] { authoredFakeEvidence, authoredFakeEvidenceProducer },
+            static compilation => Assert.Empty(compilation.GetDiagnostics().Where(
+                static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> authoredFakeProtocol =
+            DiscoverOfflineTransitionDispatchFixture(
+                [authoredFakeEvidenceProducer, authoredFakeEvidence],
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(authoredFakeProtocol.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string ExhaustedTupleFactorySource(int branches)
+        {
+            System.Text.StringBuilder replacement = new(authenticatedFactoryCall);
+
+            _ = replacement.Append(
+                "\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                ExhaustedOperation((int)(DateTime.UtcNow.Ticks % "
+                    + branches
+                    + ")),\n                CancellationToken.None);");
+
+            _ = replacement.Append(
+                "\n\n            LongRunningOperation ExhaustedOperation(int branch) => branch switch\n            {");
+
+            for (int index = 0; index < branches; index++)
+            {
+                _ = replacement.Append(
+                    "\n                "
+                        + index
+                        + " => new(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),");
+            }
+
+            _ = replacement.Append(
+                "\n                _ => new(\n                    LongRunningOperationKinds.DataRetentionMutation,\n                    4),\n            };");
+
+            return Mutate(
+                authenticatedFactoryCall,
+                replacement.ToString());
+        }
+
+        string DeepTupleFactorySource(int depth)
+        {
+            System.Text.StringBuilder replacement = new(authenticatedFactoryCall);
+
+            _ = replacement.Append(
+                "\n\n            await dispatch.DispatchAsync(\n                new AuthenticatedJournalRecoveryOwnerEvidence(),\n                DeepOperation"
+                    + depth
+                    + "(DateTime.UtcNow.Ticks > 0),\n                CancellationToken.None);");
+
+            _ = replacement.Append(
+                "\n\n            LongRunningOperation DeepOperation0(bool branch) => new(\n                LongRunningOperationKinds.DataRetentionMutation,\n                4);");
+
+            for (int index = 1; index <= depth; index++)
+            {
+                _ = replacement.Append(
+                    "\n\n            LongRunningOperation DeepOperation"
+                        + index
+                        + "(bool branch)\n            {\n                if (branch)\n                {\n                    return DeepOperation"
+                        + (index - 1)
+                        + "(branch);\n                }\n\n                return DeepOperation"
+                        + (index - 1)
+                        + "(branch);\n            }");
+            }
+
+            return Mutate(
+                authenticatedFactoryCall,
+                replacement.ToString());
+        }
+    }
+
+    [Fact]
+    public void ExactAuthenticatedRecoveryHandoffDoesNotReattributeOwnerWorkToCallingRoot()
+    {
+        string source = ProductionProjectedOfflineTransitionDispatchFixture()
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal class Worker(RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch dispatch) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.IGrimoireOfflineTransitionHandlerDispatch>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { await dispatch.DispatchAsync(new RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalRecoveryOwnerEvidence(), new RetroDownfall.Arcanum.Core.Operations.LongRunningOperation(RetroDownfall.Arcanum.Core.Operations.LongRunningOperationKinds.DataRetentionMutation, 4), token); }",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_AUTHORITY_UNPROVEN"
+            && diagnostic.Identity.StartsWith(
+                "Worker.StartAsync",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void EvaluationEnvironmentCanonicalizesReboundSchedulerCycles()
+    {
+        const string helpers =
+            "internal sealed class Scheduler(System.IO.Stream pending) { "
+            + "private readonly System.IO.Stream _pending = pending; "
+            + "internal void Start(System.IO.Stream? handle) { if (handle is null) { return; } Dispatch(handle); } "
+            + "private void Dispatch(System.IO.Stream handle) => _ = System.Threading.Tasks.Task.Run(() => RunAsync(handle)); "
+            + "private async System.Threading.Tasks.Task RunAsync(System.IO.Stream handle) { await using (handle.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"scheduled\"); Finish(handle); } } "
+            + "private void Finish(System.IO.Stream handle) { System.IO.Stream? first = null; System.IO.Stream? second = null; lock (this) { first = Schedule(handle); second = Schedule(_pending); } Start(first); Start(second); } "
+            + "private static System.IO.Stream Schedule(System.IO.Stream handle) => handle; }";
+
+        CSharpCompilation compilation = Compile(
+            R2Source(
+                R2Admission
+                    + "System.IO.Stream handle = System.IO.File.OpenRead(\"scheduled\"); new Scheduler(handle).Start(handle);",
+                helpers));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumMembers: 128,
+                evaluationEnvironmentMaximumDepth: 12);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code
+                == "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void EvaluationEnvironmentCanonicalizesReboundOutCleanupCycleBeforeDepthLimit()
+    {
+        const string helpers =
+            "internal sealed record CleanupNode(System.IO.Stream Stream, CleanupNode Next); "
+            + "internal static class CleanupNodeSource { internal static CleanupNode Value { get; set; } = null!; } "
+            + "internal sealed class ReboundCleanupCycle { "
+            + "private readonly CleanupGate _gate = new(); "
+            + "internal async System.Threading.Tasks.Task RunAsync(CleanupNode current) { "
+            + "if (!_gate.TryEnter(current.Stream, out System.IAsyncDisposable? admitted)) { return; } "
+            + "await using System.IAsyncDisposable held = admitted!; "
+            + "if (System.DateTime.UtcNow.Ticks > 0) { await RunAsync(current.Next); } } } "
+            + "internal sealed class CleanupGate { "
+            + "internal bool TryEnter(System.IO.Stream stream, out System.IAsyncDisposable? admitted) { admitted = new CleanupLease(stream); return true; } "
+            + "private sealed class CleanupLease(System.IO.Stream stream) : System.IAsyncDisposable { "
+            + "public async System.Threading.Tasks.ValueTask DisposeAsync() { await stream.DisposeAsync(); System.IO.File.Delete(\"rebound-out-cleanup\"); } } }";
+
+        CSharpCompilation compilation = Compile(
+            R2Source(
+                R2Admission
+                    + "await new ReboundCleanupCycle().RunAsync(CleanupNodeSource.Value);",
+                helpers));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumMembers: 32,
+                evaluationEnvironmentMaximumDepth: 6);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CleanupGate.CleanupLease"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code is
+                "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"
+                    or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void TraversalDepthLimitFailsClosedBeforeBuildingAnotherSemanticState()
+    {
+        const int depth = 8;
+
+        string helpers = string.Join(
+            " ",
+            Enumerable.Range(0, depth)
+                .Select(index => "internal static void Layer"
+                    + index
+                    + "() => Layer"
+                    + (index + 1)
+                    + "();"))
+            + " internal static void Layer"
+            + depth
+            + "() => System.IO.File.Exists(\"unreachable-depth-tail\");";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource("Layer0();", helpers));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                traversalMaximumDepth: 4);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED"
+            && diagnostic.Detail.Contains(
+                "4 nested states",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists"
+            && site.Member == "Layer8");
     }
 
     [Fact]
@@ -1565,6 +7407,95 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
     }
 
+    [Fact]
+    public void StoppedHostInterfaceBoundaryRetainsItsNestedGenericCallback()
+    {
+        const string registration =
+            "services.AddSingleton<ClientMutationBoundary>(); "
+            + "services.AddSingleton<IClientMutationBoundary>(provider => provider.GetRequiredService<ClientMutationBoundary>()); "
+            + "services.AddSingleton<CliInitialization>(); "
+            + "services.AddSingleton<ICliInitialization>(provider => provider.GetRequiredService<CliInitialization>()); "
+            + "services.AddHostedService<Worker>();";
+
+        const string helpers = """
+            internal interface IClientMutationBoundary
+            {
+                System.Threading.Tasks.Task<T> RunAsync<T>(
+                    System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>> mutation,
+                    System.Threading.CancellationToken cancellationToken);
+            }
+
+            internal sealed class ClientMutationBoundary : IClientMutationBoundary
+            {
+                public async System.Threading.Tasks.Task<T> RunAsync<T>(
+                    System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>> mutation,
+                    System.Threading.CancellationToken cancellationToken) =>
+                    await mutation(cancellationToken).ConfigureAwait(false);
+            }
+
+            internal interface ICliInitialization
+            {
+                System.Threading.Tasks.Task<T> RunAsync<T>(
+                    System.Func<System.IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task<T>> operation,
+                    System.Threading.CancellationToken cancellationToken);
+            }
+
+            internal sealed class CliInitialization(
+                IClientMutationBoundary boundary) : ICliInitialization
+            {
+                public System.Threading.Tasks.Task<T> RunAsync<T>(
+                    System.Func<System.IServiceProvider, System.Threading.CancellationToken, System.Threading.Tasks.Task<T>> operation,
+                    System.Threading.CancellationToken cancellationToken) =>
+                    RunCoreAsync(
+                        (provider, _, token) => operation(provider, token),
+                        cancellationToken);
+
+                private async System.Threading.Tasks.Task<T> RunCoreAsync<T>(
+                    System.Func<System.IServiceProvider, object, System.Threading.CancellationToken, System.Threading.Tasks.Task<T>> operation,
+                    System.Threading.CancellationToken cancellationToken) =>
+                    await boundary.RunAsync(
+                        token => RunUnderBothAsync(operation, token),
+                        cancellationToken).ConfigureAwait(false);
+
+                private static async System.Threading.Tasks.Task<T> RunUnderBothAsync<T>(
+                    System.Func<System.IServiceProvider, object, System.Threading.CancellationToken, System.Threading.Tasks.Task<T>> operation,
+                    System.Threading.CancellationToken cancellationToken)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return await operation(null!, new object(), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ICliInitialization initialization) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ICliInitialization>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "_ = await initialization.RunAsync((provider, callbackToken) => { _ = provider; _ = callbackToken; System.IO.File.Delete(\"path\"); return Task.FromResult(1); }, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+
+        Assert.Single(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+    }
+
     [Theory]
     [InlineData("explicit-field")]
     [InlineData("primary-constructor")]
@@ -1593,6 +7524,35 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
 
         Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void ClosedCallableResolutionIsBuiltOncePerExactSymbol()
+    {
+        string invocations = string.Join(
+            " ",
+            Enumerable.Repeat("Callback();", 32));
+
+        string helper =
+            "internal static class ClosedCallableCacheTarget { "
+            + "private static readonly Action Callback = Emit; "
+            + "internal static void Run() { "
+            + invocations
+            + " } private static void Emit() => System.IO.File.Exists(\"cached\"); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + "ClosedCallableCacheTarget.Run();", helper));
+
+        HostedProducerClosedCallableMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .ClosedCallables,
+            static candidate => candidate.Symbol.EndsWith(
+                "|Callback",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.ResolutionRequests > 1);
+
+        Assert.Equal(1, metric.ResolutionBuilds);
     }
 
     [Fact]
@@ -3125,6 +9085,24 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void CalledLocalFunctionDescendsIntoItsBodyButNotNestedLocalBody()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(
+                "void Local() { System.IO.File.Exists(\"direct-local\"); "
+                    + "void Cold() { System.IO.File.Delete(\"nested-cold\"); } } "
+                    + "Local();"));
+
+        Assert.Contains(result.Items, static site =>
+            site.Member == "Local"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.Member == "Cold"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
     public void GeneratorOutputSuppliesSymbolsWithoutInventingAuthoredProducerSites()
     {
         CSharpCompilation compilation = Compile(FixtureSource("Generated.Read();")).AddSyntaxTrees(CSharpSyntaxTree.ParseText("static class Generated { public static void Read() { System.IO.File.Exists(\"generated\"); } }", path: "ExampleGenerator/Generated.g.cs"));
@@ -3592,15 +9570,35 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     private static HostedProducerOperationEntry OrdinaryRoot(string identity = "Worker.StartAsync") => new(identity, "src/Fixture.cs", "Worker", "StartAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.WorkspaceIndexing, null, []);
 
-    private static string CallRoot(string source, string callee, int occurrence = 0)
+    private static string CallRoot(string source, string callee, int occurrence = 0) =>
+        CallRoot(source, "Worker.StartAsync", callee, occurrence);
+
+    private static string CallRoot(
+        string source,
+        string memberIdentity,
+        string callee,
+        int occurrence = 0)
     {
         CSharpCompilation compilation = Compile(source);
 
         SyntaxTree tree = compilation.SyntaxTrees.Single();
 
-        Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Where(call => compilation.GetSemanticModel(tree).GetSymbolInfo(call).Symbol is IMethodSymbol symbol && symbol.ContainingType.ToDisplayString() + "." + symbol.Name == callee).ElementAt(occurrence);
+        SemanticModel model = compilation.GetSemanticModel(tree);
 
-        return "Worker.StartAsync::call:"
+        Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call = tree
+            .GetRoot()
+            .DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
+            .Where(call => model.GetEnclosingSymbol(call.SpanStart) is IMethodSymbol owner
+                && owner.ContainingType.ToDisplayString() + "." + owner.Name
+                    == memberIdentity
+                && model.GetSymbolInfo(call).Symbol is IMethodSymbol symbol
+                && symbol.ContainingType.ToDisplayString() + "." + symbol.Name
+                    == callee)
+            .ElementAt(occurrence);
+
+        return memberIdentity
+            + "::call:"
             + callee
             + "#"
             + occurrence
@@ -3948,6 +9946,4126 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void RecoveryFeasibilityEvaluatesEachBoundConditionOncePerTraversalState()
+    {
+        string effects = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"System.IO.File.Exists(\"path-{index}\");"));
+
+        string helper =
+            "internal static class RecoveryFeasibilityTarget { "
+            + "internal static void Run(bool exact) { if (exact) { "
+            + effects
+            + " } else System.IO.File.Delete(\"unreachable\"); exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source("RecoveryFeasibilityTarget.Run(true);", helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: exact bounded recovery-feasibility fixture",
+                });
+
+        HostedProducerRecoveryConditionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RecoveryConditions,
+            static candidate => candidate.Member
+                == "M:RecoveryFeasibilityTarget.Run(System.Boolean)");
+
+        Assert.Equal(
+            32,
+            result.Items.Count(static site => site.EnclosingType
+                    == "RecoveryFeasibilityTarget"
+                && site.Member == "Run"
+                && site.Callee == "System.IO.File.Exists"));
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "RecoveryFeasibilityTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(1, metric.MaximumEvaluationsPerTraversalState);
+
+        Assert.True(metric.TotalEvaluationsAcrossTraversalStates >= 1);
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsUserDefinedConversionBranchesReachable()
+    {
+        const string helper = """
+            internal sealed class UserDefinedRecoveryDecision
+            {
+                private readonly bool value;
+
+                private UserDefinedRecoveryDecision(bool value) => this.value = value;
+
+                public static explicit operator UserDefinedRecoveryDecision(bool value) => new(!value);
+
+                public static explicit operator bool(UserDefinedRecoveryDecision value) => value.value;
+            }
+
+            internal static class UserDefinedRecoveryConversionTarget
+            {
+                internal static void Run(bool exact) => Inspect((UserDefinedRecoveryDecision)exact);
+
+                private static void Inspect(UserDefinedRecoveryDecision decision)
+                {
+                    if ((bool)decision)
+                    {
+                        System.IO.File.Exists("conversion-true");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("conversion-false");
+                    }
+
+                    decision = decision;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            R2Discover(
+                R2Source(
+                    "UserDefinedRecoveryConversionTarget.Run(true);",
+                    helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: user-defined recovery conversion fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "UserDefinedRecoveryConversionTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "UserDefinedRecoveryConversionTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsDynamicConversionBranchesReachable()
+    {
+        const string helper = """
+            internal static class DynamicRecoveryConversionTarget
+            {
+                internal static void Run(bool exact)
+                {
+                    if ((bool)(dynamic)exact)
+                    {
+                        System.IO.File.Exists("dynamic-true");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("dynamic-false");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            R2Discover(
+                R2Source(
+                    "DynamicRecoveryConversionTarget.Run(true);",
+                    helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: dynamic recovery conversion fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DynamicRecoveryConversionTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DynamicRecoveryConversionTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("==")]
+    [InlineData("!=")]
+    public void RecoveryFeasibilityKeepsOverloadedEqualityBranchesReachable(
+        string comparison)
+    {
+        const string helper = """
+            internal sealed class OverloadedRecoveryEquality
+            {
+                public static bool operator ==(
+                    bool left,
+                    OverloadedRecoveryEquality? right) => true;
+
+                public static bool operator !=(
+                    bool left,
+                    OverloadedRecoveryEquality? right) => false;
+
+                public override bool Equals(object? other) =>
+                    ReferenceEquals(this, other);
+
+                public override int GetHashCode() => 0;
+            }
+
+            internal static class OverloadedRecoveryEqualityTarget
+            {
+                internal static void Run(bool exact)
+                {
+                    if (exact COMPARISON (OverloadedRecoveryEquality?)null)
+                    {
+                        System.IO.File.Exists("operator-true");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("operator-false");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            R2Discover(
+                R2Source(
+                    "OverloadedRecoveryEqualityTarget.Run(true);",
+                    helper.Replace(
+                        "COMPARISON",
+                        comparison,
+                        StringComparison.Ordinal)),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: overloaded recovery equality fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "OverloadedRecoveryEqualityTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "OverloadedRecoveryEqualityTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsNumericPromotionEqualityBranchesReachable()
+    {
+        const string helper = """
+            internal static class NumericPromotionRecoveryTarget
+            {
+                internal static void Run(int exact)
+                {
+                    if (exact == 1L)
+                    {
+                        System.IO.File.Exists("numeric-promotion-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("numeric-promotion-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "NumericPromotionRecoveryTarget.Run(1);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: numeric-promotion recovery equality fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NumericPromotionRecoveryTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NumericPromotionRecoveryTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("==")]
+    [InlineData("!=")]
+    public void RecoveryFeasibilityKeepsIeeeNanEqualityBranchesReachable(
+        string comparison)
+    {
+        const string helper = """
+            internal static class IeeeNanRecoveryTarget
+            {
+                internal static void Run(double exact)
+                {
+                    if (exact COMPARISON double.NaN)
+                    {
+                        System.IO.File.Exists("nan-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("nan-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "IeeeNanRecoveryTarget.Run(double.NaN);",
+                helper.Replace(
+                    "COMPARISON",
+                    comparison,
+                    StringComparison.Ordinal)),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: IEEE NaN recovery equality fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "IeeeNanRecoveryTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "IeeeNanRecoveryTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsConvertedConstantPatternBranchesReachable()
+    {
+        const string helper = """
+            internal static class ConvertedConstantPatternRecoveryTarget
+            {
+                internal static void Run(long exact)
+                {
+                    if (exact is 1)
+                    {
+                        System.IO.File.Exists("converted-pattern-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("converted-pattern-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "ConvertedConstantPatternRecoveryTarget.Run(1L);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: converted recovery constant-pattern fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ConvertedConstantPatternRecoveryTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ConvertedConstantPatternRecoveryTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsPropertyPatternBranchesReachable()
+    {
+        const string helper = """
+            internal static class RecoveryPropertyPatternTarget
+            {
+                internal static void Run(string value)
+                {
+                    if (value is { Length: 0 })
+                    {
+                        System.IO.File.Exists("property-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("property-mismatch");
+                    }
+
+                    value = value;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            R2Discover(
+                R2Source(
+                    "RecoveryPropertyPatternTarget.Run(\"not-empty\");",
+                    helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: recovery property pattern fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RecoveryPropertyPatternTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RecoveryPropertyPatternTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsPositionalPatternBranchesReachable()
+    {
+        const string helper = """
+            internal static class BooleanRecoveryDeconstruction
+            {
+                internal static void Deconstruct(
+                    this bool value,
+                    out bool first,
+                    out bool second)
+                {
+                    first = value;
+                    second = value;
+                }
+            }
+
+            internal static class RecoveryPositionalPatternTarget
+            {
+                internal static void Run(bool exact)
+                {
+                    if (exact is (false, false))
+                    {
+                        System.IO.File.Exists("positional-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("positional-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "RecoveryPositionalPatternTarget.Run(true);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: recovery positional pattern fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RecoveryPositionalPatternTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RecoveryPositionalPatternTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("OrdinalIgnoreCase")]
+    [InlineData("CurrentCultureIgnoreCase")]
+    public void RecoveryFeasibilityKeepsStringComparisonOverloadBranchesReachable(
+        string comparison)
+    {
+        const string helper = """
+            internal static class StringComparisonRecoveryTarget
+            {
+                internal static void Run(string exact)
+                {
+                    if (string.Equals(
+                        exact,
+                        "match",
+                        System.StringComparison.COMPARISON))
+                    {
+                        System.IO.File.Exists("string-comparison-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("string-comparison-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "StringComparisonRecoveryTarget.Run(\"MATCH\");",
+                helper.Replace(
+                    "COMPARISON",
+                    comparison,
+                    StringComparison.Ordinal)),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: unsupported string comparison fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StringComparisonRecoveryTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StringComparisonRecoveryTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("match", true)]
+    [InlineData("mismatch", false)]
+    public void RecoveryFeasibilityFoldsExactTwoStringOrdinalPolarity(
+        string value,
+        bool matches)
+    {
+        const string helper = """
+            internal static class ExactStringOrdinalRecoveryTarget
+            {
+                internal static void Run(string exact)
+                {
+                    if (string.Equals(exact, "match"))
+                    {
+                        System.IO.File.Exists("ordinal-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("ordinal-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                $"ExactStringOrdinalRecoveryTarget.Run(\"{value}\");",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: exact ordinal string equality fixture",
+            });
+
+        Assert.Contains(result.Items, site =>
+            site.EnclosingType == "ExactStringOrdinalRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Exists"
+                : "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.EnclosingType == "ExactStringOrdinalRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Delete"
+                : "System.IO.File.Exists"));
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void RecoveryFeasibilityFoldsExactBooleanConstantPatternPolarity(
+        bool value,
+        bool matches)
+    {
+        const string helper = """
+            internal static class BooleanConstantPatternRecoveryTarget
+            {
+                internal static void Run(bool exact)
+                {
+                    if (exact is true)
+                    {
+                        System.IO.File.Exists("boolean-pattern-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("boolean-pattern-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                $"BooleanConstantPatternRecoveryTarget.Run({value.ToString().ToLowerInvariant()});",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: exact boolean constant-pattern fixture",
+            });
+
+        Assert.Contains(result.Items, site =>
+            site.EnclosingType == "BooleanConstantPatternRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Exists"
+                : "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.EnclosingType == "BooleanConstantPatternRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Delete"
+                : "System.IO.File.Exists"));
+    }
+
+    [Theory]
+    [InlineData(7, true)]
+    [InlineData(8, false)]
+    public void RecoveryFeasibilityFoldsExactIntegralConstantPatternPolarity(
+        int value,
+        bool matches)
+    {
+        const string helper = """
+            internal static class IntegralConstantPatternRecoveryTarget
+            {
+                internal static void Run(int exact)
+                {
+                    if (exact is 7)
+                    {
+                        System.IO.File.Exists("integral-pattern-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("integral-pattern-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                $"IntegralConstantPatternRecoveryTarget.Run({value});",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: exact integral constant-pattern fixture",
+            });
+
+        Assert.Contains(result.Items, site =>
+            site.EnclosingType == "IntegralConstantPatternRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Exists"
+                : "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.EnclosingType == "IntegralConstantPatternRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Delete"
+                : "System.IO.File.Exists"));
+    }
+
+    [Theory]
+    [InlineData("First", true)]
+    [InlineData("Second", false)]
+    public void RecoveryFeasibilityFoldsExactEnumConstantPatternPolarity(
+        string value,
+        bool matches)
+    {
+        const string helper = """
+            internal enum ConstantPatternMode
+            {
+                First,
+                Second,
+            }
+
+            internal static class EnumConstantPatternRecoveryTarget
+            {
+                internal static void Run(ConstantPatternMode exact)
+                {
+                    if (exact is ConstantPatternMode.First)
+                    {
+                        System.IO.File.Exists("enum-pattern-match");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("enum-pattern-mismatch");
+                    }
+
+                    exact = exact;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                $"EnumConstantPatternRecoveryTarget.Run(ConstantPatternMode.{value});",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: exact enum constant-pattern fixture",
+            });
+
+        Assert.Contains(result.Items, site =>
+            site.EnclosingType == "EnumConstantPatternRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Exists"
+                : "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.EnclosingType == "EnumConstantPatternRecoveryTarget"
+            && site.Callee == (matches
+                ? "System.IO.File.Delete"
+                : "System.IO.File.Exists"));
+    }
+
+    [Fact]
+    public void AuthoredIndexerAccessorsRetainProducerEffects()
+    {
+        const string helper = """
+            internal sealed class AuthoredIndexerTarget
+            {
+                internal string this[int index]
+                {
+                    get
+                    {
+                        System.IO.File.Exists("indexer-get");
+
+                        return index.ToString();
+                    }
+                    set
+                    {
+                        System.IO.File.Delete("indexer-set");
+
+                        _ = value;
+                    }
+                }
+            }
+
+            internal static class AuthoredIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    AuthoredIndexerTarget target = new();
+
+                    _ = target[0];
+                    target[1] = "value";
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "AuthoredIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: authored indexer accessor fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AuthoredIndexerTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AuthoredIndexerTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void ConditionalAuthoredIndexerGetterRetainsProducerEffects()
+    {
+        const string helper = """
+            internal sealed class ConditionalIndexerTarget
+            {
+                internal string this[int index]
+                {
+                    get
+                    {
+                        System.IO.File.Exists("conditional-indexer-get");
+
+                        return index.ToString();
+                    }
+                }
+            }
+
+            internal static class ConditionalIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    ConditionalIndexerTarget? target = new();
+
+                    _ = target?[0];
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "ConditionalIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: conditional authored indexer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ConditionalIndexerTarget"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
+    public void ImplicitObjectIndexerInitializerRetainsSetterEffects()
+    {
+        const string helper = """
+            internal sealed class InitializerIndexerTarget
+            {
+                internal int this[int index]
+                {
+                    set
+                    {
+                        System.IO.File.Delete("initializer-indexer-set");
+
+                        _ = index;
+                        _ = value;
+                    }
+                }
+            }
+
+            internal static class InitializerIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    InitializerIndexerTarget target = new()
+                    {
+                        [0] = 1,
+                    };
+
+                    _ = target;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "InitializerIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: implicit object indexer initializer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "InitializerIndexerTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void NestedDeconstructionIndexerTargetsInvokeOnlyTheirSetters()
+    {
+        const string helper = """
+            internal sealed class DeconstructionIndexerTarget
+            {
+                internal int this[int index]
+                {
+                    get
+                    {
+                        System.IO.File.Exists("deconstruction-indexer-get");
+
+                        return index;
+                    }
+                    set
+                    {
+                        System.IO.File.Delete("deconstruction-indexer-set");
+
+                        _ = index;
+                        _ = value;
+                    }
+                }
+            }
+
+            internal static class DeconstructionIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    DeconstructionIndexerTarget target = new();
+
+                    (target[0], (target[1], target[2])) = (3, (4, 5));
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "DeconstructionIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: nested deconstruction indexer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DeconstructionIndexerTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "DeconstructionIndexerTarget"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
+    public void AuthoredIndexerArgumentsSelectExactGetterAndSetterBranches()
+    {
+        const string helper = """
+            internal sealed class ArgumentSensitiveIndexerTarget
+            {
+                internal int this[int index]
+                {
+                    get
+                    {
+                        if (index == 7)
+                        {
+                            System.IO.File.Exists("selected-indexer-get");
+                        }
+                        else
+                        {
+                            System.IO.File.Delete("unselected-indexer-get");
+                        }
+
+                        return index;
+                    }
+                    set
+                    {
+                        if (index == 8 && value == 9)
+                        {
+                            System.IO.Directory.Exists("selected-indexer-set");
+                        }
+                        else
+                        {
+                            System.IO.Directory.Delete("unselected-indexer-set");
+                        }
+                    }
+                }
+            }
+
+            internal static class ArgumentSensitiveIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    ArgumentSensitiveIndexerTarget target = new();
+
+                    _ = target[7];
+                    target[8] = 9;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "ArgumentSensitiveIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: argument-sensitive authored indexer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ArgumentSensitiveIndexerTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ArgumentSensitiveIndexerTarget"
+            && site.Callee == "System.IO.Directory.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ArgumentSensitiveIndexerTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ArgumentSensitiveIndexerTarget"
+            && site.Callee == "System.IO.Directory.Delete");
+    }
+
+    [Fact]
+    public void DynamicAndUnknownIndexerTargetsFailClosed()
+    {
+        const string helper = """
+            internal interface IUnknownIndexerTarget
+            {
+                int this[int index] { get; set; }
+            }
+
+            internal static class UnresolvedIndexerConsumer
+            {
+                internal static void Run(IUnknownIndexerTarget unknown)
+                {
+                    dynamic dynamicTarget = new object();
+
+                    _ = dynamicTarget[0];
+                    dynamicTarget[1] = 2;
+                    _ = unknown[2];
+                    unknown[3] = 4;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "UnresolvedIndexerConsumer.Run(null!);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: unresolved indexer fixture",
+            });
+
+        Assert.Equal(
+            4,
+            result.Diagnostics.Count(static diagnostic =>
+                diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED"));
+    }
+
+    [Fact]
+    public void IndexerArgumentGetterRemainsAReadInsideOuterAssignmentTarget()
+    {
+        const string helper = """
+            internal sealed class ArgumentIndexerSource
+            {
+                internal int this[int index]
+                {
+                    get
+                    {
+                        System.IO.File.Exists("inner-argument-get");
+
+                        return index;
+                    }
+                    set => System.IO.Directory.Delete("inner-argument-set");
+                }
+            }
+
+            internal sealed class ArgumentIndexerOuter
+            {
+                internal int this[int index]
+                {
+                    get
+                    {
+                        System.IO.Directory.Exists("outer-target-get");
+
+                        return index;
+                    }
+                    set => System.IO.File.Delete("outer-target-set");
+                }
+            }
+
+            internal static class ArgumentIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    ArgumentIndexerSource inner = new();
+                    ArgumentIndexerOuter outer = new();
+
+                    outer[inner[0]] = 1;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "ArgumentIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: nested indexer argument lvalue fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ArgumentIndexerSource"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ArgumentIndexerSource"
+            && site.Callee == "System.IO.Directory.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ArgumentIndexerOuter"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ArgumentIndexerOuter"
+            && site.Callee == "System.IO.Directory.Exists");
+    }
+
+    [Fact]
+    public void IndexerReceiverGetterRemainsAReadInsideNestedAssignmentTarget()
+    {
+        const string helper = """
+            internal sealed class ReceiverChildIndexerTarget
+            {
+                internal int this[int index]
+                {
+                    get
+                    {
+                        System.IO.Directory.Exists("child-target-get");
+
+                        return index;
+                    }
+                    set => System.IO.Directory.Delete("child-target-set");
+                }
+            }
+
+            internal sealed class ReceiverOuterIndexerTarget
+            {
+                private readonly ReceiverChildIndexerTarget _child = new();
+
+                internal ReceiverChildIndexerTarget this[int index]
+                {
+                    get
+                    {
+                        System.IO.File.Exists("outer-receiver-get");
+
+                        return _child;
+                    }
+                    set => System.IO.File.Delete("outer-receiver-set");
+                }
+            }
+
+            internal static class ReceiverIndexerConsumer
+            {
+                internal static void Run()
+                {
+                    ReceiverOuterIndexerTarget outer = new();
+
+                    outer[0][1] = 2;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "ReceiverIndexerConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: nested indexer receiver lvalue fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ReceiverOuterIndexerTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ReceiverOuterIndexerTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ReceiverChildIndexerTarget"
+            && site.Callee == "System.IO.Directory.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ReceiverChildIndexerTarget"
+            && site.Callee == "System.IO.Directory.Exists");
+    }
+
+    [Fact]
+    public void PropertyReceiverGetterRemainsAReadInsideNestedAssignmentTarget()
+    {
+        const string helper = """
+            internal sealed class NestedPropertyChild
+            {
+                private int _value;
+
+                internal int Value
+                {
+                    get
+                    {
+                        System.IO.Directory.Exists("child-property-get");
+
+                        return _value;
+                    }
+                    set
+                    {
+                        System.IO.Directory.Delete("child-property-set");
+
+                        _value = value;
+                    }
+                }
+            }
+
+            internal sealed class NestedPropertyOwner
+            {
+                private NestedPropertyChild _inner = new();
+
+                internal NestedPropertyChild Inner
+                {
+                    get
+                    {
+                        System.IO.File.Exists("owner-property-get");
+
+                        return _inner;
+                    }
+                    set
+                    {
+                        System.IO.File.Delete("owner-property-set");
+
+                        _inner = value;
+                    }
+                }
+            }
+
+            internal static class NestedPropertyConsumer
+            {
+                internal static void Run()
+                {
+                    NestedPropertyOwner owner = new();
+
+                    owner.Inner.Value = 3;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "NestedPropertyConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: nested property receiver lvalue fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NestedPropertyOwner"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "NestedPropertyOwner"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NestedPropertyChild"
+            && site.Callee == "System.IO.Directory.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "NestedPropertyChild"
+            && site.Callee == "System.IO.Directory.Exists");
+    }
+
+    [Fact]
+    public void CoalescingAssignmentInvokesExactGetterAndSetterAccessors()
+    {
+        const string helper = """
+            internal sealed class CoalescingPropertyTarget
+            {
+                private string? _value;
+
+                internal string? Value
+                {
+                    get
+                    {
+                        System.IO.File.Exists("coalesce-property-get");
+
+                        return _value;
+                    }
+                    set
+                    {
+                        System.IO.File.Delete("coalesce-property-set");
+
+                        _value = value;
+                    }
+                }
+            }
+
+            internal sealed class CoalescingIndexerTarget
+            {
+                private string? _value;
+
+                internal string? this[int index]
+                {
+                    get
+                    {
+                        System.IO.Directory.Exists("coalesce-indexer-get");
+
+                        return _value;
+                    }
+                    set
+                    {
+                        System.IO.Directory.Delete("coalesce-indexer-set");
+
+                        _value = value;
+                    }
+                }
+            }
+
+            internal static class CoalescingAssignmentConsumer
+            {
+                internal static void Run()
+                {
+                    CoalescingPropertyTarget property = new();
+                    CoalescingIndexerTarget indexer = new();
+
+                    property.Value ??= "property";
+                    indexer[0] ??= "indexer";
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "CoalescingAssignmentConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: coalescing assignment accessor fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CoalescingPropertyTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CoalescingPropertyTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CoalescingIndexerTarget"
+            && site.Callee == "System.IO.Directory.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CoalescingIndexerTarget"
+            && site.Callee == "System.IO.Directory.Delete");
+    }
+
+    [Fact]
+    public void GetterOnlyRefReturnAssignmentInvokesPropertyAndIndexerGetters()
+    {
+        const string helper = """
+            internal sealed class RefPropertyTarget
+            {
+                private int _value;
+
+                internal ref int Value
+                {
+                    get
+                    {
+                        System.IO.File.Exists("ref-property-get");
+
+                        return ref _value;
+                    }
+                }
+            }
+
+            internal sealed class RefIndexerTarget
+            {
+                private int _value;
+
+                internal ref int this[int index]
+                {
+                    get
+                    {
+                        System.IO.Directory.Exists("ref-indexer-get");
+
+                        return ref _value;
+                    }
+                }
+            }
+
+            internal static class RefReturnAssignmentConsumer
+            {
+                internal static void Run()
+                {
+                    RefPropertyTarget property = new();
+                    RefIndexerTarget indexer = new();
+
+                    property.Value = 1;
+                    indexer[0] = 2;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "RefReturnAssignmentConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: ref-return assignment getter fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RefPropertyTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RefIndexerTarget"
+            && site.Callee == "System.IO.Directory.Exists");
+    }
+
+    [Fact]
+    public void AuthoredCustomEventAccessorsRetainProducerEffects()
+    {
+        const string helper = """
+            internal sealed class AuthoredEventTarget
+            {
+                internal event System.Action Changed
+                {
+                    add
+                    {
+                        System.IO.File.Exists("event-add");
+
+                        _ = value;
+                    }
+                    remove
+                    {
+                        System.IO.File.Delete("event-remove");
+
+                        _ = value;
+                    }
+                }
+            }
+
+            internal static class AuthoredEventConsumer
+            {
+                internal static void Run()
+                {
+                    AuthoredEventTarget target = new();
+                    System.Action handler = Handle;
+
+                    target.Changed += handler;
+                    target.Changed -= handler;
+                }
+
+                private static void Handle() { }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "AuthoredEventConsumer.Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: authored event accessor fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AuthoredEventTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AuthoredEventTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void BareInTypeCustomEventAccessorsBindExactHandlers()
+    {
+        const string helper = """
+            internal sealed class BareEventTarget
+            {
+                internal event System.Action Changed
+                {
+                    add => value();
+                    remove => value();
+                }
+
+                internal void Run()
+                {
+                    Changed += Added;
+                    Changed -= Removed;
+                }
+
+                private static void Added() =>
+                    System.IO.File.Exists("bare-event-add");
+
+                private static void Removed() =>
+                    System.IO.File.Delete("bare-event-remove");
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                "new BareEventTarget().Run();",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: bare in-type custom event fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "BareEventTarget"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "BareEventTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityBuildsOneLinearReachabilityPlanPerTraversalState()
+    {
+        string effects = string.Join(
+            " ",
+            Enumerable.Range(0, 128).Select(index =>
+                $"System.IO.File.Exists(\"reachable-{index}\");"));
+
+        string nestedEffects = effects;
+
+        for (int depth = 0; depth < 16; depth++)
+        {
+            nestedEffects = "{ " + nestedEffects + " }";
+        }
+
+        string helper =
+            "internal static class RecoveryReachabilityPlanTarget { "
+            + "internal static void Run(bool exact) { if (exact) { "
+            + nestedEffects
+            + " return; } else { System.IO.File.Delete(\"unreachable-alternate\"); } "
+            + "System.IO.File.Delete(\"unreachable-after-terminating-guard\"); "
+            + "exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source("RecoveryReachabilityPlanTarget.Run(true);", helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: linear recovery-reachability fixture",
+                });
+
+        HostedProducerSite[] reachable = result.Items
+            .Where(static site => site.EnclosingType
+                    == "RecoveryReachabilityPlanTarget"
+                && site.Member == "Run")
+            .ToArray();
+
+        Assert.Equal(128, reachable.Length);
+
+        Assert.All(reachable, static site =>
+        {
+            Assert.Equal(HostedProducerSiteKind.FileSystemRead, site.Kind);
+
+            Assert.Equal("System.IO.File.Exists", site.Callee);
+        });
+
+        Assert.Empty(result.Diagnostics);
+
+        HostedProducerRecoveryConditionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RecoveryConditions,
+            static candidate => candidate.Member
+                == "M:RecoveryReachabilityPlanTarget.Run(System.Boolean)");
+
+        Assert.Equal(1, metric.MaximumEvaluationsPerTraversalState);
+
+        Assert.True(
+            metric.StructuralInspections <= metric.FeasibilityQueries,
+            $"Expected linear reachability planning, but {metric.StructuralInspections} structural inspections served {metric.FeasibilityQueries} feasibility queries.");
+
+        Assert.Equal(
+            metric.TotalEvaluationsAcrossTraversalStates,
+            metric.PlanBuilds);
+    }
+
+    [Fact]
+    public void SelectedRootsShareOneCompleteBoundReachabilityPlan()
+    {
+        string noise = string.Join(
+            " ",
+            Enumerable.Range(0, 256).Select(index =>
+                $"int noise{index} = {index}; _ = noise{index};"));
+
+        string source = FixtureSource(
+            "LargeSelectedRecoveryTarget.Run(true);",
+            "internal static class LargeSelectedRecoveryTarget { "
+                + "internal static void Run(bool exact) { "
+                + "if (exact) { _ = 1; } else { _ = 2; } "
+                + noise
+                + " System.IO.File.Exists(\"first-selected\"); "
+                + "System.IO.Directory.Exists(\"second-selected\"); "
+                + "exact = exact; } }");
+
+        CSharpCompilation compilation = Compile(source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new([], []),
+                [],
+                [],
+                recoverySelectionProbe: new(
+                    CallRoot(
+                        source,
+                        "LargeSelectedRecoveryTarget.Run"),
+                    [
+                        CallRoot(
+                            source,
+                            "LargeSelectedRecoveryTarget.Run",
+                            "System.IO.File.Exists"),
+                        CallRoot(
+                            source,
+                            "LargeSelectedRecoveryTarget.Run",
+                            "System.IO.Directory.Exists"),
+                    ]));
+
+        Assert.Collection(
+            result.Items.OrderBy(static site => site.Callee, StringComparer.Ordinal),
+            static site => Assert.Equal("System.IO.Directory.Exists", site.Callee),
+            static site => Assert.Equal("System.IO.File.Exists", site.Callee));
+
+        Assert.Empty(result.Diagnostics);
+
+        HostedProducerRecoveryConditionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RecoveryConditions,
+            static candidate => candidate.Member
+                == "M:LargeSelectedRecoveryTarget.Run(System.Boolean)");
+
+        Assert.Equal(1, metric.PlanBuilds);
+
+        Assert.Equal(1, metric.TotalEvaluationsAcrossTraversalStates);
+
+        Assert.True(metric.StructuralInspections >= 1_024);
+    }
+
+    [Fact]
+    public void EquivalentRecoveryProjectionDecisionsShareOneWholeMemberScan()
+    {
+        string noise = string.Join(
+            " ",
+            Enumerable.Range(0, 128).Select(index =>
+                $"int noise{index} = {index}; _ = noise{index};"));
+
+        const string settlement =
+            "await new LongRunningOperationReconciler().SettleExactlyAsync(";
+
+        string source = RecoveryMatrixFixture()
+            .Replace(
+                settlement,
+                "TraversalRecoveryProjectionTarget.Route("
+                    + "new LongRunningOperation(LongRunningOperationKinds.Db, 0), "
+                    + "new LongRunningOperation(LongRunningOperationKinds.External, 0), "
+                    + "new LongRunningOperation(LongRunningOperationKinds.Owner, 0), true); "
+                    + settlement,
+                StringComparison.Ordinal)
+            + " namespace RetroDownfall.Arcanum.Infrastructure.Operations { "
+            + "using RetroDownfall.Arcanum.Core.Operations; "
+            + "internal static class TraversalRecoveryProjectionTarget { "
+            + "internal static void Route(LongRunningOperation first, "
+            + "LongRunningOperation second, LongRunningOperation third, bool exact) { "
+            + noise
+            + " _ = first.Kind; _ = second.Kind; _ = third.Kind; "
+            + "if (exact) { "
+            + "System.IO.File.Exists(\"first-reachable\"); "
+            + "System.IO.File.Exists(\"second-reachable\"); "
+            + "System.IO.File.Exists(\"third-reachable\"); "
+            + "System.IO.File.Exists(\"fourth-reachable\"); } else "
+            + "System.IO.File.Delete(\"unreachable\"); "
+            + "first = first; second = second; third = third; exact = exact; } } }";
+
+        HostedProducerRecoverySelectionProbe probe = new(
+            CallRoot(
+                source,
+                "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot.Run",
+                "RetroDownfall.Arcanum.Infrastructure.Operations.TraversalRecoveryProjectionTarget.Route"),
+            Enumerable.Range(0, 4)
+                .Select(index => CallRoot(
+                    source,
+                    "RetroDownfall.Arcanum.Infrastructure.Operations.TraversalRecoveryProjectionTarget.Route",
+                    "System.IO.File.Exists",
+                    index))
+                .ToArray());
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(
+                source,
+                recoverySelectionProbe: probe);
+
+        HostedProducerSite[] sites = result.Items
+            .Where(static site => site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.TraversalRecoveryProjectionTarget")
+            .ToArray();
+
+        Assert.Equal(8, sites.Length);
+
+        Assert.All(sites, static site =>
+            Assert.Equal("System.IO.File.Exists", site.Callee));
+
+        Assert.Empty(result.Diagnostics);
+
+        HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(
+            result.AnalysisMetrics);
+
+        HostedProducerTraversalRecoveryProjectionMetric projection = Assert.Single(
+            metrics.TraversalRecoveryProjections,
+            static candidate => candidate.Member.StartsWith(
+                "M:RetroDownfall.Arcanum.Infrastructure.Operations.TraversalRecoveryProjectionTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(5, projection.Requests);
+
+        Assert.Equal(1, projection.Builds);
+
+        Assert.Equal(projection.Requests - 1, projection.CacheHits);
+
+        Assert.Equal(1, projection.WholeMemberScans);
+
+        Assert.True(projection.ExpressionsInspected >= 384);
+
+        Assert.True(projection.AssignmentScans >= 384);
+
+        Assert.True(projection.AssignmentInspections >= 384);
+
+        Assert.True(projection.DependencyNodes >= projection.ExpressionsInspected);
+
+        HostedProducerRecoveryConditionMetric condition = Assert.Single(
+            metrics.RecoveryConditions,
+            static candidate => candidate.Member.StartsWith(
+                "M:RetroDownfall.Arcanum.Infrastructure.Operations.TraversalRecoveryProjectionTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, condition.PlanBuilds);
+
+        Assert.Equal(1, condition.MaximumEvaluationsPerTraversalState);
+    }
+
+    [Fact]
+    public void LimitedRecoveryProjectionEnvironmentsRemainUncachedPerState()
+    {
+        const string settlement =
+            "await new LongRunningOperationReconciler().SettleExactlyAsync(";
+
+        string source = RecoveryMatrixFixture()
+            .Replace(
+                settlement,
+                "LimitedRecoveryProjectionTarget.Route("
+                    + "new LongRunningOperation(LongRunningOperationKinds.Db, 0), true); "
+                    + settlement,
+                StringComparison.Ordinal)
+            + " namespace RetroDownfall.Arcanum.Infrastructure.Operations { "
+            + "using RetroDownfall.Arcanum.Core.Operations; "
+            + "internal static class LimitedRecoveryProjectionTarget { "
+            + "internal static void Route(LongRunningOperation operation, bool exact) { "
+            + "if (exact) { "
+            + "System.IO.File.Exists(\"first-limited-reachable\"); "
+            + "System.IO.File.Exists(\"second-limited-reachable\"); } else "
+            + "System.IO.File.Delete(\"limited-unreachable\"); "
+            + "operation = operation; exact = exact; } } }";
+
+        HostedProducerRecoverySelectionProbe probe = new(
+            CallRoot(
+                source,
+                "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot.Run",
+                "RetroDownfall.Arcanum.Infrastructure.Operations.LimitedRecoveryProjectionTarget.Route"),
+            Enumerable.Range(0, 2)
+                .Select(index => CallRoot(
+                    source,
+                    "RetroDownfall.Arcanum.Infrastructure.Operations.LimitedRecoveryProjectionTarget.Route",
+                    "System.IO.File.Exists",
+                    index))
+                .ToArray());
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(
+                source,
+                recoverySelectionProbe: probe,
+                evaluationEnvironmentMaximumMembers: 0);
+
+        HostedProducerSite[] sites = result.Items
+            .Where(static site => site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.LimitedRecoveryProjectionTarget")
+            .ToArray();
+
+        Assert.Equal(4, sites.Length);
+
+        Assert.All(sites, static site =>
+            Assert.Equal("System.IO.File.Exists", site.Callee));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        HostedProducerTraversalRecoveryProjectionMetric projection = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .TraversalRecoveryProjections,
+            static candidate => candidate.Member.StartsWith(
+                "M:RetroDownfall.Arcanum.Infrastructure.Operations.LimitedRecoveryProjectionTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(3, projection.Requests);
+
+        Assert.Equal(projection.Requests, projection.Builds);
+
+        Assert.Equal(0, projection.CacheHits);
+
+        Assert.Equal(projection.Builds, projection.WholeMemberScans);
+    }
+
+    [Fact]
+    public void DisjointRecoveryExclusionsUseLogarithmicSpanProbes()
+    {
+        string branches = string.Join(
+            " ",
+            Enumerable.Range(0, 128).Select(index =>
+                $"if (exact) System.IO.File.Exists(\"reachable-{index}\"); "
+                    + $"else System.IO.File.Delete(\"excluded-{index}\");"));
+
+        string helper =
+            "internal static class DisjointRecoveryExclusionTarget { "
+            + "internal static void Run(bool exact) { "
+            + branches
+            + " exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source(
+                    "DisjointRecoveryExclusionTarget.Run(true);",
+                    helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: disjoint recovery exclusions fixture",
+                });
+
+        Assert.Equal(
+            128,
+            result.Items.Count(static site => site.EnclosingType
+                    == "DisjointRecoveryExclusionTarget"
+                && site.Callee == "System.IO.File.Exists"));
+
+        Assert.DoesNotContain(result.Items, static site => site.EnclosingType
+                == "DisjointRecoveryExclusionTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Empty(result.Diagnostics);
+
+        HostedProducerRecoveryConditionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RecoveryConditions,
+            static candidate => candidate.Member
+                == "M:DisjointRecoveryExclusionTarget.Run(System.Boolean)");
+
+        Assert.Equal(128, metric.UnreachableIntervals);
+
+        int maximumComparisonsPerQuery = (int)Math.Ceiling(
+            Math.Log2(metric.UnreachableIntervals + 1));
+
+        Assert.InRange(
+            metric.ProbeComparisons,
+            1,
+            metric.FeasibilityQueries * maximumComparisonsPerQuery);
+    }
+
+    [Fact]
+    public void PlannedRecoveryReachabilityMatchesFallbackForEverySyntaxNode()
+    {
+        const string helper = """
+            internal static class RecoveryReachabilityParityTarget
+            {
+                internal static void Run(bool yes, bool no, bool unknown, int choice)
+                {
+                    if (yes)
+                    {
+                        System.IO.File.Exists("if-known-true");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("if-known-true-excluded");
+                    }
+
+                    if (no)
+                    {
+                        System.IO.File.Delete("if-known-false-excluded");
+                    }
+                    else
+                    {
+                        System.IO.Directory.Exists("if-known-false");
+                    }
+
+                    if (unknown)
+                    {
+                        System.IO.File.Exists("if-unknown-true");
+                    }
+                    else
+                    {
+                        System.IO.Directory.Exists("if-unknown-false");
+                    }
+
+                    _ = yes
+                        ? System.IO.File.Exists("ternary-true")
+                        : System.IO.File.Exists("ternary-false-excluded");
+
+                    _ = no
+                        ? System.IO.Directory.Exists("ternary-true-excluded")
+                        : System.IO.Directory.Exists("ternary-false");
+
+                    _ = choice switch
+                    {
+                        1 when unknown => System.IO.File.Exists("switch-match-when"),
+                        1 => System.IO.Directory.Exists("switch-overlap"),
+                        2 when unknown => System.IO.File.Exists("switch-nonmatch-when"),
+                        _ => System.IO.Directory.Exists("switch-discard"),
+                    };
+
+                    _ = no && System.IO.File.Exists("and-excluded");
+                    _ = yes || System.IO.Directory.Exists("or-excluded");
+                    _ = yes && System.IO.File.Exists("and-reachable");
+                    _ = no || System.IO.Directory.Exists("or-reachable");
+
+                    System.Action nested = () =>
+                    {
+                        if (yes)
+                        {
+                            System.IO.File.Exists("lambda-true");
+                        }
+                        else
+                        {
+                            System.IO.File.Delete("lambda-false-excluded");
+                        }
+                    };
+
+                    nested();
+
+                    void Local()
+                    {
+                        if (no)
+                        {
+                            System.IO.File.Delete("local-true-excluded");
+                        }
+                        else
+                        {
+                            System.IO.Directory.Exists("local-false");
+                        }
+                    }
+
+                    Local();
+
+                    yes = yes;
+                    no = no;
+                    unknown = unknown;
+                    choice = choice;
+                }
+
+                internal static void NestedReturn(bool yes)
+                {
+                    yes = yes;
+
+                    {
+                        if (yes)
+                        {
+                            return;
+                        }
+
+                        System.IO.File.Delete("after-nested-return");
+                    }
+                }
+
+                internal static void NestedThrow(bool no)
+                {
+                    no = no;
+
+                    {
+                        if (no)
+                        {
+                            return;
+                        }
+                        else
+                        {
+                            throw new InvalidOperationException();
+                        }
+
+                        System.IO.File.Delete("after-nested-throw");
+                    }
+                }
+            }
+            """;
+
+        string source = R2Source(
+            "RecoveryReachabilityParityTarget.Run(true, false, DateTime.UtcNow.Ticks > 0, 1); "
+                + "RecoveryReachabilityParityTarget.NestedReturn(true); "
+                + "RecoveryReachabilityParityTarget.NestedThrow(false);",
+            helper);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: recovery reachability parity fixture",
+                }])],
+                [],
+                auditRecoveryReachabilityParity: true);
+
+        Assert.Empty(result.Diagnostics);
+
+        HostedProducerRecoveryConditionMetric[] metrics = Assert
+            .IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+            .RecoveryConditions
+            .Where(static metric => metric.Member.Contains(
+                "RecoveryReachabilityParityTarget",
+                StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(metrics);
+
+        Assert.All(metrics, static metric => Assert.Equal(0, metric.ParityMismatches));
+
+        Assert.True(metrics.Sum(static metric => metric.ParityComparisons) >= 100);
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists"
+            && site.EnclosingType == "RecoveryReachabilityParityTarget");
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.Directory.Exists"
+            && site.EnclosingType == "RecoveryReachabilityParityTarget");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete"
+            && site.EnclosingType == "RecoveryReachabilityParityTarget"
+            && site.Member == "Run");
+
+        HostedProducerDiscovery<HostedProducerSite> selected =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new([], []),
+                [],
+                [],
+                recoverySelectionProbe: new(
+                    CallRoot(
+                        source,
+                        "RecoveryReachabilityParityTarget.Run"),
+                    [
+                        CallRoot(
+                            source,
+                            "RecoveryReachabilityParityTarget.Run",
+                            "System.IO.File.Exists"),
+                        CallRoot(
+                            source,
+                            "RecoveryReachabilityParityTarget.Run",
+                            "System.IO.Directory.Exists"),
+                    ]),
+                auditRecoveryReachabilityParity: true);
+
+        Assert.Equal(2, selected.Items.Count);
+
+        Assert.Empty(selected.Diagnostics);
+
+        HostedProducerRecoveryConditionMetric selectedMetric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(selected.AnalysisMetrics)
+                .RecoveryConditions,
+            static metric => metric.Member
+                == "M:RecoveryReachabilityParityTarget.Run(System.Boolean,System.Boolean,System.Boolean,System.Int32)");
+
+        Assert.True(selectedMetric.ParityComparisons >= 100);
+
+        Assert.Equal(0, selectedMetric.ParityMismatches);
+    }
+
+    [Fact]
+    public void RecoverySpanNormalizationMergesOverlapsAndPreservesBoundaries()
+    {
+        HostedProducerRecoverySpanProbe probe =
+            HostedGrimoireProducerInventory.ProbeRecoveryReachabilitySpans(
+                [
+                    new(45, 70),
+                    new(10, 50),
+                    new(20, 30),
+                    new(70, 80),
+                    new(90, 100),
+                ],
+                [
+                    new(10, 50),
+                    new(20, 30),
+                    new(45, 70),
+                    new(70, 80),
+                    new(69, 71),
+                    new(80, 90),
+                    new(90, 100),
+                ]);
+
+        Assert.Equal(
+            [new(10, 70), new(70, 80), new(90, 100)],
+            probe.NormalizedIntervals);
+
+        Assert.Equal(
+            [false, false, false, false, true, true, false],
+            probe.NodeMayExecute);
+
+        Assert.InRange(probe.ProbeComparisons, 7, 14);
+    }
+
+    [Fact]
+    public void RetainedAdmissionSyntaxIsIndexedOncePerAuthoredMember()
+    {
+        string effects = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"System.IO.File.Exists(\"indexed-{index}\");"));
+
+        string helper =
+            "internal static class AdmissionIndexTarget { "
+            + "internal static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate) { "
+            + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return; "
+            + "using var lease = work; "
+            + effects
+            + " } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + "AdmissionIndexTarget.Run(gate);", helper));
+
+        HostedProducerSite[] indexed = result.Items
+            .Where(static site => site.Member == "Run"
+                && site.Callee == "System.IO.File.Exists")
+            .ToArray();
+
+        Assert.Equal(32, indexed.Length);
+
+        Assert.All(indexed, static site =>
+        {
+            Assert.NotNull(site.WorkFrontierCapsuleId);
+
+            Assert.NotNull(site.EffectFrontierCapsuleId);
+        });
+
+        HostedProducerRetainedAdmissionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RetainedAdmissions,
+            static candidate => candidate.Member.Contains(
+                "M:AdmissionIndexTarget.Run",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.SemanticQueries > 1);
+
+        Assert.True(metric.DistinctQueryPositions >= 32);
+
+        Assert.Equal(1, metric.SourceIndexBuilds);
+    }
+
+    [Fact]
+    public void OriginFreeInheritedAuthorityAvoidsRetainedAdmissionSemanticScans()
+    {
+        string effects = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"System.IO.File.Exists(\"origin-free-{index}\");"));
+
+        string helper =
+            "internal static class OriginFreeAdmissionTarget { "
+            + "internal static void Run() { "
+            + effects
+            + " } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + "OriginFreeAdmissionTarget.Run();", helper));
+
+        HostedProducerSite[] sites = result.Items
+            .Where(static site => site.EnclosingType == "OriginFreeAdmissionTarget"
+                && site.Member == "Run"
+                && site.Callee == "System.IO.File.Exists")
+            .ToArray();
+
+        Assert.Equal(32, sites.Length);
+
+        Assert.All(sites, static site =>
+        {
+            Assert.NotNull(site.WorkFrontierCapsuleId);
+
+            Assert.NotNull(site.EffectFrontierCapsuleId);
+        });
+
+        HostedProducerRetainedAdmissionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RetainedAdmissions,
+            static candidate => candidate.Member
+                == "M:OriginFreeAdmissionTarget.Run");
+
+        Assert.True(metric.AuthorityQueries > 0);
+
+        Assert.Equal(
+            (
+                metric.AuthorityQueries,
+                metric.AuthorityQueries,
+                metric.AuthorityQueries,
+                1,
+                0,
+                0,
+                0,
+                0),
+            (
+                metric.AuthorityQueries,
+                metric.OriginFreeFastPathReturns,
+                metric.OriginPossibilityRequests,
+                metric.OriginPossibilityBuilds,
+                metric.SemanticQueries,
+                metric.DistinctQueryPositions,
+                metric.SourceIndexBuilds,
+                metric.LifetimeNodeInspections));
+    }
+
+    [Fact]
+    public void OriginFreeAdmissionMemoKeepsBoundAndUnboundEnvironmentsDistinct()
+    {
+        const string target =
+            "internal static class AdmissionBindingTarget { "
+            + "internal static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? lease, bool admitted) { "
+            + "if (admitted) { lease!.Dispose(); System.IO.File.Delete(\"bound\"); } "
+            + "else System.IO.File.Exists(\"unbound\"); } }";
+
+        const string body =
+            "AdmissionBindingTarget.Run(null, false); "
+            + "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; "
+            + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return; "
+            + "using var lease = work; AdmissionBindingTarget.Run(lease, true);";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(body, target));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AdmissionBindingTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+
+        HostedProducerRetainedAdmissionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RetainedAdmissions,
+            static candidate => candidate.Member.Contains(
+                "M:AdmissionBindingTarget.Run",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.OriginFreeFastPathReturns > 0);
+
+        Assert.True(metric.SemanticQueries > 0);
+
+        Assert.Equal(2, metric.OriginPossibilityBuilds);
+    }
+
+    [Theory]
+    [InlineData("direct")]
+    [InlineData("sync")]
+    [InlineData("task")]
+    [InlineData("valuetask")]
+    [InlineData("captured-disposal")]
+    public void AdmissionOriginFastPathRefusesPotentialLeaseSources(
+        string shape)
+    {
+        string acquisition;
+
+        string members = "";
+
+        if (shape == "direct" || shape == "captured-disposal")
+        {
+            acquisition =
+                "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; "
+                + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var lease)) return; ";
+        }
+        else
+        {
+            string returnType = shape switch
+            {
+                "sync" => "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease",
+                "task" => "Task<RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease>",
+                _ => "ValueTask<RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease>",
+            };
+
+            string asyncModifier = shape == "sync" ? "" : "async ";
+
+            string prelude = shape == "sync" ? "" : "await Task.Yield(); ";
+
+            members =
+                $"private static {asyncModifier}{returnType} AcquireLease(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate) {{ "
+                + prelude
+                + "if (gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var lease)) return lease; "
+                + "throw new OperationCanceledException(); } ";
+
+            string awaitKeyword = shape == "sync" ? "" : "await ";
+
+            acquisition =
+                "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; "
+                + $"var lease = {awaitKeyword}AcquireLease(gate); ";
+        }
+
+        string use = shape == "captured-disposal"
+            ? "Action consume = () => { lease.Dispose(); System.IO.File.Delete(\"after-disposal\"); }; consume();"
+            : "System.IO.File.Exists(\"before-disposal\"); lease.Dispose(); System.IO.File.Delete(\"after-disposal\");";
+
+        string source = R2Source(acquisition + use).Replace(
+            "public async Task StartAsync",
+            members + " public async Task StartAsync",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+
+        Assert.Contains(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RetainedAdmissions,
+            static metric => metric.SemanticQueries > 0
+                && metric.OriginFreeFastPathReturns < metric.AuthorityQueries);
+    }
+
+    [Fact]
+    public void AdmissionOriginFastPathRefusesCapturedLeaseReceiverDisposal()
+    {
+        const string callback =
+            "Action consume = () => { lease.Dispose(); System.IO.File.Delete(\"captured-receiver\"); }; consume();";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + callback));
+
+        HostedProducerSite site = Assert.Single(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+
+        Assert.Null(site.WorkFrontierCapsuleId);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("implicit-using")]
+    [InlineData("heap-escape")]
+    public void AdmissionOriginFastPathRefusesCapturedAdmissionAliases(
+        string shape)
+    {
+        string end = shape == "implicit-using"
+            ? "using (held) { }"
+            : "Escaped = held;";
+
+        string source = R2Source(
+            R2Admission
+                + "Action consume = () => { "
+                + end
+                + " System.IO.File.Delete(\"captured-alias\"); }; consume();");
+
+        if (shape == "heap-escape")
+        {
+            source = source.Replace(
+                "public async Task StartAsync",
+                "private static object Escaped = null!; public async Task StartAsync",
+                StringComparison.Ordinal);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        HostedProducerSite site = Assert.Single(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+
+        Assert.Null(site.EffectFrontierCapsuleId);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void OwnedCallbackPreservesBoundAdmissionForCapturedParameterDisposal()
+    {
+        const string helper =
+            "internal static class BoundAdmissionCallbackTarget { "
+            + "internal static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease) { "
+            + "Action consume = () => { using (lease) { } System.IO.File.Delete(\"bound-capture\"); }; consume(); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission + "BoundAdmissionCallbackTarget.Run(lease);",
+                helper));
+
+        HostedProducerSite site = Assert.Single(result.Items, static site =>
+            site.EnclosingType == "BoundAdmissionCallbackTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Null(site.WorkFrontierCapsuleId);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RetainedAdmissionFrontiersAreQueriedOnlyForProducerCandidates()
+    {
+        string noise = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"int value{index} = {index}; if (value{index} < 0) value{index}++;"));
+
+        string helper =
+            "internal static class AdmissionDemandTarget { "
+            + "internal static void Run() { "
+            + noise
+            + " System.IO.File.Exists(\"demand-driven\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + "AdmissionDemandTarget.Run();", helper));
+
+        HostedProducerSite site = Assert.Single(result.Items, static site =>
+            site.EnclosingType == "AdmissionDemandTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.NotNull(site.WorkFrontierCapsuleId);
+
+        Assert.NotNull(site.EffectFrontierCapsuleId);
+
+        HostedProducerRetainedAdmissionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RetainedAdmissions,
+            static candidate => candidate.Member == "M:AdmissionDemandTarget.Run");
+
+        Assert.Equal(4, metric.AuthorityQueries);
+
+        Assert.Equal(4, metric.OriginFreeFastPathReturns);
+
+        Assert.Equal(0, metric.SemanticQueries);
+    }
+
+    [Fact]
+    public void ExactBoundMemberUsesInternedEnvironmentWithoutTraversalFingerprint()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat("EnvironmentCacheTarget.Run(1);", 32));
+
+        const string helper =
+            "internal static class EnvironmentCacheTarget { "
+            + "internal static void Run(int exact) { "
+            + "if (exact < 0) return; "
+            + "System.IO.File.Exists(\"environment-cache\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: exact environment cache fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "EnvironmentCacheTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:EnvironmentCacheTarget.Run(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+
+        Assert.True(metric.InternerRequests > 1);
+
+        Assert.Equal(1, metric.InternerRegistrations);
+    }
+
+    [Fact]
+    public void PublicationRegionSyntaxIsIndexedOnceAcrossBoundStatesWithoutWriterCandidates()
+    {
+        const string helper =
+            "internal interface IIndexedCleanup : System.IDisposable { } "
+            + "internal sealed class FirstIndexedCleanup : IIndexedCleanup { "
+            + "public void Dispose() => System.IO.File.Exists(\"first-indexed-cleanup\"); } "
+            + "internal sealed class SecondIndexedCleanup : IIndexedCleanup { "
+            + "public void Dispose() => System.IO.File.Exists(\"second-indexed-cleanup\"); } "
+            + "internal static class PublicationIndexTarget { "
+            + "internal static void Run(IIndexedCleanup cleanup) { "
+            + "using (cleanup) { } System.IO.File.Exists(\"publication-index\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "PublicationIndexTarget.Run(new FirstIndexedCleanup()); "
+                    + "PublicationIndexTarget.Run(new SecondIndexedCleanup());",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: publication syntax index fixture",
+            });
+
+        HostedProducerAnalysisMetrics metrics =
+            Assert.IsType<HostedProducerAnalysisMetrics>(
+                result.AnalysisMetrics);
+
+        HostedProducerPublicationRegionMetric[] publications = metrics
+            .PublicationRegions
+            .Where(static candidate => candidate.Member.StartsWith(
+                "M:PublicationIndexTarget.Run(",
+                StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(publications);
+
+        Assert.All(
+            publications,
+            static publication => Assert.Equal(1, publication.IndexBuilds));
+
+        Assert.True(publications.Sum(static publication =>
+            publication.IndexRequests) > publications.Length);
+
+        Assert.All(
+            publications,
+            static publication => Assert.Equal(
+                0,
+                publication.CandidateInspections));
+
+        HostedProducerRootTraversalMetric root = Assert.Single(
+            metrics.RootTraversals,
+            static candidate => candidate.RootOperation ==
+                "Worker.StartAsync");
+
+        Assert.Equal(2, root.TraversalCalls);
+
+        Assert.True(root.AnalyzedStates > 1);
+    }
+
+    [Fact]
+    public void RootTraversalMetricRenderingIsStableAndSlowestFirst()
+    {
+        string[] rendered = RenderRootTraversalMetrics(
+        [
+            new("Zulu", "Zulu.Run", 2, 8, TimeSpan.FromMilliseconds(5)),
+            new("Beta", "Beta.Run", 1, 4, TimeSpan.FromMilliseconds(10)),
+            new("Alpha", "Alpha.Run", 3, 6, TimeSpan.FromMilliseconds(10)),
+        ]);
+
+        Assert.Equal(
+        [
+            "HOSTED_ROOT_TRAVERSAL\telapsed_ms=10.000\tstates=6\tcalls=3\troot_type=Alpha\troot=Alpha.Run",
+            "HOSTED_ROOT_TRAVERSAL\telapsed_ms=10.000\tstates=4\tcalls=1\troot_type=Beta\troot=Beta.Run",
+            "HOSTED_ROOT_TRAVERSAL\telapsed_ms=5.000\tstates=8\tcalls=2\troot_type=Zulu\troot=Zulu.Run",
+        ],
+            rendered);
+    }
+
+    [Fact]
+    public void CleanupCacheMetricRenderingIsStableAndMostReusedFirst()
+    {
+        HostedProducerAnalysisMetrics metrics = new(
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                new("Zulu", 6, 1, 5, 1, 1, 0),
+                new("Beta", 4, 2, 2, 10, 2, 8),
+                new("Alpha", 10, 3, 7, 5, 2, 3),
+                new("Gamma", 2, 1, 1, 4, 1, 3),
+                new("Delta", 4, 1, 3, 0, 0, 0),
+                new("Omitted", 2, 1, 1, 2, 1, 1),
+            ],
+            0,
+            0);
+
+        Assert.Equal(
+        [
+            "HOSTED_ANALYSIS_COUNTER\tkind=cleanup-cache\tprovenance_requests=10\tprovenance_builds=3\tprovenance_hits=7\tvalue_requests=5\tvalue_builds=2\tvalue_hits=3\tmember=Alpha",
+            "HOSTED_ANALYSIS_COUNTER\tkind=cleanup-cache\tprovenance_requests=4\tprovenance_builds=2\tprovenance_hits=2\tvalue_requests=10\tvalue_builds=2\tvalue_hits=8\tmember=Beta",
+            "HOSTED_ANALYSIS_COUNTER\tkind=cleanup-cache\tprovenance_requests=6\tprovenance_builds=1\tprovenance_hits=5\tvalue_requests=1\tvalue_builds=1\tvalue_hits=0\tmember=Zulu",
+            "HOSTED_ANALYSIS_COUNTER\tkind=cleanup-cache\tprovenance_requests=2\tprovenance_builds=1\tprovenance_hits=1\tvalue_requests=4\tvalue_builds=1\tvalue_hits=3\tmember=Gamma",
+            "HOSTED_ANALYSIS_COUNTER\tkind=cleanup-cache\tprovenance_requests=4\tprovenance_builds=1\tprovenance_hits=3\tvalue_requests=0\tvalue_builds=0\tvalue_hits=0\tmember=Delta",
+        ],
+            RenderLargestAnalysisCounters(metrics));
+    }
+
+    [Theory]
+    [InlineData("exact", true)]
+    [InlineData("malformed", false)]
+    public void PublicationRegionSyntaxIndexPreservesWriterValidation(
+        string shape,
+        bool valid)
+    {
+        string lifetime = shape == "exact"
+            ? "using var writer = store.CreateWriterAsync(); await writer.CompleteAsync();"
+            : "using var writer = store.CreateWriterAsync(); if (System.DateTime.UtcNow.Ticks < 0) await writer.CompleteAsync();";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store = null!; "
+                    + lifetime,
+                R6BlobTypes("Task")));
+
+        Assert.Equal(
+            valid,
+            !result.Diagnostics.Any(static diagnostic => diagnostic.Code ==
+                "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+
+        HostedProducerPublicationRegionMetric[] metrics =
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .PublicationRegions
+                .Where(static candidate => candidate.Member.StartsWith(
+                "M:Worker.StartAsync(",
+                StringComparison.Ordinal))
+                .ToArray();
+
+        Assert.NotEmpty(metrics);
+
+        Assert.All(
+            metrics,
+            static metric => Assert.Equal(1, metric.IndexBuilds));
+
+        Assert.All(
+            metrics,
+            static metric => Assert.Equal(
+                metric.IndexRequests,
+                metric.CandidateInspections));
+    }
+
+    [Fact]
+    public void EquivalentNestedCallableEnvironmentsCertifyOneTraversalToken()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat(
+                "NestedCallableCacheTarget.Route(NestedCallableCacheTarget.Emit);",
+                32));
+
+        const string helper =
+            "internal static class NestedCallableCacheTarget { "
+            + "internal static void Route(System.Action callback) => callback(); "
+            + "internal static void Emit() => "
+            + "System.IO.File.Exists(\"nested-cache\"); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: nested callable cache fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NestedCallableCacheTarget"
+            && site.Member == "Emit"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:NestedCallableCacheTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+
+        Assert.Equal(1, metric.EquivalentKeyBuilds);
+
+        Assert.Equal(2, metric.EquivalentKeyNodes);
+
+        Assert.Equal(129, metric.InternerRequests);
+
+        Assert.Equal(64, metric.InternerIdentityBuilds);
+
+        Assert.Equal(128, metric.InternerHits);
+
+        Assert.Equal(1, metric.InternerRegistrations);
+    }
+
+    [Fact]
+    public void DivergentNestedCallableEnvironmentsCertifyDistinctTraversalTokens()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat(
+                    "DivergentCallableCacheTarget.Route(DivergentCallableCacheTarget.Read);",
+                    16)
+                .Concat(Enumerable.Repeat(
+                    "DivergentCallableCacheTarget.Route(DivergentCallableCacheTarget.Delete);",
+                    16)));
+
+        const string helper =
+            "internal static class DivergentCallableCacheTarget { "
+            + "internal static void Route(System.Action callback) => callback(); "
+            + "internal static void Read() => "
+            + "System.IO.File.Exists(\"nested-read\"); "
+            + "internal static void Delete() => "
+            + "System.IO.File.Delete(\"nested-delete\"); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: divergent callable cache fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DivergentCallableCacheTarget"
+            && site.Member == "Read"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DivergentCallableCacheTarget"
+            && site.Member == "Delete"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:DivergentCallableCacheTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(2, metric.FingerprintRequests);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+
+        Assert.Equal(2, metric.EquivalentKeyBuilds);
+
+        Assert.Equal(4, metric.EquivalentKeyNodes);
+
+        Assert.Equal(130, metric.InternerRequests);
+
+        Assert.Equal(64, metric.InternerIdentityBuilds);
+
+        Assert.Equal(128, metric.InternerHits);
+
+        Assert.Equal(2, metric.InternerRegistrations);
+    }
+
+    [Fact]
+    public void EquivalentStableValueEnvironmentsBuildOneFingerprintAndKey()
+    {
+        string callbacks = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"internal static void Noise{index}() {{ }}"));
+
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"StableValueCacheTarget.Forward(StableValueCacheTarget.Noise{index});"));
+
+        string helper =
+            "internal static class StableValueCacheTarget { "
+            + "internal static void Forward(System.Action noise) { "
+            + "bool exact = true; _ = noise; Route(exact); } "
+            + "private static void Route(bool exact) { if (exact) "
+            + "System.IO.File.Exists(\"stable-value\"); else "
+            + "System.IO.File.Delete(\"unreachable-value\"); exact = exact; } "
+            + callbacks
+            + " }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: stable value cache fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StableValueCacheTarget"
+            && site.Member == "Route"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "StableValueCacheTarget"
+            && site.Member == "Route"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:StableValueCacheTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+
+        Assert.Equal(1, metric.EquivalentKeyBuilds);
+
+        Assert.Equal(2, metric.EquivalentKeyNodes);
+
+        Assert.Equal(129, metric.InternerRequests);
+
+        Assert.Equal(64, metric.InternerIdentityBuilds);
+
+        Assert.Equal(128, metric.InternerHits);
+
+        Assert.Equal(1, metric.InternerRegistrations);
+    }
+
+    [Fact]
+    public void DivergentStableValueEnvironmentsRemainDistinct()
+    {
+        string callbacks = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"internal static void Noise{index}() {{ }}"));
+
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 16).Select(index =>
+                    $"StableValueControlTarget.ForwardRead(StableValueControlTarget.Noise{index});")
+                .Concat(Enumerable.Range(16, 16).Select(index =>
+                    $"StableValueControlTarget.ForwardDelete(StableValueControlTarget.Noise{index});")));
+
+        string helper =
+            "internal static class StableValueControlTarget { "
+            + "internal static void ForwardRead(System.Action noise) { "
+            + "bool exact = true; _ = noise; Route(exact); } "
+            + "internal static void ForwardDelete(System.Action noise) { "
+            + "bool exact = false; _ = noise; Route(exact); } "
+            + "private static void Route(bool exact) { if (exact) "
+            + "System.IO.File.Exists(\"stable-read\"); else "
+            + "System.IO.File.Delete(\"stable-delete\"); exact = exact; } "
+            + callbacks
+            + " }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: divergent stable value cache fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StableValueControlTarget"
+            && site.Member == "Route"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StableValueControlTarget"
+            && site.Member == "Route"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:StableValueControlTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(2, metric.FingerprintRequests);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+
+        Assert.Equal(2, metric.EquivalentKeyBuilds);
+
+        Assert.Equal(4, metric.EquivalentKeyNodes);
+
+        Assert.Equal(130, metric.InternerRequests);
+
+        Assert.Equal(64, metric.InternerIdentityBuilds);
+
+        Assert.Equal(128, metric.InternerHits);
+
+        Assert.Equal(2, metric.InternerRegistrations);
+    }
+
+    [Fact]
+    public void DistinctOutDestinationsBuildOneInputEvaluationEnvironment()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"OutEnvironmentTarget.Observe({index}, out int value{index});"));
+
+        const string helper =
+            "internal static class OutEnvironmentTarget { "
+            + "internal static void Observe(int noise, out int value) { "
+            + "value = noise; System.IO.File.Exists(\"out-environment\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: out destination environment fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "OutEnvironmentTarget"
+            && site.Member == "Observe"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:OutEnvironmentTarget.Observe(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void RefArgumentsRetainDistinctInputEvaluationEnvironments()
+    {
+        const string helper =
+            "internal static class RefEnvironmentTarget { "
+            + "internal static void Route(ref bool exact) { if (exact) "
+            + "System.IO.File.Exists(\"ref-read\"); else "
+            + "System.IO.File.Delete(\"ref-delete\"); exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "bool read = true; bool delete = false; "
+                    + "RefEnvironmentTarget.Route(ref read); "
+                    + "RefEnvironmentTarget.Route(ref delete);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: ref input environment fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RefEnvironmentTarget"
+            && site.Member == "Route"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RefEnvironmentTarget"
+            && site.Member == "Route"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:RefEnvironmentTarget.Route(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Theory]
+    [InlineData("sealed-constructor")]
+    [InlineData("sealed-factory")]
+    [InlineData("struct-constructor")]
+    public void DistinctInputsUsedOnlyByExactCleanupCreationBuildOneEvaluationEnvironment(
+        string shape)
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"ExactCleanupConstructionTarget.Run(\"path-{index}\");"));
+
+        string cleanupType = shape == "struct-constructor"
+            ? "internal readonly struct ExactCleanup : System.IDisposable { "
+            : "internal sealed class ExactCleanup : System.IDisposable { ";
+
+        string factory = shape == "sealed-factory"
+            ? "internal static class ExactCleanupFactory { "
+                + "internal static ExactCleanup Create(string path) => new(path); } "
+            : string.Empty;
+
+        string creation = shape == "sealed-factory"
+            ? "ExactCleanupFactory.Create(path)"
+            : "new(path)";
+
+        string helper = cleanupType
+            + "internal ExactCleanup(string path) { _ = path; } "
+            + "public void Dispose() => System.IO.File.Delete(\"exact-cleanup\"); } "
+            + factory
+            + "internal static class ExactCleanupConstructionTarget { "
+            + "internal static void Run(string path) { "
+            + "using ExactCleanup cleanup = "
+            + creation
+            + "; "
+            + "System.IO.File.Exists(\"exact-cleanup-target\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = $"Worker.StartAsync: exact cleanup {shape} fixture",
+            });
+
+        Assert.Empty(result.Diagnostics);
+
+        (string EnclosingType, string Member, string Callee)[] expected =
+        [
+            ("ExactCleanup", "Dispose", "System.IO.File.Delete"),
+            ("ExactCleanupConstructionTarget", "Run", "System.IO.File.Exists"),
+        ];
+
+        Assert.Equal(
+            expected,
+            result.Items
+                .Select(static site =>
+                    (site.EnclosingType, site.Member, site.Callee))
+                .OrderBy(static site => site.EnclosingType, StringComparer.Ordinal)
+                .ThenBy(static site => site.Member, StringComparer.Ordinal)
+                .ThenBy(static site => site.Callee, StringComparer.Ordinal));
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:ExactCleanupConstructionTarget.Run(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(3, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void UnsealedCleanupConstructionRetainsDistinctInputEvaluationEnvironments()
+    {
+        const string helper =
+            "internal class OpenCleanup : System.IDisposable { "
+            + "internal OpenCleanup(string path) { _ = path; } "
+            + "public virtual void Dispose() { "
+            + "System.IO.File.Exists(\"open-cleanup-read\"); "
+            + "System.IO.File.Delete(\"open-cleanup-delete\"); } } "
+            + "internal static class OpenCleanupConstructionTarget { "
+            + "internal static void Run(string path) { "
+            + "using OpenCleanup cleanup = new(path); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "OpenCleanupConstructionTarget.Run(string.Empty); "
+                    + "OpenCleanupConstructionTarget.Run(\"path\");",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: unsealed cleanup construction fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "OpenCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "OpenCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:OpenCleanupConstructionTarget.Run(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void ConfiguredAsyncInterfaceCleanupRetainsDistinctInputEvaluationEnvironments()
+    {
+        const string helper =
+            "internal sealed class ConfiguredInterfaceCleanup : "
+            + "System.IAsyncDisposable { "
+            + "internal ConfiguredInterfaceCleanup(string path) { _ = path; } "
+            + "public System.Threading.Tasks.ValueTask DisposeAsync() { "
+            + "System.IO.File.Delete(\"configured-interface-cleanup\"); "
+            + "return default; } } "
+            + "internal static class ConfiguredInterfaceCleanupTarget { "
+            + "internal static async System.Threading.Tasks.Task RunAsync(string path) { "
+            + "System.IAsyncDisposable cleanup = "
+            + "new ConfiguredInterfaceCleanup(path); "
+            + "await using (cleanup.ConfigureAwait(false)) { } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "await ConfiguredInterfaceCleanupTarget.RunAsync(string.Empty); "
+                    + "await ConfiguredInterfaceCleanupTarget.RunAsync(\"path\");",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: configured interface cleanup fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ConfiguredInterfaceCleanup"
+            && site.Member == "DisposeAsync"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:ConfiguredInterfaceCleanupTarget.RunAsync(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void DistinctNonOwningSealedCleanupInputsBuildOneEvaluationEnvironment()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"NonOwningCleanupObserver.Observe(new ObservedCleanup({index}));"));
+
+        const string helper =
+            "internal sealed class ObservedCleanup : System.IDisposable { "
+            + "internal ObservedCleanup(int identity) { _ = identity; } "
+            + "public void Dispose() => System.IO.File.Delete(\"unused-cleanup\"); } "
+            + "internal static class NonOwningCleanupObserver { "
+            + "internal static void Observe(ObservedCleanup cleanup) { "
+            + "System.GC.KeepAlive(cleanup); "
+            + "System.IO.File.Exists(\"non-owning-observer\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: non-owning cleanup observer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NonOwningCleanupObserver"
+            && site.Member == "Observe"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ObservedCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:NonOwningCleanupObserver.Observe(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void TrustedSafeHandleObservationsConvergeDistinctInputs()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(1, 32).Select(index =>
+                "SafeHandleObservationTarget.Observe("
+                    + "new Microsoft.Win32.SafeHandles.SafeFileHandle("
+                    + $"new System.IntPtr({index}), ownsHandle: false));"));
+
+        const string helper =
+            "internal static class SafeHandleObservationTarget { "
+            + "internal static void Observe("
+            + "Microsoft.Win32.SafeHandles.SafeFileHandle handle) { "
+            + "_ = handle.IsInvalid; "
+            + "_ = handle.IsClosed; "
+            + "_ = handle.DangerousGetHandle().ToInt32(); "
+            + "System.IO.File.Exists(\"safe-handle-observer\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: trusted SafeHandle observer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SafeHandleObservationTarget"
+            && site.Member == "Observe"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:SafeHandleObservationTarget.Observe(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+    }
+
+    [Theory]
+    [InlineData("dispose")]
+    [InlineData("dangerous-lifetime")]
+    public void TrustedSafeHandleLifetimeUsesRetainDistinctEvaluationEnvironments(
+        string shape)
+    {
+        string use = shape == "dispose"
+            ? "handle.Dispose();"
+            : "bool added = false; try { handle.DangerousAddRef(ref added); } "
+                + "finally { if (added) handle.DangerousRelease(); }";
+
+        string helper =
+            "internal static class SafeHandleLifetimeTarget { "
+            + "internal static void Use("
+            + "Microsoft.Win32.SafeHandles.SafeFileHandle handle) { "
+            + use
+            + " System.IO.File.Exists(\"safe-handle-lifetime\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "SafeHandleLifetimeTarget.Use("
+                    + "new Microsoft.Win32.SafeHandles.SafeFileHandle("
+                    + "new System.IntPtr(1), ownsHandle: false)); "
+                    + "SafeHandleLifetimeTarget.Use("
+                    + "new Microsoft.Win32.SafeHandles.SafeFileHandle("
+                    + "new System.IntPtr(2), ownsHandle: false));",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = $"Worker.StartAsync: trusted SafeHandle {shape} fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SafeHandleLifetimeTarget"
+            && site.Member == "Use"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:SafeHandleLifetimeTarget.Use(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void AuthoredDangerousGetHandleLookalikeRetainsDistinctEvaluationEnvironments()
+    {
+        const string helper =
+            "internal sealed class AuthoredSafeHandle : "
+            + "System.Runtime.InteropServices.SafeHandle { "
+            + "internal AuthoredSafeHandle(System.IntPtr value) "
+            + ": base(System.IntPtr.Zero, ownsHandle: false) { "
+            + "SetHandle(value); } "
+            + "public override bool IsInvalid => false; "
+            + "public new System.IntPtr DangerousGetHandle() => handle; "
+            + "protected override bool ReleaseHandle() => true; } "
+            + "internal static class AuthoredSafeHandleObservationTarget { "
+            + "internal static void Observe(AuthoredSafeHandle handle) { "
+            + "_ = handle.DangerousGetHandle().ToInt32(); "
+            + "System.IO.File.Exists(\"authored-safe-handle-observer\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "AuthoredSafeHandleObservationTarget.Observe("
+                    + "new AuthoredSafeHandle(new System.IntPtr(1))); "
+                    + "AuthoredSafeHandleObservationTarget.Observe("
+                    + "new AuthoredSafeHandle(new System.IntPtr(2)));",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: authored DangerousGetHandle fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AuthoredSafeHandleObservationTarget"
+            && site.Member == "Observe"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:AuthoredSafeHandleObservationTarget.Observe(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void NonDisposableReceiverOwningCleanupStateRetainsDistinctEvaluationEnvironments()
+    {
+        const string helper =
+            "internal sealed class HeldCleanup : System.IDisposable { "
+            + "internal HeldCleanup(string identity) { _ = identity; } "
+            + "public void Dispose() => System.IO.File.Delete(\"held-cleanup\"); } "
+            + "internal sealed class NonDisposableCleanupHolder { "
+            + "private readonly HeldCleanup _cleanup; "
+            + "internal NonDisposableCleanupHolder(HeldCleanup cleanup) { "
+            + "_cleanup = cleanup; } "
+            + "internal void Observe() { using (_cleanup) { } } } "
+            + "internal static class NonDisposableCleanupHolderTarget { "
+            + "internal static void Run(HeldCleanup cleanup) { "
+            + "new NonDisposableCleanupHolder(cleanup).Observe(); "
+            + "System.IO.File.Exists(\"non-disposable-cleanup-holder\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "NonDisposableCleanupHolderTarget.Run("
+                    + "new HeldCleanup(\"first\")); "
+                    + "NonDisposableCleanupHolderTarget.Run("
+                    + "new HeldCleanup(\"second\"));",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: non-disposable cleanup holder fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "HeldCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NonDisposableCleanupHolderTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:NonDisposableCleanupHolderTarget.Run(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void UnsealedNonDisposableReceiverMayCarryCleanupState()
+    {
+        const string helper =
+            "internal interface IUnsealedHolderCleanup : System.IDisposable { } "
+            + "internal sealed class FirstUnsealedHolderCleanup : "
+            + "IUnsealedHolderCleanup { public void Dispose() => "
+            + "System.IO.File.Delete(\"unsealed-holder-first\"); } "
+            + "internal sealed class SecondUnsealedHolderCleanup : "
+            + "IUnsealedHolderCleanup { public void Dispose() => "
+            + "System.IO.File.Delete(\"unsealed-holder-second\"); } "
+            + "internal class UnsealedNonDisposableCleanupHolder { "
+            + "private readonly IUnsealedHolderCleanup _cleanup; "
+            + "internal UnsealedNonDisposableCleanupHolder("
+            + "IUnsealedHolderCleanup cleanup) { _cleanup = cleanup; } "
+            + "internal virtual void Observe() { using (_cleanup) { } } } "
+            + "internal static class UnsealedNonDisposableCleanupHolderTarget { "
+            + "internal static void Run(IUnsealedHolderCleanup cleanup) { "
+            + "new UnsealedNonDisposableCleanupHolder(cleanup).Observe(); "
+            + "System.IO.File.Exists(\"unsealed-holder-target\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "UnsealedNonDisposableCleanupHolderTarget.Run("
+                    + "new FirstUnsealedHolderCleanup()); "
+                    + "UnsealedNonDisposableCleanupHolderTarget.Run("
+                    + "new SecondUnsealedHolderCleanup());",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: unsealed cleanup holder fixture",
+            });
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member
+                == "M:UnsealedNonDisposableCleanupHolder.Observe");
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "FirstUnsealedHolderCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SecondUnsealedHolderCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void ReceiverCleanupForwardingDepthExhaustionRetainsDistinctEvaluationEnvironments()
+    {
+        const int holderCount = 18;
+
+        string receiver = "cleanup";
+
+        for (int index = holderCount - 1; index >= 0; index--)
+        {
+            receiver = $"new DeepCleanupHolder{index}({receiver})";
+        }
+
+        string forwardingHolders = string.Join(
+            " ",
+            Enumerable.Range(0, holderCount - 1).Select(index =>
+                $"internal sealed class DeepCleanupHolder{index} {{ "
+                    + $"private readonly DeepCleanupHolder{index + 1} _next; "
+                    + $"internal DeepCleanupHolder{index}("
+                    + $"DeepCleanupHolder{index + 1} next) {{ _next = next; }} "
+                    + "internal void Observe() => _next.Observe(); }"));
+
+        string helper =
+            "internal interface IDeepHolderCleanup : System.IDisposable { } "
+            + "internal sealed class FirstDeepHolderCleanup : "
+            + "IDeepHolderCleanup { public void Dispose() => "
+            + "System.IO.File.Delete(\"deep-holder-first\"); } "
+            + "internal sealed class SecondDeepHolderCleanup : "
+            + "IDeepHolderCleanup { public void Dispose() => "
+            + "System.IO.File.Delete(\"deep-holder-second\"); } "
+            + forwardingHolders
+            + $" internal sealed class DeepCleanupHolder{holderCount - 1} {{ "
+            + "private readonly IDeepHolderCleanup _cleanup; "
+            + $"internal DeepCleanupHolder{holderCount - 1}("
+            + "IDeepHolderCleanup cleanup) { _cleanup = cleanup; } "
+            + "internal void Observe() { using (_cleanup) { } } } "
+            + "internal static class DeepCleanupHolderTarget { "
+            + "internal static void Run(IDeepHolderCleanup cleanup) { "
+            + receiver
+            + ".Observe(); System.IO.File.Exists(\"deep-holder-target\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "DeepCleanupHolderTarget.Run(new FirstDeepHolderCleanup()); "
+                    + "DeepCleanupHolderTarget.Run("
+                    + "new SecondDeepHolderCleanup());",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: deep cleanup holder fixture",
+            });
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member
+                == "M:DeepCleanupHolder0.Observe");
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "FirstDeepHolderCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SecondDeepHolderCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void InheritedTrustedSafeHandleObservationDoesNotInventReleaseCleanup()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(1, 32).Select(index =>
+                "InheritedSafeHandleObservationTarget.Observe("
+                    + $"new InheritedObservedSafeHandle({index}));"));
+
+        const string helper =
+            "internal sealed class InheritedObservedSafeHandle : "
+            + "System.Runtime.InteropServices.SafeHandle { "
+            + "internal InheritedObservedSafeHandle(int value) "
+            + ": base(System.IntPtr.Zero, ownsHandle: false) { "
+            + "SetHandle(new System.IntPtr(value)); } "
+            + "public override bool IsInvalid => false; "
+            + "protected override bool ReleaseHandle() { "
+            + "System.IO.File.Delete(\"inherited-release-marker\"); "
+            + "return true; } } "
+            + "internal static class InheritedSafeHandleObservationTarget { "
+            + "internal static void Observe(InheritedObservedSafeHandle handle) { "
+            + "_ = handle.IsInvalid; _ = handle.IsClosed; "
+            + "_ = handle.DangerousGetHandle().ToInt32(); "
+            + "System.IO.File.Exists(\"inherited-safe-handle-observer\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: inherited SafeHandle observer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "InheritedSafeHandleObservationTarget"
+            && site.Member == "Observe"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "InheritedObservedSafeHandle"
+            && site.Member == "ReleaseHandle"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:InheritedSafeHandleObservationTarget.Observe(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+    }
+
+    [Theory]
+    [InlineData("using")]
+    [InlineData("receiver")]
+    [InlineData("wrapper")]
+    [InlineData("forward")]
+    [InlineData("member-mutation")]
+    [InlineData("ref")]
+    public void CleanupRelevantSealedInputsRetainDistinctEvaluationEnvironments(
+        string shape)
+    {
+        string use = shape switch
+        {
+            "using" => "using (cleanup) { }",
+            "receiver" => "cleanup.Dispose();",
+            "wrapper" => "using CleanupWrapper wrapper = new(cleanup);",
+            "forward" => "CleanupConsumer.Consume(cleanup);",
+            "member-mutation" => "cleanup.Marker = \"changed\";",
+            "ref" => "CleanupMutation.Replace(ref cleanup);",
+            _ => throw new ArgumentOutOfRangeException(nameof(shape)),
+        };
+
+        string helper =
+            "internal sealed class RetainedCleanup : System.IDisposable { "
+            + "internal RetainedCleanup(string marker) { Marker = marker; } "
+            + "internal string Marker { get; set; } "
+            + "public void Dispose() => System.IO.File.Delete(\"retained-cleanup\"); } "
+            + "internal sealed class CleanupWrapper : System.IDisposable { "
+            + "private readonly RetainedCleanup _cleanup; "
+            + "internal CleanupWrapper(RetainedCleanup cleanup) { _cleanup = cleanup; } "
+            + "public void Dispose() => _cleanup.Dispose(); } "
+            + "internal static class CleanupConsumer { "
+            + "internal static void Consume(RetainedCleanup cleanup) { "
+            + "using (cleanup) { } } } "
+            + "internal static class CleanupMutation { "
+            + "internal static void Replace(ref RetainedCleanup cleanup) { "
+            + "cleanup = cleanup; } } "
+            + "internal static class CleanupRelevantTarget { "
+            + "internal static void Run(RetainedCleanup cleanup) { "
+            + use
+            + " System.IO.File.Exists(\"cleanup-relevant-target\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "CleanupRelevantTarget.Run(new RetainedCleanup(\"first\")); "
+                    + "CleanupRelevantTarget.Run(new RetainedCleanup(\"second\"));",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = $"Worker.StartAsync: cleanup-relevant {shape} fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CleanupRelevantTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        if (shape is "using" or "receiver" or "wrapper" or "forward")
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "RetainedCleanup"
+                && site.Member == "Dispose"
+                && site.Callee == "System.IO.File.Delete");
+        }
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:CleanupRelevantTarget.Run(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 2);
+
+        Assert.Equal(2, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void ReusedRetainedValueCapturingDelegateBuildsOneEquivalentKeyTree()
+    {
+        string retainedCalls = string.Join(
+            " ",
+            Enumerable.Repeat("Retain(retained);", 32));
+
+        string helper =
+            "internal static class RetainedValueDelegateTarget { "
+            + "internal static void Start(bool input) => Forward(!input); "
+            + "private static void Forward(bool exact) { "
+            + "System.Action retained = () => Consume(exact); "
+            + retainedCalls
+            + " } "
+            + "private static void Retain(System.Action retained) { _ = retained; } "
+            + "private static void Consume(bool exact) { if (exact) "
+            + "System.IO.File.Exists(\"retained-value\"); exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(
+                "RetainedValueDelegateTarget.Start(true);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: retained value delegate cache fixture",
+            });
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "RetainedValueDelegateTarget"
+            && site.Member == "Consume");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:RetainedValueDelegateTarget.Retain(",
+                StringComparison.Ordinal));
+
+        Assert.True(metric.FingerprintRequests >= 32);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+
+        Assert.Equal(1, metric.EquivalentKeyBuilds);
+
+        Assert.Equal(4, metric.EquivalentKeyNodes);
+    }
+
+    [Fact]
+    public void EmptyAndExactTokenFastPathsSkipTraversalIdentityWork()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat(
+                "TokenFastPathTarget.Retain(TokenFastPathTarget.Empty);",
+                32));
+
+        const string helper =
+            "internal static class TokenFastPathTarget { "
+            + "internal static void Retain(System.Action callback) { _ = callback; } "
+            + "internal static void Empty() { } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source(calls, helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: token fast-path fixture",
+            });
+
+        HostedProducerEvaluationEnvironmentMetric retain = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:TokenFastPathTarget.Retain(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(128, retain.InternerRequests);
+
+        Assert.Equal(64, retain.InternerContextBuilds);
+
+        Assert.Equal(64, retain.InternerTraversalIdentityBuilds);
+
+        Assert.Equal(1, retain.FingerprintBuilds);
+
+        Assert.Equal(1, retain.EquivalentKeyBuilds);
+
+        Assert.Equal(2, retain.EquivalentKeyNodes);
+
+        HostedProducerEvaluationEnvironmentMetric empty = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member
+                == "M:TokenFastPathTarget.Empty");
+
+        Assert.Equal(0, empty.InternerContextBuilds);
+
+        Assert.Equal(0, empty.InternerTraversalIdentityBuilds);
+    }
+
+    [Fact]
+    public void UnrelatedSealedReceiverStateDoesNotCreateOneEvaluationEnvironmentPerCall()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"new ScalarServiceReceiver({index}, new NoiseService()).Run();"));
+
+        const string helper = """
+            internal sealed class NoiseService
+            {
+                internal int Observe() => 1;
+            }
+
+            internal sealed class ScalarServiceReceiver
+            {
+                private readonly int _scalar;
+
+                private NoiseService Service { get; }
+
+                internal ScalarServiceReceiver(int scalar, NoiseService service)
+                {
+                    _scalar = scalar;
+                    Service = service;
+                }
+
+                internal void Run()
+                {
+                    _ = _scalar;
+                    _ = Service.Observe();
+                    System.IO.File.Exists("receiver-noise");
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(calls, helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ScalarServiceReceiver"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member
+                == "M:ScalarServiceReceiver.Run");
+
+        Assert.Equal(1, metric.FingerprintRequests);
+
+        Assert.Equal(1, metric.FingerprintBuilds);
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsDistinctBoundConditionsIsolated()
+    {
+        const string target =
+            "internal static class DistinctRecoveryFeasibilityTarget { "
+            + "internal static void Run(bool exact) { "
+            + "if (exact) System.IO.File.Exists(\"exact\"); "
+            + "else System.IO.File.Delete(\"other\"); exact = exact; } }";
+
+        string source = R2Source(
+                "DistinctRecoveryFeasibilityTarget.Run(true);",
+                target)
+            .Replace(
+                "public Task StopAsync(CancellationToken token) => Task.CompletedTask;",
+                "public Task StopAsync(CancellationToken token) { DistinctRecoveryFeasibilityTarget.Run(false); return Task.CompletedTask; }",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                source,
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: distinct bound-condition fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+
+    }
+
+    [Fact]
+    public void EvaluationEnvironmentKeepsTransformedValueSourcesIsolated()
+    {
+        const string target =
+            "internal static class TransformedValueSourceTarget { "
+            + "internal static void Route(bool exact) => Check(!exact); "
+            + "private static void Check(bool exact) { if (exact) "
+            + "System.IO.File.Exists(\"negated-true\"); else "
+            + "System.IO.File.Delete(\"negated-false\"); exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source(
+                    "TransformedValueSourceTarget.Route(true); "
+                        + "TransformedValueSourceTarget.Route(false);",
+                    target),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: transformed value source fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "TransformedValueSourceTarget"
+            && site.Member == "Check"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "TransformedValueSourceTarget"
+            && site.Member == "Check"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void NonTransparentCallableWrapperKeepsCapturedConditionsIsolated()
+    {
+        const string target =
+            "internal static class NonTransparentCallableTarget { "
+            + "internal static void Route(bool exact) { Invoke(() => { "
+            + "if (exact) System.IO.Directory.Exists(\"wrapper-true\"); "
+            + "else System.IO.File.Delete(\"wrapper-false\"); }); } "
+            + "private static void Invoke(System.Action callback) => callback(); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source(
+                    "NonTransparentCallableTarget.Route(true); "
+                        + "NonTransparentCallableTarget.Route(false);",
+                    target),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: nontransparent callable fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NonTransparentCallableTarget"
+            && site.Callee == "System.IO.Directory.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "NonTransparentCallableTarget"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void AsyncCallableWrapperCannotReuseDirectCallbackCompletionOwnership()
+    {
+        const string helper =
+            "internal static class AsyncCallableWrapperTarget { "
+            + "internal static async Task ForwardAsync(Func<Task> next) { "
+            + "await InvokeAsync(next); await InvokeAsync(async () => next()); } "
+            + "internal static async Task InvokeAsync(Func<Task> callback) { "
+            + "await callback(); } "
+            + "internal static async Task ProduceAsync() { await Task.Yield(); "
+            + "System.IO.File.Delete(\"async-wrapper\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "await AsyncCallableWrapperTarget.ForwardAsync("
+                    + "AsyncCallableWrapperTarget.ProduceAsync);",
+                helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "AsyncCallableWrapperTarget"
+            && site.Member == "ProduceAsync"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
+
+    [Fact]
+    public void ReassignedBoundValueSourceDoesNotPruneReachableBranch()
+    {
+        const string target =
+            "internal static class ReassignedBoundValueTarget { "
+            + "internal static void Route(bool exact) { exact = !exact; "
+            + "Check(exact); } "
+            + "private static void Check(bool exact) { if (exact) "
+            + "System.IO.File.Exists(\"stale-true\"); else "
+            + "System.IO.File.Delete(\"actual-false\"); exact = exact; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source(
+                    "ReassignedBoundValueTarget.Route(true);",
+                    target),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: reassigned bound value fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ReassignedBoundValueTarget"
+            && site.Member == "Check"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsCapturedCallableBoundConditionsIsolated()
+    {
+        const string target =
+            "internal static class CapturedRecoveryFeasibilityTarget { "
+            + "internal static void Route(bool exact) { "
+            + "Check(() => { if (exact) System.IO.File.Exists(\"exact-callback\"); "
+            + "else System.IO.File.Delete(\"other-callback\"); }); exact = exact; } "
+            + "private static void Check(System.Action callback) => callback(); }";
+
+        string source = R2Source(
+            "CapturedRecoveryFeasibilityTarget.Route(true); "
+                + "CapturedRecoveryFeasibilityTarget.Route(false);",
+            target);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                source,
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: captured callable binding fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+
+    }
+
+    [Fact]
+    public void RecoveryFeasibilityKeepsNestedValueSourceOwnerTuplesIsolated()
+    {
+        string source = RecoveryMatrixFixture();
+
+        int ownerCall = source.LastIndexOf(
+            "await new LongRunningOperationReconciler().SettleExactlyAsync(",
+            StringComparison.Ordinal);
+
+        Assert.True(ownerCall >= 0);
+
+        source = source.Insert(
+            ownerCall,
+            "Route(new LongRunningOperation(LongRunningOperationKinds.Db, 0)); "
+                + "Route(new LongRunningOperation(LongRunningOperationKinds.External, 0)); ");
+
+        int ownerClassEnd = source.LastIndexOf(
+            "    }\n}",
+            StringComparison.Ordinal);
+
+        Assert.True(ownerClassEnd >= 0);
+
+        source = source.Insert(
+            ownerClassEnd,
+            "        private static void Route(LongRunningOperation operation) => "
+                + "Check(operation.Kind == LongRunningOperationKinds.Db);\n"
+                + "        private static void Check(bool exact) { if (exact) "
+                + "System.IO.File.Exists(\"nested-db-tuple\"); else "
+                + "System.IO.Directory.Exists(\"nested-external-tuple\"); exact = exact; }\n");
+
+        Assert.NotEqual(RecoveryMatrixFixture(), source);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot"
+            && site.Callee == "System.IO.Directory.Exists");
+    }
+
+    [Fact]
+    public void CallableEnvironmentDistinguishesConstructorAndMethodParametersAtTheSameOrdinal()
+    {
+        const string target =
+            "internal sealed class CallableOwnerCollisionTarget(System.Action? callback) { "
+            + "internal void Run(System.Action? callback) { callback?.Invoke(); } "
+            + "internal static void Emit() { System.IO.File.Exists(\"owner-qualified-callback\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source(
+                    "new CallableOwnerCollisionTarget(CallableOwnerCollisionTarget.Emit).Run(null); "
+                        + "new CallableOwnerCollisionTarget(null).Run(CallableOwnerCollisionTarget.Emit);",
+                    target),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: callable symbol-owner collision fixture",
+                });
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists");
+
+    }
+
+    [Fact]
+    public void CallableEnvironmentDistinguishesReboundCyclesWithDifferentTails()
+    {
+        string source = RecoveryMatrixFixture();
+
+        int ownerCall = source.LastIndexOf(
+            "await new LongRunningOperationReconciler().SettleExactlyAsync(",
+            StringComparison.Ordinal);
+
+        Assert.True(ownerCall >= 0);
+
+        source = source.Insert(ownerCall, "RunRebound(); ");
+
+        int ownerClassEnd = source.LastIndexOf(
+            "    }\n}",
+            StringComparison.Ordinal);
+
+        Assert.True(ownerClassEnd >= 0);
+
+        source = source.Insert(
+            ownerClassEnd,
+            "        private static void RunRebound() { "
+                + "A(C, new LongRunningOperation(LongRunningOperationKinds.Db, 0)); "
+                + "A(D, new LongRunningOperation(LongRunningOperationKinds.Db, 0)); }\n"
+                + "        private static void A(System.Action next, LongRunningOperation operation) { "
+                + "System.Action relay = () => next(); "
+                + "if (operation.Kind == LongRunningOperationKinds.Db) B(relay); else Sink(relay); }\n"
+                + "        private static void B(System.Action next) { "
+                + "A(next, new LongRunningOperation(LongRunningOperationKinds.External, 0)); }\n"
+                + "        private static void Sink(System.Action next) { next(); }\n"
+                + "        private static void C() { System.IO.File.Exists(\"cycle-read\"); }\n"
+                + "        private static void D() { System.IO.File.Delete(\"cycle-delete\"); }\n");
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot"
+            && site.Member == "C"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType
+                == "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot"
+            && site.Member == "D"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
     public void EveryApplicationHostedServiceHasExactlyOneEntry()
     {
         System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -4092,6 +14210,62 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void ProductionCompilerGraphUsesCanonicalProjectReferences()
+    {
+        IReadOnlyList<CSharpCompilation> compilations =
+            HostedGrimoireProducerInventory.ProductionCompilations;
+
+        CSharpCompilation infrastructure = compilations.Single(static compilation =>
+            compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        CSharpCompilation api = compilations.Single(static compilation =>
+            compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        CSharpCompilation cli = compilations.Single(static compilation =>
+            compilation.AssemblyName == "RetroDownfall.Arcanum.Cli");
+
+        void AssertReferencesCanonicalInfrastructure(CSharpCompilation consumer)
+        {
+            CompilationReference reference = Assert.Single(
+                consumer.References
+                    .OfType<CompilationReference>(),
+                static candidate => candidate.Compilation.AssemblyName
+                    == "RetroDownfall.Arcanum.Infrastructure");
+
+            Assert.Same(infrastructure, reference.Compilation);
+        }
+
+        AssertReferencesCanonicalInfrastructure(api);
+
+        AssertReferencesCanonicalInfrastructure(cli);
+
+        System.Reflection.AssemblyName runtimeContract =
+            System.Reflection.Assembly.Load(
+                new System.Reflection.AssemblyName("System.Runtime")).GetName();
+
+        foreach (string metadataName in new[]
+        {
+            "System.TimeProvider",
+            "System.DateTimeOffset",
+            "System.TimeSpan",
+            "System.String",
+            "System.Collections.Generic.IReadOnlyDictionary`2",
+        })
+        {
+            INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(
+                infrastructure.GetTypeByMetadataName(metadataName));
+
+            AssemblyIdentity identity = type.ContainingAssembly.Identity;
+
+            Assert.Equal(runtimeContract.Name, identity.Name);
+            Assert.Equal(runtimeContract.Version, identity.Version);
+            Assert.Equal(
+                runtimeContract.GetPublicKeyToken(),
+                identity.PublicKeyToken.ToArray());
+        }
+    }
+
+    [Fact]
     public void ProductionRecoveryGraphsRetainTheirClosedExactAuthority()
     {
         HostedProducerDiscovery<HostedProducerSite> discovery =
@@ -4157,6 +14331,6548 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
                     or "HOSTED_SITE_WORK_FRONTIER_MISSING"
                     or "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
+    }
+
+    [Fact]
+    public void CompilerClosedAuthoredCleanupUsesStaticTypeWithoutWeakeningPolymorphicDispatch()
+    {
+        const string closedTypes = "internal sealed record CleanupResult<T>(T Value); "
+            + "internal sealed class DirectCleanup : System.IDisposable { public void Dispose() { System.IO.File.Delete(\"direct-cleanup\"); } } "
+            + "internal abstract class CleanupBase : System.IAsyncDisposable { public async System.Threading.Tasks.ValueTask DisposeAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"inherited-cleanup\"); } } "
+            + "internal sealed class InheritedCleanup : CleanupBase { } "
+            + "internal sealed class ClaimProjection : System.IDisposable { public void Dispose() { System.IO.File.Delete(\"projection-cleanup\"); } } "
+            + "internal static class CleanupFactory { "
+            + "internal static CleanupResult<DirectCleanup> Direct() => new(new()); "
+            + "internal static CleanupResult<InheritedCleanup> Inherited() => new(new()); "
+            + "internal static bool TryProject(out ClaimProjection? projection) { projection = new(); return true; } }";
+
+        const string closedBody = "CleanupResult<DirectCleanup> directResult = CleanupFactory.Direct(); "
+            + "using DirectCleanup direct = directResult.Value; "
+            + "CleanupResult<InheritedCleanup> inheritedResult = CleanupFactory.Inherited(); "
+            + "await using InheritedCleanup inherited = inheritedResult.Value; "
+            + "if (CleanupFactory.TryProject(out ClaimProjection? projection) && projection is not null) { using (projection) { } }";
+
+        HostedProducerDiscovery<HostedProducerSite> closed = R2Discover(
+            R2Source(R2Admission + closedBody, closedTypes));
+
+        Assert.DoesNotContain(closed.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Equal(
+            ["ClaimProjection", "CleanupBase", "DirectCleanup"],
+            closed.Items
+                .Where(static site => site.Callee == "System.IO.File.Delete")
+                .Select(static site => site.EnclosingType)
+                .Order(StringComparer.Ordinal));
+
+        const string openTypes = "internal sealed record CleanupResult<T>(T Value); "
+            + "internal class OpenCleanup : System.IDisposable { public virtual void Dispose() { System.IO.File.Exists(\"open-cleanup\"); } } "
+            + "internal sealed class FirstOpenCleanup : OpenCleanup { public override void Dispose() { System.IO.File.Delete(\"first-open-cleanup\"); } } "
+            + "internal sealed class SecondOpenCleanup : OpenCleanup { public override void Dispose() { System.IO.File.Delete(\"second-open-cleanup\"); } } "
+            + "internal static class CleanupFactory { internal static CleanupResult<OpenCleanup> Create(bool first) => new(first ? new FirstOpenCleanup() : new SecondOpenCleanup()); }";
+
+        HostedProducerDiscovery<HostedProducerSite> open = R2Discover(
+            R2Source(
+                R2Admission
+                    + "CleanupResult<OpenCleanup> result = CleanupFactory.Create(token.CanBeCanceled); using OpenCleanup cleanup = result.Value;",
+                openTypes));
+
+        Assert.Contains(open.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void AwaitUsingOwnsForwardedDisposeAsyncHelper()
+    {
+        const string body = "await using (new Helper()) { } await using Helper helper = new();";
+
+        const string helper = "internal sealed class Helper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"path\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> exact = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(
+            exact.Diagnostics,
+            static diagnostic => diagnostic.Code is
+                "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                    or "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                    or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                    or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(exact.Items, static site =>
+            site.EnclosingType == "Helper"
+            && site.Callee == "System.IO.File.Delete");
+
+        AssertOwnedCleanup(
+            "await using ((System.IAsyncDisposable)new InterfaceExpressionHelper()) { }",
+            "internal sealed class InterfaceExpressionHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"interface-expression\"); } }",
+            "InterfaceExpressionHelper");
+
+        AssertOwnedCleanup(
+            "await using System.IAsyncDisposable interfaceDeclaration = new InterfaceDeclarationHelper();",
+            "internal sealed class InterfaceDeclarationHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"interface-declaration\"); } }",
+            "InterfaceDeclarationHelper");
+
+        AssertOwnedCleanup(
+            "await using (await CleanupFactory.CreateExpressionAsync()) { }",
+            "internal static class CleanupFactory { internal static async System.Threading.Tasks.ValueTask<System.IAsyncDisposable> CreateExpressionAsync() { await System.Threading.Tasks.Task.Yield(); return new FactoryExpressionHelper(); } } internal sealed class FactoryExpressionHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"factory-expression\"); } }",
+            "FactoryExpressionHelper");
+
+        AssertOwnedCleanup(
+            "await using System.IAsyncDisposable factoryDeclaration = CleanupFactory.CreateDeclaration();",
+            "internal static class CleanupFactory { internal static System.IAsyncDisposable CreateDeclaration() => new FactoryDeclarationHelper(); } internal sealed class FactoryDeclarationHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"factory-declaration\"); } }",
+            "FactoryDeclarationHelper");
+
+        AssertOwnedCleanup(
+            "await using (new DerivedExpressionHelper()) { }",
+            "internal class ExpressionCleanupBase : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"inherited-expression\"); } } internal sealed class DerivedExpressionHelper : ExpressionCleanupBase { }",
+            "ExpressionCleanupBase");
+
+        AssertOwnedCleanup(
+            "await using DerivedDeclarationHelper derivedDeclaration = new();",
+            "internal class DeclarationCleanupBase : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"inherited-declaration\"); } } internal sealed class DerivedDeclarationHelper : DeclarationCleanupBase { }",
+            "DeclarationCleanupBase");
+
+        AssertOwnedCleanup(
+            "await using IInheritedCleanup inheritedInterface = new InheritedInterfaceHelper();",
+            "internal interface IInheritedCleanup : System.IAsyncDisposable { } internal sealed class InheritedInterfaceHelper : IInheritedCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"inherited-interface\"); } }",
+            "InheritedInterfaceHelper");
+
+        AssertOwnedCleanup(
+            "await using ExplicitInterfaceHelper explicitInterface = new();",
+            "internal sealed class ExplicitInterfaceHelper : System.IAsyncDisposable { public int DisposeAsync(int ignored) => ignored; System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"explicit-interface\"); } }",
+            "ExplicitInterfaceHelper");
+
+        AssertOwnedCleanup(
+            "await using (await TaskCleanupFactory.CreateAsync()) { }",
+            "internal static class TaskCleanupFactory { internal static async System.Threading.Tasks.Task<System.IAsyncDisposable> CreateAsync() { await System.Threading.Tasks.Task.Yield(); return new TaskFactoryHelper(); } } internal sealed class TaskFactoryHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"task-factory\"); } }",
+            "TaskFactoryHelper");
+
+        AssertOwnedCleanup(
+            "await using System.IAsyncDisposable structCleanup = new StructCleanupHelper();",
+            "internal struct StructCleanupHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"struct-cleanup\"); } }",
+            "StructCleanupHelper");
+
+        AssertOwnedCleanup(
+            "await using (new ConfiguredCleanupHelper().ConfigureAwait(false)) { }",
+            "internal sealed class ConfiguredCleanupHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"configured-cleanup\"); } }",
+            "ConfiguredCleanupHelper");
+
+        foreach ((string cleanupBody, string cleanupTypes) in new[]
+        {
+            (
+                "await using System.IAsyncDisposable conditionalDeclaration = token.CanBeCanceled ? new FirstAmbiguousHelper() : new SecondAmbiguousHelper();",
+                "internal sealed class FirstAmbiguousHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"first-ambiguous\"); return default; } } internal sealed class SecondAmbiguousHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"second-ambiguous\"); return default; } }"),
+            (
+                "await using (token.CanBeCanceled ? (System.IAsyncDisposable)new FirstExpressionHelper() : new SecondExpressionHelper()) { }",
+                "internal sealed class FirstExpressionHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"first-expression\"); return default; } } internal sealed class SecondExpressionHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"second-expression\"); return default; } }"),
+            (
+                "ReassignedCleanupBase reassigned = new FirstReassignedHelper(); if (token.CanBeCanceled) { reassigned = new SecondReassignedHelper(); } await using (reassigned) { }",
+                "internal abstract class ReassignedCleanupBase : System.IAsyncDisposable { public abstract System.Threading.Tasks.ValueTask DisposeAsync(); } internal sealed class FirstReassignedHelper : ReassignedCleanupBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"first-reassigned\"); return default; } } internal sealed class SecondReassignedHelper : ReassignedCleanupBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"second-reassigned\"); return default; } }"),
+            (
+                "await UnknownCleanupConsumer.ConsumeAsync(null!);",
+                "internal static class UnknownCleanupConsumer { internal static async System.Threading.Tasks.Task ConsumeAsync(System.IAsyncDisposable supplied) { await using System.IAsyncDisposable owned = supplied; await System.Threading.Tasks.Task.Yield(); } }"),
+            (
+                "await using System.IAsyncDisposable mixedReturn = MixedCleanupFactory.Create(token.CanBeCanceled);",
+                "internal static class MixedCleanupFactory { internal static System.IAsyncDisposable Create(bool first) { if (first) { return new KnownReturnHelper(); } return MixedCleanupHolder.Value; } } internal static class MixedCleanupHolder { internal static System.IAsyncDisposable Value = new HiddenReturnHelper(); } internal sealed class KnownReturnHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"known-return\"); return default; } } internal sealed class HiddenReturnHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"hidden-return\"); return default; } }"),
+            (
+                "System.IAsyncDisposable? prior = UnknownPriorCleanup.Value; await using System.IAsyncDisposable coalesced = prior ?? new CoalescedCleanupHelper();",
+                "internal static class UnknownPriorCleanup { internal static System.IAsyncDisposable? Value { get; set; } } internal sealed class CoalescedCleanupHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"coalesced-cleanup\"); return default; } }"),
+            (
+                "System.IAsyncDisposable mixedAdmission = token.CanBeCanceled ? lease : new MixedAdmissionCleanupHelper(); await using (mixedAdmission) { }",
+                "internal sealed class MixedAdmissionCleanupHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"mixed-admission-cleanup\"); return default; } }"),
+            (
+                "ClosureCleanupBase closureCleanup = new HarmlessClosureCleanupHelper(); void ReplaceCleanup() { closureCleanup = new DangerousClosureCleanupHelper(); } ReplaceCleanup(); await using (closureCleanup) { }",
+                "internal abstract class ClosureCleanupBase : System.IAsyncDisposable { public abstract System.Threading.Tasks.ValueTask DisposeAsync(); } internal sealed class HarmlessClosureCleanupHelper : ClosureCleanupBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"harmless-closure-cleanup\"); return default; } } internal sealed class DangerousClosureCleanupHelper : ClosureCleanupBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"dangerous-closure-cleanup\"); return default; } }"),
+            (
+                "LambdaCleanupBase lambdaCleanup = new HarmlessLambdaCleanupHelper(); System.Action replaceCleanup = () => lambdaCleanup = new DangerousLambdaCleanupHelper(); replaceCleanup(); await using (lambdaCleanup) { }",
+                "internal abstract class LambdaCleanupBase : System.IAsyncDisposable { public abstract System.Threading.Tasks.ValueTask DisposeAsync(); } internal sealed class HarmlessLambdaCleanupHelper : LambdaCleanupBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"harmless-lambda-cleanup\"); return default; } } internal sealed class DangerousLambdaCleanupHelper : LambdaCleanupBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"dangerous-lambda-cleanup\"); return default; } }"),
+            (
+                "System.IAsyncDisposable nestedCleanup = new HarmlessNestedClosureCleanupHelper(); void SwapCleanup() => nestedCleanup = new DangerousNestedClosureCleanupHelper(); void InvokeSwapCleanup() => SwapCleanup(); InvokeSwapCleanup(); await using (nestedCleanup) { }",
+                "internal sealed class HarmlessNestedClosureCleanupHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"harmless-nested-closure-cleanup\"); return default; } } internal sealed class DangerousNestedClosureCleanupHelper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"dangerous-nested-closure-cleanup\"); return default; } }"),
+            (
+                "CleanupDispatchBase baseCleanup = new DerivedDispatchCleanup(); await CleanupDispatchConsumer.ConsumeAsync(baseCleanup);",
+                "internal static class CleanupDispatchConsumer { internal static async System.Threading.Tasks.Task ConsumeAsync(CleanupDispatchBase cleanup) { await using (cleanup) { await System.Threading.Tasks.Task.Yield(); } } } internal class CleanupDispatchBase : System.IAsyncDisposable { public virtual System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"base-cleanup\"); return default; } } internal sealed class DerivedDispatchCleanup : CleanupDispatchBase { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"derived-cleanup\"); return default; } }"),
+        })
+        {
+            AssertUnresolvedCleanup(cleanupBody, cleanupTypes);
+        }
+
+        AssertCollisionCleanupUnresolved();
+
+        AssertForeignPeCleanupUnresolved();
+
+        string detached = helper.Replace(
+            "public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync();",
+            "public System.Threading.Tasks.ValueTask DisposeAsync() { _ = ReleaseAsync(); return System.Threading.Tasks.ValueTask.CompletedTask; }",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> unowned = R2Discover(
+            R2Source(R2Admission + body, detached));
+
+        Assert.Contains(unowned.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("Helper.ReleaseAsync;", StringComparison.Ordinal));
+
+        void AssertOwnedCleanup(
+            string cleanupBody,
+            string cleanupTypes,
+            string expectedCleanupType)
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+                R2Source(R2Admission + cleanupBody, cleanupTypes));
+
+            Assert.DoesNotContain(
+                result.Diagnostics,
+                static diagnostic => diagnostic.Code is
+                    "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                        or "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                        or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                        or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+            Assert.Single(result.Items, site =>
+                site.EnclosingType == expectedCleanupType
+                && site.Callee == "System.IO.File.Delete");
+        }
+
+        void AssertUnresolvedCleanup(
+            string cleanupBody,
+            string cleanupTypes)
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+                R2Source(R2Admission + cleanupBody, cleanupTypes));
+
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+        }
+
+        void AssertCollisionCleanupUnresolved()
+        {
+            static CSharpCompilation CleanupAssembly(
+                string assembly,
+                string effect) =>
+                Compile(
+                    "namespace Collision { public sealed class Helper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File."
+                        + effect
+                        + "(\"collision\"); return default; } } }")
+                    .WithAssemblyName(assembly);
+
+            CSharpCompilation first = CleanupAssembly(
+                "Cleanup.Collision.First",
+                "Exists");
+
+            CSharpCompilation second = CleanupAssembly(
+                "Cleanup.Collision.Second",
+                "Delete");
+
+            MetadataReference firstReference = first.ToMetadataReference(
+                ImmutableArray.Create("first"));
+
+            MetadataReference secondReference = second.ToMetadataReference(
+                ImmutableArray.Create("second"));
+
+            string source = "extern alias first; extern alias second; "
+                + R2Source(
+                    R2Admission
+                        + "await using System.IAsyncDisposable collision = CollisionCleanupFactory.Create(token.CanBeCanceled);",
+                    "internal static class CollisionCleanupFactory { internal static System.IAsyncDisposable Create(bool chooseFirst) => chooseFirst ? new first::Collision.Helper() : new second::Collision.Helper(); }");
+
+            CSharpCompilation producer = Compile(source)
+                .AddReferences(firstReference, secondReference)
+                .WithAssemblyName("Cleanup.Collision.Producer");
+
+            Assert.Empty(producer.GetDiagnostics().Where(static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error));
+
+            HostedProducerDiscovery<HostedProducerSite> result =
+                HostedGrimoireProducerInventory.DiscoverProducerSites(
+                    [producer, first, second],
+                    new(["Worker"], []),
+                    [new("Worker", [OrdinaryRoot()])],
+                    []);
+
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+        }
+
+        void AssertForeignPeCleanupUnresolved()
+        {
+            static CSharpCompilation CleanupAssembly(string effect) => Compile(
+                    "namespace Collision { public sealed class Helper : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File."
+                        + effect
+                        + "(\"foreign-collision\"); return default; } } }")
+                .WithAssemblyName("Cleanup.ForeignTwin");
+
+            CSharpCompilation foreignPe = CleanupAssembly("Delete");
+
+            CSharpCompilation suppliedSource = CleanupAssembly("Exists");
+
+            using MemoryStream image = new();
+
+            Assert.True(foreignPe.Emit(image).Success);
+
+            MetadataReference foreignReference = MetadataReference.CreateFromImage(
+                image.ToArray(),
+                MetadataReferenceProperties.Assembly.WithAliases(
+                    ImmutableArray.Create("foreign")));
+
+            CSharpCompilation producer = Compile(
+                    "extern alias foreign; "
+                        + R2Source(
+                            R2Admission
+                                + "await using (new foreign::Collision.Helper()) { }"))
+                .AddReferences(foreignReference)
+                .WithAssemblyName("Cleanup.ForeignProducer");
+
+            Assert.Empty(producer.GetDiagnostics().Where(static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error));
+
+            HostedProducerDiscovery<HostedProducerSite> result =
+                HostedGrimoireProducerInventory.DiscoverProducerSites(
+                    [producer, suppliedSource],
+                    new(["Worker"], []),
+                    [new("Worker", [OrdinaryRoot()])],
+                    []);
+
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+            Assert.DoesNotContain(result.Items, static site =>
+                site.EnclosingType == "Collision.Helper");
+        }
+    }
+
+    [Fact]
+    public void AwaitUsingResolvesClosedAuthoredInterfaceThroughResultValue()
+    {
+        const string body =
+            "CleanupResult<IResultCleanup> acquired = CleanupFactory.Acquire(); await using IResultCleanup cleanup = acquired.Value;";
+
+        const string helper =
+            "internal sealed class CleanupResult<T>(T value) { internal T Value { get; } = value; } "
+            + "internal interface IResultCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class ResultCleanup : IResultCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"result-cleanup\"); } } "
+            + "internal static class CleanupFactory { internal static CleanupResult<IResultCleanup> Acquire() => new(new ResultCleanup()); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "ResultCleanup"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void AwaitUsingAcceptsReviewedExternalCleanupReturnedByAuthoredHelper()
+    {
+        const string body =
+            "await using Microsoft.Data.Sqlite.SqliteCommand command = ExternalCleanupFactory.Forward(new Microsoft.Data.Sqlite.SqliteCommand());";
+
+        const string helper =
+            "internal static class ExternalCleanupFactory { internal static Microsoft.Data.Sqlite.SqliteCommand Forward(Microsoft.Data.Sqlite.SqliteCommand command) => command; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AwaitUsingRefusesAbstractDbTransactionWithoutConcreteProviderProvenance()
+    {
+        const string body =
+            "System.Data.Common.DbConnection connection = UnknownDatabaseConnection.Value; "
+            + "await using System.Data.Common.DbTransaction transaction = await connection.BeginTransactionAsync().ConfigureAwait(false);";
+
+        const string helper =
+            "internal static class UnknownDatabaseConnection { internal static System.Data.Common.DbConnection Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.Data.Common.DbTransaction.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AwaitUsingAcceptsDbTransactionFromExactSqliteProviderReceiver()
+    {
+        const string body =
+            "await using Microsoft.Data.Sqlite.SqliteConnection connection = new(); "
+            + "await using System.Data.Common.DbTransaction transaction = await connection.BeginTransactionAsync().ConfigureAwait(false);";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.Data.Common.DbTransaction.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AwaitUsingAcceptsExactTrustedSqliteFactoryCleanupProvenance()
+    {
+        const string body =
+            "await using Microsoft.Data.Sqlite.SqliteConnection connection = new(); "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); "
+            + "await using Microsoft.Data.Sqlite.SqliteTransaction transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false);";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body));
+
+        Assert.Equal(
+            [],
+            result.Diagnostics.Where(static diagnostic =>
+                    diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                    && diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.Sqlite",
+                        StringComparison.Ordinal))
+                .Select(static diagnostic => diagnostic.Detail)
+                .Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ProductionShapedSqliteCleanupRetainsExactProviderAcrossCarriers()
+    {
+        const string body =
+            "SqliteCarrier carrier = new(new Microsoft.Data.Sqlite.SqliteConnection()); "
+            + "await DatabasePipeline.RunAsync(carrier.Connection, token); "
+            + "await carrier.RunAsync(token);";
+
+        const string helper =
+            "internal sealed class SqliteCarrier(Microsoft.Data.Sqlite.SqliteConnection connection) { "
+            + "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection = connection; "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection => _connection; "
+            + "internal async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand authored = await SqliteCommandFactory.CreateAsync(_connection, token); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader authoredReader = await authored.ExecuteReaderAsync(token).ConfigureAwait(false); "
+            + "await using Microsoft.Data.Sqlite.SqliteTransaction sync = _connection.BeginTransaction(deferred: false); "
+            + "await using Microsoft.Data.Sqlite.SqliteTransaction forwarded = await TransactionFactory.BeginAsync(_connection, token).ConfigureAwait(false); } } "
+            + "internal static class SqliteCommandFactory { internal static async System.Threading.Tasks.ValueTask<Microsoft.Data.Sqlite.SqliteCommand> CreateAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return Forward(connection); } private static Microsoft.Data.Sqlite.SqliteCommand Forward(Microsoft.Data.Sqlite.SqliteConnection connection) => connection.CreateCommand(); } "
+            + "internal static class TransactionFactory { internal static async System.Threading.Tasks.ValueTask<Microsoft.Data.Sqlite.SqliteTransaction> BeginAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Threading.CancellationToken token) => (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); } "
+            + "internal static class DatabasePipeline { internal static System.Threading.Tasks.Task RunAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Threading.CancellationToken token) => Layer1Async(connection, token); private static async System.Threading.Tasks.Task Layer1Async(Microsoft.Data.Sqlite.SqliteConnection source, System.Threading.CancellationToken token) { Microsoft.Data.Sqlite.SqliteConnection staged = source; await using System.Data.Common.DbCommand command = staged.CreateCommand(); await using System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); using System.IO.Stream payload = reader.GetStream(0); await using System.Data.Common.DbTransaction transaction = await staged.BeginTransactionAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        string[] cleanupTypes =
+        [
+            "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+            "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+            "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+            "System.Data.Common.DbCommand.DisposeAsync;",
+            "System.Data.Common.DbDataReader.DisposeAsync;",
+            "System.Data.Common.DbTransaction.DisposeAsync;",
+            "System.IO.Stream.Dispose;",
+        ];
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && cleanupTypes.Any(prefix => diagnostic.Detail.StartsWith(
+                prefix,
+                StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void ExactSqliteReaderForwardedToAuthoredBlobHelperRetainsGetStreamProvenance()
+    {
+        const string body =
+            "await using Microsoft.Data.Sqlite.SqliteConnection connection = new(); "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); "
+            + "_ = BlobReader.ReadBlob(reader, 0);";
+
+        const string helper = """
+            internal static class BlobReader
+            {
+                internal static byte[] ReadBlob(
+                    Microsoft.Data.Sqlite.SqliteDataReader reader,
+                    int ordinal)
+                {
+                    using System.IO.Stream stream = reader.GetStream(ordinal);
+                    using System.IO.MemoryStream buffer = new();
+                    stream.CopyTo(buffer);
+                    return buffer.ToArray();
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.Dispose;",
+                StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public void ProductionShapedCovenantMutationTransactionRetainsSqliteCleanupProvenance()
+    {
+        string source = RegistrationSource(
+                "services.AddSingleton<ICovenantConnectionSource, CovenantConnectionSource>(); services.AddSingleton<CovenantOwnerDeletionReader>(); services.AddSingleton<CovenantCleanupWorker>(); services.AddSingleton<CovenantCoordinator>(); services.AddHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ICovenantConnectionSource connections, CovenantCoordinator coordinator) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ICovenantConnectionSource>(), provider.GetRequiredService<CovenantCoordinator>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "Microsoft.Data.Sqlite.SqliteConnection connection = await connections.GetOpenConnectionAsync(token).ConfigureAwait(false); "
+                    + "await using Microsoft.Data.Sqlite.SqliteTransaction transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); "
+                    + "await coordinator.RunAsync(new CovenantMutationTransaction(connection, transaction), token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + " internal interface ICovenantConnectionSource { System.Threading.Tasks.ValueTask<Microsoft.Data.Sqlite.SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token); } "
+            + "internal sealed class CovenantConnectionSource : ICovenantConnectionSource { public async System.Threading.Tasks.ValueTask<Microsoft.Data.Sqlite.SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return RequireExactProviderConnection(UnknownConnection.Value); } private static Microsoft.Data.Sqlite.SqliteConnection RequireExactProviderConnection(System.Data.Common.DbConnection connection) { if (connection is not Microsoft.Data.Sqlite.SqliteConnection sqlite || sqlite.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); return sqlite; } } "
+            + "internal static class UnknownConnection { internal static System.Data.Common.DbConnection Value { get; set; } = null!; } "
+            + "internal sealed class CovenantMutationTransaction { "
+            + "internal CovenantMutationTransaction(Microsoft.Data.Sqlite.SqliteConnection connection, Microsoft.Data.Sqlite.SqliteTransaction transaction) { System.ArgumentNullException.ThrowIfNull(connection); System.ArgumentNullException.ThrowIfNull(transaction); if (connection.State != System.Data.ConnectionState.Open) throw new System.InvalidOperationException(); if (!object.ReferenceEquals(transaction.Connection, connection)) throw new System.ArgumentException(); Connection = connection; Transaction = transaction; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } "
+            + "internal Microsoft.Data.Sqlite.SqliteTransaction Transaction { get; } "
+            + "internal Microsoft.Data.Sqlite.SqliteCommand CreateCommand() { Microsoft.Data.Sqlite.SqliteCommand command = Connection.CreateCommand(); command.Transaction = Transaction; return command; } } "
+            + "internal sealed class CovenantCoordinator(CovenantCleanupWorker worker) { internal System.Threading.Tasks.Task RunAsync(CovenantMutationTransaction transaction, System.Threading.CancellationToken token) => worker.RunBatchAsync(transaction, token); } "
+            + "internal sealed class CovenantCleanupWorker(CovenantOwnerDeletionReader reader) { internal System.Threading.Tasks.Task RunBatchAsync(CovenantMutationTransaction transaction, System.Threading.CancellationToken token) => ReadCampaignHeadsAsync(transaction, token); private System.Threading.Tasks.Task ReadCampaignHeadsAsync(CovenantMutationTransaction transaction, System.Threading.CancellationToken token) => reader.ReadCursorAsync(transaction, token); } "
+            + "internal sealed class CovenantOwnerDeletionReader { internal async System.Threading.Tasks.Task ReadCursorAsync(CovenantMutationTransaction transaction, System.Threading.CancellationToken token) { await using Microsoft.Data.Sqlite.SqliteCommand command = transaction.CreateCommand(); await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("direct", false)]
+    [InlineData("exact-wrapper", false)]
+    [InlineData("unknown-wrapper", true)]
+    [InlineData("conditional-connection", true)]
+    [InlineData("multiple-wrappers", true)]
+    public void ProductionShapedCovenantHostedSweepRetainsOnlyExactWrapperCleanupProvenance(
+        string route,
+        bool expectedUnresolved)
+    {
+        string coordinatorBody = route switch
+        {
+            "direct" =>
+                "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+                + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);",
+            "exact-wrapper" =>
+                "await worker.RunBatchAsync(lease, new CovenantMutationTransaction(connection, transaction), token, 128).ConfigureAwait(false);",
+            "unknown-wrapper" =>
+                "await worker.RunBatchAsync(lease, new CovenantMutationTransaction(UnknownSqliteConnection.Value, transaction), token, 128).ConfigureAwait(false);",
+            "conditional-connection" =>
+                "await worker.RunBatchAsync(lease, new CovenantMutationTransaction(token.CanBeCanceled ? connection : UnknownSqliteConnection.Value, transaction), token, 128).ConfigureAwait(false);",
+            "multiple-wrappers" =>
+                "await worker.RunBatchAsync(lease, token.CanBeCanceled ? new CovenantMutationTransaction(connection, transaction) : new CovenantMutationTransaction(UnknownSqliteConnection.Value, transaction), token, 128).ConfigureAwait(false);",
+            _ => throw new ArgumentOutOfRangeException(nameof(route)),
+        };
+
+        const string registration =
+            "services.AddDbContext<ExactCovenantDbContext>((sp, options) => Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")); "
+            + "services.AddScoped<ICovenantConnectionSource>(static sp => new CovenantConnectionSource(sp.GetRequiredService<ExactCovenantDbContext>())); "
+            + "services.AddScoped<CovenantOperationGate>(); "
+            + "services.AddScoped<CovenantOwnerDeletionReader>(); "
+            + "services.AddScoped<CovenantCleanupWorker>(); "
+            + "services.AddScoped(static sp => new CovenantOwnerCleanupCoordinator(sp.GetRequiredService<CovenantOperationGate>(), sp.GetRequiredService<ICovenantConnectionSource>(), sp.GetRequiredService<CovenantCleanupWorker>())); "
+            + "services.AddScoped(static sp => new CovenantSearchOutboxCoordinator(sp.GetRequiredService<CovenantOperationGate>(), sp.GetRequiredService<ICovenantConnectionSource>(), sp.GetRequiredService<CovenantCleanupWorker>())); "
+            + "services.AddScoped(static sp => new CovenantTurnReceiptCompactionCoordinator(sp.GetRequiredService<CovenantOperationGate>(), sp.GetRequiredService<ICovenantConnectionSource>(), sp.GetRequiredService<CovenantCleanupWorker>())); "
+            + "services.AddHostedService<Worker>();";
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(IServiceScopeFactory scopeFactory) : BackgroundService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "protected override async Task ExecuteAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await RunOnceAsync(token).ConfigureAwait(false); } "
+                    + "private async Task RunOnceAsync(CancellationToken token) { "
+                    + "await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope(); "
+                    + "await RunSweepAsync(scope, token, async () => { "
+                    + "CovenantOwnerCleanupCoordinator coordinator = scope.ServiceProvider.GetRequiredService<CovenantOwnerCleanupCoordinator>(); "
+                    + "await coordinator.RunAsync(token).ConfigureAwait(false); }).ConfigureAwait(false); "
+                    + "await RunSweepAsync(scope, token, async () => { "
+                    + "CovenantSearchOutboxCoordinator coordinator = scope.ServiceProvider.GetRequiredService<CovenantSearchOutboxCoordinator>(); "
+                    + "await coordinator.RunAsync(token).ConfigureAwait(false); }).ConfigureAwait(false); "
+                    + "await RunSweepAsync(scope, token, async () => { "
+                    + "CovenantTurnReceiptCompactionCoordinator coordinator = scope.ServiceProvider.GetRequiredService<CovenantTurnReceiptCompactionCoordinator>(); "
+                    + "await coordinator.RunAsync(token).ConfigureAwait(false); }).ConfigureAwait(false); } "
+                    + "private static async Task RunSweepAsync(AsyncServiceScope scope, CancellationToken token, Func<Task> run) { "
+                    + "ExactCovenantDbContext db = scope.ServiceProvider.GetRequiredService<ExactCovenantDbContext>(); "
+                    + "if (Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database).State != System.Data.ConnectionState.Open) { await Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.OpenConnectionAsync(db.Database, token).ConfigureAwait(false); } "
+                    + "await run().ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StopAsync(CancellationToken token) => Task.CompletedTask;",
+                string.Empty,
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + " public sealed class ExactCovenantDbContext(Microsoft.EntityFrameworkCore.DbContextOptions<ExactCovenantDbContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { } "
+            + " internal interface ICovenantConnectionSource { System.Threading.Tasks.ValueTask<Microsoft.Data.Sqlite.SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token); } "
+            + "internal sealed class CovenantConnectionSource(ExactCovenantDbContext db) : ICovenantConnectionSource { public async System.Threading.Tasks.ValueTask<Microsoft.Data.Sqlite.SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token) { System.Data.Common.DbConnection candidate = Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database); Microsoft.Data.Sqlite.SqliteConnection connection = RequireExactProviderConnection(candidate); if (connection.State == System.Data.ConnectionState.Open) return connection; await System.Threading.Tasks.Task.Yield(); return token.CanBeCanceled ? RequireExactProviderConnection(candidate) : connection; } private static Microsoft.Data.Sqlite.SqliteConnection RequireExactProviderConnection(System.Data.Common.DbConnection connection) { if (connection is not Microsoft.Data.Sqlite.SqliteConnection sqlite || sqlite.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); return sqlite; } } "
+            + "internal static class UnknownSqliteConnection { internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!; } "
+            + "internal sealed class CleanupResult<T>(T value) { internal bool IsFailure => false; internal T Value { get; } = value; } "
+            + "internal sealed class CovenantOperationGate { internal async System.Threading.Tasks.ValueTask<CleanupResult<CovenantCleanupLease>> AcquireAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return new(new CovenantCleanupLease()); } } "
+            + "internal sealed class CovenantCleanupLease : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => default; } "
+            + "internal sealed class CovenantMutationTransaction { "
+            + "internal CovenantMutationTransaction(Microsoft.Data.Sqlite.SqliteConnection connection, Microsoft.Data.Sqlite.SqliteTransaction transaction) { System.ArgumentNullException.ThrowIfNull(connection); System.ArgumentNullException.ThrowIfNull(transaction); Connection = connection; Transaction = transaction; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } "
+            + "internal Microsoft.Data.Sqlite.SqliteTransaction Transaction { get; } "
+            + "internal Microsoft.Data.Sqlite.SqliteCommand CreateCommand() { Microsoft.Data.Sqlite.SqliteCommand command = Connection.CreateCommand(); command.Transaction = Transaction; return command; } } "
+            + "internal sealed class CovenantOwnerCleanupCoordinator(CovenantOperationGate gate, ICovenantConnectionSource connections, CovenantCleanupWorker worker) { internal async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { CleanupResult<CovenantCleanupLease> acquired = await gate.AcquireAsync(token).ConfigureAwait(false); if (acquired.IsFailure) return; await using CovenantCleanupLease lease = acquired.Value; Microsoft.Data.Sqlite.SqliteConnection connection = await connections.GetOpenConnectionAsync(token).ConfigureAwait(false); await using Microsoft.Data.Sqlite.SqliteTransaction transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); "
+            + coordinatorBody
+            + " } } "
+            + "internal sealed class CovenantSearchOutboxCoordinator(CovenantOperationGate gate, ICovenantConnectionSource connections, CovenantCleanupWorker worker) { internal async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { CleanupResult<CovenantCleanupLease> acquired = await gate.AcquireAsync(token).ConfigureAwait(false); if (acquired.IsFailure) return; await using CovenantCleanupLease lease = acquired.Value; Microsoft.Data.Sqlite.SqliteConnection connection = await connections.GetOpenConnectionAsync(token).ConfigureAwait(false); await using Microsoft.Data.Sqlite.SqliteTransaction transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); "
+            + coordinatorBody
+            + " } } "
+            + "internal sealed class CovenantTurnReceiptCompactionCoordinator(CovenantOperationGate gate, ICovenantConnectionSource connections, CovenantCleanupWorker worker) { internal async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { CleanupResult<CovenantCleanupLease> acquired = await gate.AcquireAsync(token).ConfigureAwait(false); if (acquired.IsFailure) return; await using CovenantCleanupLease lease = acquired.Value; Microsoft.Data.Sqlite.SqliteConnection connection = await connections.GetOpenConnectionAsync(token).ConfigureAwait(false); await using Microsoft.Data.Sqlite.SqliteTransaction transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); "
+            + coordinatorBody
+            + " } } "
+            + "internal sealed class CovenantCleanupWorker(CovenantOwnerDeletionReader reader) { internal System.Threading.Tasks.Task RunBatchAsync(CovenantCleanupLease lease, CovenantMutationTransaction transaction, System.Threading.CancellationToken token, int maxEvents) { _ = lease; _ = maxEvents; return ReadCampaignHeadsAsync(transaction, token); } private System.Threading.Tasks.Task ReadCampaignHeadsAsync(CovenantMutationTransaction transaction, System.Threading.CancellationToken token) => reader.ReadCursorAsync(transaction, token); } "
+            + "internal sealed class CovenantOwnerDeletionReader { internal async System.Threading.Tasks.Task ReadCursorAsync(CovenantMutationTransaction transaction, System.Threading.CancellationToken token) { await using Microsoft.Data.Sqlite.SqliteCommand command = transaction.CreateCommand(); await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            source,
+            OrdinaryRoot("Worker.ExecuteAsync") with
+            {
+                Member = "ExecuteAsync",
+            });
+
+        bool unresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(expectedUnresolved, unresolved);
+    }
+
+    [Fact]
+    public void ProductionCovenantHostedSweepRetainsExactCleanupProvenanceAtBoundedStateCap()
+    {
+        IReadOnlyList<CSharpCompilation> compilations =
+            HostedGrimoireProducerInventory.ProductionCompilations;
+
+        HostedProducerServiceEntry service =
+            HostedGrimoireProducerInventory.Catalog.Single(static candidate =>
+                candidate.ServiceType == "CovenantMaintenanceHostedService");
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                compilations,
+                new(["CovenantMaintenanceHostedService"], []),
+                [service],
+                [],
+                maximumAnalyzedStatesPerRoot: 1024);
+
+        HostedProducerInventoryDiagnostic[] unresolved = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED")
+            .ToArray();
+
+        Assert.True(
+            unresolved.Length == 0,
+            string.Join(
+                global::System.Environment.NewLine,
+                unresolved.Select(static diagnostic =>
+                    $"{diagnostic.Identity}: {diagnostic.Detail}")));
+    }
+
+    [Fact]
+    public void ConvergentAuthoredReceiverTypesDoNotCollapseDifferentCleanupState()
+    {
+        const string body =
+            "await using System.IAsyncDisposable owned = new CleanupCarrier(token.CanBeCanceled "
+            + "? new CleanupOwner(new FirstCleanup()) "
+            + ": new CleanupOwner(new SecondCleanup())).CreateResource();";
+
+        const string helpers =
+            "internal sealed class FirstCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"first\"); return default; } } "
+            + "internal sealed class SecondCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.Directory.Delete(\"second\"); return default; } } "
+            + "internal sealed class CleanupOwner(System.IAsyncDisposable resource) { internal System.IAsyncDisposable Resource { get; } = resource; } "
+            + "internal sealed class CleanupCarrier(CleanupOwner owner) { internal CleanupOwner Owner { get; } = owner; internal System.IAsyncDisposable CreateResource() => Owner.Resource; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IAsyncDisposable.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CovenantMutationTransactionRejectsConditionalPropertyAssignment()
+    {
+        const string body =
+            "await using Microsoft.Data.Sqlite.SqliteConnection connection = new(); "
+            + "await using Microsoft.Data.Sqlite.SqliteTransaction transaction = connection.BeginTransaction(deferred: false); "
+            + "CovenantMutationTransaction owned = new(connection, transaction, token.CanBeCanceled); "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = owned.CreateCommand();";
+
+        const string helper =
+            "internal sealed class CovenantMutationTransaction { "
+            + "internal CovenantMutationTransaction(Microsoft.Data.Sqlite.SqliteConnection connection, Microsoft.Data.Sqlite.SqliteTransaction transaction, bool assign) { if (assign) { Connection = connection; Transaction = transaction; } } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } = null!; "
+            + "internal Microsoft.Data.Sqlite.SqliteTransaction Transaction { get; } = null!; "
+            + "internal Microsoft.Data.Sqlite.SqliteCommand CreateCommand() { Microsoft.Data.Sqlite.SqliteCommand command = Connection.CreateCommand(); command.Transaction = Transaction; return command; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProductionShapedFreshOrdinaryLeaseRetainsSqliteCleanupProvenanceInsideRetryCallback()
+    {
+        CSharpCompilation core = Compile(
+                "namespace ProductionResult { "
+                    + "public sealed class ConnectionError { } "
+                    + "public sealed class UnknownConnectionError { } "
+                    + "public static class UnknownConnectionResult<T> { public static ConnectionResult<T> Value { get; set; } = null!; } "
+                    + "public sealed class ConnectionResult<T> { private readonly T? _value; private ConnectionResult(T value) { IsSuccess = true; _value = value; } private ConnectionResult(ConnectionError error) { _ = error; IsSuccess = false; _value = default; } public bool IsSuccess { get; } public bool IsFailure => !IsSuccess; public T Value => IsSuccess ? _value! : throw new System.InvalidOperationException(); public static ConnectionResult<T> Success(T value) => new(value); public static implicit operator ConnectionResult<T>(ConnectionError error) => new(error); public static implicit operator ConnectionResult<T>(UnknownConnectionError error) => UnknownConnectionResult<T>.Value; } "
+                    + "}")
+            .WithAssemblyName("Cleanup.Result.Core");
+
+        CSharpCompilation infrastructure = Compile(
+                "using ProductionResult; namespace ProductionStore { "
+                    + "public interface IOperationStore { System.Threading.Tasks.Task RenewAsync(System.Threading.CancellationToken token); } "
+                    + "public interface IOrdinaryConnectionFactory { System.Threading.Tasks.Task<ConnectionResult<IOrdinaryConnectionLease>> OpenFreshAsync(System.Threading.CancellationToken token); } "
+                    + "public interface IOrdinaryConnectionLease : System.IAsyncDisposable { Microsoft.Data.Sqlite.SqliteConnection Connection { get; } } "
+                    + "public sealed class OperationStore(IOrdinaryConnectionFactory connections) : IOperationStore { public System.Threading.Tasks.Task RenewAsync(System.Threading.CancellationToken token) => SqliteBusyRetry.ExecuteAsync(async () => { ConnectionResult<IOrdinaryConnectionLease> acquired = await connections.OpenFreshAsync(token).ConfigureAwait(false); if (acquired.IsFailure) throw new System.InvalidOperationException(); await using IOrdinaryConnectionLease ordinaryLease = acquired.Value; Microsoft.Data.Sqlite.SqliteConnection connection = ordinaryLease.Connection; await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); }, token); } "
+                    + "public sealed class OrdinaryConnectionFactory : IOrdinaryConnectionFactory { public async System.Threading.Tasks.Task<ConnectionResult<IOrdinaryConnectionLease>> OpenFreshAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); if (token.IsCancellationRequested) return new ConnectionError(); return ConnectionResult<IOrdinaryConnectionLease>.Success(new OrdinaryConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())); } } "
+                    + "public sealed class UnknownConnectionFactory : IOrdinaryConnectionFactory { public async System.Threading.Tasks.Task<ConnectionResult<IOrdinaryConnectionLease>> OpenFreshAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return new UnknownConnectionError(); } } "
+                    + "public sealed class OrdinaryConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) : IOrdinaryConnectionLease { private bool _disposed; public Microsoft.Data.Sqlite.SqliteConnection Connection { get { System.ObjectDisposedException.ThrowIf(System.Threading.Volatile.Read(ref _disposed), this); return connection; } } public System.Threading.Tasks.ValueTask DisposeAsync() { _disposed = true; return default; } } "
+                    + "internal static class SqliteBusyRetry { internal static System.Threading.Tasks.Task ExecuteAsync(System.Func<System.Threading.Tasks.Task> action, System.Threading.CancellationToken token) => action(); } "
+                    + "}")
+            .AddReferences(core.ToMetadataReference())
+            .WithAssemblyName("Cleanup.Result.Infrastructure");
+
+        string source = RegistrationSource(
+                "services.AddSingleton<ProductionStore.IOrdinaryConnectionFactory, ProductionStore.OrdinaryConnectionFactory>(); services.AddScoped<ProductionStore.OperationStore>(); services.AddScoped<ProductionStore.IOperationStore>(sp => sp.GetRequiredService<ProductionStore.OperationStore>()); services.AddHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ProductionStore.IOperationStore store) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ProductionStore.IOperationStore>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await store.RenewAsync(token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes;
+
+        CSharpCompilation consumer = Compile(source)
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.Result.Consumer");
+
+        Assert.All(
+            new[] { core, infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "ProductionStore.IOrdinaryConnectionLease.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+
+        CSharpCompilation unknownConsumer = Compile(source.Replace(
+                "ProductionStore.OrdinaryConnectionFactory",
+                "ProductionStore.UnknownConnectionFactory",
+                StringComparison.Ordinal))
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.Result.UnknownConsumer");
+
+        Assert.Empty(unknownConsumer.GetDiagnostics().Where(
+            static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> unknownResult =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, unknownConsumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(unknownResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "ProductionStore.IOrdinaryConnectionLease.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PrimaryConstructorBackedGuardedLeaseGetterRetainsExactSqliteCleanupProvenance()
+    {
+        const string body =
+            "IStoppedHostConnectionLease stoppedLease = new StoppedHostConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection()); "
+            + "Microsoft.Data.Sqlite.SqliteConnection connection = stoppedLease.Connection; "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);";
+
+        const string helper =
+            "internal interface IStoppedHostConnectionLease { Microsoft.Data.Sqlite.SqliteConnection Connection { get; } } "
+            + "internal sealed class StoppedHostConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) : IStoppedHostConnectionLease { "
+            + "private bool _disposed; "
+            + "public Microsoft.Data.Sqlite.SqliteConnection Connection { get { System.ObjectDisposedException.ThrowIf(System.Threading.Volatile.Read(ref _disposed), this); return connection; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("CoreConnection!")]
+    [InlineData("this.CoreConnection!")]
+    public void ExactSameInstanceGetOnlyPropertyRetainsSqliteCleanupProvenance(
+        string connectionAccess)
+    {
+        const string body =
+            "CovenantDisclosureWriter writer = new(new Microsoft.Data.Sqlite.SqliteConnection()); "
+            + "await writer.WriteAsync(token).ConfigureAwait(false);";
+
+        string helper =
+            "internal sealed class CovenantDisclosureWriter { "
+            + "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection; "
+            + "internal CovenantDisclosureWriter(Microsoft.Data.Sqlite.SqliteConnection connection) { _connection = connection; } "
+            + "private Microsoft.Data.Sqlite.SqliteConnection CoreConnection => _connection; "
+            + "internal async System.Threading.Tasks.Task WriteAsync(System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = "
+            + connectionAccess
+            + ".CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void ExactSameInstanceGetterRetainsConditionalPropertyCleanupProvenance()
+    {
+        const string body =
+            "CovenantDisclosureWriter writer = new(new ConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())); "
+            + "await writer.WriteAsync(token).ConfigureAwait(false);";
+
+        const string helper =
+            "internal sealed class ConnectionLease : System.IAsyncDisposable { "
+            + "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection; "
+            + "internal ConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) { _connection = connection; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection => _connection; "
+            + "public System.Threading.Tasks.ValueTask DisposeAsync() => default; } "
+            + "internal sealed class CovenantDisclosureWriter { "
+            + "private readonly ConnectionLease? _connectionLease; "
+            + "internal CovenantDisclosureWriter(ConnectionLease connectionLease) { _connectionLease = connectionLease; } "
+            + "private Microsoft.Data.Sqlite.SqliteConnection? CoreConnection => _connectionLease?.Connection; "
+            + "internal async System.Threading.Tasks.Task WriteAsync(System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = CoreConnection!.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void WarmWriterAssignmentAndRetryCallbackRetainConditionalPropertyCleanupProvenance()
+    {
+        const string body =
+            "CovenantDisclosureWriter writer = new(); "
+            + "await writer.AcknowledgeAsync(token).ConfigureAwait(false);";
+
+        const string helper =
+            "internal sealed class ConnectionLease : System.IAsyncDisposable { "
+            + "internal ConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) { Connection = connection; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } "
+            + "public System.Threading.Tasks.ValueTask DisposeAsync() => default; } "
+            + "internal sealed class CovenantDisclosureWriter { "
+            + "private ConnectionLease? _connectionLease; "
+            + "private Microsoft.Data.Sqlite.SqliteConnection? CoreConnection => _connectionLease?.Connection; "
+            + "internal async System.Threading.Tasks.Task AcknowledgeAsync(System.Threading.CancellationToken token) { "
+            + "ConnectionLease candidateLease = new(new Microsoft.Data.Sqlite.SqliteConnection()); "
+            + "_connectionLease = candidateLease; "
+            + "try { await SqliteBusyRetry.ExecuteAsync(() => CovenantDisclosureJournal.WriteAsync(CoreConnection!, token), token).ConfigureAwait(false); } "
+            + "finally { _connectionLease = null; await candidateLease.DisposeAsync().ConfigureAwait(false); } } } "
+            + "internal static class CovenantDisclosureJournal { "
+            + "internal static async System.Threading.Tasks.Task WriteAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteTransaction transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false); "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } } "
+            + "internal static class SqliteBusyRetry { "
+            + "internal static System.Threading.Tasks.Task ExecuteAsync(System.Func<System.Threading.Tasks.Task> action, System.Threading.CancellationToken token) { _ = token; return action(); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("direct-assignment")]
+    [InlineData("tuple-assignment")]
+    [InlineData("ref-argument")]
+    [InlineData("out-argument")]
+    [InlineData("ref-expression")]
+    [InlineData("increment")]
+    [InlineData("invoked-mutation")]
+    [InlineData("ordinary-invoked-mutation")]
+    [InlineData("nested-ordinary-invoked-mutation")]
+    [InlineData("setter-mediated-ordinary-invoked-mutation")]
+    [InlineData("getter-mediated-ordinary-invoked-mutation")]
+    public void WarmWriterGetterMutationInvalidatesImportedCleanupProvenance(
+        string shape)
+    {
+        const string body =
+            "CovenantDisclosureWriter writer = new(new ConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())); "
+            + "await writer.AcknowledgeAsync(token).ConfigureAwait(false);";
+
+        string mutation = shape switch
+        {
+            "tuple-assignment" =>
+                "(_connectionLease, _) = (UnknownConnectionLease.Value, 0); ",
+            "ref-argument" =>
+                "ConnectionLeaseMutation.ReplaceRef(ref _connectionLease); ",
+            "out-argument" =>
+                "ConnectionLeaseMutation.ReplaceOut(out _connectionLease); ",
+            "ref-expression" =>
+                "ref ConnectionLease? alias = ref _connectionLease; alias = UnknownConnectionLease.Value; ",
+            "increment" => "_connectionLease++; ",
+            "invoked-mutation" =>
+                "void Replace() { _connectionLease = UnknownConnectionLease.Value; } Replace(); ",
+            "ordinary-invoked-mutation"
+                or "setter-mediated-ordinary-invoked-mutation"
+                or "getter-mediated-ordinary-invoked-mutation" => "Replace(); ",
+            "nested-ordinary-invoked-mutation" => "ReplaceIndirect(); ",
+            _ => "_connectionLease = UnknownConnectionLease.Value; ",
+        };
+
+        string replacementMembers = shape switch
+        {
+            "setter-mediated-ordinary-invoked-mutation" =>
+                "private ConnectionLease? Replacement { set { _connectionLease = value; } } "
+                    + "private void Replace() { Replacement = UnknownConnectionLease.Value; } ",
+            "getter-mediated-ordinary-invoked-mutation" =>
+                "private ConnectionLease? Replacement { get { _connectionLease = UnknownConnectionLease.Value; return _connectionLease; } } "
+                    + "private void Replace() { _ = Replacement; } ",
+            _ => "private void Replace() { _connectionLease = UnknownConnectionLease.Value; } ",
+        };
+
+        string helper =
+            "internal sealed class ConnectionLease : System.IAsyncDisposable { "
+            + "internal ConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) { Connection = connection; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } "
+            + "public static ConnectionLease? operator ++(ConnectionLease? value) { _ = value; return UnknownConnectionLease.Value; } "
+            + "public System.Threading.Tasks.ValueTask DisposeAsync() => default; } "
+            + "internal static class UnknownConnectionLease { internal static ConnectionLease Value { get; set; } = null!; } "
+            + "internal static class ConnectionLeaseMutation { "
+            + "internal static void ReplaceRef(ref ConnectionLease? lease) { lease = UnknownConnectionLease.Value; } "
+            + "internal static void ReplaceOut(out ConnectionLease? lease) { lease = UnknownConnectionLease.Value; } } "
+            + "internal sealed class CovenantDisclosureWriter(ConnectionLease? _connectionLease) { "
+            + "private Microsoft.Data.Sqlite.SqliteConnection? CoreConnection { get { "
+            + mutation
+            + "return _connectionLease?.Connection; } } "
+            + replacementMembers
+            + "private void ReplaceIndirect() { Replace(); } "
+            + "internal async System.Threading.Tasks.Task AcknowledgeAsync(System.Threading.CancellationToken token) { "
+            + "try { await CovenantDisclosureJournal.WriteAsync(CoreConnection!, token).ConfigureAwait(false); } "
+            + "finally { if (_connectionLease is not null) await _connectionLease.DisposeAsync().ConfigureAwait(false); } } } "
+            + "internal static class CovenantDisclosureJournal { "
+            + "internal static async System.Threading.Tasks.Task WriteAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("unknown-receiver")]
+    [InlineData("external")]
+    [InlineData("virtual")]
+    [InlineData("cycle")]
+    public void WarmWriterGetterUnprovenInvocationInvalidatesImportedCleanupProvenance(
+        string shape)
+    {
+        const string body =
+            "CovenantDisclosureWriter writer = new(new ConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())); "
+            + "await writer.AcknowledgeAsync(token).ConfigureAwait(false);";
+
+        string invocation = shape switch
+        {
+            "external" => "System.GC.KeepAlive(_connectionLease); ",
+            "virtual" or "cycle" => "Observe(); ",
+            _ => "UnknownConnectionLeaseObserver.Value.Observe(); ",
+        };
+
+        string baseType = shape == "virtual"
+            ? "internal abstract class CovenantDisclosureWriterBase { protected virtual void Observe() { } } "
+            : string.Empty;
+
+        string inheritance = shape == "virtual"
+            ? " : CovenantDisclosureWriterBase"
+            : string.Empty;
+
+        string unknownReceiver = shape == "unknown-receiver"
+            ? "internal sealed class UnknownConnectionLeaseObserver { "
+                + "internal static UnknownConnectionLeaseObserver Value { get; set; } = null!; "
+                + "internal void Observe() { } } "
+            : string.Empty;
+
+        string writerMember = shape == "cycle"
+            ? "private void Observe() { Observe(); } "
+            : string.Empty;
+
+        string helper =
+            "internal sealed class ConnectionLease : System.IAsyncDisposable { "
+            + "internal ConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) { Connection = connection; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } "
+            + "public System.Threading.Tasks.ValueTask DisposeAsync() => default; } "
+            + baseType
+            + unknownReceiver
+            + "internal sealed class CovenantDisclosureWriter(ConnectionLease? _connectionLease)"
+            + inheritance
+            + " { private Microsoft.Data.Sqlite.SqliteConnection? CoreConnection { get { "
+            + invocation
+            + "return _connectionLease?.Connection; } } "
+            + writerMember
+            + "internal async System.Threading.Tasks.Task AcknowledgeAsync(System.Threading.CancellationToken token) { "
+            + "try { await CovenantDisclosureJournal.WriteAsync(CoreConnection!, token).ConfigureAwait(false); } "
+            + "finally { if (_connectionLease is not null) await _connectionLease.DisposeAsync().ConfigureAwait(false); } } } "
+            + "internal static class CovenantDisclosureJournal { "
+            + "internal static async System.Threading.Tasks.Task WriteAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("mutable-property")]
+    [InlineData("unsealed-owner")]
+    [InlineData("incomplete-getter")]
+    public void SameInstancePropertyCleanupRemainsUnresolvedWhenGetterIsNotExact(
+        string shape)
+    {
+        const string body =
+            "CovenantDisclosureWriter writer = new(new Microsoft.Data.Sqlite.SqliteConnection()); "
+            + "await writer.WriteAsync(token).ConfigureAwait(false);";
+
+        string declaration = shape switch
+        {
+            "mutable-property" =>
+                "internal sealed class CovenantDisclosureWriter { "
+                + "internal CovenantDisclosureWriter(Microsoft.Data.Sqlite.SqliteConnection connection) { CoreConnection = connection; } "
+                + "private Microsoft.Data.Sqlite.SqliteConnection CoreConnection { get; set; } ",
+            "unsealed-owner" =>
+                "internal class CovenantDisclosureWriter { "
+                + "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection; "
+                + "internal CovenantDisclosureWriter(Microsoft.Data.Sqlite.SqliteConnection connection) { _connection = connection; } "
+                + "private Microsoft.Data.Sqlite.SqliteConnection CoreConnection => _connection; ",
+            _ =>
+                "internal sealed class CovenantDisclosureWriter { "
+                + "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection; "
+                + "internal CovenantDisclosureWriter(Microsoft.Data.Sqlite.SqliteConnection connection) { _connection = connection; } "
+                + "private Microsoft.Data.Sqlite.SqliteConnection CoreConnection => System.DateTime.UtcNow.Ticks > 0 ? _connection : UnknownConnection.Value; ",
+        };
+
+        string helper = declaration
+            + "internal async System.Threading.Tasks.Task WriteAsync(System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = CoreConnection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } } "
+            + "internal static class UnknownConnection { internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConditionalPropertyCleanupRequiresAnExactStableReceiver(
+        bool mutableReceiver)
+    {
+        string lease = mutableReceiver
+            ? "new ConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())"
+            : "UnknownConnectionLease.Value";
+
+        string mutator = mutableReceiver
+            ? "internal void Replace(ConnectionLease? lease) { _connectionLease = lease; } "
+            : string.Empty;
+
+        string readOnly = mutableReceiver ? string.Empty : "readonly ";
+
+        string body =
+            "CovenantDisclosureWriter writer = new("
+            + lease
+            + "); await writer.WriteAsync(token).ConfigureAwait(false);";
+
+        string helper =
+            "internal sealed class ConnectionLease { "
+            + "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection; "
+            + "internal ConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) { _connection = connection; } "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection => _connection; } "
+            + "internal static class UnknownConnectionLease { internal static ConnectionLease Value { get; set; } = null!; } "
+            + "internal sealed class CovenantDisclosureWriter { "
+            + "private "
+            + readOnly
+            + "ConnectionLease? _connectionLease; "
+            + "internal CovenantDisclosureWriter(ConnectionLease connectionLease) { _connectionLease = connectionLease; } "
+            + mutator
+            + "private Microsoft.Data.Sqlite.SqliteConnection? CoreConnection => _connectionLease?.Connection; "
+            + "internal async System.Threading.Tasks.Task WriteAsync(System.Threading.CancellationToken token) { "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = CoreConnection!.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void MutablePrimaryConstructorBackedLeaseGetterRemainsUnresolved()
+    {
+        const string body =
+            "MutableStoppedHostConnectionLease stoppedLease = new(new Microsoft.Data.Sqlite.SqliteConnection()); "
+            + "Microsoft.Data.Sqlite.SqliteConnection connection = stoppedLease.Connection; "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();";
+
+        const string helper =
+            "internal sealed class MutableStoppedHostConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection) { "
+            + "internal Microsoft.Data.Sqlite.SqliteConnection Connection => connection; "
+            + "internal void Replace(Microsoft.Data.Sqlite.SqliteConnection replacement) { connection = replacement; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StoppedHostLeaseSessionChainRetainsExactSqliteCleanupProvenance()
+    {
+        const string body =
+            "ConnectionResult<StoppedHostSession> opened = await database.OpenSessionAsync(token).ConfigureAwait(false); "
+            + "if (opened.IsFailure) return; "
+            + "await using StoppedHostSession session = opened.Value; "
+            + "await session.ReadAsync(token).ConfigureAwait(false); "
+            + "Microsoft.Data.Sqlite.SqliteConnection borrowed = session.BorrowCoreConnection(); "
+            + "await using Microsoft.Data.Sqlite.SqliteTransaction transaction = borrowed.BeginTransaction();";
+
+        const string helper = """
+            internal sealed class ConnectionResult<T>
+            {
+                private readonly T? _value;
+
+                private ConnectionResult(T value)
+                {
+                    IsSuccess = true;
+
+                    _value = value;
+                }
+
+                private ConnectionResult()
+                {
+                    _value = default;
+                }
+
+                internal bool IsSuccess { get; }
+
+                internal bool IsFailure => !IsSuccess;
+
+                internal T Value => IsSuccess
+                    ? _value!
+                    : throw new System.InvalidOperationException();
+
+                internal static ConnectionResult<T> Success(T value) => new(value);
+
+                internal static ConnectionResult<T> Failure() => new();
+
+                public static implicit operator ConnectionResult<T>(T value) =>
+                    Success(value);
+            }
+
+            internal interface IStoppedHostConnectionLease : System.IAsyncDisposable
+            {
+                Microsoft.Data.Sqlite.SqliteConnection Connection { get; }
+            }
+
+            internal interface IStoppedHostConnectionFactory
+            {
+                System.Threading.Tasks.Task<ConnectionResult<IStoppedHostConnectionLease>>
+                    OpenAsync(System.Threading.CancellationToken token);
+            }
+
+            internal sealed class StoppedHostConnectionFactory : IStoppedHostConnectionFactory
+            {
+                public System.Threading.Tasks.Task<ConnectionResult<IStoppedHostConnectionLease>>
+                    OpenAsync(System.Threading.CancellationToken token) =>
+                    OpenCoreAsync(token);
+
+                private static async System.Threading.Tasks.Task<ConnectionResult<IStoppedHostConnectionLease>>
+                    OpenCoreAsync(System.Threading.CancellationToken token)
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection? connection = null;
+
+                    try
+                    {
+                        connection = new Microsoft.Data.Sqlite.SqliteConnection();
+
+                        await System.Threading.Tasks.Task.Yield();
+
+                        token.ThrowIfCancellationRequested();
+
+                        return new StoppedHostConnectionLease(connection);
+                    }
+                    catch
+                    {
+                        if (connection is not null)
+                        {
+                            await connection.DisposeAsync().ConfigureAwait(false);
+                        }
+
+                        return ConnectionResult<IStoppedHostConnectionLease>.Failure();
+                    }
+                }
+
+                private sealed class StoppedHostConnectionLease(
+                    Microsoft.Data.Sqlite.SqliteConnection connection) :
+                    IStoppedHostConnectionLease
+                {
+                    private bool _disposed;
+
+                    public Microsoft.Data.Sqlite.SqliteConnection Connection
+                    {
+                        get
+                        {
+                            System.ObjectDisposedException.ThrowIf(
+                                System.Threading.Volatile.Read(ref _disposed),
+                                this);
+
+                            return connection;
+                        }
+                    }
+
+                    public async System.Threading.Tasks.ValueTask DisposeAsync()
+                    {
+                        await connection.DisposeAsync().ConfigureAwait(false);
+
+                        _disposed = true;
+                    }
+                }
+            }
+
+            internal sealed class StoppedHostDatabase(
+                IStoppedHostConnectionFactory connections)
+            {
+                internal async System.Threading.Tasks.Task<ConnectionResult<StoppedHostSession>>
+                    OpenSessionAsync(System.Threading.CancellationToken token)
+                {
+                    IStoppedHostConnectionLease? lease = null;
+
+                    try
+                    {
+                        ConnectionResult<IStoppedHostConnectionLease> opened =
+                            await connections.OpenAsync(token).ConfigureAwait(false);
+
+                        if (opened.IsFailure)
+                        {
+                            return ConnectionResult<StoppedHostSession>.Failure();
+                        }
+
+                        lease = opened.Value;
+
+                        return ConnectionResult<StoppedHostSession>.Success(
+                            CreateSession(lease));
+                    }
+                    catch
+                    {
+                        if (lease is not null)
+                        {
+                            await lease.DisposeAsync().ConfigureAwait(false);
+                        }
+
+                        return ConnectionResult<StoppedHostSession>.Failure();
+                    }
+                }
+
+                private StoppedHostSession CreateSession(
+                    IStoppedHostConnectionLease lease)
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection connection =
+                        lease.Connection;
+
+                    object ticket = new SessionCreationTicket(connection);
+
+                    return new StoppedHostSession(lease, this, ticket);
+                }
+
+                internal bool TryConsumeSessionCreationTicket(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    object creationTicket) =>
+                    creationTicket is SessionCreationTicket ticket
+                    && System.Object.ReferenceEquals(ticket.Connection, connection);
+
+                private sealed class SessionCreationTicket(
+                    Microsoft.Data.Sqlite.SqliteConnection connection)
+                {
+                    internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } =
+                        connection;
+                }
+            }
+
+            internal sealed class StoppedHostSession : System.IAsyncDisposable
+            {
+                private readonly IStoppedHostConnectionLease _lease;
+
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+
+                internal StoppedHostSession(
+                    IStoppedHostConnectionLease lease,
+                    StoppedHostDatabase owner,
+                    object creationTicket)
+                {
+                    System.ArgumentNullException.ThrowIfNull(lease);
+
+                    Microsoft.Data.Sqlite.SqliteConnection connection =
+                        lease.Connection;
+
+                    System.ArgumentNullException.ThrowIfNull(owner);
+
+                    System.ArgumentNullException.ThrowIfNull(creationTicket);
+
+                    if (!owner.TryConsumeSessionCreationTicket(
+                        connection,
+                        creationTicket))
+                    {
+                        throw new System.InvalidOperationException();
+                    }
+
+                    _lease = lease;
+
+                    _connection = connection;
+                }
+
+                internal Microsoft.Data.Sqlite.SqliteConnection BorrowCoreConnection() =>
+                    _connection;
+
+                internal async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        _connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+
+                public System.Threading.Tasks.ValueTask DisposeAsync() =>
+                    _lease.DisposeAsync();
+            }
+            """;
+
+        HostedProducerOperationEntry stoppedHostRoot = new(
+            "Worker.StartAsync",
+            "src/Fixture.cs",
+            "Worker",
+            "StartAsync",
+            HostedProducerAuthorityKind.StoppedHost,
+            null,
+            "Worker.StartAsync: exact stopped-host owner",
+            []);
+
+        const string factoryBody =
+            "StoppedHostConnectionFactory connections = new(); "
+            + "ConnectionResult<IStoppedHostConnectionLease> opened = await connections.OpenAsync(token).ConfigureAwait(false); "
+            + "if (opened.IsFailure) return; "
+            + "IStoppedHostConnectionLease stoppedLease = opened.Value; "
+            + "Microsoft.Data.Sqlite.SqliteConnection connection = stoppedLease.Connection; "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); "
+            + "await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);";
+
+        HostedProducerDiscovery<HostedProducerSite> factoryResult = R2Discover(
+            R2Source(factoryBody, helper),
+            stoppedHostRoot);
+
+        Assert.DoesNotContain(factoryResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        string registeredSource = RegistrationSource(
+                "services.AddSingleton<IStoppedHostConnectionFactory, StoppedHostConnectionFactory>(); "
+                + "services.AddSingleton<StoppedHostDatabase>(); "
+                + "services.AddHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(StoppedHostDatabase database) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<StoppedHostDatabase>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + body
+                    + " }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helper;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            registeredSource,
+            stoppedHostRoot);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("exact-derived", true)]
+    [InlineData("derived-exact", true)]
+    [InlineData("exact-unknown", true)]
+    [InlineData("unknown-exact", true)]
+    [InlineData("mutable-field", true)]
+    [InlineData("multiply-assigned-field", true)]
+    [InlineData("unguarded", false)]
+    [InlineData("multiple-session-source", true)]
+    public void ProductionShapedSessionCleanupRetainsOnlyExactReadonlyReceiverState(
+        string shape,
+        bool unresolved)
+    {
+        string connectionSource = shape switch
+        {
+            "unknown" => "UnknownResetConnection.Value",
+            "exact-derived" =>
+                "token.CanBeCanceled ? new Microsoft.Data.Sqlite.SqliteConnection() : new DerivedResetConnection()",
+            "derived-exact" =>
+                "token.CanBeCanceled ? new DerivedResetConnection() : new Microsoft.Data.Sqlite.SqliteConnection()",
+            "exact-unknown" =>
+                "token.CanBeCanceled ? new Microsoft.Data.Sqlite.SqliteConnection() : UnknownResetConnection.Value",
+            "unknown-exact" =>
+                "token.CanBeCanceled ? UnknownResetConnection.Value : new Microsoft.Data.Sqlite.SqliteConnection()",
+            _ => "new Microsoft.Data.Sqlite.SqliteConnection()",
+        };
+
+        string field = shape == "mutable-field"
+            ? "private Microsoft.Data.Sqlite.SqliteConnection _connection;"
+            : "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;";
+
+        string fieldAssignments = shape == "multiply-assigned-field"
+            ? "_connection = lease.Connection; _connection = UnknownResetConnection.Value;"
+            : "_connection = lease.Connection;";
+
+        string mutation = shape == "mutable-field"
+            ? "internal void Replace(Microsoft.Data.Sqlite.SqliteConnection connection) => _connection = connection;"
+            : string.Empty;
+
+        string returnedSession = shape == "multiple-session-source"
+            ? "return token.CanBeCanceled ? ResetResult<ResetSession>.Success(CreateSession(lease)) : ResetResult<ResetSession>.Success(CreateSession(new ResetConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())));"
+            : "return ResetResult<ResetSession>.Success(CreateSession(lease));";
+
+        string guard = shape == "unguarded"
+            ? string.Empty
+            : "if (opened.IsFailure) return; ";
+
+        string body =
+            "ResetDatabase database = new(); "
+            + "ResetResult<ResetSession> opened = await database.OpenAsync(token).ConfigureAwait(false); "
+            + guard
+            + "await using ResetSession session = opened.Value;";
+
+        string helpers = $$"""
+            internal sealed class ResetResult<T>
+            {
+                private readonly T? _value;
+
+                private ResetResult(T value)
+                {
+                    IsSuccess = true;
+
+                    _value = value;
+                }
+
+                private ResetResult()
+                {
+                    _value = default;
+                }
+
+                internal bool IsSuccess { get; }
+
+                internal bool IsFailure => !IsSuccess;
+
+                internal T Value => IsSuccess
+                    ? _value!
+                    : throw new System.InvalidOperationException();
+
+                internal static ResetResult<T> Success(T value) => new(value);
+
+                internal static ResetResult<T> Failure() => new();
+            }
+
+            internal sealed class ResetConnectionLease(
+                Microsoft.Data.Sqlite.SqliteConnection connection)
+            {
+                internal Microsoft.Data.Sqlite.SqliteConnection Connection { get; } =
+                    connection;
+            }
+
+            internal sealed class ResetDatabase
+            {
+                internal async System.Threading.Tasks.Task<ResetResult<ResetSession>>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    if (token.IsCancellationRequested)
+                    {
+                        return ResetResult<ResetSession>.Failure();
+                    }
+
+                    Microsoft.Data.Sqlite.SqliteConnection connection =
+                        {{connectionSource}};
+
+                    ResetConnectionLease lease = new(connection);
+
+                    {{returnedSession}}
+                }
+
+                private static ResetSession CreateSession(
+                    ResetConnectionLease lease) =>
+                    new(lease);
+            }
+
+            internal sealed class ResetSession : System.IAsyncDisposable
+            {
+                {{field}}
+
+                internal ResetSession(ResetConnectionLease lease)
+                {
+                    {{fieldAssignments}}
+                }
+
+                {{mutation}}
+
+                public async System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    await TryRollbackAsync().ConfigureAwait(false);
+                }
+
+                private async System.Threading.Tasks.Task TryRollbackAsync()
+                {
+                    await ExecuteAsync().ConfigureAwait(false);
+                }
+
+                private async System.Threading.Tasks.Task ExecuteAsync()
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        _connection.CreateCommand();
+
+                    _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedResetConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownResetConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "ResetSession"
+                && site.Kind == HostedProducerSiteKind.DatabaseAccess
+                && site.Callee
+                    == "System.Data.Common.DbCommand.ExecuteNonQueryAsync");
+        }
+    }
+
+    [Theory]
+    [InlineData("task-exact", false)]
+    [InlineData("task-unknown", true)]
+    [InlineData("valuetask-exact", false)]
+    [InlineData("valuetask-unknown", true)]
+    [InlineData("foreign-valuetask-exact", true)]
+    public void ProductionShapedCompletedResultCleanupRetainsOnlyExactFrameworkCompletionProvenance(
+        string shape,
+        bool unresolved)
+    {
+        CSharpCompilation foreign = Compile(
+                "namespace System.Threading.Tasks { "
+                    + "public readonly struct ValueTask { public static ValueTask<T> FromResult<T>(T value) => new(value); } "
+                    + "public readonly struct ValueTask<T> { private readonly T _value; public ValueTask(T value) { _value = value; } public global::System.Runtime.CompilerServices.TaskAwaiter<T> GetAwaiter() => global::System.Threading.Tasks.Task.FromResult(_value).GetAwaiter(); } "
+                    + "}")
+            .WithAssemblyName("Cleanup.ForeignCompletedValueTask");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("foreign")));
+
+        string value = shape.EndsWith("unknown", StringComparison.Ordinal)
+            ? "UnknownReadLease.Value"
+            : "new KnownReadLease()";
+
+        string returnType = shape switch
+        {
+            "task-exact" or "task-unknown" =>
+                "System.Threading.Tasks.Task<CompletionResult<IReadLease>>",
+            "foreign-valuetask-exact" =>
+                "foreign::System.Threading.Tasks.ValueTask<CompletionResult<IReadLease>>",
+            _ =>
+                "System.Threading.Tasks.ValueTask<CompletionResult<IReadLease>>",
+        };
+
+        string factory = shape switch
+        {
+            "task-exact" or "task-unknown" =>
+                "System.Threading.Tasks.Task.FromResult",
+            "foreign-valuetask-exact" =>
+                "foreign::System.Threading.Tasks.ValueTask.FromResult",
+            _ =>
+                "System.Threading.Tasks.ValueTask.FromResult",
+        };
+
+        const string body =
+            "CompletionResult<IReadLease> acquired = await CompletedRetentionLeaseSource.AcquireAsync(); "
+            + "if (acquired.IsFailure) return; "
+            + "await using (acquired.Value.ConfigureAwait(false)) { }";
+
+        string helpers = $$"""
+            internal interface IReadLease : System.IAsyncDisposable
+            {
+            }
+
+            internal sealed class CompletionResult<T>
+            {
+                private readonly T? _value;
+
+                private CompletionResult(T value)
+                {
+                    IsSuccess = true;
+
+                    _value = value;
+                }
+
+                internal bool IsSuccess { get; }
+
+                internal bool IsFailure => !IsSuccess;
+
+                internal T Value => IsSuccess
+                    ? _value!
+                    : throw new System.InvalidOperationException();
+
+                internal static CompletionResult<T> Success(T value) =>
+                    new(value);
+            }
+
+            internal static class CompletedRetentionLeaseSource
+            {
+                internal static {{returnType}} AcquireAsync() =>
+                    {{factory}}(
+                        CompletionResult<IReadLease>.Success({{value}}));
+            }
+
+            internal sealed class KnownReadLease : IReadLease
+            {
+                public async System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    System.IO.File.Delete("completed-retention-cleanup");
+                }
+            }
+
+            internal sealed class AlternateReadLease : IReadLease
+            {
+                public System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    System.IO.File.Delete("alternate-retention-cleanup");
+
+                    return default;
+                }
+            }
+
+            internal static class UnknownReadLease
+            {
+                internal static IReadLease Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+            """;
+
+        CSharpCompilation consumer = Compile(
+                "extern alias foreign; "
+                    + R2Source(R2Admission + body, helpers))
+            .AddReferences(reference)
+            .WithAssemblyName("Cleanup.CompletedResult.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.Runtime.CompilerServices.ConfiguredAsyncDisposable.DisposeAsync;",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(
+            !unresolved,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownReadLease"
+                && site.Callee == "System.IO.File.Delete"));
+    }
+
+    [Theory]
+    [InlineData("non-generic-delegate", false)]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("alternate", true)]
+    [InlineData("mutable-carrier", true)]
+    [InlineData("transformed", true)]
+    public void ProductionShapedNestedAdmissionCarrierRetainsOnlyExactBoundedCleanupProvenance(
+        string shape,
+        bool unresolved)
+    {
+        string carrier = shape == "mutable-carrier"
+            ? "internal sealed class RetentionAdmission { internal RetentionAdmission(object plan, IReadLease? readLease) { Plan = plan; ReadLease = readLease; } internal object Plan { get; } internal IReadLease? ReadLease { get; set; } }"
+            : "internal sealed record RetentionAdmission(object Plan, IReadLease? ReadLease);";
+
+        string installationLease = shape switch
+        {
+            "unknown" => "UnknownReadLease.Value",
+            "transformed" => "TransformReadLease(lease.Value, token)",
+            _ => "lease.Value",
+        };
+
+        string scopedLease = shape switch
+        {
+            "alternate" => "new AlternateReadLease()",
+            "unknown" => "UnknownReadLease.Value",
+            "transformed" => "TransformReadLease(lease.Value, token)",
+            _ => "lease.Value",
+        };
+
+        string planAdmission = shape switch
+        {
+            "non-generic-delegate" =>
+                "RetentionResult<KnownReadLease> acquired = await gate.AcquireNonGenericReadAsync(token).ConfigureAwait(false); "
+                    + "if (acquired.IsFailure) { return RetentionResult<RetentionAdmission>.Failure(); } "
+                    + "return RetentionResult<RetentionAdmission>.Success(new RetentionAdmission(new object(), acquired.Value));",
+            _ => "RetentionResult<IReadLease?> leaseResult = await "
+                + "AcquirePlanningAdmissionAsync(request: 1, capability: 0, token)"
+                + ".ConfigureAwait(false); "
+                + "if (leaseResult.IsFailure) { return RetentionResult<RetentionAdmission>.Failure(); } "
+                + "IReadLease? lease = leaseResult.Value; "
+                + "if (lease is null) { return RetentionResult<RetentionAdmission>.Success(new RetentionAdmission(new object(), null)); } "
+                + "try { return RetentionResult<RetentionAdmission>.Success(new RetentionAdmission(new object(), lease)); } "
+                + "catch { await lease.DisposeAsync().ConfigureAwait(false); throw; }",
+        };
+
+        const string body =
+            "RetentionPlanner planner = new(new RetentionGate()); "
+            + "await planner.PlanAsync(token).ConfigureAwait(false);";
+
+        string helpers = $$"""
+            internal interface IReadLease : System.IAsyncDisposable
+            {
+            }
+
+            internal sealed class RetentionResult<T>
+            {
+                private readonly T? _value;
+
+                private RetentionResult(T value)
+                {
+                    IsSuccess = true;
+
+                    _value = value;
+                }
+
+                private RetentionResult()
+                {
+                    _value = default;
+                }
+
+                internal bool IsSuccess { get; }
+
+                internal bool IsFailure => !IsSuccess;
+
+                internal T Value => IsSuccess
+                    ? _value!
+                    : throw new System.InvalidOperationException();
+
+                internal static RetentionResult<T> Success(T value) =>
+                    new(value);
+
+                internal static RetentionResult<T> Failure() =>
+                    new();
+            }
+
+            {{carrier}}
+
+            internal sealed class RetentionPlanner(RetentionGate gate)
+            {
+                internal async System.Threading.Tasks.Task PlanAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    RetentionResult<RetentionAdmission> admission =
+                        await PlanAdmissionAsync(token).ConfigureAwait(false);
+
+                    if (admission.IsFailure)
+                    {
+                        return;
+                    }
+
+                    if (admission.Value.ReadLease is not null)
+                    {
+                        await using (admission.Value.ReadLease.ConfigureAwait(false))
+                        {
+                            _ = admission.Value.Plan;
+                        }
+                    }
+                }
+
+                private async System.Threading.Tasks.Task<RetentionResult<RetentionAdmission>>
+                    PlanAdmissionAsync(System.Threading.CancellationToken token)
+                {
+                    {{planAdmission}}
+                }
+
+                private async System.Threading.Tasks.ValueTask<RetentionResult<IReadLease?>>
+                    AcquirePlanningAdmissionAsync(
+                        int request,
+                        int capability,
+                        System.Threading.CancellationToken token) =>
+                    capability == 0
+                        ? await AcquireRequestAdmissionAsync(request, token).ConfigureAwait(false)
+                        : await AcquireInstallationAdmissionAsync(token).ConfigureAwait(false);
+
+                private async System.Threading.Tasks.ValueTask<RetentionResult<IReadLease?>>
+                    AcquireRequestAdmissionAsync(
+                        int request,
+                        System.Threading.CancellationToken token) =>
+                    request switch
+                    {
+                        0 => await AcquireScopedAdmissionAsync(token).ConfigureAwait(false),
+                        1 => await AcquireInstallationAdmissionAsync(token).ConfigureAwait(false),
+                        2 => await AcquireScopedAdmissionAsync(token).ConfigureAwait(false),
+                        3 => await AcquireInstallationAdmissionAsync(token).ConfigureAwait(false),
+                        _ => RetentionResult<IReadLease?>.Success(null),
+                    };
+
+                private async System.Threading.Tasks.ValueTask<RetentionResult<IReadLease?>>
+                    AcquireInstallationAdmissionAsync(
+                        System.Threading.CancellationToken token)
+                {
+                    RetentionResult<KnownReadLease> lease =
+                        await gate.AcquireInstallationReadAsync(token).ConfigureAwait(false);
+
+                    return lease.IsFailure
+                        ? RetentionResult<IReadLease?>.Failure()
+                        : RetentionResult<IReadLease?>.Success({{installationLease}});
+                }
+
+                private async System.Threading.Tasks.ValueTask<RetentionResult<IReadLease?>>
+                    AcquireScopedAdmissionAsync(
+                        System.Threading.CancellationToken token)
+                {
+                    RetentionResult<KnownReadLease> lease =
+                        await gate.AcquireReadAsync(token).ConfigureAwait(false);
+
+                    return lease.IsFailure
+                        ? RetentionResult<IReadLease?>.Failure()
+                        : RetentionResult<IReadLease?>.Success({{scopedLease}});
+                }
+
+                private static IReadLease TransformReadLease(
+                    IReadLease lease,
+                    System.Threading.CancellationToken token) =>
+                    token.CanBeCanceled ? lease : UnknownReadLease.Value;
+            }
+
+            internal sealed class RetentionGate
+            {
+                internal System.Threading.Tasks.ValueTask<RetentionResult<KnownReadLease>>
+                    AcquireNonGenericReadAsync(System.Threading.CancellationToken token) =>
+                    System.Threading.Tasks.ValueTask.FromResult(
+                        AcquireOrdinaryNonGeneric(
+                            kind: 1,
+                            token,
+                            static _ => new KnownReadLease()));
+
+                internal System.Threading.Tasks.ValueTask<RetentionResult<KnownReadLease>>
+                    AcquireInstallationReadAsync(System.Threading.CancellationToken token) =>
+                    System.Threading.Tasks.ValueTask.FromResult(
+                        AcquireOrdinary(
+                            kind: 1,
+                            token,
+                            static _ => new KnownReadLease()));
+
+                internal System.Threading.Tasks.ValueTask<RetentionResult<KnownReadLease>>
+                    AcquireReadAsync(System.Threading.CancellationToken token) =>
+                    System.Threading.Tasks.ValueTask.FromResult(
+                        AcquireOrdinary(
+                            kind: 2,
+                            token,
+                            static _ => new KnownReadLease()));
+
+                private static RetentionResult<TLease> AcquireOrdinary<TLease>(
+                    int kind,
+                    System.Threading.CancellationToken token,
+                    System.Func<object, TLease> create)
+                    where TLease : IReadLease
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    if (kind < 0)
+                    {
+                        return RetentionResult<TLease>.Failure();
+                    }
+
+                    if (kind == 0)
+                    {
+                        return RetentionResult<TLease>.Failure();
+                    }
+
+                    if (kind > 4)
+                    {
+                        return RetentionResult<TLease>.Failure();
+                    }
+
+                    return RetentionResult<TLease>.Success(create(new object()));
+                }
+
+                private static RetentionResult<KnownReadLease>
+                    AcquireOrdinaryNonGeneric(
+                        int kind,
+                        System.Threading.CancellationToken token,
+                        System.Func<object, KnownReadLease> create)
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    if (kind < 0)
+                    {
+                        return RetentionResult<KnownReadLease>.Failure();
+                    }
+
+                    if (kind == 0)
+                    {
+                        return RetentionResult<KnownReadLease>.Failure();
+                    }
+
+                    if (kind > 4)
+                    {
+                        return RetentionResult<KnownReadLease>.Failure();
+                    }
+
+                    return RetentionResult<KnownReadLease>.Success(
+                        create(new object()));
+                }
+            }
+
+            internal sealed class KnownReadLease : IReadLease
+            {
+                public async System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    System.IO.File.Delete("nested-admission-known-cleanup");
+                }
+            }
+
+            internal sealed class AlternateReadLease : IReadLease
+            {
+                public System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    System.IO.Directory.Delete("nested-admission-alternate-cleanup");
+
+                    return default;
+                }
+            }
+
+            internal static class UnknownReadLease
+            {
+                internal static IReadLease Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.Runtime.CompilerServices.ConfiguredAsyncDisposable.DisposeAsync;",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(
+            !unresolved,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownReadLease"
+                && site.Callee == "System.IO.File.Delete"));
+    }
+
+    [Theory]
+    [InlineData("exact-return", false)]
+    [InlineData("exact-throw", false)]
+    [InlineData("unconfigured", true)]
+    [InlineData("unknown", true)]
+    [InlineData("derived", true)]
+    [InlineData("mixed", true)]
+    [InlineData("source-mutated", true)]
+    [InlineData("pattern-mutated", true)]
+    public void ProductionShapedConfiguredSqliteLocalGuardRequiresExactStableSourceProvenance(
+        string shape,
+        bool unresolved)
+    {
+        string options = shape == "unconfigured"
+            ? "options.EnableDetailedErrors()"
+            : "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")";
+
+        string sourceValue = shape switch
+        {
+            "unknown" => "UnknownRetentionConnection.Value",
+            "derived" => "new DerivedRetentionSqliteConnection()",
+            "mixed" => "cancellationToken.CanBeCanceled ? Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database) : UnknownRetentionConnection.Value",
+            _ => "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database)",
+        };
+
+        string sourceMutation = shape == "source-mutated"
+            ? "(connection, _) = (UnknownRetentionConnection.Value, 0);"
+            : string.Empty;
+
+        string termination = shape == "exact-throw"
+            ? "throw new System.InvalidOperationException();"
+            : "return null;";
+
+        string patternMutation = shape == "pattern-mutated"
+            ? "(sqlite, _) = (new DerivedRetentionSqliteConnection(), 0);"
+            : string.Empty;
+
+        string registration =
+            "services.AddDbContext<RetentionSqliteContext>((sp, options) => "
+            + options
+            + "); services.AddHostedService<Worker>();";
+
+        string helpers = $$"""
+            public sealed class RetentionSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<RetentionSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal sealed class DerivedRetentionSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownRetentionConnection
+            {
+                internal static System.Data.Common.DbConnection Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+
+            internal static class RetentionConnectionPipeline
+            {
+                private static async System.Threading.Tasks.Task<System.Data.Common.DbConnection>
+                    OpenConnectionAsync(
+                        RetentionSqliteContext db,
+                        System.Threading.CancellationToken cancellationToken)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return {{sourceValue}};
+                }
+
+                internal static async System.Threading.Tasks.Task<int?> ReadExposureAsync(
+                    RetentionSqliteContext db,
+                    System.Threading.CancellationToken cancellationToken)
+                {
+                    System.Data.Common.DbConnection connection =
+                        await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
+
+                    {{sourceMutation}}
+
+                    if (connection is not Microsoft.Data.Sqlite.SqliteConnection sqlite)
+                    {
+                        {{termination}}
+                    }
+
+                    {{patternMutation}}
+
+                    await RetentionExposureReader
+                        .ReadWithinAsync(sqlite, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    return 1;
+                }
+            }
+
+            internal static class RetentionExposureReader
+            {
+                internal static async System.Threading.Tasks.Task ReadWithinAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken cancellationToken)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                }
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(RetentionSqliteContext db) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<RetentionSqliteContext>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await RetentionConnectionPipeline.ReadExposureAsync(db, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        string[] cleanupTypes =
+        [
+            "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+            "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+        ];
+
+        Assert.All(cleanupTypes, prefix => Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    prefix,
+                    StringComparison.Ordinal))));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "RetentionExposureReader"
+                && site.Kind == HostedProducerSiteKind.DatabaseAccess
+                && site.Callee
+                    == "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync");
+        }
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    public void BoundPrimaryConstructorInterfaceReceiverRetainsOnlyExactReadonlyCleanupState(
+        string sourceKind,
+        bool unresolved)
+    {
+        string connection = sourceKind == "exact"
+            ? "new Microsoft.Data.Sqlite.SqliteConnection()"
+            : "UnknownPrimaryReceiverConnection.Value";
+
+        const string body =
+            "await OuterStartupBootstrap.ReadAsync(token).ConfigureAwait(false);";
+
+        string helper = $$"""
+            internal interface IAuthorityStore
+            {
+                System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token);
+            }
+
+            internal static class OuterStartupBootstrap
+            {
+                internal static async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteConnection installConnection =
+                        {{connection}};
+
+                    await StartupBootstrap.ReadAsync(installConnection, token)
+                        .ConfigureAwait(false);
+
+                    FinalizerResult<FinalizerCompletion> created =
+                        FinalizerFactory.Create(
+                        installConnection,
+                        token.CanBeCanceled);
+
+                    if (created.IsFailure)
+                    {
+                        return;
+                    }
+
+                    await FinalizerExecutor.ExecuteAsync(
+                            created.Value.Finalizer,
+                            token)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class FinalizerResult<T>
+            {
+                private readonly T? _value;
+
+                private FinalizerResult(T value)
+                {
+                    IsSuccess = true;
+
+                    _value = value;
+                }
+
+                internal bool IsSuccess { get; }
+
+                internal bool IsFailure => !IsSuccess;
+
+                internal T Value => IsSuccess
+                    ? _value!
+                    : throw new System.InvalidOperationException();
+
+                internal static FinalizerResult<T> Success(T value) => new(value);
+            }
+
+            internal sealed record FinalizerCompletion(
+                IConnectionFinalizer Finalizer);
+
+            internal static class FinalizerFactory
+            {
+                internal static FinalizerResult<FinalizerCompletion> Create(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    bool noOp) =>
+                    FinalizerResult<FinalizerCompletion>.Success(noOp
+                        ? new(new NoOpConnectionFinalizer())
+                        : new(new DirectConnectionFinalizer(connection)));
+            }
+
+            internal interface IConnectionFinalizer
+            {
+                System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token);
+            }
+
+            internal static class FinalizerExecutor
+            {
+                internal static System.Threading.Tasks.Task ExecuteAsync(
+                    IConnectionFinalizer finalizer,
+                    System.Threading.CancellationToken token) =>
+                    finalizer.ReadAsync(token);
+            }
+
+            internal sealed class NoOpConnectionFinalizer : IConnectionFinalizer
+            {
+                public System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token) =>
+                    System.Threading.Tasks.Task.CompletedTask;
+            }
+
+            internal sealed class DirectConnectionFinalizer(
+                Microsoft.Data.Sqlite.SqliteConnection connection) :
+                IConnectionFinalizer
+            {
+                public async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal static class StartupBootstrap
+            {
+                internal static async System.Threading.Tasks.Task ReadAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    AuthorityStore store = new(connection);
+
+                    await StoreInvoker.ReadAsync(store, token).ConfigureAwait(false);
+
+                    StartupGate startupGate = new(store);
+
+                    await startupGate.ReadAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal static class StoreInvoker
+            {
+                internal static System.Threading.Tasks.Task ReadAsync(
+                    AuthorityStore store,
+                    System.Threading.CancellationToken token) =>
+                    store.ReadAsync(token);
+            }
+
+            internal sealed class StartupGate(IAuthorityStore authority)
+            {
+                internal System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token) =>
+                    ReadCoreAsync(token);
+
+                private System.Threading.Tasks.Task ReadCoreAsync(
+                    System.Threading.CancellationToken token) =>
+                    authority.ReadAsync(token);
+            }
+
+            internal sealed class AuthorityStore(
+                Microsoft.Data.Sqlite.SqliteConnection connection) :
+                IAuthorityStore
+            {
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection =
+                    connection ?? throw new System.ArgumentNullException(nameof(connection));
+
+                public async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        _connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                    await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal static class UnknownPrimaryReceiverConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value =>
+                    throw new System.NotSupportedException();
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Theory]
+    [InlineData("direct")]
+    [InlineData("constructed-generic")]
+    [InlineData("nested-generic")]
+    [InlineData("array")]
+    public void BoundPropertyDefinitionRejectsSameDocumentationIdAcrossDifferentSignatureAssemblies(
+        string returnShape)
+    {
+        const string signatureSource =
+            "namespace Shared { public interface IConnectionFinalizer { } }";
+
+        CSharpCompilation firstSignature = Compile(signatureSource)
+            .WithAssemblyName("Signature.First");
+
+        CSharpCompilation secondSignature = Compile(signatureSource)
+            .WithAssemblyName("Signature.Second");
+
+        CSharpCompilation wrapper = Compile(
+                "namespace Shared { public sealed class Wrapper<T> { } }")
+            .WithAssemblyName("Signature.Wrapper");
+
+        string propertyType = returnShape switch
+        {
+            "direct" => "Shared.IConnectionFinalizer",
+            "constructed-generic" =>
+                "Shared.Wrapper<Shared.IConnectionFinalizer>",
+            "nested-generic" =>
+                "Shared.Wrapper<Shared.Wrapper<Shared.IConnectionFinalizer>>",
+            "array" => "Shared.IConnectionFinalizer[]",
+            _ => throw new ArgumentOutOfRangeException(nameof(returnShape)),
+        };
+
+        string carrierSource =
+            "namespace Collision { public sealed class Completion { "
+            + "public "
+            + propertyType
+            + " Finalizer { get; } = null!; } }";
+
+        CSharpCompilation Carrier(CSharpCompilation signature) =>
+            CSharpCompilation.Create(
+                "Collision.Carrier",
+                [CSharpSyntaxTree.ParseText(
+                    carrierSource,
+                    path: "src/Carrier.cs")],
+                [
+                    .. signature.References,
+                    signature.ToMetadataReference(),
+                    wrapper.ToMetadataReference(),
+                ],
+                (CSharpCompilationOptions)signature.Options);
+
+        CSharpCompilation firstCarrier = Carrier(firstSignature);
+
+        CSharpCompilation secondCarrier = Carrier(secondSignature);
+
+        MetadataReference firstCarrierReference =
+            firstCarrier.ToMetadataReference(ImmutableArray.Create("first"));
+
+        MetadataReference secondCarrierReference =
+            secondCarrier.ToMetadataReference(ImmutableArray.Create("second"));
+
+        MetadataReference firstSignatureReference =
+            firstSignature.ToMetadataReference(
+                ImmutableArray.Create("first_signature"));
+
+        MetadataReference secondSignatureReference =
+            secondSignature.ToMetadataReference(
+                ImmutableArray.Create("second_signature"));
+
+        MetadataReference wrapperReference = wrapper.ToMetadataReference(
+            ImmutableArray.Create("wrapper_signature"));
+
+        CSharpCompilation consumer = Compile(
+                "extern alias first; extern alias second; "
+                + "internal sealed class IdentityProbe { "
+                + "private first::Collision.Completion _first = null!; "
+                + "private second::Collision.Completion _second = null!; }")
+            .AddReferences(
+                firstCarrierReference,
+                secondCarrierReference,
+                firstSignatureReference,
+                secondSignatureReference,
+                wrapperReference)
+            .WithAssemblyName("Collision.Consumer");
+
+        Assert.Empty(firstCarrier.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(secondCarrier.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        IPropertySymbol firstProperty = Assert.Single(
+            firstCarrier.GetTypeByMetadataName("Collision.Completion")!
+            .GetMembers("Finalizer")
+            .OfType<IPropertySymbol>());
+
+        IPropertySymbol secondProperty = Assert.Single(
+            secondCarrier.GetTypeByMetadataName("Collision.Completion")!
+            .GetMembers("Finalizer")
+            .OfType<IPropertySymbol>());
+
+        Assert.Equal(
+            firstProperty.OriginalDefinition.GetDocumentationCommentId(),
+            secondProperty.OriginalDefinition.GetDocumentationCommentId());
+
+        Assert.Equal(
+            firstProperty.Type.ToDisplayString(),
+            secondProperty.Type.ToDisplayString());
+
+        ITypeSymbol SignatureContract(ITypeSymbol type) => returnShape switch
+        {
+            "direct" => type,
+            "constructed-generic" =>
+                ((INamedTypeSymbol)type).TypeArguments[0],
+            "nested-generic" =>
+                ((INamedTypeSymbol)((INamedTypeSymbol)type).TypeArguments[0])
+                .TypeArguments[0],
+            "array" => ((IArrayTypeSymbol)type).ElementType,
+            _ => throw new ArgumentOutOfRangeException(nameof(returnShape)),
+        };
+
+        Assert.NotEqual(
+            SignatureContract(firstProperty.Type).ContainingAssembly.Identity,
+            SignatureContract(secondProperty.Type).ContainingAssembly.Identity);
+
+        Assert.False(
+            HostedGrimoireProducerInventory.ProbeSameBoundPropertyDefinition(
+                [consumer],
+                firstProperty,
+                consumer,
+                secondProperty,
+                consumer));
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("mutable", true)]
+    [InlineData("conditional", true)]
+    [InlineData("multiply-assigned", true)]
+    [InlineData("derived", true)]
+    public void BoundConventionalConstructorGenericFinalizerPropertyRetainsOnlyExactCleanupState(
+        string sourceKind,
+        bool unresolved)
+    {
+        string finalizerProperty = sourceKind switch
+        {
+            "mutable" =>
+                "internal IConnectionFinalizer Finalizer { get; private set; }",
+            _ => "internal IConnectionFinalizer Finalizer { get; }",
+        };
+
+        string finalizerAssignment = sourceKind switch
+        {
+            "conditional" =>
+                "if (System.Environment.TickCount >= 0) { Finalizer = finalizer; }",
+            "multiply-assigned" =>
+                "Finalizer = finalizer; Finalizer = finalizer;",
+            _ => "Finalizer = finalizer;",
+        };
+
+        string connection = sourceKind switch
+        {
+            "unknown" => "UnknownGenericFinalizerConnection.Value",
+            _ => "new Microsoft.Data.Sqlite.SqliteConnection()",
+        };
+
+        string completionModifier = sourceKind == "derived"
+            ? string.Empty
+            : "sealed ";
+
+        string completionConstruction = sourceKind == "derived"
+            ? "new DerivedCompletion<int>(1, new Fixture.Core.DirectConnectionFinalizer(connection))"
+            : "new Fixture.Core.Completion<int>(1, new Fixture.Core.DirectConnectionFinalizer(connection))";
+
+        string derivedCompletion = sourceKind == "derived"
+            ? """
+                internal sealed class DerivedCompletion<T> :
+                    Fixture.Core.Completion<T>
+                {
+                    internal DerivedCompletion(
+                        T result,
+                        Fixture.Core.IConnectionFinalizer finalizer) :
+                        base(result, finalizer)
+                    {
+                    }
+                }
+                """
+            : string.Empty;
+
+        string coreSource = $$"""
+            [assembly: System.Runtime.CompilerServices.InternalsVisibleTo(
+                "Fixture.Infrastructure")]
+            [assembly: System.Runtime.CompilerServices.InternalsVisibleTo(
+                "Fixture.Consumer")]
+
+            namespace Fixture.Core
+            {
+                internal interface IConnectionFinalizer
+                {
+                    System.Threading.Tasks.Task ReadAsync(
+                        System.Threading.CancellationToken token);
+                }
+
+                internal {{completionModifier}}class Completion<T>
+                {
+                    internal Completion(T result, IConnectionFinalizer finalizer)
+                    {
+                        Result = result;
+
+                        {{finalizerAssignment}}
+                    }
+
+                    internal T Result { get; }
+
+                    {{finalizerProperty}}
+                }
+
+                internal static class FinalizerExecutor
+                {
+                    internal static System.Threading.Tasks.Task ExecuteAsync(
+                        IConnectionFinalizer finalizer,
+                        System.Threading.CancellationToken token) =>
+                        finalizer.ReadAsync(token);
+                }
+
+                internal sealed class DirectConnectionFinalizer :
+                    IConnectionFinalizer
+                {
+                    private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+
+                    internal DirectConnectionFinalizer(
+                        Microsoft.Data.Sqlite.SqliteConnection connection)
+                    {
+                        _connection = connection;
+                    }
+
+                    public async System.Threading.Tasks.Task ReadAsync(
+                        System.Threading.CancellationToken token)
+                    {
+                        await using Microsoft.Data.Sqlite.SqliteConnection connection =
+                            _connection;
+
+                        _ = System.IO.File.Exists("generic-finalizer-cleanup");
+
+                        await System.Threading.Tasks.Task.CompletedTask;
+                    }
+                }
+            }
+            """;
+
+        string infrastructureSource = $$"""
+            [assembly: System.Runtime.CompilerServices.InternalsVisibleTo(
+                "Fixture.Consumer")]
+
+            namespace Fixture.Infrastructure
+            {
+                internal static class CompletionFactory
+                {
+                    internal static Fixture.Core.Completion<int> Create(
+                        Microsoft.Data.Sqlite.SqliteConnection connection) =>
+                        {{completionConstruction}};
+                }
+
+                {{derivedCompletion}}
+            }
+            """;
+
+        string consumerSource = R2Source(
+            R2Admission
+                + "Microsoft.Data.Sqlite.SqliteConnection connection = "
+                + connection
+                + "; Fixture.Core.Completion<int> completion = "
+                + "Fixture.Infrastructure.CompletionFactory.Create("
+                + "connection); "
+                + "await Fixture.Core.FinalizerExecutor.ExecuteAsync("
+                + "completion.Finalizer, token).ConfigureAwait(false);",
+            """
+                internal static class UnknownGenericFinalizerConnection
+                {
+                    internal static Microsoft.Data.Sqlite.SqliteConnection Value
+                    {
+                        get;
+                        set;
+                    } = null!;
+                }
+                """);
+
+        CSharpCompilation core = Compile(coreSource)
+            .WithAssemblyName("Fixture.Core");
+
+        CSharpCompilation infrastructure = CSharpCompilation.Create(
+            "Fixture.Infrastructure",
+            [CSharpSyntaxTree.ParseText(
+                infrastructureSource,
+                path: "src/InfrastructureFixture.cs")],
+            [.. core.References, core.ToMetadataReference()],
+            (CSharpCompilationOptions)core.Options);
+
+        CSharpCompilation consumer = CSharpCompilation.Create(
+            "Fixture.Consumer",
+            [CSharpSyntaxTree.ParseText(
+                consumerSource,
+                path: "src/ConsumerFixture.cs")],
+            [.. infrastructure.References, infrastructure.ToMetadataReference()],
+            (CSharpCompilationOptions)infrastructure.Options);
+
+        Assert.Empty(core.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(infrastructure.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        bool cleanupUnresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteConnection.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(unresolved, cleanupUnresolved);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "Fixture.Core.DirectConnectionFinalizer"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Theory]
+    [InlineData("readonly-field", "exact", false)]
+    [InlineData("readonly-field", "unknown", true)]
+    [InlineData("readonly-field", "derived", true)]
+    [InlineData("get-only-property", "exact", false)]
+    [InlineData("get-only-property", "unknown", true)]
+    [InlineData("get-only-property", "derived", true)]
+    public void ConventionalConstructorNonDisposableServiceForwardingRetainsOnlyExactCleanupState(
+        string carrier,
+        string sourceKind,
+        bool unresolved)
+    {
+        string connection = sourceKind switch
+        {
+            "exact" => "new Microsoft.Data.Sqlite.SqliteConnection()",
+            "unknown" => "UnknownForwardedConnection.Value",
+            "derived" => "new DerivedForwardedSqliteConnection()",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        (string declaration, string assignment, string receiver) = carrier switch
+        {
+            "readonly-field" => (
+                "private readonly CleanupService _service;",
+                "_service = service;",
+                "_service"),
+            "get-only-property" => (
+                "private CleanupService Service { get; }",
+                "Service = service;",
+                "Service"),
+            _ => throw new ArgumentOutOfRangeException(nameof(carrier)),
+        };
+
+        string body =
+            "await using Microsoft.Data.Sqlite.SqliteConnection connection = "
+            + connection
+            + "; ConventionalForwardingService service = new(new CleanupService(connection)); "
+            + "await service.RunAsync(token).ConfigureAwait(false);";
+
+        string helper = $$"""
+            internal sealed class ConventionalForwardingService
+            {
+                {{declaration}}
+
+                internal ConventionalForwardingService(CleanupService service)
+                {
+                    {{assignment}}
+                }
+
+                internal System.Threading.Tasks.Task RunAsync(
+                    System.Threading.CancellationToken token) =>
+                    {{receiver}}.RunAsync(token);
+            }
+
+            internal sealed class CleanupService
+            {
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+
+                internal CleanupService(
+                    Microsoft.Data.Sqlite.SqliteConnection connection)
+                {
+                    _connection = connection;
+                }
+
+                internal async System.Threading.Tasks.Task RunAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        _connection.CreateCommand();
+
+                    await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedForwardedSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownForwardedConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        bool commandUnresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(unresolved, commandUnresolved);
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("derived", true)]
+    [InlineData("mutable", true)]
+    [InlineData("ambiguous-constructor", true)]
+    public void ProductionShapedResultCapabilityRetainsExactSqliteAcrossOrdinaryReadonlyCarriers(
+        string sourceKind,
+        bool unresolved)
+    {
+        string connection = sourceKind switch
+        {
+            "exact" or "mutable" or "ambiguous-constructor" =>
+                "new Microsoft.Data.Sqlite.SqliteConnection()",
+            "unknown" => "UnknownCapabilityConnection.Value",
+            "derived" => "new DerivedCapabilitySqliteConnection()",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string field = sourceKind == "mutable"
+            ? "private Microsoft.Data.Sqlite.SqliteConnection _connection;"
+            : "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;";
+
+        string mutation = sourceKind == "mutable"
+            ? "_connection = UnknownCapabilityConnection.Value;"
+            : string.Empty;
+
+        string alternateConstructor = sourceKind == "ambiguous-constructor"
+            ? "private SanitizationCapability(Microsoft.Data.Sqlite.SqliteConnection connection, bool alternate) { _ = connection; _ = alternate; _connection = UnknownCapabilityConnection.Value; }"
+            : string.Empty;
+
+        string construction = sourceKind == "ambiguous-constructor"
+            ? "chooseExact ? new SanitizationCapability(connection) : new SanitizationCapability(connection, alternate: true)"
+            : "new SanitizationCapability(connection)";
+
+        string body =
+            "Result<SanitizationCapability> capability = SanitizationCapability.Mint("
+            + connection
+            + ", token.CanBeCanceled); if (capability.IsFailure) return; await capability.Value.RunImmediateAsync(token).ConfigureAwait(false);";
+
+        string helpers = $$"""
+            internal sealed class Result<T>
+            {
+                private readonly T? _value;
+
+                private Result(T value)
+                {
+                    IsSuccess = true;
+
+                    _value = value;
+                }
+
+                internal bool IsSuccess { get; }
+
+                internal bool IsFailure => !IsSuccess;
+
+                internal T Value => IsSuccess
+                    ? _value!
+                    : throw new System.InvalidOperationException();
+
+                internal static Result<T> Success(T value) => new(value);
+            }
+
+            internal sealed class SanitizationCapability
+            {
+                {{field}}
+
+                private SanitizationCapability(
+                    Microsoft.Data.Sqlite.SqliteConnection connection)
+                {
+                    _connection = connection;
+                }
+
+                {{alternateConstructor}}
+
+                internal static Result<SanitizationCapability> Mint(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    bool chooseExact) =>
+                    Result<SanitizationCapability>.Success({{construction}});
+
+                internal async System.Threading.Tasks.Task RunImmediateAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    {{mutation}}
+
+                    await using Microsoft.Data.Sqlite.SqliteTransaction transaction =
+                        _connection.BeginTransaction(deferred: false);
+
+                    SanitizationSession session = new(_connection, transaction);
+
+                    await session.InventoryAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class SanitizationSession
+            {
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+
+                private readonly Microsoft.Data.Sqlite.SqliteTransaction _transaction;
+
+                internal SanitizationSession(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    Microsoft.Data.Sqlite.SqliteTransaction transaction)
+                {
+                    _connection = connection;
+
+                    _transaction = transaction;
+                }
+
+                internal System.Threading.Tasks.Task InventoryAsync(
+                    System.Threading.CancellationToken token) =>
+                    StepAsync(() => QueryAsync(token));
+
+                private static System.Threading.Tasks.Task StepAsync(
+                    System.Func<System.Threading.Tasks.Task> operation) =>
+                    operation();
+
+                private async System.Threading.Tasks.Task QueryAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        _connection.CreateCommand();
+
+                    command.Transaction = _transaction;
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedCapabilitySqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownCapabilityConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        string[] unresolvedCleanup = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && (diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                        StringComparison.Ordinal)
+                    || diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                        StringComparison.Ordinal)
+                    || diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+                        StringComparison.Ordinal)))
+            .Select(static diagnostic => diagnostic.Detail)
+            .ToArray();
+
+        if (unresolved)
+        {
+            Assert.Contains(unresolvedCleanup, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolvedCleanup, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolvedCleanup, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+                StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.Empty(unresolvedCleanup);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProductionShapedConfiguredEfStoreRetainsDbCleanupAcrossOrdinaryConstructorDelegation(
+        bool delegatingConstructor)
+    {
+        string constructor = delegatingConstructor
+            ? "public UploadedFileStore(ExactDelegatingSqliteContext db) : this(db, \"root\") { } internal UploadedFileStore(ExactDelegatingSqliteContext db, string root) { _ = root; _db = db; }"
+            : "public UploadedFileStore(ExactDelegatingSqliteContext db) { _db = db; }";
+
+        const string registration =
+            "services.AddDbContextPool<ExactDelegatingSqliteContext>((sp, options) => Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")); services.AddHostedService<Worker>();";
+
+        string helpers = $$"""
+            public sealed class ExactDelegatingSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<ExactDelegatingSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal sealed class UploadedFileStore
+            {
+                private readonly ExactDelegatingSqliteContext _db;
+
+                {{constructor}}
+
+                internal System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token) =>
+                    SqliteBusyRetry.ExecuteAsync(
+                        async () =>
+                        {
+                            System.Data.Common.DbConnection connection =
+                                await OpenConnectionAsync(token).ConfigureAwait(false);
+
+                            await using System.Data.Common.DbCommand command =
+                                connection.CreateCommand();
+
+                            await using System.Data.Common.DbDataReader reader =
+                                await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                        },
+                        token);
+
+                private async System.Threading.Tasks.Task<System.Data.Common.DbConnection>
+                    OpenConnectionAsync(System.Threading.CancellationToken token)
+                {
+                    System.Data.Common.DbConnection connection =
+                        Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions
+                            .GetDbConnection(_db.Database);
+
+                    if (connection.State != System.Data.ConnectionState.Open)
+                    {
+                        await Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions
+                            .OpenConnectionAsync(_db.Database, token)
+                            .ConfigureAwait(false);
+                    }
+
+                    return connection;
+                }
+            }
+
+            internal static class SqliteBusyRetry
+            {
+                internal static System.Threading.Tasks.Task ExecuteAsync(
+                    System.Func<System.Threading.Tasks.Task> operation,
+                    System.Threading.CancellationToken token)
+                {
+                    _ = token;
+
+                    return operation();
+                }
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ExactDelegatingSqliteContext db) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ExactDelegatingSqliteContext>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await new UploadedFileStore(db).ReadAsync(token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "System.Data.Common.DbCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "System.Data.Common.DbDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("exact", true, false)]
+    [InlineData("exact", false, true)]
+    [InlineData("two-public", true, true)]
+    [InlineData("transformed", true, true)]
+    [InlineData("unknown", true, true)]
+    [InlineData("reassigned-forwarded", true, true)]
+    [InlineData("no-public", true, true)]
+    [InlineData("explicit-internal-factory", true, false)]
+    [InlineData("explicit-internal-factory", false, true)]
+    public void ProductionShapedAsyncScopedStoreRequiresExactPublicDiConstructorForwarding(
+        string shape,
+        bool configured,
+        bool unresolved)
+    {
+        string constructors = shape switch
+        {
+            "exact" =>
+                "public UploadedFileRepository(ExactBatchSqliteContext db) : this(db, \"root\") { } internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; _db = db; }",
+            "two-public" =>
+                "public UploadedFileRepository(ExactBatchSqliteContext db, System.IServiceProvider provider) : this(db, \"root\") { _ = provider; } public UploadedFileRepository(ExactBatchSqliteContext db, IServiceScopeFactory scopeFactory) : this(db, \"root\") { _ = scopeFactory; } internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; _db = db; }",
+            "transformed" =>
+                "public UploadedFileRepository(ExactBatchSqliteContext db) : this(Transform(db), \"root\") { } internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; _db = db; } private static ExactBatchSqliteContext Transform(ExactBatchSqliteContext db) => db;",
+            "unknown" =>
+                "public UploadedFileRepository(ExactBatchSqliteContext db) : this(UnknownBatchSqliteContext.Value, \"root\") { _ = db; } internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; _db = db; }",
+            "reassigned-forwarded" =>
+                "public UploadedFileRepository(ExactBatchSqliteContext db) : this(db, \"root\") { } internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; db = UnknownBatchSqliteContext.Value; _db = db; }",
+            "no-public" or "explicit-internal-factory" =>
+                "internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; _db = db; }",
+            _ => throw new ArgumentOutOfRangeException(nameof(shape)),
+        };
+
+        string storeRegistration = shape == "explicit-internal-factory"
+            ? "services.AddScoped<IUploadedFileRepository>(static sp => new UploadedFileRepository(sp.GetRequiredService<ExactBatchSqliteContext>(), \"root\")); "
+            : "services.AddScoped<IUploadedFileRepository, UploadedFileRepository>(); ";
+
+        string providerConfiguration = configured
+            ? "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\");"
+            : "options.EnableDetailedErrors();";
+
+        string registration =
+            "services.AddDbContext<ExactBatchSqliteContext>((sp, options) => { "
+            + providerConfiguration
+            + " }); "
+            + storeRegistration
+            + "services.AddHostedService<Worker>();";
+
+        string helpers = $$"""
+            public sealed class ExactBatchSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<ExactBatchSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal interface IUploadedFileRepository
+            {
+                System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token);
+            }
+
+            internal sealed class UploadedFileRepository : IUploadedFileRepository
+            {
+                private readonly ExactBatchSqliteContext _db;
+
+                {{constructors}}
+
+                public async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    System.Data.Common.DbConnection connection =
+                        Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions
+                            .GetDbConnection(_db.Database);
+
+                    await using System.Data.Common.DbCommand command =
+                        connection.CreateCommand();
+
+                    await using System.Data.Common.DbDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                    await using System.Data.Common.DbTransaction transaction =
+                        await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal static class UnknownBatchSqliteContext
+            {
+                internal static ExactBatchSqliteContext Value { get; set; } = null!;
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope(); "
+                    + "IUploadedFileRepository store = scope.ServiceProvider.GetRequiredService<IUploadedFileRepository>(); "
+                    + "await store.ReadAsync(token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        string[] cleanupTypes =
+        [
+            "System.Data.Common.DbCommand.DisposeAsync;",
+            "System.Data.Common.DbDataReader.DisposeAsync;",
+            "System.Data.Common.DbTransaction.DisposeAsync;",
+        ];
+
+        Assert.All(cleanupTypes, prefix => Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    prefix,
+                    StringComparison.Ordinal))));
+    }
+
+    [Fact]
+    public void ProductionShapedConfiguredEfHelperRetainsDbCleanupProvenance()
+    {
+        const string registration =
+            "services.AddDbContextPool<ExactHelperSqliteContext>((sp, options) => "
+            + "ExactOptionsConfigurator.Configure(options)); "
+            + "services.AddHostedService<Worker>();";
+
+        const string helpers = """
+            public sealed class ExactHelperSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<ExactHelperSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal static class ExactOptionsConfigurator
+            {
+                internal static void Configure(
+                    Microsoft.EntityFrameworkCore.DbContextOptionsBuilder options) =>
+                    ConfigureProvider(options);
+
+                private static void ConfigureProvider(
+                    Microsoft.EntityFrameworkCore.DbContextOptionsBuilder options)
+                {
+                    _ = Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions
+                        .UseSqlite(options, "Data Source=:memory:")
+                        .EnableDetailedErrors();
+                }
+            }
+
+            internal sealed class ExactHelperStore(ExactHelperSqliteContext db)
+            {
+                internal async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    System.Data.Common.DbConnection connection =
+                        Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions
+                            .GetDbConnection(db.Database);
+
+                    await using System.Data.Common.DbCommand command =
+                        connection.CreateCommand();
+
+                    await using System.Data.Common.DbDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ExactHelperSqliteContext db) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ExactHelperSqliteContext>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await new ExactHelperStore(db).ReadAsync(token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "System.Data.Common.DbCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "System.Data.Common.DbDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("configured-sqlite", false)]
+    [InlineData("non-sqlite", true)]
+    [InlineData("unknown", true)]
+    [InlineData("derived", true)]
+    [InlineData("unrelated", true)]
+    [InlineData("multiple-conditionals", true)]
+    public void ProductionShapedDbTransactionHelperPrunesGenericFallbackOnlyForExactSqliteInput(
+        string sourceKind,
+        bool unresolved)
+    {
+        string connection = sourceKind switch
+        {
+            "configured-sqlite" or "multiple-conditionals" =>
+                "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database)",
+            "non-sqlite" => "new NonSqliteConnection()",
+            "unknown" => "UnknownTransactionConnection.Value",
+            "derived" => "new DerivedTransactionSqliteConnection()",
+            "unrelated" => "UnrelatedTransactionConnection.Select(db)",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string additionalConditional = sourceKind == "multiple-conditionals"
+            ? "if (connection.State == System.Data.ConnectionState.Broken) throw new System.InvalidOperationException();"
+            : string.Empty;
+
+        const string registration =
+            "services.AddDbContextPool<ExactTransactionSqliteContext>((sp, options) => Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")); services.AddHostedService<Worker>();";
+
+        string helpers = $$"""
+            public sealed class ExactTransactionSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<ExactTransactionSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal static class TransactionPipeline
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    System.Data.Common.DbConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    await using System.Data.Common.DbTransaction transaction =
+                        await BeginImmediateTransactionAsync(connection, token)
+                            .ConfigureAwait(false);
+                }
+
+                private static async System.Threading.Tasks.Task<System.Data.Common.DbTransaction>
+                    BeginImmediateTransactionAsync(
+                        System.Data.Common.DbConnection connection,
+                        System.Threading.CancellationToken token)
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    {{additionalConditional}}
+
+                    if (connection is Microsoft.Data.Sqlite.SqliteConnection sqliteConnection)
+                    {
+                        return sqliteConnection.BeginTransaction(deferred: false);
+                    }
+
+                    return await connection.BeginTransactionAsync(
+                            System.Data.IsolationLevel.Serializable,
+                            token)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedTransactionSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal sealed class NonSqliteConnection : System.Data.Common.DbConnection
+            {
+                public override string ConnectionString { get; set; } = string.Empty;
+
+                public override string Database => string.Empty;
+
+                public override string DataSource => string.Empty;
+
+                public override string ServerVersion => string.Empty;
+
+                public override System.Data.ConnectionState State =>
+                    System.Data.ConnectionState.Closed;
+
+                public override void ChangeDatabase(string databaseName)
+                {
+                    _ = databaseName;
+                }
+
+                public override void Close()
+                {
+                }
+
+                public override void Open()
+                {
+                }
+
+                protected override System.Data.Common.DbTransaction BeginDbTransaction(
+                    System.Data.IsolationLevel isolationLevel) =>
+                    throw new System.NotSupportedException();
+
+                protected override System.Data.Common.DbCommand CreateDbCommand() =>
+                    throw new System.NotSupportedException();
+            }
+
+            internal static class UnknownTransactionConnection
+            {
+                internal static System.Data.Common.DbConnection Value { get; set; } = null!;
+            }
+
+            internal static class UnrelatedTransactionConnection
+            {
+                internal static System.Data.Common.DbConnection Select(
+                    ExactTransactionSqliteContext db)
+                {
+                    _ = Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions
+                        .GetDbConnection(db.Database);
+
+                    return UnknownTransactionConnection.Value;
+                }
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ExactTransactionSqliteContext db) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ExactTransactionSqliteContext>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "System.Data.Common.DbConnection connection = "
+                    + connection
+                    + "; await TransactionPipeline.RunAsync(connection, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        bool transactionUnresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.Data.Common.DbTransaction.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(unresolved, transactionUnresolved);
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("derived", true)]
+    [InlineData("mutated", true)]
+    public void ProductionShapedRetryCallbackRequiresStableCapturedSqliteConnection(
+        string sourceKind,
+        bool unresolved)
+    {
+        string connection = sourceKind switch
+        {
+            "exact" or "mutated" =>
+                "await ExactConnectionFactory.OpenAsync(token).ConfigureAwait(false)",
+            "unknown" => "UnknownConnection.Value",
+            "derived" => "new DerivedSqliteConnection()",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string retryBody = sourceKind == "mutated"
+            ? "System.Func<System.Threading.Tasks.Task> callback = () => SchemaPipeline.InstallTierAsync(connection, token); connection = UnknownConnection.Value; return SqliteBusyRetry.ExecuteAsync(callback, token);"
+            : "return SqliteBusyRetry.ExecuteAsync(() => SchemaPipeline.InstallTierAsync(connection, token), token);";
+
+        string body =
+            "await RetryInstaller.InstallAsync("
+            + connection
+            + ", token).ConfigureAwait(false);";
+
+        string helpers = $$"""
+            internal static class ExactConnectionFactory
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class RetryInstaller
+            {
+                internal static System.Threading.Tasks.Task InstallAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    {{retryBody}}
+                }
+            }
+
+            internal static class SqliteBusyRetry
+            {
+                internal static System.Threading.Tasks.Task ExecuteAsync(
+                    System.Func<System.Threading.Tasks.Task> callback,
+                    System.Threading.CancellationToken token)
+                {
+                    _ = token;
+
+                    return callback();
+                }
+            }
+
+            internal static class SchemaPipeline
+            {
+                internal static System.Threading.Tasks.Task InstallTierAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken token) =>
+                    PrepareAsync(connection, token);
+
+                private static async System.Threading.Tasks.Task PrepareAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                    await using Microsoft.Data.Sqlite.SqliteTransaction transaction =
+                        (Microsoft.Data.Sqlite.SqliteTransaction)await connection
+                            .BeginTransactionAsync(
+                                System.Data.IsolationLevel.Serializable,
+                                token)
+                            .ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        string[] unresolvedCleanup = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && (diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                        StringComparison.Ordinal)
+                    || diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                        StringComparison.Ordinal)
+                    || diagnostic.Detail.StartsWith(
+                        "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+                        StringComparison.Ordinal)))
+            .Select(static diagnostic => diagnostic.Detail)
+            .ToArray();
+
+        if (unresolved)
+        {
+            Assert.Contains(unresolvedCleanup, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolvedCleanup, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolvedCleanup, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+                StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.Empty(unresolvedCleanup);
+        }
+    }
+
+    [Theory]
+    [InlineData("exact")]
+    [InlineData("unknown")]
+    [InlineData("derived")]
+    [InlineData("reassigned-connection")]
+    [InlineData("reassigned-transaction")]
+    public void ProductionShapedResolvedDelegateInvocationBindsExactSqliteArgumentsAtCallTime(
+        string sourceKind)
+    {
+        string connection = sourceKind switch
+        {
+            "exact" or "reassigned-connection" or "reassigned-transaction" =>
+                "await ExactDelegateConnectionFactory.OpenAsync(token).ConfigureAwait(false)",
+            "unknown" => "UnknownDelegateConnection.Value",
+            "derived" => "new DerivedDelegateSqliteConnection()",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string mutation = sourceKind switch
+        {
+            "reassigned-connection" =>
+                "connection = UnknownDelegateConnection.Value;",
+            "reassigned-transaction" =>
+                "transaction = UnknownDelegateTransaction.Value;",
+            _ => string.Empty,
+        };
+
+        string body =
+            "await OwnedSnapshotHost.RunAsync("
+            + connection
+            + ", static (connection, transaction, callbackToken) => SnapshotReader.RunAsync(connection, transaction, callbackToken), token).ConfigureAwait(false);";
+
+        string helpers = $$"""
+            internal static class ExactDelegateConnectionFactory
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class OwnedSnapshotHost
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, System.Threading.CancellationToken, System.Threading.Tasks.Task> work,
+                    System.Threading.CancellationToken token)
+                {
+                    Microsoft.Data.Sqlite.SqliteTransaction transaction =
+                        connection.BeginTransaction(deferred: false);
+
+                    {{mutation}}
+
+                    await work(connection, transaction, token).ConfigureAwait(false);
+                }
+            }
+
+            internal static class SnapshotReader
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    Microsoft.Data.Sqlite.SqliteTransaction transaction,
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteTransaction ownedTransaction =
+                        transaction;
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    command.Transaction = ownedTransaction;
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedDelegateSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownDelegateConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!;
+            }
+
+            internal static class UnknownDelegateTransaction
+            {
+                internal static Microsoft.Data.Sqlite.SqliteTransaction Value { get; set; } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        string[] unresolved = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED")
+            .Select(static diagnostic => diagnostic.Detail)
+            .ToArray();
+
+        bool commandUnresolved = unresolved.Any(static detail => detail.StartsWith(
+            "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+            StringComparison.Ordinal));
+
+        bool readerUnresolved = unresolved.Any(static detail => detail.StartsWith(
+            "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+            StringComparison.Ordinal));
+
+        bool transactionUnresolved = unresolved.Any(static detail => detail.StartsWith(
+            "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+            StringComparison.Ordinal));
+
+        Assert.Equal(
+            sourceKind is "unknown" or "derived" or "reassigned-connection",
+            commandUnresolved);
+
+        Assert.Equal(
+            sourceKind is "unknown" or "derived" or "reassigned-connection",
+            readerUnresolved);
+
+        Assert.Equal(
+            sourceKind is "unknown" or "derived" or "reassigned-transaction",
+            transactionUnresolved);
+    }
+
+    [Theory]
+    [InlineData("exact", false, false)]
+    [InlineData("unknown", true, true)]
+    [InlineData("multiple", true, true)]
+    [InlineData("ambiguous-result", true, false)]
+    public void DelegateReturnedSqliteResourceRequiresOneExactFactory(
+        string sourceKind,
+        bool factoryCleanupUnresolved,
+        bool resourceCleanupUnresolved)
+    {
+        string open = sourceKind switch
+        {
+            "exact" =>
+                "ExactDelegateReturnedSqliteResource.OpenAsync",
+            "unknown" =>
+                "UnknownDelegateReturnedSqliteResource.Value",
+            "multiple" =>
+                "token.CanBeCanceled ? ExactDelegateReturnedSqliteResource.OpenAsync : SecondDelegateReturnedSqliteResource.OpenAsync",
+            "ambiguous-result" =>
+                "AmbiguousDelegateReturnedSqliteResource.OpenAsync",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string body =
+            "await DelegateReturnedSqliteResource.RunAsync("
+            + open
+            + ", token).ConfigureAwait(false);";
+
+        const string helpers = """
+            internal static class ExactDelegateReturnedSqliteResource
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class SecondDelegateReturnedSqliteResource
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class AmbiguousDelegateReturnedSqliteResource
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return token.CanBeCanceled
+                        ? new Microsoft.Data.Sqlite.SqliteConnection()
+                        : new DerivedDelegateReturnedSqliteConnection();
+                }
+            }
+
+            internal static class UnknownDelegateReturnedSqliteResource
+            {
+                internal static System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> Value
+                {
+                    get;
+                    set;
+                } = null!;
+            }
+
+            internal sealed class DerivedDelegateReturnedSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class DelegateReturnedSqliteResource
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> open,
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteConnection connection =
+                        await open(token).ConfigureAwait(false);
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        bool connectionUnresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteConnection.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(resourceCleanupUnresolved, connectionUnresolved);
+
+        string[] factoryCleanupTargets =
+        [
+            "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+            "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+        ];
+
+        Assert.All(factoryCleanupTargets, cleanupTarget =>
+            Assert.Equal(
+                factoryCleanupUnresolved,
+                result.Diagnostics.Any(diagnostic =>
+                    diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                    && diagnostic.Detail.StartsWith(
+                        cleanupTarget,
+                        StringComparison.Ordinal))));
+    }
+
+    [Fact]
+    public void ProductionShapedDelegateReturnedLeasePreservesConnectionCleanupProvenance()
+    {
+        const string body =
+            "await ProductionShapedConnectionLease.RunAsync(ExactConnectionLeaseFactory.OpenAsync, ConnectionLeaseWork.ReadAsync, token).ConfigureAwait(false);";
+
+        const string helpers = """
+            internal interface IConnectionLease : System.IAsyncDisposable
+            {
+                Microsoft.Data.Sqlite.SqliteConnection Connection { get; }
+            }
+
+            internal sealed record ExactConnectionLease(
+                Microsoft.Data.Sqlite.SqliteConnection Connection) :
+                IConnectionLease
+            {
+                public System.Threading.Tasks.ValueTask DisposeAsync() =>
+                    Connection.DisposeAsync();
+            }
+
+            internal sealed record ConnectionLeaseResult<T>(
+                T Value,
+                bool IsFailure);
+
+            internal static class ExactConnectionLeaseFactory
+            {
+                internal static async System.Threading.Tasks.Task<ConnectionLeaseResult<IConnectionLease>>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new(
+                        new ExactConnectionLease(
+                            new Microsoft.Data.Sqlite.SqliteConnection()),
+                        IsFailure: false);
+                }
+            }
+
+            internal static class ProductionShapedConnectionLease
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<ConnectionLeaseResult<IConnectionLease>>> open,
+                    System.Func<Microsoft.Data.Sqlite.SqliteConnection, System.Threading.CancellationToken, System.Threading.Tasks.Task> work,
+                    System.Threading.CancellationToken token)
+                {
+                    ConnectionLeaseResult<IConnectionLease> opened =
+                        await open(token).ConfigureAwait(false);
+
+                    if (opened.IsFailure)
+                    {
+                        return;
+                    }
+
+                    await using (opened.Value.ConfigureAwait(false))
+                    {
+                        await work(opened.Value.Connection, token).ConfigureAwait(false);
+                    }
+                }
+            }
+
+            internal static class ConnectionLeaseWork
+            {
+                internal static async System.Threading.Tasks.Task ReadAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void CapturedDelegateReturnPreservesBoundSqliteConnectionProvenance()
+    {
+        const string body =
+            "await CapturedConnectionFactoryHost.RunAsync(new Microsoft.Data.Sqlite.SqliteConnection(), token).ConfigureAwait(false);";
+
+        const string helpers = """
+            internal static class CapturedConnectionFactoryHost
+            {
+                internal static System.Threading.Tasks.Task RunAsync(
+                    Microsoft.Data.Sqlite.SqliteConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    System.Func<System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> open =
+                        async () =>
+                        {
+                            await System.Threading.Tasks.Task.Yield();
+
+                            return connection;
+                        };
+
+                    return CapturedConnectionFactoryConsumer.RunAsync(open, token);
+                }
+            }
+
+            internal static class CapturedConnectionFactoryConsumer
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    System.Func<System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> open,
+                    System.Threading.CancellationToken token)
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection connection =
+                        await open().ConfigureAwait(false);
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void CapturedDelegateReturnPreservesBoundCallableProvenance()
+    {
+        const string body =
+            "await CapturedCallableFactoryHost.RunAsync(FirstCapturedCallableFactory.OpenAsync, token).ConfigureAwait(false); "
+            + "await CapturedCallableFactoryHost.RunAsync(SecondCapturedCallableFactory.OpenAsync, token).ConfigureAwait(false);";
+
+        const string helpers = """
+            internal static class FirstCapturedCallableFactory
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync()
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class SecondCapturedCallableFactory
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync()
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class CapturedCallableFactoryHost
+            {
+                internal static System.Threading.Tasks.Task RunAsync(
+                    System.Func<System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> source,
+                    System.Threading.CancellationToken token)
+                {
+                    System.Func<System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> open =
+                        async () =>
+                        {
+                            await System.Threading.Tasks.Task.Yield();
+
+                            return await source().ConfigureAwait(false);
+                        };
+
+                    return CapturedCallableFactoryConsumer.RunAsync(open, token);
+                }
+            }
+
+            internal static class CapturedCallableFactoryConsumer
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    System.Func<System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>> open,
+                    System.Threading.CancellationToken token)
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection connection =
+                        await open().ConfigureAwait(false);
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CapturedCallbackCleanupProvenanceIsIndependentOfCallOrder(
+        bool cleanupFirst)
+    {
+        const string observation =
+            "await CallbackRequirementHost.RunAsync(CallbackRequirementWork.ObserveAsync, token).ConfigureAwait(false);";
+
+        const string cleanup =
+            "await CallbackRequirementHost.RunAsync(CallbackRequirementWork.CleanupAsync, token).ConfigureAwait(false);";
+
+        string body = cleanupFirst
+            ? cleanup + observation
+            : observation + cleanup;
+
+        const string helpers = """
+            internal static class CallbackRequirementConnectionFactory
+            {
+                internal static async System.Threading.Tasks.Task<System.Data.Common.DbConnection>
+                    OpenAsync(System.Threading.CancellationToken token)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal static class CallbackRequirementHost
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    System.Func<System.Data.Common.DbConnection, System.Threading.CancellationToken, System.Threading.Tasks.Task> work,
+                    System.Threading.CancellationToken token)
+                {
+                    System.Data.Common.DbConnection connection =
+                        await CallbackRequirementConnectionFactory
+                            .OpenAsync(token)
+                            .ConfigureAwait(false);
+
+                    System.Func<System.Data.Common.DbConnection, System.Threading.CancellationToken, System.Threading.Tasks.Task> relay =
+                        (value, callbackToken) => work(value, callbackToken);
+
+                    await relay(connection, token).ConfigureAwait(false);
+                }
+            }
+
+            internal static class CallbackRequirementWork
+            {
+                internal static System.Threading.Tasks.Task ObserveAsync(
+                    System.Data.Common.DbConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    _ = connection;
+                    _ = token;
+
+                    return System.Threading.Tasks.Task.CompletedTask;
+                }
+
+                internal static async System.Threading.Tasks.Task CleanupAsync(
+                    System.Data.Common.DbConnection connection,
+                    System.Threading.CancellationToken token)
+                {
+                    await using System.Data.Common.DbCommand command =
+                        connection.CreateCommand();
+
+                    await using System.Data.Common.DbDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && (diagnostic.Detail.StartsWith(
+                    "System.Data.Common.DbCommand.DisposeAsync;",
+                    StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith(
+                    "System.Data.Common.DbDataReader.DisposeAsync;",
+                    StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProductionShapedGrimoireSqlCommandFactoryRequiresConfiguredEfProvider(
+        bool configured)
+    {
+        string options = configured
+            ? "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")"
+            : "options.EnableDetailedErrors()";
+
+        string registration =
+            "services.AddDbContextPool<ExactSqliteContext>((sp, options) => "
+            + options
+            + "); services.AddHostedService<Worker>();";
+
+        const string helpers =
+            "public sealed class ExactSqliteContext(Microsoft.EntityFrameworkCore.DbContextOptions<ExactSqliteContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { } "
+            + "internal static class GrimoireSqlCommandFactory { internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteCommand> CreateAsync(ExactSqliteContext db, string commandText, System.Threading.CancellationToken token) { if (Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database) is not Microsoft.Data.Sqlite.SqliteConnection connection) throw new System.InvalidOperationException(); if (connection.State != System.Data.ConnectionState.Open) await Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.OpenConnectionAsync(db.Database, token).ConfigureAwait(false); Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); command.CommandText = commandText; return command; } } "
+            + "internal static class EfCommandPipeline { internal static async System.Threading.Tasks.Task RunAsync(ExactSqliteContext db, System.Threading.CancellationToken token) { await using Microsoft.Data.Sqlite.SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(db, \"SELECT 1;\", token).ConfigureAwait(false); await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); } }";
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ExactSqliteContext db) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ExactSqliteContext>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await EfCommandPipeline.RunAsync(db, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        string[] unresolved = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.Sqlite",
+                    StringComparison.Ordinal))
+            .Select(static diagnostic => diagnostic.Detail)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (configured)
+        {
+            Assert.Empty(unresolved);
+        }
+        else
+        {
+            Assert.Contains(unresolved, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolved, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void ProductionShapedEfSqliteCleanupRetainsConfiguredProviderProvenance()
+    {
+        const string registration =
+            "services.AddDbContext<ExactSqliteContext>((sp, options) => Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")); services.AddHostedService<Worker>();";
+
+        const string helpers =
+            "public sealed class ExactSqliteContext(Microsoft.EntityFrameworkCore.DbContextOptions<ExactSqliteContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { internal static ExactSqliteContext CreateOwned() { Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<ExactSqliteContext> options = new(); _ = Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\"); return new(options.Options); } } "
+            + "internal static class EfSqlitePipeline { internal static async System.Threading.Tasks.Task RunAsync(ExactSqliteContext db, System.Threading.CancellationToken token) { System.Data.Common.DbConnection connection = Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database); await using System.Data.Common.DbCommand command = connection.CreateCommand(); await using System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false); await using System.Data.Common.DbTransaction transaction = await BeginAsync(connection, token).ConfigureAwait(false); await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction efTransaction = await db.Database.BeginTransactionAsync(token).ConfigureAwait(false); await using ExactSqliteContext owned = ExactSqliteContext.CreateOwned(); } private static System.Threading.Tasks.ValueTask<System.Data.Common.DbTransaction> BeginAsync(System.Data.Common.DbConnection connection, System.Threading.CancellationToken token) => connection.BeginTransactionAsync(token); }";
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ExactSqliteContext db) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ExactSqliteContext>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + " await EfSqlitePipeline.RunAsync(db, token); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        string[] cleanupTypes =
+        [
+            "ExactSqliteContext.DisposeAsync;",
+            "Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction.DisposeAsync;",
+            "System.Data.Common.DbCommand.DisposeAsync;",
+            "System.Data.Common.DbDataReader.DisposeAsync;",
+            "System.Data.Common.DbTransaction.DisposeAsync;",
+        ];
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && cleanupTypes.Any(prefix => diagnostic.Detail.StartsWith(
+                prefix,
+                StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProductionShapedAsyncScopedStoreRequiresConfiguredEfProvider(
+        bool configured)
+    {
+        string providerConfiguration = configured
+            ? "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\");"
+            : "options.EnableDetailedErrors();";
+
+        string registration = string.Concat(Enumerable.Repeat(
+                "services.AddSingleton<object>(); ",
+                32))
+            + "services.AddDbContext<ExactScopedSqliteContext>((sp, options) => ScopedStoreOptions.Configure(options)); "
+            + "services.AddScoped<IScopedStore, ScopedStore>(); "
+            + "services.AddHostedService<Worker>();";
+
+        string helpers = $$"""
+            public sealed class ExactScopedSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<ExactScopedSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal static class ScopedStoreOptions
+            {
+                internal static void Configure(
+                    Microsoft.EntityFrameworkCore.DbContextOptionsBuilder options)
+                {
+                    {{providerConfiguration}}
+                }
+            }
+
+            internal interface IScopedStore
+            {
+                System.Threading.Tasks.Task RunAsync(
+                    System.Threading.CancellationToken cancellationToken);
+            }
+
+            internal sealed class ScopedStore(ExactScopedSqliteContext db) : IScopedStore
+            {
+                public async System.Threading.Tasks.Task RunAsync(
+                    System.Threading.CancellationToken cancellationToken)
+                {
+                    System.Data.Common.DbConnection connection =
+                        Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(
+                            db.Database);
+
+                    await using System.Data.Common.DbCommand command =
+                        connection.CreateCommand();
+
+                    await using System.Data.Common.DbDataReader reader =
+                        await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                    await using System.Data.Common.DbTransaction transaction =
+                        await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope(); "
+                    + "IScopedStore store = scope.ServiceProvider.GetRequiredService<IScopedStore>(); "
+                    + "await store.RunAsync(token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        string[] cleanupTypes =
+        [
+            "System.Data.Common.DbCommand.DisposeAsync;",
+            "System.Data.Common.DbDataReader.DisposeAsync;",
+            "System.Data.Common.DbTransaction.DisposeAsync;",
+        ];
+
+        Assert.All(cleanupTypes, prefix => Assert.Equal(
+            !configured,
+            result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    prefix,
+                    StringComparison.Ordinal))));
+
+        Assert.Equal(
+            0,
+            Assert.IsType<HostedProducerAnalysisMetrics>(
+                result.AnalysisMetrics).RepeatedRegistrationSemanticQueries);
+
+        Assert.InRange(
+            Assert.IsType<HostedProducerAnalysisMetrics>(
+                result.AnalysisMetrics).RegistrationCandidateInspections,
+            0,
+            4);
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("derived", true)]
+    [InlineData("unrelated", true)]
+    public void ProductionShapedVolatileSnapshotRequiresExactAdoptedConnection(
+        string sourceKind,
+        bool unresolved)
+    {
+        string adopted = sourceKind switch
+        {
+            "exact" or "unrelated" =>
+                "await BackupRestoreDatabaseWorker.OpenAsync(token).ConfigureAwait(false)",
+            "unknown" => "UnknownConnection.Value",
+            "derived" => "new DerivedSqliteConnection()",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string snapshotField = sourceKind == "unrelated"
+            ? "_unrelated"
+            : "_source";
+
+        string body =
+            "await using ImportedSessionSourceLease sourceLease = "
+            + "ImportedSessionSourceLease.Adopt("
+            + adopted
+            + "); await SnapshotPipeline.RunAsync(sourceLease, token).ConfigureAwait(false);";
+
+        string helpers = $$"""
+            internal static class BackupRestoreDatabaseWorker
+            {
+                internal static async System.Threading.Tasks.Task<Microsoft.Data.Sqlite.SqliteConnection>
+                    OpenAsync(System.Threading.CancellationToken cancellationToken)
+                {
+                    await System.Threading.Tasks.Task.Yield();
+
+                    return new Microsoft.Data.Sqlite.SqliteConnection();
+                }
+            }
+
+            internal sealed class ImportedSessionSourceLease : System.IAsyncDisposable
+            {
+                private Microsoft.Data.Sqlite.SqliteConnection? _source;
+
+                private Microsoft.Data.Sqlite.SqliteConnection? _unrelated;
+
+                private ImportedSessionSourceLease(
+                    Microsoft.Data.Sqlite.SqliteConnection source)
+                {
+                    _source = source;
+                    _unrelated = UnknownConnection.Value;
+                }
+
+                internal static ImportedSessionSourceLease Adopt(
+                    Microsoft.Data.Sqlite.SqliteConnection source) => new(source);
+
+                internal Microsoft.Data.Sqlite.SqliteConnection Snapshot =>
+                    System.Threading.Volatile.Read(ref {{snapshotField}})
+                        ?? throw new System.ObjectDisposedException(
+                            nameof(ImportedSessionSourceLease));
+
+                public async System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection? source =
+                        System.Threading.Interlocked.Exchange(ref _source, null);
+
+                    if (source is not null)
+                    {
+                        await source.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+
+            internal static class SnapshotPipeline
+            {
+                internal static async System.Threading.Tasks.Task RunAsync(
+                    ImportedSessionSourceLease sourceLease,
+                    System.Threading.CancellationToken cancellationToken)
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection source = sourceLease.Snapshot;
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command =
+                        source.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class DerivedSqliteConnection :
+                Microsoft.Data.Sqlite.SqliteConnection
+            {
+            }
+
+            internal static class UnknownConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!;
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        string[] cleanupTypes =
+        [
+            "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+            "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+        ];
+
+        Assert.All(cleanupTypes, prefix => Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    prefix,
+                    StringComparison.Ordinal))));
+    }
+
+    [Fact]
+    public void ProductionShapedTrustedExternalCleanupFactoriesResolveCompilerCleanup()
+    {
+        const string body =
+            "using System.Security.Principal.WindowsIdentity identity = System.Security.Principal.WindowsIdentity.GetCurrent(); "
+            + "using System.Threading.CancellationTokenSource linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(token); "
+            + "using System.Security.Cryptography.ECDsa key = System.Security.Cryptography.ECDsa.Create(); "
+            + "using System.Diagnostics.Process attached = System.Diagnostics.Process.GetProcessById(1); "
+            + "using System.Diagnostics.Process direct = new(); "
+            + "await using System.IO.FileStream file = System.IO.File.OpenRead(\"path\"); "
+            + "using System.IO.FileStream syncFile = System.IO.File.OpenRead(\"path\"); "
+            + "using System.IO.Stream baseStream = System.IO.File.OpenRead(\"path\"); "
+            + "using System.Threading.PeriodicTimer timer = new(System.TimeSpan.FromSeconds(1)); "
+            + "using System.Threading.Mutex mutex = new(initiallyOwned: false); "
+            + "using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(\"{}\"); "
+            + "using System.Threading.CancellationTokenRegistration registration = token.Register(static () => { });";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body));
+
+        string[] cleanupTypes =
+        [
+            "System.Diagnostics.Process.Dispose;",
+            "System.IO.FileStream.DisposeAsync;",
+            "System.IO.FileStream.Dispose;",
+            "System.IO.Stream.Dispose;",
+            "System.Security.Cryptography.ECDsa.Dispose;",
+            "System.Security.Principal.WindowsIdentity.Dispose;",
+            "System.Text.Json.JsonDocument.Dispose;",
+            "System.Threading.CancellationTokenRegistration.Dispose;",
+            "System.Threading.CancellationTokenSource.Dispose;",
+            "System.Threading.Mutex.Dispose;",
+            "System.Threading.PeriodicTimer.Dispose;",
+        ];
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && cleanupTypes.Any(prefix => diagnostic.Detail.StartsWith(
+                prefix,
+                StringComparison.Ordinal)));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Fact]
+    public void ProductionReferencePackResolvesThreadingMechanicalCleanupIdentities()
+    {
+        const string source =
+            "using System.Threading; using System.Threading.Tasks; "
+            + "public sealed class Worker { public async Task StartAsync(CancellationToken token) { "
+            + "using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(token); "
+            + "NamedWaitHandleOptions options = new() { CurrentUserOnly = true, CurrentSessionOnly = false }; "
+            + "using Mutex mutex = new(\"fixture\", options); await Task.Yield(); } }";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        string[] unresolved = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && (diagnostic.Detail.StartsWith(
+                        "System.Threading.CancellationTokenSource.Dispose;",
+                        StringComparison.Ordinal)
+                    || diagnostic.Detail.StartsWith(
+                        "System.Threading.Mutex.Dispose;",
+                        StringComparison.Ordinal)))
+            .Select(static diagnostic => diagnostic.Detail)
+            .ToArray();
+
+        Assert.Empty(unresolved);
+    }
+
+    [Fact]
+    public void ProductionShapedAuthoredOutFileStreamsRetainCleanupProvenance()
+    {
+        const string helpers =
+            "internal static class FileFactory { internal static bool TryOpen(out System.IO.FileStream? stream) { stream = System.IO.File.OpenRead(\"path\"); return true; } } "
+            + "internal static class UnknownFileFactory { internal static System.IO.FileStream Value { get; set; } = null!; internal static void Consume(System.IO.FileStream stream) { using (stream) { } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> exact = R2Discover(
+            R2Source(
+                R2Admission
+                    + "if (FileFactory.TryOpen(out System.IO.FileStream? stream) && stream is not null) { await using (stream.ConfigureAwait(false)) { } }",
+                helpers));
+
+        Assert.DoesNotContain(exact.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(exact.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        HostedProducerDiscovery<HostedProducerSite> unknown = R2Discover(
+            R2Source(
+                R2Admission
+                    + "UnknownFileFactory.Consume(UnknownFileFactory.Value);",
+                helpers));
+
+        Assert.Contains(unknown.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.Dispose;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProductionShapedAuthoredOutNormalReturnsRetainCleanupProvenance()
+    {
+        const string helpers = """
+            internal enum OpenStatus { Success, Rejected }
+            internal static class SecureFactory
+            {
+                internal static OpenStatus TryOpen(out System.IO.FileStream? stream)
+                {
+                    stream = null;
+                    try
+                    {
+                        OpenStatus openStatus = System.Environment.TickCount == 0
+                            ? OpenStatus.Rejected
+                            : OpenStatus.Success;
+                        if (openStatus is not OpenStatus.Success) return openStatus;
+                        stream = new SecureStream();
+                        return OpenStatus.Success;
+                    }
+                    catch (System.IO.IOException)
+                    {
+                        return OpenStatus.Rejected;
+                    }
+                }
+
+                private sealed class SecureStream : System.IO.FileStream
+                {
+                    internal SecureStream() : base("path", System.IO.FileMode.OpenOrCreate) { }
+                }
+            }
+            internal static class TemporaryFactory
+            {
+                internal static object Create(out System.IO.FileStream stream)
+                {
+                    System.IO.FileStream? created = null;
+                    stream = null!;
+                    try
+                    {
+                        created = new System.IO.FileStream("path", System.IO.FileMode.OpenOrCreate);
+                        if (System.Environment.TickCount == 0) throw new System.IO.IOException();
+                        stream = created;
+                        return new object();
+                    }
+                    catch
+                    {
+                        created?.Dispose();
+                        throw;
+                    }
+                }
+            }
+            """;
+
+        const string body =
+            "OpenStatus status = SecureFactory.TryOpen(out System.IO.FileStream? secure); "
+            + "if (status != OpenStatus.Success || secure is null) return; "
+            + "await using (secure.ConfigureAwait(false)) { } "
+            + "_ = TemporaryFactory.Create(out System.IO.FileStream temporary); "
+            + "await using (temporary.ConfigureAwait(false)) { }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        int cleanupEffects = result.Items.Count(static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.True(
+            cleanupEffects == 2,
+            $"Expected two exact FileStream cleanup effects, found {cleanupEffects}.\n"
+                + string.Join(
+                    "\n",
+                    result.Diagnostics.Select(static diagnostic =>
+                        $"{diagnostic.Code}: {diagnostic.Detail}")));
+    }
+
+    [Fact]
+    public void AuthoredOutStatusOnlySuccessProofRequiresExactAssignedStream()
+    {
+        const string helpers = """
+            internal enum OpenStatus { Success, Rejected }
+            internal static class SecureFactory
+            {
+                internal static System.IO.FileStream Unknown { get; set; } = null!;
+
+                internal static OpenStatus TryExact(out System.IO.FileStream? stream)
+                {
+                    stream = null;
+                    if (System.Environment.TickCount == 0) return OpenStatus.Rejected;
+                    stream = System.IO.File.OpenRead("path");
+                    return OpenStatus.Success;
+                }
+
+                internal static OpenStatus TryUnknown(out System.IO.FileStream? stream)
+                {
+                    stream = null;
+                    if (System.Environment.TickCount == 0)
+                    {
+                        stream = System.IO.File.OpenRead("path");
+                        return OpenStatus.Success;
+                    }
+                    stream = Unknown;
+                    return OpenStatus.Success;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> exact = R2Discover(
+            R2Source(
+                R2Admission
+                    + "OpenStatus status = SecureFactory.TryExact(out System.IO.FileStream? stream); "
+                    + "if (status is not OpenStatus.Success) return; "
+                    + "await using (System.IO.FileStream opened = stream!) { }",
+                helpers));
+
+        Assert.DoesNotContain(exact.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(exact.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        HostedProducerDiscovery<HostedProducerSite> unknown = R2Discover(
+            R2Source(
+                R2Admission
+                    + "OpenStatus status = SecureFactory.TryUnknown(out System.IO.FileStream? stream); "
+                    + "if (status is not OpenStatus.Success) return; "
+                    + "await using (System.IO.FileStream opened = stream!) { }",
+                helpers));
+
+        Assert.Contains(unknown.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AuthoredOutCleanupRetainsUnknownMultiTargetAndRefFailures()
+    {
+        const string helpers = """
+            internal enum NegativeOpenStatus { Success, Rejected }
+            internal static class NegativeFactories
+            {
+                internal static System.IO.FileStream Unknown { get; set; } = null!;
+                internal static System.IO.Stream UnknownStream { get; set; } = null!;
+
+                internal static bool TryUnknown(out System.IO.FileStream? stream)
+                {
+                    stream = null;
+                    if (System.Environment.TickCount == 0)
+                    {
+                        stream = Unknown;
+                        return true;
+                    }
+                    return false;
+                }
+
+                internal static bool TryMulti(out System.IO.Stream? stream)
+                {
+                    stream = null;
+                    if (System.Environment.TickCount == 0)
+                    {
+                        stream = System.IO.File.OpenRead("path");
+                        return true;
+                    }
+                    if (System.Environment.TickCount == 1)
+                    {
+                        stream = new System.IO.MemoryStream();
+                        return true;
+                    }
+                    return false;
+                }
+
+                internal static void Replace(ref System.IO.FileStream? stream) =>
+                    stream = System.IO.File.OpenRead("path");
+
+                internal static NegativeOpenStatus TryCorrelated(
+                    out System.IO.Stream? stream)
+                {
+                    if (System.Environment.TickCount == 0)
+                    {
+                        stream = System.IO.File.OpenRead("path");
+                        return NegativeOpenStatus.Success;
+                    }
+                    stream = UnknownStream;
+                    return NegativeOpenStatus.Rejected;
+                }
+            }
+            """;
+
+        string[] bodies =
+        [
+            "if (!NegativeFactories.TryUnknown(out System.IO.FileStream? stream) || stream is null) return; using (stream) { }",
+            "if (!NegativeFactories.TryMulti(out System.IO.Stream? stream) || stream is null) return; using (stream) { }",
+            "System.IO.FileStream? stream = null; NegativeFactories.Replace(ref stream); if (stream is null) return; using (stream) { }",
+            "NegativeOpenStatus status = NegativeFactories.TryCorrelated(out System.IO.Stream? stream); status = NegativeOpenStatus.Success; if (status != NegativeOpenStatus.Success || stream is null) return; using (stream) { }",
+        ];
+
+        Assert.All(bodies, body =>
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+                R2Source(R2Admission + body, helpers));
+
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+        });
+    }
+
+    [Fact]
+    public void ProductionShapedDiAndConfiguredStreamCleanupRetainsExactImplementation()
+    {
+        CSharpCompilation infrastructure = Compile(
+                "namespace ProductionStreams { "
+                    + "public interface IBlobStore { System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(System.Threading.CancellationToken token); } "
+                    + "public sealed class BlobStore : IBlobStore { public async System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return new BlobReadStream(); } private sealed class BlobReadStream : System.IO.MemoryStream { public override async System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"blob-cleanup\"); await base.DisposeAsync(); } } } "
+                    + "public static class LegacyBlobStore { public static System.IO.Stream OpenRead() => System.IO.File.OpenRead(\"legacy-blob\"); } } ")
+            .WithAssemblyName("Cleanup.ProductionStreams.Infrastructure");
+
+        string source = RegistrationSource(
+                "services.AddSingleton<ProductionStreams.IBlobStore, ProductionStreams.BlobStore>(); services.AddHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ProductionStreams.IBlobStore store) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ProductionStreams.IBlobStore>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + " System.IO.Stream plaintext; if (token.CanBeCanceled) { plaintext = await store.OpenReadAsync(token).ConfigureAwait(false); } else { plaintext = ProductionStreams.LegacyBlobStore.OpenRead(); } await using (plaintext.ConfigureAwait(false)) { } }",
+                StringComparison.Ordinal)
+            + AdmissionTypes;
+
+        CSharpCompilation consumer = Compile(source)
+            .AddReferences(infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionStreams.Consumer");
+
+        Assert.All(
+            new[] { infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType
+                == "ProductionStreams.BlobStore.BlobReadStream"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Fact]
+    public void ProductionShapedCoreCompatibilityExtensionRetainsRegisteredStreamImplementation()
+    {
+        CSharpCompilation core = Compile(
+                "namespace ProductionStreams.Core { "
+                    + "public enum BlobPurpose { BatchArtifact } "
+                    + "public interface IBlobStore { System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, BlobPurpose purpose, System.Threading.CancellationToken token = default); bool HasEnvelope(string path); } "
+                    + "public static class BlobStoreCompatibilityExtensions { public static System.Threading.Tasks.Task<System.IO.Stream> OpenCompatibleReadAsync(this IBlobStore blobStore, string path, BlobPurpose purpose, int encryptionVersion, System.Threading.CancellationToken token = default) { if (encryptionVersion > 0 || blobStore.HasEnvelope(path)) return blobStore.OpenReadAsync(path, purpose, token); System.IO.Stream plaintext = new System.IO.FileStream(path, System.IO.FileMode.Open); return System.Threading.Tasks.Task.FromResult(plaintext); } } } ")
+            .WithAssemblyName("Cleanup.ProductionStreams.Core");
+
+        CSharpCompilation infrastructure = Compile(
+                "namespace ProductionStreams.Infrastructure { "
+                    + "public sealed class BlobStore : ProductionStreams.Core.IBlobStore { public async System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, ProductionStreams.Core.BlobPurpose purpose, System.Threading.CancellationToken token = default) { await System.Threading.Tasks.Task.Yield(); return new BlobReadStream(path); } public bool HasEnvelope(string path) => true; private sealed class BlobReadStream(string path) : System.IO.MemoryStream { private readonly System.IO.FileStream _input = new(path, System.IO.FileMode.Open); public override async System.Threading.Tasks.ValueTask DisposeAsync() { await _input.DisposeAsync().ConfigureAwait(false); await base.DisposeAsync().ConfigureAwait(false); } } } "
+                    + "public sealed class UnknownBlobStore : ProductionStreams.Core.IBlobStore { public System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, ProductionStreams.Core.BlobPurpose purpose, System.Threading.CancellationToken token = default) => System.Threading.Tasks.Task.FromResult(UnknownStream.Value); public bool HasEnvelope(string path) => true; } "
+                    + "public static class UnknownStream { public static System.IO.Stream Value { get; set; } = null!; } } ")
+            .AddReferences(core.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionStreams.Infrastructure");
+
+        string source = RegistrationSource(
+                "services.AddSingleton<ProductionStreams.Core.IBlobStore, ProductionStreams.Infrastructure.BlobStore>(); services.AddHostedService<Worker>();")
+            .Replace(
+                "using System;",
+                "using System; using ProductionStreams.Core;",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ProductionStreams.Core.IBlobStore store) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ProductionStreams.Core.IBlobStore>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using System.IO.Stream input = await store.OpenCompatibleReadAsync(\"blob\", ProductionStreams.Core.BlobPurpose.BatchArtifact, 1, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes;
+
+        CSharpCompilation consumer = Compile(source)
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionStreams.Consumer");
+
+        Assert.All(
+            new[] { core, infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType
+                == "ProductionStreams.Infrastructure.BlobStore.BlobReadStream"
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        CSharpCompilation unknownConsumer = Compile(source.Replace(
+                "ProductionStreams.Infrastructure.BlobStore",
+                "ProductionStreams.Infrastructure.UnknownBlobStore",
+                StringComparison.Ordinal))
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionStreams.UnknownConsumer");
+
+        Assert.Empty(unknownConsumer.GetDiagnostics().Where(
+            static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> unknownResult =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, unknownConsumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(unknownResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProductionShapedReadOnlyCompatibilityCleanupRetainsOwnedFileStreamProvenance()
+    {
+        CSharpCompilation core = Compile(
+                "namespace ReadOnlyProductionStreams.Core { "
+                    + "public enum BlobPurpose { BatchArtifact } "
+                    + "public interface IBlobStore { System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, BlobPurpose purpose, System.Threading.CancellationToken token = default); bool HasEnvelope(string path); } "
+                    + "public static class BlobStoreCompatibilityExtensions { public static System.Threading.Tasks.Task<System.IO.Stream> OpenCompatibleReadAsync(this IBlobStore blobStore, string path, BlobPurpose purpose, int encryptionVersion, System.Threading.CancellationToken token = default) { if (encryptionVersion > 0 || blobStore.HasEnvelope(path)) return blobStore.OpenReadAsync(path, purpose, token); System.IO.Stream plaintext = new System.IO.FileStream(path, new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read }); return System.Threading.Tasks.Task.FromResult(plaintext); } } } ")
+            .WithAssemblyName("Cleanup.ReadOnlyProductionStreams.Core");
+
+        CSharpCompilation infrastructure = Compile(
+                "namespace ReadOnlyProductionStreams.Infrastructure { "
+                    + "public sealed class BlobStore : ReadOnlyProductionStreams.Core.IBlobStore { public async System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, ReadOnlyProductionStreams.Core.BlobPurpose purpose, System.Threading.CancellationToken token = default) { await System.Threading.Tasks.Task.Yield(); System.IO.FileStream input = new(path, new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read }); return new BlobReadStream(input); } public bool HasEnvelope(string path) => true; private sealed class BlobReadStream : System.IO.MemoryStream { private readonly System.IO.FileStream _input; public BlobReadStream(System.IO.FileStream input) { _input = input; } public override async System.Threading.Tasks.ValueTask DisposeAsync() { await _input.DisposeAsync().ConfigureAwait(false); await base.DisposeAsync().ConfigureAwait(false); } } } } ")
+            .AddReferences(core.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ReadOnlyProductionStreams.Infrastructure");
+
+        string source = RegistrationSource(
+                "services.AddSingleton<ReadOnlyProductionStreams.Core.IBlobStore, ReadOnlyProductionStreams.Infrastructure.BlobStore>(); services.AddHostedService<Worker>();")
+            .Replace(
+                "using System;",
+                "using System; using ReadOnlyProductionStreams.Core;",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ReadOnlyProductionStreams.Core.IBlobStore store) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ReadOnlyProductionStreams.Core.IBlobStore>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + AcquireWork.Replace(
+                        "return Task.CompletedTask;",
+                        "return;",
+                        StringComparison.Ordinal)
+                    + " await using System.IO.Stream input = await store.OpenCompatibleReadAsync(\"blob\", ReadOnlyProductionStreams.Core.BlobPurpose.BatchArtifact, token.CanBeCanceled ? 1 : 0, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes;
+
+        CSharpCompilation consumer = Compile(source)
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ReadOnlyProductionStreams.Consumer");
+
+        Assert.All(
+            new[] { core, infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        HostedProducerSite[] cleanupSites = result.Items
+            .Where(static site =>
+                site.Callee == "System.IO.FileStream.DisposeAsync")
+            .ToArray();
+
+        Assert.Equal(2, cleanupSites.Length);
+
+        Assert.All(cleanupSites, static site =>
+            Assert.Equal(HostedProducerSiteKind.FileSystemRead, site.Kind));
+
+        Assert.Contains(cleanupSites, static site =>
+            site.EnclosingType == "Worker");
+
+        Assert.Contains(cleanupSites, static site =>
+            site.EnclosingType
+                == "ReadOnlyProductionStreams.Infrastructure.BlobStore.BlobReadStream");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Fact]
+    public void ProductionShapedAttachmentForwardingRetainsDelayedStreamCleanup()
+    {
+        CSharpCompilation core = Compile(
+                "namespace ProductionAttachments.Core { "
+                    + "public enum BlobPurpose { SessionAttachment } "
+                    + "public sealed record AttachmentRecord(int EncryptionVersion); "
+                    + "public interface IBlobStore { System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, BlobPurpose purpose, System.Threading.CancellationToken token = default); bool HasEnvelope(string path); } "
+                    + "public interface IAttachmentStore { System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(AttachmentRecord record, System.Threading.CancellationToken token = default); } "
+                    + "public static class BlobStoreCompatibilityExtensions { public static System.Threading.Tasks.Task<System.IO.Stream> OpenCompatibleReadAsync(this IBlobStore blobStore, string path, BlobPurpose purpose, int encryptionVersion, System.Threading.CancellationToken token = default) { if (encryptionVersion > 0 || blobStore.HasEnvelope(path)) return blobStore.OpenReadAsync(path, purpose, token); System.IO.Stream plaintext = new System.IO.FileStream(path, System.IO.FileMode.Open); return System.Threading.Tasks.Task.FromResult(plaintext); } } } ")
+            .WithAssemblyName("Cleanup.ProductionAttachments.Core");
+
+        CSharpCompilation infrastructure = Compile(
+                "using ProductionAttachments.Core; namespace ProductionAttachments.Infrastructure { "
+                    + "public sealed class BlobStore : IBlobStore { public async System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, BlobPurpose purpose, System.Threading.CancellationToken token = default) { await System.Threading.Tasks.Task.Yield(); return new BlobReadStream(path); } public bool HasEnvelope(string path) => true; private sealed class BlobReadStream(string path) : System.IO.MemoryStream { private readonly System.IO.FileStream _input = new(path, System.IO.FileMode.Open); public override async System.Threading.Tasks.ValueTask DisposeAsync() { await _input.DisposeAsync().ConfigureAwait(false); await base.DisposeAsync().ConfigureAwait(false); } } } "
+                    + "public sealed class UnknownBlobStore : IBlobStore { public System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(string path, BlobPurpose purpose, System.Threading.CancellationToken token = default) => System.Threading.Tasks.Task.FromResult(UnknownStream.Value); public bool HasEnvelope(string path) => true; } "
+                    + "public static class UnknownStream { public static System.IO.Stream Value { get; set; } = null!; } "
+                    + "public sealed class AttachmentStore(IBlobStore blobs) : IAttachmentStore { public async System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(AttachmentRecord record, System.Threading.CancellationToken token = default) { System.IO.Stream decrypted = await blobs.OpenCompatibleReadAsync(\"attachment\", BlobPurpose.SessionAttachment, record.EncryptionVersion, token).ConfigureAwait(false); try { if (decrypted.Length < 0) throw new System.IO.InvalidDataException(); return decrypted; } catch { await decrypted.DisposeAsync().ConfigureAwait(false); throw; } } } } ")
+            .AddReferences(core.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionAttachments.Infrastructure");
+
+        string source = RegistrationSource(
+                "services.AddScoped<ProductionAttachments.Core.IBlobStore, ProductionAttachments.Infrastructure.BlobStore>(); services.AddScoped<ProductionAttachments.Core.IAttachmentStore, ProductionAttachments.Infrastructure.AttachmentStore>(); services.AddHostedService<Worker>();")
+            .Replace(
+                "using System;",
+                "using System; using ProductionAttachments.Core;",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ProductionAttachments.Core.IAttachmentStore attachments) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ProductionAttachments.Core.IAttachmentStore>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "System.IO.Stream stream; try { stream = await attachments.OpenReadAsync(new ProductionAttachments.Core.AttachmentRecord(1), token).ConfigureAwait(false); } catch (System.IO.IOException) { return; } await Task.Yield(); await using (stream) { } }",
+                StringComparison.Ordinal)
+            + AdmissionTypes;
+
+        CSharpCompilation consumer = Compile(source)
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionAttachments.Consumer");
+
+        Assert.All(
+            new[] { core, infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        CSharpCompilation unknownConsumer = Compile(source.Replace(
+                "ProductionAttachments.Infrastructure.BlobStore",
+                "ProductionAttachments.Infrastructure.UnknownBlobStore",
+                StringComparison.Ordinal))
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.ProductionAttachments.UnknownConsumer");
+
+        Assert.Empty(unknownConsumer.GetDiagnostics().Where(
+            static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> unknownResult =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, unknownConsumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(unknownResult.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProductionShapedFrameworkLifecycleCleanupResolvesExactFactories()
+    {
+        const string body =
+            "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory scopeFactory = null!; using Microsoft.Extensions.DependencyInjection.IServiceScope scope = scopeFactory.CreateScope(); "
+            + "SQLitePCL.sqlite3 source = null!; SQLitePCL.sqlite3 destination = null!; using SQLitePCL.sqlite3_backup backup = SQLitePCL.raw.sqlite3_backup_init(destination, \"main\", source, \"main\");";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body));
+
+        string[] cleanupTypes =
+        [
+            "Microsoft.Extensions.DependencyInjection.IServiceScope.Dispose;",
+            "SQLitePCL.sqlite3_backup.Dispose;",
+        ];
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && cleanupTypes.Any(prefix => diagnostic.Detail.StartsWith(
+                prefix,
+                StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("exact")]
+    [InlineData("exact-factory")]
+    [InlineData("unknown")]
+    [InlineData("derived")]
+    [InlineData("unrelated")]
+    [InlineData("factory-unrelated")]
+    [InlineData("fake-registration")]
+    public void AwaitUsingRequiresExactBoundSourceProvenanceForTrustedSqliteFactories(
+        string sourceKind)
+    {
+        CSharpCompilation infrastructure = Compile(
+                "using Microsoft.Data.Sqlite; "
+                    + "namespace ProductionSqlite { "
+                    + "public interface IConnectionLease { SqliteConnection Connection { get; } } "
+                    + "public sealed class ConnectionLease(SqliteConnection connection) : IConnectionLease { public SqliteConnection Connection { get; } = connection; } "
+                    + "public sealed class ConnectionResult<T>(T value) { public T Value { get; } = value; } "
+                    + "public sealed class ConnectionMarker { } "
+                    + "public interface IConnectionFactory { System.Threading.Tasks.Task<ConnectionResult<IConnectionLease>> OpenAsync(System.Threading.CancellationToken token); } "
+                    + "public sealed class ConnectionFactory : IConnectionFactory { public async System.Threading.Tasks.Task<ConnectionResult<IConnectionLease>> OpenAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return new(new ConnectionLease(new SqliteConnection())); } } "
+                    + "public interface IConnectionSource { System.Threading.Tasks.ValueTask<SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token); } "
+                    + "public sealed class ConnectionSource(ConnectionMarker marker, IConnectionFactory factory) : IConnectionSource { private IConnectionLease? _retained; public async System.Threading.Tasks.ValueTask<SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token) { _ = marker; IConnectionLease? retained = _retained; if (retained is not null) return retained.Connection; ConnectionResult<IConnectionLease> acquired = await factory.OpenAsync(token); _retained = acquired.Value; return acquired.Value.Connection; } } "
+                    + "public sealed class UnknownConnectionSource : IConnectionSource { public System.Threading.Tasks.ValueTask<SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token) => System.Threading.Tasks.ValueTask.FromResult(UnknownConnection.Value); } "
+                    + "public sealed class DerivedConnectionSource : IConnectionSource { public System.Threading.Tasks.ValueTask<SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token) => System.Threading.Tasks.ValueTask.FromResult<SqliteConnection>(new DerivedSqliteConnection()); } "
+                    + "public sealed class FakeRegisteredConnectionSource : IConnectionSource { public async System.Threading.Tasks.ValueTask<SqliteConnection> GetOpenConnectionAsync(System.Threading.CancellationToken token) { await System.Threading.Tasks.Task.Yield(); return new SqliteConnection(); } } "
+                    + "public sealed class DerivedSqliteConnection : SqliteConnection { } "
+                    + "public static class UnknownConnection { public static SqliteConnection Value { get; set; } = null!; } "
+                    + "public static class UnrelatedConnectionSource { public static IConnectionSource Value { get; set; } = new DerivedConnectionSource(); } "
+                    + "public sealed class MutationTransaction(SqliteConnection connection) { public SqliteConnection Connection { get; } = connection; public SqliteCommand CreateCommand() => Connection.CreateCommand(); } "
+                    + "public static class Pipeline { public static async System.Threading.Tasks.Task RunAsync(SqliteConnection connection, System.Threading.CancellationToken token) { await using SqliteCommand direct = connection.CreateCommand(); await using SqliteDataReader reader = await direct.ExecuteReaderAsync(token).ConfigureAwait(false); await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); await using SqliteCommand wrapped = new MutationTransaction(connection).CreateCommand(); } } "
+                    + "}")
+            .WithAssemblyName("Cleanup.Sqlite.Infrastructure");
+
+        string sourceRegistration = sourceKind switch
+        {
+            "exact" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.ConnectionSource>(); services.AddHostedService<Worker>();",
+            "exact-factory" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource>(sp => new ProductionSqlite.ConnectionSource(sp.GetRequiredService<ProductionSqlite.ConnectionMarker>(), sp.GetRequiredService<ProductionSqlite.IConnectionFactory>())); services.AddHostedService<Worker>();",
+            "unknown" => "services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.UnknownConnectionSource>(); services.AddHostedService<Worker>();",
+            "derived" => "services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.DerivedConnectionSource>(); services.AddHostedService<Worker>();",
+            "unrelated" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.ConnectionSource>(); services.AddHostedService<Worker>();",
+            "factory-unrelated" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.ConnectionSource>(); services.AddHostedService<Worker>(_ => new Worker(ProductionSqlite.UnrelatedConnectionSource.Value));",
+            "fake-registration" => "Microsoft.Extensions.DependencyInjection.FakeRegistrations.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.FakeRegisteredConnectionSource>(services); services.AddHostedService<Worker>();",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
+        string receiver = sourceKind == "unrelated"
+            ? "unrelated"
+            : "source";
+
+        string receiverSetup = sourceKind == "unrelated"
+            ? " ProductionSqlite.IConnectionSource unrelated = ProductionSqlite.UnrelatedConnectionSource.Value;"
+            : string.Empty;
+
+        string source = RegistrationSource(sourceRegistration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(ProductionSqlite.IConnectionSource source) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ProductionSqlite.IConnectionSource>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + receiverSetup
+                    + " SqliteConnection connection = await "
+                    + receiver
+                    + ".GetOpenConnectionAsync(token).ConfigureAwait(false); await ProductionSqlite.Pipeline.RunAsync(connection, token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            .Replace(
+                "using Microsoft.Extensions.Hosting;",
+                "using Microsoft.Extensions.Hosting; using Microsoft.Data.Sqlite;",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + (sourceKind == "fake-registration"
+                ? " namespace Microsoft.Extensions.DependencyInjection { internal static class FakeRegistrations { internal static IServiceCollection AddSingleton<TContract, TImplementation>(IServiceCollection services) => services; } }"
+                : string.Empty);
+
+        CSharpCompilation consumer = Compile(source)
+            .AddReferences(infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.Sqlite.Consumer");
+
+        Assert.All(
+            new[] { infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        string[] unresolved = result.Diagnostics
+            .Where(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "Microsoft.Data.Sqlite.Sqlite",
+                    StringComparison.Ordinal))
+            .Select(static diagnostic => diagnostic.Detail)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        if (sourceKind is "unknown" or "derived" or "unrelated"
+            or "factory-unrelated" or "fake-registration")
+        {
+            Assert.Contains(unresolved, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolved, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+                StringComparison.Ordinal));
+
+            Assert.Contains(unresolved, static detail => detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteTransaction.DisposeAsync;",
+                StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.Empty(unresolved);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AwaitUsingRequiresAnExactRuntimeTypeGuardForSqliteFactories(
+        bool exactRuntimeGuard)
+    {
+        string guard = exactRuntimeGuard
+            ? "if (candidate is not Microsoft.Data.Sqlite.SqliteConnection connection || connection.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); "
+            : "if (candidate is not Microsoft.Data.Sqlite.SqliteConnection connection) throw new System.InvalidOperationException(); ";
+
+        const string helper =
+            "internal static class UnknownDatabaseConnection { internal static System.Data.Common.DbConnection Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "System.Data.Common.DbConnection candidate = UnknownDatabaseConnection.Value; "
+                    + guard
+                    + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();",
+                helper));
+
+        bool unresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(!exactRuntimeGuard, unresolved);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExactRuntimeTypeGuardFlowsIntoCapturedCleanupCallback(
+        bool exactRuntimeGuard)
+    {
+        string guard = exactRuntimeGuard
+            ? "if (connection.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); "
+            : string.Empty;
+
+        const string helper =
+            "internal static class UnknownCapturedConnection { internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "Microsoft.Data.Sqlite.SqliteConnection connection = UnknownCapturedConnection.Value; "
+                    + guard
+                    + "System.Func<System.Threading.Tasks.Task> callback = async () => { await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); }; "
+                    + "await callback().ConfigureAwait(false);",
+                helper));
+
+        Assert.Equal(
+            !exactRuntimeGuard,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExactRuntimeTypeGuardFlowsThroughReadonlyDelegateField(
+        bool exactRuntimeGuard)
+    {
+        string guard = exactRuntimeGuard
+            ? "if (connection.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); "
+            : string.Empty;
+
+        const string helper =
+            "internal static class UnknownCapturedConnection { internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!; } "
+            + "internal sealed class CleanupFinalizer(System.Func<System.Threading.Tasks.Task> cleanup) { private readonly System.Func<System.Threading.Tasks.Task> _cleanup = cleanup ?? throw new System.ArgumentNullException(nameof(cleanup)); internal System.Threading.Tasks.Task RunAsync() => _cleanup(); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "Microsoft.Data.Sqlite.SqliteConnection connection = UnknownCapturedConnection.Value; "
+                    + guard
+                    + "CleanupFinalizer finalizer = new(async () => { await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); }); "
+                    + "await finalizer.RunAsync().ConfigureAwait(false);",
+                helper));
+
+        Assert.Equal(
+            !exactRuntimeGuard,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Fact]
+    public void AwaitUsingRejectsInvokedMutationAfterExactRuntimeTypeGuard()
+    {
+        const string body =
+            "System.Data.Common.DbConnection candidate = UnknownDatabaseConnection.Value; "
+            + "if (candidate is not Microsoft.Data.Sqlite.SqliteConnection connection || connection.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); "
+            + "void ReplaceWithDerived() => connection = new DerivedSqliteConnection(); "
+            + "ReplaceWithDerived(); "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();";
+
+        const string helper =
+            "internal sealed class DerivedSqliteConnection : Microsoft.Data.Sqlite.SqliteConnection { } "
+            + "internal static class UnknownDatabaseConnection { internal static System.Data.Common.DbConnection Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AwaitUsingRequiresPatternLocalTypeProofInProviderValidationHelper(
+        bool matchingReceiver)
+    {
+        string typeReceiver = matchingReceiver
+            ? "sqlite"
+            : "UnknownDatabaseConnection.Unrelated";
+
+        string helper =
+            "internal static class UnknownDatabaseConnection { internal static System.Data.Common.DbConnection Value { get; set; } = null!; internal static System.Data.Common.DbConnection Unrelated { get; set; } = null!; } "
+            + "internal static class ConnectionGuard { internal static Microsoft.Data.Sqlite.SqliteConnection RequireExactProviderConnection(System.Data.Common.DbConnection connection) { if (connection is not Microsoft.Data.Sqlite.SqliteConnection sqlite || "
+            + typeReceiver
+            + ".GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); return sqlite; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "System.Data.Common.DbConnection candidate = UnknownDatabaseConnection.Value; "
+                    + "Microsoft.Data.Sqlite.SqliteConnection connection = ConnectionGuard.RequireExactProviderConnection(candidate); "
+                    + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();",
+                helper));
+
+        bool unresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(!matchingReceiver, unresolved);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AwaitUsingSelectsTheDirectRuntimeTypeGuardInsideAnOuterConditional(
+        bool exactRuntimeGuard)
+    {
+        string guard = exactRuntimeGuard
+            ? "if (candidate is not Microsoft.Data.Sqlite.SqliteConnection connection || connection.GetType() != typeof(Microsoft.Data.Sqlite.SqliteConnection)) throw new System.InvalidOperationException(); "
+            : "if (candidate is not Microsoft.Data.Sqlite.SqliteConnection connection) throw new System.InvalidOperationException(); ";
+
+        const string helper =
+            "internal static class UnknownDatabaseConnection { internal static System.Data.Common.DbConnection Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "if (System.DateTime.UtcNow.Ticks >= 0) { System.Data.Common.DbConnection candidate = UnknownDatabaseConnection.Value; "
+                    + guard
+                    + "await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); }",
+                helper));
+
+        bool unresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Equal(!exactRuntimeGuard, unresolved);
+    }
+
+    [Fact]
+    public void AwaitUsingRefusesAmbiguousAuthoredSqliteHelperReceivers()
+    {
+        const string body =
+            "bool exact = System.DateTime.UtcNow.Ticks > 0; "
+            + "await using Microsoft.Data.Sqlite.SqliteCommand command = (exact ? new SqliteCommandFactory(new Microsoft.Data.Sqlite.SqliteConnection()) : new SqliteCommandFactory(new DerivedSqliteConnection())).CreateCommand();";
+
+        const string helper =
+            "internal sealed class DerivedSqliteConnection : Microsoft.Data.Sqlite.SqliteConnection { } "
+            + "internal sealed class SqliteCommandFactory(Microsoft.Data.Sqlite.SqliteConnection connection) { private Microsoft.Data.Sqlite.SqliteConnection Connection { get; } = connection; internal Microsoft.Data.Sqlite.SqliteCommand CreateCommand() => Connection.CreateCommand(); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CompleteCleanupAnalysisIsReusedAcrossEquivalentRootTraversals()
+    {
+        const int rootCount = 16;
+
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat("CleanupCacheTarget.Run();", rootCount));
+
+        const string helper =
+            "internal sealed class CachedCleanup : System.IDisposable { "
+            + "private readonly System.IO.Stream _stream = new System.IO.MemoryStream(); "
+            + "public void Dispose() { _stream.Dispose(); System.IO.File.Delete(\"stable-cleanup-cache\"); } } "
+            + "internal static class CleanupCacheTarget { internal static void Run() { using (new CachedCleanup()) { } } }";
+
+        string source = R2Source(calls, helper);
+
+        string fingerprint = HostedGrimoireProducerInventory.Fingerprint(
+            SyntaxFactory.ParseExpression("CleanupCacheTarget.Run()"));
+
+        HostedProducerOperationEntry[] roots = Enumerable.Range(0, rootCount)
+            .Select(index => OrdinaryRoot(
+                    "Worker.StartAsync::call:CleanupCacheTarget.Run#"
+                        + index
+                        + "~"
+                        + fingerprint) with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: equivalent cleanup cache fixture",
+                })
+            .ToArray();
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            source,
+            roots);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CachedCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerCleanupCacheMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .CleanupCaches,
+            static candidate => candidate.Member
+                == "M:CleanupCacheTarget.Run");
+
+        Assert.True(metric.ProvenanceRequests > 1);
+
+        Assert.True(metric.ValueFlowRequests > 1);
+
+        Assert.True(
+            metric.ProvenanceBuilds == 1
+                && metric.ProvenanceStableHits
+                    == metric.ProvenanceRequests - 1
+                && metric.ValueFlowBuilds == 1
+                && metric.ValueFlowStableHits
+                    == metric.ValueFlowRequests - 1,
+            $"Expected one complete cleanup build per flow and all later requests to hit the stable cache; observed provenance requests/builds/hits {metric.ProvenanceRequests}/{metric.ProvenanceBuilds}/{metric.ProvenanceStableHits} and value-flow requests/builds/hits {metric.ValueFlowRequests}/{metric.ValueFlowBuilds}/{metric.ValueFlowStableHits}.");
+    }
+
+    [Fact]
+    public void IncompleteCleanupWorkBudgetResultsAreNotPromotedAcrossEquivalentRootTraversals()
+    {
+        const int rootCount = 2;
+
+        const int chainLength = 300;
+
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat("CleanupCacheTarget.Run();", rootCount));
+
+        string chain = string.Join(
+            " ",
+            Enumerable.Range(0, chainLength).Select(index =>
+                index == chainLength - 1
+                    ? $"internal static BudgetCleanup Step{index}() => new();"
+                    : $"internal static BudgetCleanup Step{index}() => Step{index + 1}();"));
+
+        string helper =
+            "internal sealed class BudgetCleanup : System.IDisposable { "
+            + "private readonly System.IO.Stream _stream = new System.IO.MemoryStream(); "
+            + "public void Dispose() { _stream.Dispose(); System.IO.File.Delete(\"incomplete-cleanup-cache\"); } } "
+            + "internal static class CleanupCacheTarget { "
+            + chain
+            + " internal static void Run() { using (Step0()) { } } }";
+
+        string source = R2Source(calls, helper);
+
+        string fingerprint = HostedGrimoireProducerInventory.Fingerprint(
+            SyntaxFactory.ParseExpression("CleanupCacheTarget.Run()"));
+
+        HostedProducerOperationEntry[] roots = Enumerable.Range(0, rootCount)
+            .Select(index => OrdinaryRoot(
+                    "Worker.StartAsync::call:CleanupCacheTarget.Run#"
+                        + index
+                        + "~"
+                        + fingerprint) with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: incomplete cleanup cache fixture",
+                })
+            .ToArray();
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", roots)],
+                [],
+                traversalMaximumDepth: 64);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "BudgetCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerCleanupCacheMetric run = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .CleanupCaches,
+            static candidate => candidate.Member
+                == "M:CleanupCacheTarget.Run");
+
+        Assert.Equal(rootCount, run.ProvenanceRequests);
+
+        Assert.Equal(rootCount, run.ProvenanceBuilds);
+
+        Assert.Equal(0, run.ProvenanceStableHits);
+
+        Assert.Equal(rootCount, run.ValueFlowRequests);
+
+        Assert.Equal(rootCount, run.ValueFlowBuilds);
+
+        Assert.Equal(0, run.ValueFlowStableHits);
+
+        HostedProducerCleanupCacheMetric exhausted = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .CleanupCaches,
+            candidate => candidate.Member.StartsWith(
+                    "M:CleanupCacheTarget.Step",
+                    StringComparison.Ordinal)
+                && candidate.ProvenanceRequests == rootCount
+                && candidate.ProvenanceBuilds == 0
+                && candidate.ValueFlowRequests == rootCount
+                && candidate.ValueFlowBuilds == 0);
+
+        Assert.Equal(0, exhausted.ProvenanceStableHits);
+
+        Assert.Equal(0, exhausted.ValueFlowStableHits);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedValueBindingCleanupProvenanceKeepsTwoCallSitesIsolated(
+        bool reverse)
+    {
+        string body = reverse
+            ? "await CleanupPipeline.Layer1Async(CleanupFactory.MakeB()); await CleanupPipeline.Layer1Async(CleanupFactory.MakeA());"
+            : "await CleanupPipeline.Layer1Async(CleanupFactory.MakeA()); await CleanupPipeline.Layer1Async(CleanupFactory.MakeB());";
+
+        const string helper =
+            "internal sealed class CacheCleanupA : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"cache-a\"); } } "
+            + "internal sealed class CacheCleanupB : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"cache-b\"); } } "
+            + "internal static class CleanupFactory { internal static System.IO.Stream MakeA() => new CacheCleanupA(); internal static System.IO.Stream MakeB() => new CacheCleanupB(); } "
+            + "internal static class CleanupPipeline { internal static System.Threading.Tasks.Task Layer1Async(System.IO.Stream cleanup) => Layer2Async(cleanup); private static async System.Threading.Tasks.Task Layer2Async(System.IO.Stream cleanup) { await using (cleanup) { await System.Threading.Tasks.Task.Yield(); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CacheCleanupA"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CacheCleanupB"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedDirectCleanupProvenanceKeepsCompleteEnvironmentsDistinct(
+        bool reverse)
+    {
+        string body = reverse
+            ? "await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeB()))); await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeA())));"
+            : "await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeA()))); await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeB())));";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class CacheCleanupA : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"complete-environment-a\"); } } "
+            + "internal sealed class CacheCleanupB : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"complete-environment-b\"); } } "
+            + "internal static class CleanupFactory { internal static IPropertyCleanup MakeA() => new CacheCleanupA(); internal static IPropertyCleanup MakeB() => new CacheCleanupB(); } "
+            + "internal static class CleanupPipeline { internal static IPropertyCleanup Layer1(IPropertyCleanup cleanup) => Layer2(cleanup); private static IPropertyCleanup Layer2(IPropertyCleanup cleanup) => cleanup; } "
+            + "internal static class CleanupConsumer { internal static async System.Threading.Tasks.Task ConsumeAsync(IPropertyCleanup cleanup) { await using (cleanup.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CacheCleanupA"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CacheCleanupB"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedSealedRecordPropertyValueFlowKeepsCompleteEnvironmentsDistinct(
+        bool reverse)
+    {
+        string body = reverse
+            ? "await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeB()))); await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeA())));"
+            : "await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeA()))); await CleanupConsumer.ConsumeAsync(CleanupPipeline.Layer1(CleanupPipeline.Layer1(CleanupFactory.MakeB())));";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class CacheCleanupA : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"record-environment-a\"); } } "
+            + "internal sealed class CacheCleanupB : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"record-environment-b\"); } } "
+            + "internal sealed record CleanupAdmission(IPropertyCleanup Lease); "
+            + "internal static class CleanupFactory { internal static CleanupAdmission MakeA() => new(new CacheCleanupA()); internal static CleanupAdmission MakeB() => new(new CacheCleanupB()); } "
+            + "internal static class CleanupPipeline { internal static CleanupAdmission Layer1(CleanupAdmission admission) => Layer2(admission); private static CleanupAdmission Layer2(CleanupAdmission admission) => admission; } "
+            + "internal static class CleanupConsumer { internal static async System.Threading.Tasks.Task ConsumeAsync(CleanupAdmission admission) { await using (admission.Lease.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CacheCleanupA"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "CacheCleanupB"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConditionalNestedValueBindingCleanupRemainsAmbiguousAcrossArmOrder(
+        bool reverse)
+    {
+        string resource = reverse
+            ? "condition ? CleanupPipeline.Layer1(CleanupFactory.MakeB()) : CleanupPipeline.Layer1(CleanupFactory.MakeA())"
+            : "condition ? CleanupPipeline.Layer1(CleanupFactory.MakeA()) : CleanupPipeline.Layer1(CleanupFactory.MakeB())";
+
+        string body =
+            "bool condition = System.DateTime.UtcNow.Ticks > 0; await using System.IO.Stream cleanup = "
+            + resource
+            + ";";
+
+        const string helper =
+            "internal sealed class CacheCleanupA : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"conditional-cache-a\"); } } "
+            + "internal sealed class CacheCleanupB : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"conditional-cache-b\"); } } "
+            + "internal static class CleanupFactory { internal static System.IO.Stream MakeA() => new CacheCleanupA(); internal static System.IO.Stream MakeB() => new CacheCleanupB(); } "
+            + "internal static class CleanupPipeline { internal static System.IO.Stream Layer1(System.IO.Stream cleanup) => Layer2(cleanup); private static System.IO.Stream Layer2(System.IO.Stream cleanup) => cleanup; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.Stream.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AwaitUsingClassifiesImplicitExternalProducerCleanupReturnedByAuthoredHelper()
+    {
+        const string body =
+            "await using System.IO.FileStream stream = ExternalFileFactory.Open();";
+
+        const string helper =
+            "internal static class ExternalFileFactory { internal static System.IO.FileStream Open() => new(\"path\", System.IO.FileMode.OpenOrCreate); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Fact]
+    public void ReadOnlyFileStreamCleanupReturnedByAuthoredHelperNeedsNoEffectFrontier()
+    {
+        const string body =
+            "await using System.IO.FileStream stream = ExternalFileFactory.Open();";
+
+        const string helper =
+            "internal static class ExternalFileFactory { internal static System.IO.FileStream Open() => new(\"path\", new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read }); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                AcquireWork.Replace(
+                    "return Task.CompletedTask;",
+                    "return;",
+                    StringComparison.Ordinal)
+                    + body,
+                helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.Callee == "System.IO.FileStream..ctor");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail is
+                "System.IO.FileStream.DisposeAsync"
+                    or "System.IO.FileStream..ctor");
+    }
+
+    [Fact]
+    public void MixedReadOnlyFileStreamCleanupReturnedByAuthoredHelperRemainsEffectful()
+    {
+        const string body =
+            "await using System.IO.FileStream stream = ExternalFileFactory.Open(token.CanBeCanceled);";
+
+        const string helper =
+            "internal static class ExternalFileFactory { internal static System.IO.FileStream Open(bool readOnly) => readOnly ? new(\"read\", new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read }) : new(\"write\", System.IO.FileMode.OpenOrCreate); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                AcquireWork.Replace(
+                    "return Task.CompletedTask;",
+                    "return;",
+                    StringComparison.Ordinal)
+                    + body,
+                helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SameAuthoredWrapperFactoryContextsRemainEffectfulInEitherOrder(
+        bool reverse)
+    {
+        const string readOnly =
+            "ContextualWrapperFactory.Wrap(new System.IO.FileStream(\"read\", new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read }))";
+
+        const string writable =
+            "ContextualWrapperFactory.Wrap(new System.IO.FileStream(\"write\", System.IO.FileMode.OpenOrCreate))";
+
+        string resource = reverse
+            ? "condition ? " + writable + " : " + readOnly
+            : "condition ? " + readOnly + " : " + writable;
+
+        string body =
+            "bool condition = System.DateTime.UtcNow.Ticks > 0; await using System.IO.Stream cleanup = "
+            + resource
+            + ";";
+
+        const string helper =
+            "internal sealed class ContextualOwnedStream : System.IO.MemoryStream { private readonly System.IO.FileStream _input; internal ContextualOwnedStream(System.IO.FileStream input) { _input = input; } public override async System.Threading.Tasks.ValueTask DisposeAsync() { await _input.DisposeAsync(); await base.DisposeAsync(); } } "
+            + "internal static class ContextualWrapperFactory { internal static System.IO.Stream Wrap(System.IO.FileStream input) => new ContextualOwnedStream(input); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                AcquireWork.Replace(
+                    "return Task.CompletedTask;",
+                    "return;",
+                    StringComparison.Ordinal)
+                    + body,
+                helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ContextualOwnedStream"
+            && site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ContextualOwnedStream"
+            && site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Theory]
+    [InlineData("new System.IO.FileStream(\"path\", System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read, 4096, System.IO.FileOptions.DeleteOnClose)")]
+    [InlineData("new System.IO.FileStream(\"path\", new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read, Options = System.IO.FileOptions.Asynchronous | System.IO.FileOptions.DeleteOnClose })")]
+    public void DeleteOnCloseFileStreamNeverQualifiesAsReadOnly(
+        string construction)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                AcquireWork.Replace(
+                    "return Task.CompletedTask;",
+                    "return;",
+                    StringComparison.Ordinal)
+                    + " await using System.IO.FileStream stream = "
+                    + construction
+                    + ";"));
+
+        string[] callees =
+        [
+            "System.IO.FileStream..ctor",
+            "System.IO.FileStream.DisposeAsync",
+        ];
+
+        Assert.All(callees, callee =>
+            Assert.Contains(result.Items, site =>
+                site.Kind == HostedProducerSiteKind.FileSystemEffect
+                && site.Callee == callee));
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead
+            && callees.Contains(site.Callee, StringComparer.Ordinal));
+
+        Assert.All(callees, callee =>
+            Assert.Contains(result.Diagnostics, diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                && diagnostic.Detail == callee));
+    }
+
+    [Fact]
+    public void AwaitUsingRebasesConfiguredFiniteAuthoredPropertyCleanup()
+    {
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal abstract class PropertyCleanupBase : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() => ReleaseAsync(); private static async System.Threading.Tasks.ValueTask ReleaseAsync() { await System.Threading.Tasks.Task.Yield(); System.IO.File.Delete(\"configured-property\"); } } "
+            + "internal sealed class FirstPropertyCleanup : PropertyCleanupBase { } "
+            + "internal sealed class SecondPropertyCleanup : PropertyCleanupBase { } "
+            + "internal sealed record CleanupAdmission(IPropertyCleanup Lease); "
+            + "internal sealed class CleanupResult<T>(T value) { internal T Value { get; } = value; } "
+            + "internal static class PropertyCleanupFactory { internal static CleanupResult<CleanupAdmission> Acquire(bool first) => new(new(first ? new FirstPropertyCleanup() : new SecondPropertyCleanup())); } "
+            + "internal static class UnknownPropertyCleanup { internal static IPropertyCleanup Value { get; set; } = null!; } "
+            + "internal static class UnknownPropertyCleanupConsumer { internal static async System.Threading.Tasks.Task ConsumeAsync(IPropertyCleanup cleanup) { await using (cleanup.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> exact = R2Discover(
+            R2Source(
+                R2Admission
+                    + "CleanupResult<CleanupAdmission> acquired = PropertyCleanupFactory.Acquire(token.CanBeCanceled); await using (acquired.Value.Lease.ConfigureAwait(false)) { }",
+                helper));
+
+        Assert.DoesNotContain(exact.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(exact.Items, static site =>
+            site.EnclosingType == "PropertyCleanupBase"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerDiscovery<HostedProducerSite> unknown = R2Discover(
+            R2Source(
+                R2Admission
+                    + "await UnknownPropertyCleanupConsumer.ConsumeAsync(UnknownPropertyCleanup.Value);",
+                helper));
+
+        Assert.Contains(unknown.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void AwaitUsingRefusesSealedRecordPropertyWithoutExactAssignedValueProvenance()
+    {
+        const string body =
+            "IPropertyCleanup injected = UnknownPropertyCleanup.Value; _ = new KnownPropertyCleanup(); CleanupAdmission admission = new(injected); await using (admission.Lease.ConfigureAwait(false)) { }";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"unrelated-known-cleanup\"); return default; } } "
+            + "internal sealed record CleanupAdmission(IPropertyCleanup Lease); "
+            + "internal static class UnknownPropertyCleanup { internal static IPropertyCleanup Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void AwaitUsingRefusesUnknownObjectInitializerOverrideOfExactConstructorProperty()
+    {
+        const string body =
+            "CleanupAdmission admission = new(new KnownPropertyCleanup()) { Lease = UnknownPropertyCleanup.Value }; await using (admission.Lease.ConfigureAwait(false)) { }";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"constructor-cleanup\"); return default; } } "
+            + "internal sealed record CleanupAdmission(IPropertyCleanup Lease); "
+            + "internal static class UnknownPropertyCleanup { internal static IPropertyCleanup Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownPropertyCleanup"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void AwaitUsingRefusesCustomInitSetterWithoutExactValueSemantics()
+    {
+        const string body =
+            "CleanupAdmission admission = new(new KnownPropertyCleanup()) { Lease = new KnownPropertyCleanup() }; await using (admission.Lease.ConfigureAwait(false)) { }";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"custom-init-cleanup\"); return default; } } "
+            + "internal sealed class CleanupAdmission { private IPropertyCleanup _lease; internal CleanupAdmission(IPropertyCleanup lease) { _lease = lease; } internal IPropertyCleanup Lease { get => _lease; init => _lease = UnknownPropertyCleanup.Value; } } "
+            + "internal static class UnknownPropertyCleanup { internal static IPropertyCleanup Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownPropertyCleanup"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void AwaitUsingRefusesSiblingInitializerThatMayReplaceCleanup()
+    {
+        const string body =
+            "CleanupAdmission admission = new(new KnownPropertyCleanup()) { Override = UnknownPropertyCleanup.Value }; await using (admission.Lease.ConfigureAwait(false)) { }";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"sibling-init-cleanup\"); return default; } } "
+            + "internal sealed class CleanupAdmission { internal CleanupAdmission(IPropertyCleanup lease) { Lease = lease; } internal IPropertyCleanup Lease { get; init; } internal IPropertyCleanup Override { init => Lease = value; } } "
+            + "internal static class UnknownPropertyCleanup { internal static IPropertyCleanup Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownPropertyCleanup"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void ReviewedCleanupFactoriesRequireExactFrameworkAssemblyIdentity()
+    {
+        CSharpCompilation foreign = Compile(
+                "[assembly: global::System.Reflection.AssemblyVersionAttribute(\"99.0.0.0\")] "
+                    + "namespace System.Reflection { public sealed class Assembly { public global::System.IO.Stream GetManifestResourceStream(string name) => null!; } } "
+                    + "namespace System.Security.Cryptography { public sealed class ECDsa : global::System.IDisposable { public static ECDsa Create() => new(); public void Dispose() { } } } "
+                    + "namespace System.Text.Json { public sealed class JsonDocument : global::System.IDisposable { public static JsonDocument Parse(string json) => new(); public void Dispose() { } } } "
+                    + "namespace SQLitePCL { public sealed class sqlite3 { } public abstract class sqlite3_backup : global::System.IDisposable { public abstract void Dispose(); } public static class raw { public static sqlite3_backup sqlite3_backup_init(sqlite3 destination, string destinationName, sqlite3 source, string sourceName) => null!; } } "
+                    + "namespace System.Threading.Tasks { public readonly struct ValueTask<T>(T value) { private readonly T _value = value; public static implicit operator ValueTask<T>(T value) => new(value); public ValueTask<T> ConfigureAwait(bool continueOnCapturedContext) => this; public global::System.Runtime.CompilerServices.TaskAwaiter<T> GetAwaiter() => global::System.Threading.Tasks.Task.FromResult(_value).GetAwaiter(); } } ")
+            .WithAssemblyName("SQLitePCLRaw.core");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("foreign")));
+
+        string body =
+            "using System.IO.Stream embedded = new foreign::System.Reflection.Assembly().GetManifestResourceStream(\"resource\"); "
+            + "using System.IO.StreamReader reader = new(embedded); _ = reader.ReadToEnd(); "
+            + "using foreign::System.Security.Cryptography.ECDsa crypto = foreign::System.Security.Cryptography.ECDsa.Create(); "
+            + "using foreign::System.Text.Json.JsonDocument document = foreign::System.Text.Json.JsonDocument.Parse(\"{}\"); "
+            + "using foreign::SQLitePCL.sqlite3_backup backup = foreign::SQLitePCL.raw.sqlite3_backup_init(new(), \"main\", new(), \"main\"); "
+            + "await using System.IAsyncDisposable configured = await KnownConfiguredCleanupFactory.CreateAsync().ConfigureAwait(false);";
+
+        const string helper =
+            "internal sealed class KnownConfiguredCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"known-configured-cleanup\"); return default; } } "
+            + "internal static class KnownConfiguredCleanupFactory { internal static foreign::System.Threading.Tasks.ValueTask<KnownConfiguredCleanup> CreateAsync() => new KnownConfiguredCleanup(); }";
+
+        CSharpCompilation consumer = Compile(
+                "extern alias foreign; "
+                    + R2Source(R2Admission + body, helper))
+            .AddReferences(reference)
+            .WithAssemblyName("Cleanup.ForeignTrustedFactories.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        HostedProducerInventoryDiagnostic[] unresolved = result.Diagnostics
+            .Where(static diagnostic => diagnostic.Code
+                == "HOSTED_DISPOSAL_TARGET_UNRESOLVED")
+            .ToArray();
+
+        Assert.Equal(5, unresolved.Length);
+
+        Assert.Contains(unresolved, static diagnostic =>
+            diagnostic.Detail.StartsWith(
+                "System.IO.Stream.Dispose;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(unresolved, static diagnostic =>
+            diagnostic.Detail.StartsWith(
+                "System.Security.Cryptography.ECDsa.Dispose;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(unresolved, static diagnostic =>
+            diagnostic.Detail.StartsWith(
+                "System.Text.Json.JsonDocument.Dispose;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(unresolved, static diagnostic =>
+            diagnostic.Detail.StartsWith(
+                "SQLitePCL.sqlite3_backup.Dispose;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(unresolved, static diagnostic =>
+            diagnostic.Detail.StartsWith(
+                "System.IAsyncDisposable.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.Callee == "System.IO.StreamReader.ReadToEnd");
+    }
+
+    [Fact]
+    public void ForeignConfigureAwaitCannotProveAuthoredCompletionOwnership()
+    {
+        CSharpCompilation foreign = Compile(
+                "namespace System.Threading.Tasks { public readonly struct Task { public Task ConfigureAwait(bool continueOnCapturedContext) => this; public global::System.Runtime.CompilerServices.TaskAwaiter GetAwaiter() => default; } }")
+            .WithAssemblyName("Completion.ForeignTaskLike");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("foreign")));
+
+        const string helper =
+            "internal static class ForeignCompletionProducer { internal static foreign::System.Threading.Tasks.Task ProduceAsync() { System.IO.File.Delete(\"foreign-completion\"); return default; } }";
+
+        CSharpCompilation consumer = Compile(
+                "extern alias foreign; "
+                    + R2Source(
+                        R2Admission
+                            + "await ForeignCompletionProducer.ProduceAsync().ConfigureAwait(false);",
+                        helper))
+            .AddReferences(reference)
+            .WithAssemblyName("Completion.ForeignTaskLike.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith(
+                "ForeignCompletionProducer.ProduceAsync; An awaitable or lazy helper must complete within its caller's retained lifetime.",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                or "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AwaitUsingRefusesUnreviewedMetadataCleanupWithoutExactClosedDispatch(
+        bool sealedType)
+    {
+        string cleanupType = sealedType
+            ? "public sealed class Cleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => default; }"
+            : "public abstract class Cleanup : System.IAsyncDisposable { public virtual System.Threading.Tasks.ValueTask DisposeAsync() => default; } public sealed class DerivedCleanup : Cleanup { }";
+
+        string factoryBody = sealedType
+            ? "new Cleanup()"
+            : "new DerivedCleanup()";
+
+        CSharpCompilation external = Compile(
+                "namespace ExternalCleanup { "
+                    + cleanupType
+                    + " public static class Factory { public static Cleanup Create() => "
+                    + factoryBody
+                    + "; } }")
+            .WithAssemblyName(sealedType
+                ? "Cleanup.Unreviewed.Sealed"
+                : "Cleanup.Unreviewed.Abstract");
+
+        using MemoryStream image = new();
+
+        Assert.True(external.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray());
+
+        CSharpCompilation consumer = Compile(
+                R2Source(
+                    R2Admission
+                        + "await using ExternalCleanup.Cleanup cleanup = ExternalCleanup.Factory.Create();"))
+            .AddReferences(reference)
+            .WithAssemblyName("Cleanup.Unreviewed.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "ExternalCleanup.Cleanup.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void UsingTreatsOnlyDirectConditionalNullAsAnExactEmptyCleanupBranch()
+    {
+        const string body =
+            "IOptionalSyncGate syncGate = new OptionalSyncGate(); using System.IDisposable? syncLease = token.CanBeCanceled ? null : await syncGate.AcquireAsync(); "
+            + "IOptionalAsyncGate asyncGate = new OptionalAsyncGate(); await using System.IAsyncDisposable? asyncLease = token.CanBeCanceled ? null : await asyncGate.AcquireAsync();";
+
+        const string helper =
+            "internal interface IOptionalSyncGate { System.Threading.Tasks.Task<System.IDisposable> AcquireAsync(); } "
+            + "internal sealed class OptionalSyncGate : IOptionalSyncGate { public async System.Threading.Tasks.Task<System.IDisposable> AcquireAsync() { await System.Threading.Tasks.Task.Yield(); return new OptionalSyncLease(); } } "
+            + "internal sealed class OptionalSyncLease : System.IDisposable { public void Dispose() => System.IO.File.Delete(\"optional-sync\"); } "
+            + "internal interface IOptionalAsyncGate { System.Threading.Tasks.ValueTask<System.IAsyncDisposable> AcquireAsync(); } "
+            + "internal sealed class OptionalAsyncGate : IOptionalAsyncGate { public async System.Threading.Tasks.ValueTask<System.IAsyncDisposable> AcquireAsync() { await System.Threading.Tasks.Task.Yield(); return new OptionalAsyncLease(); } } "
+            + "internal sealed class OptionalAsyncLease : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"optional-async\"); return default; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "OptionalSyncLease"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "OptionalAsyncLease"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void UsingInventoriesDefaultNonNullableStructInNullableConditional()
+    {
+        const string body =
+            "using System.IDisposable? cleanup = token.CanBeCanceled ? default(DefaultStructCleanup) : null;";
+
+        const string helper =
+            "internal readonly struct DefaultStructCleanup : System.IDisposable { public void Dispose() => System.IO.File.Delete(\"default-struct-cleanup\"); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "DefaultStructCleanup"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void UsingAcceptsExactFrameworkLockScopeCleanup()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "System.Threading.Lock runtimeLock = new(); using System.Threading.Lock.Scope scope = runtimeLock.EnterScope();"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.Threading.Lock.Scope.Dispose;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AwaitUsingLiftsMostDerivedStreamCleanupAcrossCanonicalCompilations()
+    {
+        CSharpCompilation infrastructure = Compile(
+                "namespace CrossProjectCleanup { "
+                    + "public interface IBlobStore { System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync(); } "
+                    + "public sealed class BlobStore : IBlobStore { public async System.Threading.Tasks.Task<System.IO.Stream> OpenReadAsync() { await System.Threading.Tasks.Task.Yield(); return new ReadStream(); } "
+                    + "public static System.IO.Stream OpenAmbiguous(bool first) => first ? new FirstStream() : new SecondStream(); "
+                    + "private sealed class ReadStream : System.IO.MemoryStream { public override async System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"known-stream-cleanup\"); await base.DisposeAsync(); } } "
+                    + "private sealed class FirstStream : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"first-stream-cleanup\"); return default; } } "
+                    + "private sealed class SecondStream : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.Directory.Delete(\"second-stream-cleanup\"); return default; } } } }")
+            .WithAssemblyName("Cleanup.Stream.Infrastructure");
+
+        HostedProducerDiscovery<HostedProducerSite> exact = Discover(
+            "CrossProjectCleanup.IBlobStore store = new CrossProjectCleanup.BlobStore(); await using System.IO.Stream stream = await store.OpenReadAsync();");
+
+        Assert.DoesNotContain(exact.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(exact.Items, static site =>
+            site.EnclosingType == "CrossProjectCleanup.BlobStore.ReadStream"
+            && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerDiscovery<HostedProducerSite> ambiguous = Discover(
+            "await using System.IO.Stream stream = CrossProjectCleanup.BlobStore.OpenAmbiguous(token.CanBeCanceled);");
+
+        Assert.Contains(ambiguous.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        HostedProducerDiscovery<HostedProducerSite> unknown = Discover(
+            "await UnknownStreamConsumer.ConsumeAsync(null!);",
+            "internal static class UnknownStreamConsumer { internal static async System.Threading.Tasks.Task ConsumeAsync(System.IO.Stream stream) { await using (stream) { await System.Threading.Tasks.Task.Yield(); } } }");
+
+        Assert.Contains(unknown.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(
+            string cleanupBody,
+            string extra = "")
+        {
+            CSharpCompilation consumer = Compile(
+                    R2Source(R2Admission + cleanupBody, extra))
+                .AddReferences(infrastructure.ToMetadataReference())
+                .WithAssemblyName("Cleanup.Stream.Consumer");
+
+            Assert.All(
+                new[] { infrastructure, consumer },
+                static compilation => Assert.Empty(
+                    compilation.GetDiagnostics().Where(static diagnostic =>
+                        diagnostic.Severity == DiagnosticSeverity.Error)));
+
+            return HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+        }
     }
 
     [Theory]
@@ -4311,7 +21027,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             }
         }
 
-        Assert.True(validation.IsValid, "Every discovery, ownership, root, and site diagnostic must be closed by executable evidence before the production inventory is GREEN.");
+        Assert.True(
+            validation.IsValid,
+            "Every discovery, ownership, root, and site diagnostic must be closed by executable evidence before the production inventory is GREEN."
+                + global::System.Environment.NewLine
+                + HostedGrimoireProducerInventory.RenderDiagnosticReport(validation.Diagnostics));
     }
 
     [Theory]
@@ -4592,20 +21312,281 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void DiagnosticReportRetainsEveryDiagnosticWithoutCollectionAbbreviation()
+    {
+        HostedProducerInventoryDiagnostic[] diagnostics =
+        [
+            new("CODE-1", "identity-1", "detail-1"),
+            new("CODE-2", "identity-2", "detail-2"),
+            new("CODE-3", "identity-3", "detail-3"),
+            new("CODE-4", "identity-4", "detail-4"),
+            new("CODE-5", "identity-5", "detail-5"),
+            new("CODE-6", "identity-6", "detail-6"),
+            new("CODE-7", "identity-7", "detail-7"),
+        ];
+
+        string expected = string.Join(
+            global::System.Environment.NewLine,
+            "CODE-1\tidentity-1\tdetail-1",
+            "CODE-2\tidentity-2\tdetail-2",
+            "CODE-3\tidentity-3\tdetail-3",
+            "CODE-4\tidentity-4\tdetail-4",
+            "CODE-5\tidentity-5\tdetail-5",
+            "CODE-6\tidentity-6\tdetail-6",
+            "CODE-7\tidentity-7\tdetail-7");
+
+        Assert.Equal(
+            expected,
+            HostedGrimoireProducerInventory.RenderDiagnosticReport(diagnostics));
+    }
+
+    [Fact]
+    public void ManifestComparisonReportsDuplicateRawRowsAsMultisetDifferences()
+    {
+        const string discovered = "# header\n# columns\nshared\nshared\nadded\n";
+        const string reviewed = "# header\n# columns\nshared\nremoved\nremoved\n";
+
+        HostedProducerCapsuleManifestComparison comparison =
+            HostedGrimoireProducerInventory.CompareCapsuleManifests(
+                discovered,
+                reviewed);
+
+        Assert.False(comparison.ExactTextMatch);
+        Assert.Equal(["shared", "added"], comparison.AddedRows);
+        Assert.Equal(["removed", "removed"], comparison.RemovedRows);
+
+        string expected = string.Join(
+            global::System.Environment.NewLine,
+            "DISCOVERY DIAGNOSTICS (0)",
+            "<none>",
+            "MANIFEST EXACT TEXT MATCH: False",
+            "MANIFEST ADDED ROWS (2)",
+            "+ shared",
+            "+ added",
+            "MANIFEST REMOVED ROWS (2)",
+            "- removed",
+            "- removed");
+
+        Assert.Equal(
+            expected,
+            HostedGrimoireProducerInventory.RenderProductionComparisonReport(
+                [],
+                comparison));
+    }
+
+    [Fact]
+    public void CapsuleManifestUpdateTreatsAMissingReviewedFileAsEmptyRawContent()
+    {
+
+        DirectoryInfo root = Directory.CreateTempSubdirectory("arcanum-hosted-manifest-");
+
+        try
+        {
+
+            string path = Path.Combine(root.FullName, "reviewed.tsv");
+
+            const string expected = "# header\n# columns\nrow\n";
+
+            List<string> reports = [];
+
+            bool reportedBeforeWrite = false;
+
+            HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory
+                .ReadOrUpdateCapsuleManifest(
+                    path,
+                    expected,
+                    [],
+                    updateRequested: true,
+                    report =>
+                    {
+
+                        reportedBeforeWrite = !File.Exists(path);
+
+                        reports.Add(report);
+
+                    });
+
+            string report = Assert.Single(reports);
+
+            string expectedReport = string.Join(
+                global::System.Environment.NewLine,
+                "DISCOVERY DIAGNOSTICS (0)",
+                "<none>",
+                "MANIFEST EXACT TEXT MATCH: False",
+                "MANIFEST ADDED ROWS (3)",
+                "+ # header",
+                "+ # columns",
+                "+ row",
+                "MANIFEST REMOVED ROWS (0)",
+                "<none>");
+
+            Assert.True(reportedBeforeWrite);
+
+            Assert.Equal(expectedReport, report);
+
+            Assert.Equal(expectedReport, update.Report);
+
+            Assert.Equal(expected, update.Reviewed);
+
+            Assert.Equal(expected, File.ReadAllText(path));
+
+        }
+        finally
+        {
+
+            root.Delete(recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void CapsuleManifestUpdateReportsMalformedHeadersBeforeReplacingThem()
+    {
+
+        DirectoryInfo root = Directory.CreateTempSubdirectory("arcanum-hosted-manifest-");
+
+        try
+        {
+
+            string path = Path.Combine(root.FullName, "reviewed.tsv");
+
+            const string reviewed = "# wrong-version\n# columns\nold\n";
+
+            const string expected = "# supported-version\n# columns\nnew\n";
+
+            File.WriteAllText(path, reviewed);
+
+            string? reportedContent = null;
+
+            string? observedBeforeWrite = null;
+
+            HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory
+                .ReadOrUpdateCapsuleManifest(
+                    path,
+                    expected,
+                    [],
+                    updateRequested: true,
+                    report =>
+                    {
+
+                        observedBeforeWrite = File.ReadAllText(path);
+
+                        reportedContent = report;
+
+                    });
+
+            Assert.Equal(reviewed, observedBeforeWrite);
+
+            Assert.NotNull(reportedContent);
+
+            Assert.Contains("+ # supported-version", reportedContent, StringComparison.Ordinal);
+
+            Assert.Contains("- # wrong-version", reportedContent, StringComparison.Ordinal);
+
+            Assert.Contains("+ new", reportedContent, StringComparison.Ordinal);
+
+            Assert.Contains("- old", reportedContent, StringComparison.Ordinal);
+
+            Assert.Equal(reportedContent, update.Report);
+
+            Assert.Equal(expected, update.Reviewed);
+
+            Assert.Equal(expected, File.ReadAllText(path));
+
+        }
+        finally
+        {
+
+            root.Delete(recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void CapsuleManifestUpdateDoesNotWriteWhenDiscoveryDiagnosticsExist()
+    {
+
+        DirectoryInfo root = Directory.CreateTempSubdirectory("arcanum-hosted-manifest-");
+
+        try
+        {
+
+            string path = Path.Combine(root.FullName, "reviewed.tsv");
+
+            const string reviewed = "# wrong-version\n";
+
+            const string expected = "# supported-version\n";
+
+            File.WriteAllText(path, reviewed);
+
+            bool reportedBeforeWrite = false;
+
+            HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory
+                .ReadOrUpdateCapsuleManifest(
+                    path,
+                    expected,
+                    [new("DISCOVERY_ERROR", "identity", "detail")],
+                    updateRequested: true,
+                    _ => reportedBeforeWrite = true);
+
+            Assert.False(reportedBeforeWrite);
+
+            Assert.Contains("DISCOVERY_ERROR\tidentity\tdetail", update.Report, StringComparison.Ordinal);
+
+            Assert.Equal(reviewed, update.Reviewed);
+
+            Assert.Equal(reviewed, File.ReadAllText(path));
+
+        }
+        finally
+        {
+
+            root.Delete(recursive: true);
+
+        }
+
+    }
+
+    [Fact]
     public void ReviewedCapsuleManifestExactlyMatchesProductionDiscovery()
     {
         HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.Empty(discovery.Diagnostics);
+        HostedProducerAnalysisMetrics metrics =
+            Assert.IsType<HostedProducerAnalysisMetrics>(
+                discovery.AnalysisMetrics);
+
+        foreach (string line in RenderRootTraversalMetrics(
+            metrics.RootTraversals))
+        {
+            output.WriteLine(line);
+        }
+
+        foreach (string line in RenderLargestAnalysisCounters(metrics))
+        {
+            output.WriteLine(line);
+        }
 
         string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(discovery.Items);
 
-        if (global::System.Environment.GetEnvironmentVariable("ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES") == "1")
-        {
-            File.WriteAllText(HostedGrimoireProducerInventory.CapsuleManifestPath, expected);
-        }
+        bool updateRequested =
+            global::System.Environment.GetEnvironmentVariable(
+                "ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES") == "1";
 
-        Assert.Equal(expected, File.ReadAllText(HostedGrimoireProducerInventory.CapsuleManifestPath));
+        HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory
+            .ReadOrUpdateCapsuleManifest(
+                HostedGrimoireProducerInventory.CapsuleManifestPath,
+                expected,
+                discovery.Diagnostics,
+                updateRequested,
+                output.WriteLine);
+
+        Assert.True(
+            discovery.Diagnostics.Count == 0
+                && string.Equals(expected, update.Reviewed, StringComparison.Ordinal),
+            update.Report);
     }
 
     [Fact]
@@ -4811,6 +21792,38 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void ReadOnlyFileStreamCleanupNeedsNoExternalEffectFrontier()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                AcquireWork.Replace(
+                    "return Task.CompletedTask;",
+                    "return;",
+                    StringComparison.Ordinal)
+                    + " await using System.IO.FileStream input = new(\"path\", new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess.Read, Share = System.IO.FileShare.Read });"));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.FileStream.DisposeAsync");
+    }
+
+    [Fact]
+    public void DbParameterCollectionClearIsReviewedDatabaseSupport()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(
+                "System.Data.Common.DbCommand command = new Microsoft.Data.Sqlite.SqliteCommand(); command.Parameters.Clear();"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Data.Common.DbParameterCollection.Clear");
+    }
+
+    [Fact]
     public void ExternalCapabilityInterfacesAreClassifiedAtTheirExactBoundary()
     {
         const string capabilities = """
@@ -4998,6 +22011,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 && diagnostic.Detail.Contains(
                     "Enumerator",
                     StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
     }
 
     [Fact]
@@ -5019,6 +22038,21 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 && diagnostic.Detail.Contains(
                     "Enumerator",
                     StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        HostedProducerDiscovery<HostedProducerSite> unknown = Discover(
+            FixtureSource(
+                "Consume(null!);",
+                "static void Consume(System.Collections.Generic.IEnumerator<string> enumerator) { using (enumerator) { } }"));
+
+        Assert.Contains(
+            unknown.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
     }
 
     [Fact]
@@ -5047,6 +22081,79 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             fileResult.Items,
             static site => site.Callee == "System.IO.StreamReader.ReadToEnd"
                 && site.Kind == HostedProducerSiteKind.FileSystemRead);
+
+        Assert.DoesNotContain(
+            fileResult.Diagnostics,
+            static diagnostic => diagnostic.Code
+                    == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.IO.StreamReader.Dispose;",
+                    StringComparison.Ordinal));
+
+        HostedProducerDiscovery<HostedProducerSite> borrowedResult = Discover(
+            FixtureSource(
+                "using System.IO.Stream stream = System.IO.File.OpenRead(\"path\"); using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8, true, 1024, leaveOpen: true); _ = reader.ReadToEnd();"));
+
+        Assert.DoesNotContain(
+            borrowedResult.Diagnostics,
+            static diagnostic => diagnostic.Code
+                    == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.IO.StreamReader.Dispose;",
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FileBackedStreamReaderLeaveOpenControlsCleanupEffect()
+    {
+        const string constructor =
+            "System.IO.Stream stream = System.IO.File.OpenRead(\"path\"); "
+            + "using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8, false, 1024, leaveOpen: true); "
+            + "_ = reader.ReadToEnd();";
+
+        HostedProducerDiscovery<HostedProducerSite> borrowed =
+            DiscoverWithRoots(
+                FixtureSource(AcquireWork + constructor, AdmissionTypes),
+                OrdinaryRoot());
+
+        Assert.Contains(borrowed.Items, static site =>
+            site.Callee == "System.IO.StreamReader.ReadToEnd"
+            && site.Kind == HostedProducerSiteKind.FileSystemRead);
+
+        Assert.DoesNotContain(borrowed.Items, static site =>
+            site.Callee == "System.IO.StreamReader.Dispose"
+            && site.Kind == HostedProducerSiteKind.FileSystemEffect);
+
+        Assert.DoesNotContain(borrowed.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.StreamReader.Dispose");
+
+        const string unknown =
+            "internal static class UnknownLeaveOpen { internal static bool Value { get; set; } }";
+
+        string[] conservativeConstructors =
+        [
+            constructor.Replace("leaveOpen: true", "leaveOpen: false", StringComparison.Ordinal),
+            constructor.Replace("leaveOpen: true", "leaveOpen: UnknownLeaveOpen.Value", StringComparison.Ordinal),
+        ];
+
+        Assert.All(conservativeConstructors, conservative =>
+        {
+            HostedProducerDiscovery<HostedProducerSite> result =
+                DiscoverWithRoots(
+                    FixtureSource(
+                        AcquireWork + conservative,
+                        AdmissionTypes + unknown),
+                    OrdinaryRoot());
+
+            Assert.Contains(result.Items, static site =>
+                site.Callee == "System.IO.StreamReader.Dispose"
+                && site.Kind == HostedProducerSiteKind.FileSystemEffect);
+
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                && diagnostic.Detail == "System.IO.StreamReader.Dispose");
+        });
     }
 
     [Fact]
@@ -5098,6 +22205,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             static diagnostic => diagnostic.Code is
                 "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
                     or "HOSTED_SITE_UNCLASSIFIED");
+
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
     }
 
     [Fact]
@@ -5294,6 +22406,299 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             result.Diagnostics,
             static diagnostic => diagnostic.Code
                 == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void IdentityPreservingCleanupValueDiamondConvergesWithinTraversalStateLimit()
+    {
+        const int depth = 6;
+
+        string helpers = string.Join(
+            " ",
+            Enumerable.Range(0, depth)
+                .Select(index => "static void CleanupLayer"
+                    + index
+                    + "(System.IO.Stream stream) { CleanupLayer"
+                    + (index + 1)
+                    + "(Identity(stream)); CleanupLayer"
+                    + (index + 1)
+                    + "(Identity(stream)); }"))
+            + " static System.IO.Stream Identity(System.IO.Stream stream) => stream;"
+            + " static void CleanupLayer"
+            + depth
+            + "(System.IO.Stream stream) { using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8, true, 1024, leaveOpen: true); _ = reader.ReadToEnd(); }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(
+                "using System.IO.Stream stream = System.IO.File.OpenRead(\"diamond\"); CleanupLayer0(Identity(stream));",
+                helpers));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                maximumAnalyzedStatesPerRoot: 64);
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.StreamReader.ReadToEnd"
+            && site.Kind == HostedProducerSiteKind.FileSystemRead);
+
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void OwnerRecoveryTupleContextExpiresBeforeSharedCleanupValueTail()
+    {
+        const int depth = 40;
+
+        string source = OfflineTransitionDispatchFixture();
+
+        foreach (string marker in new[]
+        {
+            "System.IO.File.Exists(\"serving-authenticated-mutation\");",
+            "System.IO.File.Exists(\"serving-authenticated-factory\");",
+            "System.IO.File.Delete(\"authenticated-mutation-owner\");",
+            "System.IO.File.Delete(\"authenticated-factory-owner\");",
+        })
+        {
+            string expanded = marker + " global::RecoverySharedTail.Run();";
+
+            source = source.Replace(marker, expanded, StringComparison.Ordinal);
+
+            Assert.Contains(expanded, source, StringComparison.Ordinal);
+        }
+
+        string layers = string.Join(
+            " ",
+            Enumerable.Range(0, depth)
+                .Select(index => "private static void Layer"
+                    + index
+                    + "(System.IO.Stream stream) { Layer"
+                    + (index + 1)
+                    + "(Identity(stream)); Layer"
+                    + (index + 1)
+                    + "(Identity(stream)); }"));
+
+        source += " internal static class RecoverySharedTail { "
+            + "internal static void Run() { using System.IO.Stream stream = System.IO.File.OpenRead(\"shared-recovery-tail\"); Layer0(Identity(stream)); } "
+            + "private static System.IO.Stream Identity(System.IO.Stream stream) => stream; "
+            + layers
+            + " private static void Layer"
+            + depth
+            + "(System.IO.Stream stream) { using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8, true, 1024, leaveOpen: true); _ = reader.ReadToEnd(); } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [new(
+                    "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalOwnerRoot.Run",
+                    "src/Fixture.cs",
+                    "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.AuthenticatedJournalOwnerRoot",
+                    "Run",
+                    HostedProducerAuthorityKind.OwnerBoundRecovery,
+                    "authenticated journal owner shared-tail fixture",
+                    [])],
+                maximumAnalyzedStatesPerRoot: 64);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType.EndsWith(
+                ".ServingMutationRecoveryHandler",
+                StringComparison.Ordinal)
+            && site.Member == "RecoverAuthenticatedAsync"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType.EndsWith(
+                ".ServingFactoryRecoveryHandler",
+                StringComparison.Ordinal)
+            && site.Member == "RecoverAuthenticatedAsync"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType.EndsWith(
+                ".CovenantErasureCoordinator",
+                StringComparison.Ordinal)
+            && site.Member == "RunMutationAuthenticatedAsync"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType.EndsWith(
+                ".CovenantErasureCoordinator",
+                StringComparison.Ordinal)
+            && site.Member == "RunFactoryAuthenticatedAsync"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RecoverySharedTail"
+            && site.Member == "Layer40"
+            && site.Callee == "System.IO.StreamReader.ReadToEnd");
+    }
+
+    [Fact]
+    public void EvaluationEnvironmentWorkLimitFailsClosed()
+    {
+        CSharpCompilation compilation = Compile(
+            FixtureSource("System.IO.File.Exists(\"bounded-environment\");"));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumMembers: 0);
+
+        Assert.Contains(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void EvaluationEnvironmentDepthLimitFailsClosed()
+    {
+        CSharpCompilation compilation = Compile(
+            FixtureSource("System.IO.File.Exists(\"bounded-depth\");"));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumDepth: 0);
+
+        Assert.Contains(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void EquivalentReboundCallableEnvironmentsConvergeWithoutTraversalLimit()
+    {
+        const string target =
+            "internal static class ReboundConvergenceTarget { "
+            + "internal static void Start() { A(Emit, Unknown()); } "
+            + "private static bool Unknown() => DateTime.UtcNow.Ticks > 0; "
+            + "private static void A(System.Action next, bool wrap) { "
+            + "System.Action relay = () => next(); "
+            + "if (wrap) A(relay, wrap); else Sink(relay); } "
+            + "private static void Sink(System.Action next) => next(); "
+            + "private static void Emit() { System.IO.File.Exists(\"rebound-tail\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource("ReboundConvergenceTarget.Start();", target));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ReboundConvergenceTarget"
+            && site.Member == "Emit"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code is "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED"
+                or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void SharedDiamondCallableCycleConvergesWithinLowEvaluationEnvironmentLimit()
+    {
+        const string target =
+            "internal static class SharedDiamondCallableCycleTarget { "
+            + "internal static void Start() => A(Read, Delete); "
+            + "private static bool Unknown() => DateTime.UtcNow.Ticks > 0; "
+            + "private static void A(System.Action left, System.Action right) { "
+            + "B(() => left(), () => right()); } "
+            + "private static void B(System.Action left, System.Action right) { "
+            + "if (Unknown()) A(left, right); else { left(); right(); } } "
+            + "private static void Read() { System.IO.File.Exists(\"shared-cycle-read\"); } "
+            + "private static void Delete() { System.IO.File.Delete(\"shared-cycle-delete\"); } }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(
+                "SharedDiamondCallableCycleTarget.Start();",
+                target));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumMembers: 5);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SharedDiamondCallableCycleTarget"
+            && site.Member == "Read"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SharedDiamondCallableCycleTarget"
+            && site.Member == "Delete"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code is
+                "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"
+                    or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void SharedDiamondCallableEnvironmentDoesNotConflateDivergentBoundValues()
+    {
+        const string target =
+            "internal static class DivergentSharedDiamondCycleTarget { "
+            + "internal static void Start() { "
+            + "A(Read, Delete, true); A(Read, Delete, false); } "
+            + "private static void A(System.Action left, System.Action right, bool choose) { "
+            + "B(() => left(), () => right(), choose); choose = choose; } "
+            + "private static void B(System.Action left, System.Action right, bool choose) { "
+            + "if (choose) left(); else right(); choose = choose; } "
+            + "private static void Read() { System.IO.File.Exists(\"divergent-cycle-read\"); } "
+            + "private static void Delete() { System.IO.File.Delete(\"divergent-cycle-delete\"); } }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(
+                "DivergentSharedDiamondCycleTarget.Start();",
+                target));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                [],
+                evaluationEnvironmentMaximumMembers: 6);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DivergentSharedDiamondCycleTarget"
+            && site.Member == "Read"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "DivergentSharedDiamondCycleTarget"
+            && site.Member == "Delete"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code is
+                "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"
+                    or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
     }
 
     [Fact]
@@ -6285,5 +23690,21 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         string[] assemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);
 
         return CSharpCompilation.Create("InventoryFixture", [CSharpSyntaxTree.ParseText(source, path: "src/Fixture.cs")], assemblies.Select(static path => MetadataReference.CreateFromFile(path)), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+    }
+
+    private static CSharpCompilation CompileWithProductionReferencePack(
+        string source)
+    {
+        CSharpCompilation core = HostedGrimoireProducerInventory
+            .ProductionCompilations
+            .Single(static compilation => compilation.AssemblyName
+                == "RetroDownfall.Arcanum.Core");
+
+        return CSharpCompilation.Create(
+            "InventoryReferencePackFixture",
+            [CSharpSyntaxTree.ParseText(source, path: "src/Fixture.cs")],
+            core.References,
+            new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary));
     }
 }

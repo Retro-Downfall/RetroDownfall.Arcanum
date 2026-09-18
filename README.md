@@ -12,6 +12,8 @@ Arcanum runs a long-lived HTTP host (`arcanum serve`) with a set of thin CLI cli
 
 This page is a tour of what Arcanum does and how it differs. The authoritative architecture, HTTP contracts, CLI reference, and configuration reference are linked below; this one assumes you're comfortable with the usual terms.
 
+Ordinary background work stays on the queue-free fast path. A destructive Grimoire transition closes host-wide admission and drains work already admitted before it takes exclusive control. If the process stops, startup resumes only from authenticated durable evidence; evidence it cannot verify keeps the Grimoire closed instead of guessing.
+
 ## Functions and how Arcanum differs
 
 ### One executable, no runtime

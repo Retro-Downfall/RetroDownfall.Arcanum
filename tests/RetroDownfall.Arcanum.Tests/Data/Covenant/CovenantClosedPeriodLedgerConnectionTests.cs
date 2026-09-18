@@ -108,6 +108,47 @@ public sealed class CovenantClosedPeriodLedgerConnectionTests
 
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Opening_rejects_a_non_exact_connection_without_changing_its_state(
+        bool alreadyOpen)
+    {
+
+        await using CovenantSchemaScratchDatabase scratch =
+            await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        await using DerivedSqliteConnection connection = new(
+            ConnectionString(scratch));
+
+        if (alreadyOpen)
+        {
+
+            await connection.OpenAsync(Token);
+
+        }
+
+        await using ArcanumDbContext context = CreateContext(connection);
+
+        CovenantClosedPeriodLedgerConnection ledger = new(
+            context,
+            CovenantSqliteConnectionInitializer.Instance);
+
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ledger.OpenAsync(Token));
+
+        Assert.Equal(
+            "The closed-period ledger connection must be an exact SQLite connection.",
+            error.Message);
+
+        Assert.Equal(
+            alreadyOpen
+                ? System.Data.ConnectionState.Open
+                : System.Data.ConnectionState.Closed,
+            connection.State);
+
+    }
+
     private static async Task<long> ScalarLongAsync(
         CovenantClosedPeriodLedgerConnection ledger,
         string sql)
@@ -127,21 +168,35 @@ public sealed class CovenantClosedPeriodLedgerConnectionTests
     {
 
         DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
-            .UseSqlite(
-                new SqliteConnectionStringBuilder
-                {
-                    DataSource = scratch.DatabasePath,
-
-                    Password = CovenantSchemaScratchDatabase.ScratchPassphrase,
-
-                    Pooling = false,
-                }.ToString())
+            .UseSqlite(ConnectionString(scratch))
             .UseModel(RetroDownfall.Arcanum.Infrastructure.Generated.ArcanumDbContextModel.Instance)
             .Options;
 
         return new ArcanumDbContext(options, new UnusedSecretStore(), new ScratchPassphrase());
 
     }
+
+    private static ArcanumDbContext CreateContext(SqliteConnection connection)
+    {
+
+        DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
+            .UseSqlite(connection)
+            .UseModel(RetroDownfall.Arcanum.Infrastructure.Generated.ArcanumDbContextModel.Instance)
+            .Options;
+
+        return new ArcanumDbContext(options, new UnusedSecretStore(), new ScratchPassphrase());
+
+    }
+
+    private static string ConnectionString(CovenantSchemaScratchDatabase scratch) =>
+        new SqliteConnectionStringBuilder
+        {
+            DataSource = scratch.DatabasePath,
+
+            Password = CovenantSchemaScratchDatabase.ScratchPassphrase,
+
+            Pooling = false,
+        }.ToString();
 
     /// <summary>The context takes one and this suite never reaches a path that reads it.</summary>
     private sealed class UnusedSecretStore : ISecretStore
@@ -170,5 +225,8 @@ public sealed class CovenantClosedPeriodLedgerConnectionTests
                 "This suite's passphrase is the scratch database's own and is never replaced.");
 
     }
+
+    private sealed class DerivedSqliteConnection(string connectionString)
+        : SqliteConnection(connectionString);
 
 }

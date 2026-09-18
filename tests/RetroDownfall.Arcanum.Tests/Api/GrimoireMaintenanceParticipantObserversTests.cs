@@ -26,6 +26,134 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 public sealed class GrimoireMaintenanceParticipantObserversTests
 {
     [Fact]
+    public void Drain_observer_tracks_reference_counted_active_enrolments_and_idempotent_disposal()
+    {
+        SqliteNativeRuntime.Instance.Initialize();
+
+        using SqliteConnection connection = new("Data Source=:memory:;Pooling=False");
+
+        connection.Open();
+
+        ObservingCovenantConnectionDrain drain = new(new CovenantConnectionDrain());
+
+        using IDisposable firstEnrolment = drain.Register(connection);
+
+        using IDisposable secondEnrolment = drain.Register(connection);
+
+        Assert.Equal(1, drain.OpenEnrolledConnectionCount);
+
+        Assert.Equal(2, drain.OpenEnrolmentCount);
+
+        Assert.Equal(2, drain.OpenEnrolmentCountFor(connection));
+
+        Assert.Equal(1, drain.RegisteredConnectionCount);
+
+        Assert.Equal(2, drain.RegisteredEnrolmentCount);
+
+        Assert.Equal(2, drain.RegisteredEnrolmentCountFor(connection));
+
+        connection.Close();
+
+        Assert.Equal(0, drain.OpenEnrolledConnectionCount);
+
+        Assert.Equal(0, drain.OpenEnrolmentCount);
+
+        Assert.Equal(0, drain.OpenEnrolmentCountFor(connection));
+
+        Assert.Equal(2, drain.RegisteredEnrolmentCountFor(connection));
+
+        connection.Open();
+
+        DrainEnrolmentObservation[] observations = [.. drain.Enrolments];
+
+        Assert.Equal(2, observations.Length);
+
+        firstEnrolment.Dispose();
+
+        Assert.Equal(1, drain.OpenEnrolledConnectionCount);
+
+        Assert.Equal(1, drain.OpenEnrolmentCount);
+
+        Assert.Equal(1, drain.OpenEnrolmentCountFor(connection));
+
+        Assert.Equal(1, drain.RegisteredConnectionCount);
+
+        Assert.Equal(1, drain.RegisteredEnrolmentCount);
+
+        Assert.Equal(1, drain.RegisteredEnrolmentCountFor(connection));
+
+        Assert.Equal(1, observations[0].Disposals);
+
+        firstEnrolment.Dispose();
+
+        Assert.Equal(1, drain.OpenEnrolledConnectionCount);
+
+        Assert.Equal(1, drain.OpenEnrolmentCount);
+
+        Assert.Equal(1, drain.RegisteredEnrolmentCount);
+
+        Assert.Equal(1, observations[0].Disposals);
+
+        secondEnrolment.Dispose();
+
+        Assert.Equal(0, drain.OpenEnrolledConnectionCount);
+
+        Assert.Equal(0, drain.OpenEnrolmentCount);
+
+        Assert.Equal(0, drain.OpenEnrolmentCountFor(connection));
+
+        Assert.Equal(0, drain.RegisteredConnectionCount);
+
+        Assert.Equal(0, drain.RegisteredEnrolmentCount);
+
+        Assert.Equal(0, drain.RegisteredEnrolmentCountFor(connection));
+
+        Assert.Equal(1, observations[1].Disposals);
+    }
+
+    [Fact]
+    public async Task Reconciliation_barrier_waits_for_the_exact_next_generation()
+    {
+        const long expectedGeneration = 43;
+
+        OrdinaryMutationObservations observations = new();
+
+        SessionAttachmentIndexRequest[] pending =
+        [
+            new(Guid.NewGuid(), Guid.NewGuid(), Attempt: 7),
+        ];
+
+        var index = new ObservingSessionAttachmentIndexWriter(
+            new ControlledIndexWriter(() => Task.FromResult(pending)),
+            observations,
+            () => expectedGeneration);
+
+        long completedBefore = observations.Snapshot.Reconciliations;
+
+        Task<IndexingReconciliationObservation> waiting = observations.WaitForNextReconciliationAsync(
+            completedBefore,
+            expectedGeneration,
+            CancellationToken.None);
+
+        Assert.False(waiting.IsCompleted);
+
+        Assert.Same(pending, await index.ReconcileAndFindPendingAsync(64, 8, CancellationToken.None));
+
+        IndexingReconciliationObservation completed = await waiting;
+
+        Assert.Equal(completedBefore + 1, completed.Ordinal);
+
+        Assert.Equal(expectedGeneration, completed.Generation);
+
+        Assert.Equal(completedBefore + 1, observations.Snapshot.Reconciliations);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => observations.WaitForNextReconciliationAsync(
+            completedBefore,
+            expectedGeneration + 1,
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Mutation_forwarders_preserve_returns_and_count_only_completed_successes()
     {
         OrdinaryMutationObservations observations = new();
@@ -38,7 +166,7 @@ public sealed class GrimoireMaintenanceParticipantObserversTests
         Guid billableId = Guid.NewGuid();
 
         var index = new ObservingSessionAttachmentIndexWriter(
-            new ControlledIndexWriter(() => Task.FromResult(pending)), observations);
+            new ControlledIndexWriter(() => Task.FromResult(pending)), observations, static () => 0);
 
         var accounting = new ObservingTurnRunWriter(
             new ControlledTurnRunWriter(() => Task.FromResult(billableId)), observations);
@@ -82,7 +210,8 @@ public sealed class GrimoireMaintenanceParticipantObserversTests
 
         var index = new ObservingSessionAttachmentIndexWriter(
             new ControlledIndexWriter(() => Task.FromException<SessionAttachmentIndexRequest[]>(cancelled)),
-            observations);
+            observations,
+            static () => 0);
 
         var accounting = new ObservingTurnRunWriter(
             new ControlledTurnRunWriter(() => Task.FromException<Guid>(billingFailure)), observations);
@@ -163,11 +292,64 @@ public sealed class GrimoireMaintenanceParticipantObserversTests
         }
     }
 
+    [Fact]
+    public async Task Worker_scope_disposal_barrier_holds_after_the_inner_scope_is_disposed()
+    {
+        DisposedScopeSentinel sentinel = new();
+
+        await using ServiceProvider services = new ServiceCollection().AddScoped(_ => sentinel).BuildServiceProvider();
+
+        ObservingWorkerScopeFactory factory = new(services.GetRequiredService<IServiceScopeFactory>());
+
+        WorkerScopeDisposalBarrier barrier = factory.HoldAfterScopeDisposal(scopeOrdinal: 1);
+
+        AsyncServiceScope scope = factory.CreateAsyncScope();
+
+        _ = scope.ServiceProvider.GetRequiredService<DisposedScopeSentinel>();
+
+        Task disposing = scope.DisposeAsync().AsTask();
+
+        try
+        {
+            await barrier.WaitUntilReachedAsync();
+
+            Assert.Equal(1, sentinel.Disposals);
+
+            Assert.Equal(1, Assert.Single(factory.Scopes).Disposals);
+
+            Assert.False(disposing.IsCompleted);
+
+            barrier.Release();
+
+            await disposing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            barrier.Release();
+
+            await disposing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     private sealed class HeldInitialScopeSentinel : IAsyncDisposable
     {
         internal MaintenanceCheckpoint Checkpoint { get; } = new();
 
         public async ValueTask DisposeAsync() => await Checkpoint.PauseAsync(CancellationToken.None);
+    }
+
+    private sealed class DisposedScopeSentinel : IAsyncDisposable
+    {
+        private int _disposals;
+
+        internal int Disposals => Volatile.Read(ref _disposals);
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposals);
+
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static BillableOperationRecord Billable() => new(

@@ -100,6 +100,10 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(ConnectionState.Open, harness.Stats.ConnectionStateAtPause);
 
+        SqliteConnection admittedStatsConnection = Assert.IsType<SqliteConnection>(harness.Stats.Connection);
+
+        Assert.Equal(1, harness.Drain.OpenEnrolmentCountFor(admittedStatsConnection));
+
         Assert.False(stats.IsCompleted);
 
         string downloadPath = $"/api/sessions/{harness.SessionId}/attachments/{harness.DownloadAttachment.Id}/content";
@@ -162,12 +166,23 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         harness.EfOpen.TargetContext = openingDb;
 
+        int enrolmentsBeforeLosingOpen = harness.Drain.Enrolments.Count;
+
         Task opening = Task.Factory.StartNew(() => openingDb.Database.OpenConnectionAsync(timeout.Token),
             timeout.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
         await harness.EfOpen.Checkpoint.WaitUntilReachedAsync();
 
         var losingTicket = Assert.Single(harness.Admission.Tickets, ticket => ReferenceEquals(ticket.Connection, harness.EfOpen.Connection) && ticket.TerminalCount == 0);
+
+        Assert.Same(harness.EfOpen.Connection, losingTicket.Connection);
+
+        SqliteConnection losingConnection = Assert.IsType<SqliteConnection>(losingTicket.Connection);
+
+        Assert.Equal(0, harness.Drain.RegisteredEnrolmentCountFor(losingConnection));
+
+        Assert.DoesNotContain(harness.Drain.Enrolments.Skip(enrolmentsBeforeLosingOpen),
+            enrolment => ReferenceEquals(enrolment.Connection, losingConnection));
 
         Assert.Equal(losingGeneration, losingTicket.Generation);
 
@@ -177,6 +192,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Task<HttpResponseMessage> reset = harness.Client.SendAsync(apply, timeout.Token);
 
+        WorkerScopeDisposalBarrier? resumedBatchBarrier = null;
+
         try
         {
             await harness.Admission.StageOne.WaitUntilEnteredAsync();
@@ -184,10 +201,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             AssertStageOnePending(harness, reset);
 
             await AssertCommitRefusalsAsync(harness, timeout.Token);
-
-            harness.IndexingLogs.ExpectDeferred(requestB.AttachmentId);
-
-            Assert.True(harness.Indexing.TryEnqueue(requestB));
 
             await FinishCommitStreamsAsync(harness, streams, reset);
 
@@ -209,6 +222,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             }
 
             await statsScope.WaitUntilDisposedAsync();
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCountFor(admittedStatsConnection));
 
             Assert.Equal(1, harness.Stats.Callbacks);
 
@@ -286,7 +301,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             await harness.Admission.StageOne.AfterCompletion.WaitUntilReachedAsync();
 
+            OrdinaryMutationCounters mutationsBeforeFirstDeferral = harness.OrdinaryMutations.Snapshot;
+
+            harness.IndexingLogs.ExpectDeferred(requestB.AttachmentId);
+
+            Assert.True(harness.Indexing.TryEnqueue(requestB));
+
             await harness.IndexingLogs.WaitUntilDeferredAsync();
+
+            Assert.Equal(mutationsBeforeFirstDeferral, harness.OrdinaryMutations.Snapshot);
 
             int scopesAfterA = harness.WorkerScopes.Scopes.Count;
 
@@ -298,13 +321,23 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.Same(requestB, Assert.Single(harness.Indexing.DeferredRequests));
 
+            OrdinaryMutationCounters mutationsAfterFirstDeferral = harness.OrdinaryMutations.Snapshot;
+
             Assert.True(harness.Indexing.TryEnqueue(requestB));
 
             Assert.Same(requestB, Assert.Single(harness.Indexing.DeferredRequests));
 
+            Assert.Equal(mutationsAfterFirstDeferral, harness.OrdinaryMutations.Snapshot);
+
             Assert.Equal(scopesAfterA, harness.WorkerScopes.Scopes.Count);
 
             Assert.Equal(effectsAfterA, harness.Admission.Effects.Count);
+
+            int workAttemptsBeforeReopen = harness.Admission.WorkAttempts.Count;
+
+            OrdinaryMutationCounters mutationsBeforeReopen = harness.OrdinaryMutations.Snapshot;
+
+            resumedBatchBarrier = harness.WorkerScopes.HoldAfterScopeDisposal(scopesAfterA + 2);
 
             Assert.Equal(1, workerScope.Disposals);
 
@@ -358,6 +391,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.True(clear.Result.IsSuccess);
 
+            Assert.Equal(0, harness.Drain.OpenEnrolledConnectionCount);
+
+            Assert.Equal(0, harness.Drain.OpenEnrolmentCount);
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCountFor(losingConnection));
+
+            Assert.DoesNotContain(harness.Drain.Enrolments.Skip(enrolmentsBeforeLosingOpen),
+                enrolment => ReferenceEquals(enrolment.Connection, losingConnection));
+
             Assert.Equal(0, harness.Drain.Enrolments.Select(item => item.Connection)
                 .Distinct().Count(connection => connection.State != ConnectionState.Closed));
 
@@ -383,7 +425,74 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.True(result!.IsSuccess);
 
+            PostReopenIndexingBatchEvidence resumedBatch = await ObservePostReopenIndexingBatchCompletionAsync(
+                harness,
+                resumedBatchBarrier,
+                scopesAfterA,
+                workAttemptsBeforeReopen,
+                mutationsBeforeReopen,
+                losingGeneration + 1,
+                timeout.Token);
+
+            Assert.Equal(
+                mutationsBeforeReopen with
+                {
+                    Invocations = mutationsBeforeReopen.Invocations + 5,
+                    Successes = mutationsBeforeReopen.Successes + 5,
+                    IndexWrites = mutationsBeforeReopen.IndexWrites + 4,
+                    IndexAttempts = mutationsBeforeReopen.IndexAttempts + 1,
+                    Reconciliations = mutationsBeforeReopen.Reconciliations + 1,
+                },
+                resumedBatch.Mutations);
+
+            GrimoireEffectObservation resumedEffect = Assert.Single(
+                harness.Admission.Effects.Skip(effectsAfterA));
+
+            Assert.Equal(GrimoireWorkKind.SessionAttachmentIndexing, resumedEffect.Kind);
+
+            Assert.Equal(1, resumedEffect.Disposals);
+
+            Assert.Equal(1, resumedEffect.TerminalCount);
+
+            Assert.Equal(2, harness.Weave.Calls);
+
+            Assert.Equal(2, harness.Weave.Completed);
+
+            Assert.Equal(0, harness.Weave.Cancellations);
+
+            await using (AsyncServiceScope verification = harness.Factory.Services.CreateAsyncScope())
+            {
+                SessionAttachmentIndexRepository indexing = verification.ServiceProvider
+                    .GetRequiredService<SessionAttachmentIndexRepository>();
+
+                SessionAttachmentIndexState resumed = await indexing.GetStateAsync(
+                    requestB.AttachmentId,
+                    timeout.Token);
+
+                Assert.Equal(SessionAttachmentIndexStatus.Indexed, resumed.Status);
+
+                Assert.Equal(7, resumed.AttemptCount);
+
+                Assert.Null(resumed.FailureReason);
+
+                Assert.Single(await indexing.GetChunksForAttachmentAsync(requestB.AttachmentId, timeout.Token));
+            }
+
+            Assert.Equal(0, harness.Drain.RegisteredConnectionCount);
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCount);
+
+            resumedBatchBarrier.Release();
+
+            await resumedBatch.ReconciliationWork.WaitUntilDisposedAsync();
+
+            Assert.Equal(1, resumedBatch.ReconciliationWork.Disposals);
+
             await AssertCommittedDirectResetAsync(harness, plan, result.Data!, losingGeneration, sourceDataset, sourceEpochs, timeout.Token);
+
+            Assert.Equal(0, harness.Drain.RegisteredConnectionCount);
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCount);
 
             Assert.False(staleWork.TryBeginExternalEffectGroup(out var staleEffect));
 
@@ -412,6 +521,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             harness.ReleaseStreamProducers();
 
             harness.EfOpen.Checkpoint.Release();
+
+            resumedBatchBarrier?.Release();
 
             await Task.WhenAll(stats, opening, reset).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(TimeSpan.FromSeconds(10));
         }
@@ -460,6 +571,10 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         MaintenanceScopeSentinel statsScope = Assert.IsType<MaintenanceScopeSentinel>(harness.StatsProbe.Scope);
 
         Assert.Equal(ConnectionState.Open, harness.Stats.ConnectionStateAtPause);
+
+        SqliteConnection admittedStatsConnection = Assert.IsType<SqliteConnection>(harness.Stats.Connection);
+
+        Assert.Equal(1, harness.Drain.OpenEnrolmentCountFor(admittedStatsConnection));
 
         Assert.False(stats.IsCompleted);
 
@@ -527,6 +642,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         IGrimoireOrdinaryConnectionFactory rawFactory = openingScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
+        int enrolmentsBeforeLosingOpen = harness.Drain.Enrolments.Count;
+
         Task<RetroDownfall.Arcanum.Core.Primitives.Result<IGrimoireOrdinaryConnectionLease>> opening = Task.Factory.StartNew(async () =>
         {
             using IDisposable selected = harness.RawOpen.SelectCurrentExecution();
@@ -539,6 +656,13 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.Equal(1, harness.RawOpen.SelectedConstructions);
 
         var losingTicket = Assert.Single(harness.Admission.Tickets, ticket => ticket.TerminalCount == 0);
+
+        SqliteConnection losingConnection = Assert.IsType<SqliteConnection>(losingTicket.Connection);
+
+        Assert.Equal(0, harness.Drain.RegisteredEnrolmentCountFor(losingConnection));
+
+        Assert.DoesNotContain(harness.Drain.Enrolments.Skip(enrolmentsBeforeLosingOpen),
+            enrolment => ReferenceEquals(enrolment.Connection, losingConnection));
 
         Assert.Equal(losingGeneration, losingTicket.Generation);
 
@@ -558,6 +682,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Task<HttpResponseMessage> reset = harness.Client.SendAsync(apply, timeout.Token);
 
+        WorkerScopeDisposalBarrier? resumedBatchBarrier = null;
+
         try
         {
             await harness.Admission.StageOne.WaitUntilEnteredAsync();
@@ -565,10 +691,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             AssertStageOnePending(harness, reset);
 
             await AssertCommitRefusalsAsync(harness, timeout.Token);
-
-            harness.IndexingLogs.ExpectDeferred(requestB.AttachmentId);
-
-            Assert.True(harness.Indexing.TryEnqueue(requestB));
 
             await FinishCommitStreamsAsync(harness, streams, reset);
 
@@ -590,6 +712,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             }
 
             await statsScope.WaitUntilDisposedAsync();
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCountFor(admittedStatsConnection));
 
             Assert.Equal(1, harness.Stats.Callbacks);
 
@@ -667,7 +791,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             await harness.Admission.StageOne.AfterCompletion.WaitUntilReachedAsync();
 
+            OrdinaryMutationCounters mutationsBeforeFirstDeferral = harness.OrdinaryMutations.Snapshot;
+
+            harness.IndexingLogs.ExpectDeferred(requestB.AttachmentId);
+
+            Assert.True(harness.Indexing.TryEnqueue(requestB));
+
             await harness.IndexingLogs.WaitUntilDeferredAsync();
+
+            Assert.Equal(mutationsBeforeFirstDeferral, harness.OrdinaryMutations.Snapshot);
 
             int scopesAfterA = harness.WorkerScopes.Scopes.Count;
 
@@ -679,13 +811,23 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.Same(requestB, Assert.Single(harness.Indexing.DeferredRequests));
 
+            OrdinaryMutationCounters mutationsAfterFirstDeferral = harness.OrdinaryMutations.Snapshot;
+
             Assert.True(harness.Indexing.TryEnqueue(requestB));
 
             Assert.Same(requestB, Assert.Single(harness.Indexing.DeferredRequests));
 
+            Assert.Equal(mutationsAfterFirstDeferral, harness.OrdinaryMutations.Snapshot);
+
             Assert.Equal(scopesAfterA, harness.WorkerScopes.Scopes.Count);
 
             Assert.Equal(effectsAfterA, harness.Admission.Effects.Count);
+
+            int workAttemptsBeforeReopen = harness.Admission.WorkAttempts.Count;
+
+            OrdinaryMutationCounters mutationsBeforeReopen = harness.OrdinaryMutations.Snapshot;
+
+            resumedBatchBarrier = harness.WorkerScopes.HoldAfterScopeDisposal(scopesAfterA + 2);
 
             Assert.Equal(1, workerScope.Disposals);
 
@@ -750,6 +892,15 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.True(clear.Result.IsSuccess);
 
+            Assert.Equal(0, harness.Drain.OpenEnrolledConnectionCount);
+
+            Assert.Equal(0, harness.Drain.OpenEnrolmentCount);
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCountFor(losingConnection));
+
+            Assert.DoesNotContain(harness.Drain.Enrolments.Skip(enrolmentsBeforeLosingOpen),
+                enrolment => ReferenceEquals(enrolment.Connection, losingConnection));
+
             Assert.Equal(0, harness.Drain.Enrolments.Select(item => item.Connection)
                 .Distinct().Count(connection => connection.State != ConnectionState.Closed));
 
@@ -778,7 +929,47 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.True(result!.IsSuccess);
 
+            PostReopenIndexingBatchEvidence resumedBatch = await ObservePostReopenIndexingBatchCompletionAsync(
+                harness,
+                resumedBatchBarrier,
+                scopesAfterA,
+                workAttemptsBeforeReopen,
+                mutationsBeforeReopen,
+                losingGeneration + 1,
+                timeout.Token);
+
+            Assert.Equal(
+                mutationsBeforeReopen with
+                {
+                    Invocations = mutationsBeforeReopen.Invocations + 1,
+                    Successes = mutationsBeforeReopen.Successes + 1,
+                    Reconciliations = mutationsBeforeReopen.Reconciliations + 1,
+                },
+                resumedBatch.Mutations);
+
+            Assert.Equal(effectsAfterA, harness.Admission.Effects.Count);
+
+            Assert.Equal(1, harness.Weave.Calls);
+
+            Assert.Equal(1, harness.Weave.Completed);
+
+            Assert.Equal(0, harness.Weave.Cancellations);
+
+            Assert.Equal(0, harness.Drain.RegisteredConnectionCount);
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCount);
+
+            resumedBatchBarrier.Release();
+
+            await resumedBatch.ReconciliationWork.WaitUntilDisposedAsync();
+
+            Assert.Equal(1, resumedBatch.ReconciliationWork.Disposals);
+
             await AssertCommittedFactoryResetAsync(harness, plan, result.Data!, requestedOperationId, losingGeneration, sourceDataset, sourceEpochs, drained!, timeout.Token);
+
+            Assert.Equal(0, harness.Drain.RegisteredConnectionCount);
+
+            Assert.Equal(0, harness.Drain.RegisteredEnrolmentCount);
 
             Assert.False(staleWork.TryBeginExternalEffectGroup(out var staleEffect));
 
@@ -808,11 +999,74 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             harness.RawOpen.Checkpoint.Release();
 
+            resumedBatchBarrier?.Release();
+
             await Task.WhenAll(stats, opening, reset).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(TimeSpan.FromSeconds(10));
         }
     }
 
     private sealed record FactoryDrainEvidence(long Rows, long DerivedRecords, string[] Files, long AuditBytes);
+
+    private sealed record PostReopenIndexingBatchEvidence(
+        OrdinaryMutationCounters Mutations,
+        GrimoireLeaseObservation<GrimoireWorkKind> ReconciliationWork);
+
+    private static async Task<PostReopenIndexingBatchEvidence> ObservePostReopenIndexingBatchCompletionAsync(
+        GrimoireMaintenanceAdmissionHarness harness,
+        WorkerScopeDisposalBarrier disposalBarrier,
+        int workerScopesBeforeReopen,
+        int workAttemptsBeforeReopen,
+        OrdinaryMutationCounters mutationsBeforeReopen,
+        long expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        await disposalBarrier.WaitUntilReachedAsync();
+
+        IndexingReconciliationObservation reconciliation = await harness.OrdinaryMutations
+            .WaitForNextReconciliationAsync(
+                mutationsBeforeReopen.Reconciliations,
+                expectedGeneration,
+                cancellationToken);
+
+        Assert.Equal(mutationsBeforeReopen.Reconciliations + 1, reconciliation.Ordinal);
+
+        Assert.Equal(expectedGeneration, reconciliation.Generation);
+
+        WorkerScopeObservation[] resumedScopes =
+            [.. harness.WorkerScopes.Scopes.Skip(workerScopesBeforeReopen)];
+
+        Assert.Equal(2, resumedScopes.Length);
+
+        Assert.All(resumedScopes, scope => Assert.Equal(1, scope.Disposals));
+
+        GrimoireLeaseObservation<GrimoireWorkKind>[] resumedAttempts =
+        [
+            .. harness.Admission.WorkAttempts
+                .Skip(workAttemptsBeforeReopen)
+                .Where(attempt => attempt.Kind == GrimoireWorkKind.SessionAttachmentIndexing),
+        ];
+
+        Assert.Equal(2, resumedAttempts.Length);
+
+        Assert.All(resumedAttempts, attempt =>
+        {
+            Assert.True(attempt.Acquired);
+
+            Assert.Equal(expectedGeneration, attempt.Generation);
+        });
+
+        Assert.Equal(1, resumedAttempts[0].Disposals);
+
+        Assert.Equal(0, resumedAttempts[1].Disposals);
+
+        Assert.Empty(harness.Indexing.DeferredRequests);
+
+        Assert.Equal(0, harness.Drain.RegisteredConnectionCount);
+
+        Assert.Equal(0, harness.Drain.RegisteredEnrolmentCount);
+
+        return new(harness.OrdinaryMutations.Snapshot, resumedAttempts[1]);
+    }
 
     private static async Task<FactoryDrainEvidence> ReadFactoryDrainEvidenceAsync(GrimoireMaintenanceAdmissionHarness harness,
         SqliteConnection connection, DataRetentionPlan plan, DataRetentionConflict activeInference, CancellationToken token)

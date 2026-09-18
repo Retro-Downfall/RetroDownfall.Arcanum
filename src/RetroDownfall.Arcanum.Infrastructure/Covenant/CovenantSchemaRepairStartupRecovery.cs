@@ -164,6 +164,14 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         ArgumentNullException.ThrowIfNull(preparation);
 
+        if (connection.GetType() != typeof(SqliteConnection))
+        {
+
+            throw new InvalidOperationException(
+                "Schema repair recovery requires an exact SQLite connection.");
+
+        }
+
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
         if (preparation.Intent is not { } intent)

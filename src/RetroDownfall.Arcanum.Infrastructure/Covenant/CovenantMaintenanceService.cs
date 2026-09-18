@@ -74,6 +74,14 @@ internal sealed class CovenantMaintenanceService(
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        if (connection.GetType() != typeof(SqliteConnection))
+        {
+
+            throw new InvalidOperationException(
+                "Schema repair requires an exact SQLite connection.");
+
+        }
+
         Result<CovenantSchemaRepairInspection> inspected = await _executor
             .InspectAsync(connection, cancellationToken)
             .ConfigureAwait(false);
@@ -373,6 +381,14 @@ internal sealed class CovenantMaintenanceService(
         string? blockingCode,
         CancellationToken cancellationToken)
     {
+
+        if (connection.GetType() != typeof(SqliteConnection))
+        {
+
+            throw new InvalidOperationException(
+                "Schema repair finalization requires an exact SQLite connection.");
+
+        }
 
         CovenantSchemaRepairPostDispositionFinalizer finalizer = new(
             (phase, token) => AdvanceToTerminalAsync(connection, intent, phase, token));

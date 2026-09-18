@@ -290,7 +290,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
             services.RemoveAll<ISessionAttachmentIndexWriter>();
 
             services.AddScoped<ISessionAttachmentIndexWriter>(sp => new ObservingSessionAttachmentIndexWriter(
-                sp.GetRequiredService<SessionAttachmentIndexRepository>(), OrdinaryMutations));
+                sp.GetRequiredService<SessionAttachmentIndexRepository>(),
+                OrdinaryMutations,
+                () => sp.GetRequiredService<IGrimoireConnectionAdmissionGate>().CurrentGeneration));
 
             services.RemoveAll<ITurnRunWriter>();
 

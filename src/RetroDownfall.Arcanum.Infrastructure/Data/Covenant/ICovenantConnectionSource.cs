@@ -1,3 +1,5 @@
+using System.Data.Common;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -107,17 +109,12 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
         if (retained is not null)
         {
 
-            return retained.Connection;
+            return RequireExactProviderConnection(retained.Connection);
 
         }
 
-        if (_db.Database.GetDbConnection() is not SqliteConnection connection)
-        {
-
-            throw new InvalidOperationException(
-                "The Covenant canonical tier requires a SQLCipher connection.");
-
-        }
+        SqliteConnection connection = RequireExactProviderConnection(
+            _db.Database.GetDbConnection());
 
         // An already-open connection is used as it stands rather than leased again. During a closed
         // period the admission gate has admitted this exact connection object under a scoped permit
@@ -146,7 +143,7 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
             if (retained is not null)
             {
 
-                return retained.Connection;
+                return RequireExactProviderConnection(retained.Connection);
 
             }
 
@@ -164,9 +161,29 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
 
             }
 
-            _lease = acquired.Value;
+            IGrimoireOrdinaryConnectionLease acquiredLease = acquired.Value;
 
-            return acquired.Value.Connection;
+            SqliteConnection acquiredConnection;
+
+            try
+            {
+
+                acquiredConnection = RequireExactProviderConnection(
+                    acquiredLease.Connection);
+
+            }
+            catch
+            {
+
+                await acquiredLease.DisposeAsync().ConfigureAwait(false);
+
+                throw;
+
+            }
+
+            _lease = acquiredLease;
+
+            return acquiredConnection;
 
         }
         finally
@@ -175,6 +192,23 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
             _leaseGate.Release();
 
         }
+
+    }
+
+    private static SqliteConnection RequireExactProviderConnection(
+        DbConnection connection)
+    {
+
+        if (connection is not SqliteConnection sqlite
+            || sqlite.GetType() != typeof(SqliteConnection))
+        {
+
+            throw new InvalidOperationException(
+                "The Covenant canonical tier requires an exact SQLCipher provider connection.");
+
+        }
+
+        return sqlite;
 
     }
 

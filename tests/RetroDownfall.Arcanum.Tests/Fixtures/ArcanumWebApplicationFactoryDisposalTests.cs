@@ -1,12 +1,31 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 [Collection("ProcessEnvironment")]
 public sealed class ArcanumWebApplicationFactoryDisposalTests
 {
+
+    private const string OwnedCredentialService = "arcanum-profile-disposal";
+
+    private const string OwnedCredentialAccount = "owned-secret";
+
+    [Fact]
+    public async Task Profile_disposal_clears_owned_credentials_and_passphrase()
+    {
+
+        RestartableArcanumProfileFixture profile = new();
+
+        SeedOwnedSecrets(profile);
+
+        await profile.DisposeAsync();
+
+        AssertOwnedSecretsCleared(profile);
+
+    }
 
     [Theory]
     [InlineData(true)]
@@ -47,6 +66,8 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
             });
 
+        SeedOwnedSecrets(profile);
+
         string profileHome = profile.TempHome;
 
         InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -58,9 +79,13 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
         Assert.False(Directory.Exists(profileHome));
 
+        AssertOwnedSecretsCleared(profile);
+
         await profile.DisposeAsync();
 
         Assert.Equal(["pools", "grimoire"], attempts);
+
+        AssertOwnedSecretsCleared(profile);
 
     }
 
@@ -75,6 +100,8 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
         using TestingEnvironmentScope scope = new(parentHome);
 
         RestartableArcanumProfileFixture profile = new();
+
+        SeedOwnedSecrets(profile);
 
         string profileHome = profile.TempHome;
 
@@ -107,9 +134,13 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
             Assert.True(File.Exists(Path.Combine(profileHome, ".config", "arcanum", "arcanum.db.kdf")));
 
+            AssertOwnedSecretsRetained(profile);
+
             await profile.DisposeAsync();
 
             Assert.False(Directory.Exists(profileHome));
+
+            AssertOwnedSecretsCleared(profile);
 
             Assert.Equal(
                 "outside restartable profile",
@@ -188,6 +219,54 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
         using HttpClient client = factory.CreateAuthenticatedClient();
 
         return factory;
+
+    }
+
+    private static void SeedOwnedSecrets(RestartableArcanumProfileFixture profile)
+    {
+
+        OsCredentialStoreResult stored = profile.CredentialStore.Set(
+            OwnedCredentialService,
+            OwnedCredentialAccount,
+            Guid.NewGuid().ToString("N"));
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, stored.Status);
+
+        stored = default;
+
+        if (profile.Grimoire is null)
+        {
+
+            profile.PassphraseSource.SetPassphrase(Guid.NewGuid().ToString("N"));
+
+        }
+
+    }
+
+    private static void AssertOwnedSecretsRetained(RestartableArcanumProfileFixture profile)
+    {
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            profile.CredentialStore.TryGet(
+                OwnedCredentialService,
+                OwnedCredentialAccount).Status);
+
+        Assert.True(profile.PassphraseSource.Passphrase.Length > 0);
+
+    }
+
+    private static void AssertOwnedSecretsCleared(RestartableArcanumProfileFixture profile)
+    {
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            profile.CredentialStore.TryGet(
+                OwnedCredentialService,
+                OwnedCredentialAccount).Status);
+
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            _ = profile.PassphraseSource.Passphrase);
 
     }
 

@@ -220,6 +220,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         AssertManagedFilesEqual(before, after, entryPoint);
 
         await AssertOpenAdmissionAsync(harness, originalGeneration + 1, timeout.Token, entryPoint);
+
+        AssertOnlyExpectedOutcomeFaultWarning(
+            harness,
+            CovenantErasureFaultBoundary.BeforePhaseBegin,
+            operationId);
     }
 
     [SkippableTheory]
@@ -385,6 +390,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         GrimoireMaintenanceAdmissionObserver retainedAdmission = harness.Admission;
 
         await harness.DisposeAsync();
+
+        AssertOnlyExpectedOutcomeFaultWarning(
+            harness,
+            CovenantErasureFaultBoundary.AfterPhaseBegin,
+            operationId);
 
         Assert.Equal(originalGeneration + 1, retainedAdmission.CurrentGeneration);
 
@@ -573,6 +583,47 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         Assert.DoesNotContain("exception", lower);
 
         Assert.DoesNotContain(operationId.ToString(), raw, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertOnlyExpectedOutcomeFaultWarning(
+        GrimoireMaintenanceAdmissionHarness harness,
+        CovenantErasureFaultBoundary boundary,
+        Guid operationId)
+    {
+        MaintenanceHostLog warning = Assert.Single(harness.HostLogs.Unexpected);
+
+        Assert.Equal(typeof(CovenantErasureCoordinator).FullName, warning.Category);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Null(warning.Exception);
+
+        if (boundary is CovenantErasureFaultBoundary.BeforePhaseBegin)
+        {
+
+            Assert.Equal(
+                "A Covenant erasure aborted before any artifact was touched with {ErrorCode}; admission reopens.",
+                warning.Template);
+
+            Assert.Equal(
+                $"A Covenant erasure aborted before any artifact was touched with "
+                    + $"{ErrorCodes.Covenant.ErasureIncomplete}; admission reopens.",
+                warning.Message);
+
+            return;
+
+        }
+
+        Assert.Equal(
+            "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
+                + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
+            warning.Template);
+
+        Assert.Equal(
+            $"A Covenant erasure stopped at phase {CovenantResetPhase.InventoryPrepared} for durable operation "
+                + $"{operationId} with {ErrorCodes.Covenant.ErasureIncomplete}: Injected outcome fault at "
+                + $"{boundary} of {CovenantResetPhase.CanonicalApplied}.; admission stays closed.",
+            warning.Message);
     }
 
     private static RecordedMaintenanceOperationRead AssertInitialBindingOperation(

@@ -95,7 +95,7 @@ internal static class LongRunningOperationEndpoints
                     httpContext,
                     StatusCodes.Status409Conflict,
                     ErrorCodes.Operation.StateConflict,
-                    "The operation changed or is already terminal.",
+                    "The operation cannot be cancelled in its current state.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
@@ -122,6 +122,18 @@ internal static class LongRunningOperationEndpoints
                     StatusCodes.Status404NotFound,
                     ErrorCodes.Operation.NotFound,
                     "The durable operation was not found.",
+                    ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
+            }
+
+            LongRunningRecoveryAdmissionDecision admission =
+                LongRunningOperationRecoveryAdmission.Classify(operation, ownerEvidence: null);
+            if (admission.Kind is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner)
+            {
+                return Error<LongRunningOperationDto>(
+                    httpContext,
+                    StatusCodes.Status409Conflict,
+                    ErrorCodes.Operation.StateConflict,
+                    "Only Failed, Abandoned, or ReconciliationRequired operations can be retried.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 

@@ -172,6 +172,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.True(File.Exists(parked.Raw.Location.JournalPath));
 
+        AssertOnlyExpectedOutcomeFaultWarning(
+            first,
+            CovenantErasureFaultBoundary.AfterPhaseBegin,
+            operationId);
+
         MaintenanceAdoptionObservation adoption = new() { PauseAfterAcquisition = true };
 
         RecoveryHostStartupObservation startup = new()
@@ -456,6 +461,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     timeout.Token,
                     entryPoint);
             }
+
+            AssertOnlyExpectedRecoveryResumeWarning(
+                startup,
+                entryPoint,
+                operationId);
         }
         finally
         {
@@ -464,36 +474,52 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             // WhenAny cannot strand a later adoption on the test's artificial barrier.
             adoption.Checkpoint.Release();
 
+            timeout.Cancel();
+
+            try
+            {
+                _ = await firstOpenWaiter.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                // The waiter is intentionally kept pending until this owned cleanup cancels it.
+            }
+
             if (!startupTransferred)
             {
-                try
-                {
-                    Task ownerBoundary = await Task.WhenAny(startup.HarnessCreated, starting);
-
-                    if (ReferenceEquals(ownerBoundary, startup.HarnessCreated))
-                    {
-                        GrimoireMaintenanceAdmissionHarness owned = await startup.HarnessCreated;
-
-                        await owned.DisposeAsync();
-                    }
-                }
-                catch
-                {
-                    // StartHostAsync also owns the same idempotent failure cleanup.
-                }
-                finally
-                {
-                    try
-                    {
-                        _ = await starting;
-                    }
-                    catch
-                    {
-                        // The owned factory is disposed; awaiting observes the startup failure.
-                    }
-                }
+                await RecoveryHostStartupObservation.DisposeAndObserveStartupAsync(
+                    starting,
+                    startup);
             }
         }
+    }
+
+    private static void AssertOnlyExpectedRecoveryResumeWarning(
+        RecoveryHostStartupObservation startup,
+        GrimoireTransitionEntryPoint entryPoint,
+        Guid operationId)
+    {
+        MaintenanceHostLog warning = Assert.Single(startup.HostLogs.Unexpected);
+
+        Assert.Equal(typeof(DataRetentionService).FullName, warning.Category);
+
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, warning.Level);
+
+        Assert.Null(warning.Exception);
+
+        string operation = entryPoint is GrimoireTransitionEntryPoint.DirectCovenantReset
+            ? "Covenant reset"
+            : "healthy-catalog Covenant factory erasure";
+
+        Assert.Equal(
+            $"A {operation} was interrupted at phase {{ResetPhase}} for durable operation "
+                + "{OperationId}; recovery is resuming the recorded owner.",
+            warning.Template);
+
+        Assert.Equal(
+            $"A {operation} was interrupted at phase {CovenantResetPhase.InventoryPrepared} for durable operation "
+                + $"{operationId}; recovery is resuming the recorded owner.",
+            warning.Message);
     }
 
     private static async Task AssertRecoveredCatalogAsync(

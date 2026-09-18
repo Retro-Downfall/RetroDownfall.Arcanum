@@ -17,9 +17,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private const string OpeningTimeoutCode = "Grimoire.OpeningTimeout";
 
-    /// <summary>
-    /// The stage-one drain's own refusal, which is the one drain failure an owner may abort out of.
-    /// </summary>
+    /// <summary>The stage-one drain's own timeout refusal.</summary>
     internal const string WorkDrainTimeoutCode = ErrorCodes.Grimoire.WorkDrainTimeout;
 
     private const string StaleOpenCode = "Grimoire.StaleOpenGeneration";
@@ -735,14 +733,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         {
             if (!OwnsClosingToken(token)
                 || _state != GateState.Closing
-                || !token.Closure.StageOneTimedOut)
+                || token.Closure.StageTwoInProgress)
             {
                 return LifecycleConflict(
-                    "Only the exact owner of a timed-out stage-one transition may request abort.");
+                    "Only the exact owner of an uncommitted Grimoire closing transition may request abort.");
             }
         }
 
-        // Abort is the only way out of a stage one that timed out, and while the gate is Closing
+        // Abort is the only way out of an uncommitted closing transition, whether stage one timed
+        // out or the caller was cancelled before stage two could commit. While the gate is Closing
         // every request and work lease is refused. The caller most likely to reach here is a host
         // unwinding under an ambient token that has already fired, so honouring that token would
         // withhold the escape hatch from exactly the caller who needs it and leave the gate Closing
@@ -767,7 +766,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         {
             if (!OwnsClosingToken(token)
                 || _state != GateState.Closing
-                || !token.Closure.StageOneTimedOut)
+                || token.Closure.StageTwoInProgress)
             {
                 return LifecycleConflict(
                     "The Grimoire closing generation changed before the proven abort completed.");

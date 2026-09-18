@@ -175,6 +175,11 @@ internal sealed class PausingOrdinaryConnectionFactoryTestSeam : IGrimoireOrdina
 
 internal sealed class ObservingCovenantConnectionDrain(CovenantConnectionDrain inner) : ICovenantConnectionDrain
 {
+    private readonly Lock _registeredEnrolmentGate = new();
+
+    private readonly Dictionary<SqliteConnection, int> _registeredEnrolments =
+        new(ReferenceEqualityComparer.Instance);
+
     private readonly ConcurrentQueue<DrainEnrolmentObservation> _enrolments = new();
 
     private readonly ConcurrentQueue<PoolClearObservation> _poolClears = new();
@@ -182,6 +187,52 @@ internal sealed class ObservingCovenantConnectionDrain(CovenantConnectionDrain i
     internal IReadOnlyList<DrainEnrolmentObservation> Enrolments => _enrolments.ToArray();
 
     internal IReadOnlyList<PoolClearObservation> PoolClears => _poolClears.ToArray();
+
+    internal int OpenEnrolledConnectionCount
+    {
+        get
+        {
+            lock (_registeredEnrolmentGate)
+            {
+                return _registeredEnrolments.Keys.Count(IsPhysicallyOpen);
+            }
+        }
+    }
+
+    internal int OpenEnrolmentCount
+    {
+        get
+        {
+            lock (_registeredEnrolmentGate)
+            {
+                return _registeredEnrolments
+                    .Where(pair => IsPhysicallyOpen(pair.Key))
+                    .Sum(pair => pair.Value);
+            }
+        }
+    }
+
+    internal int RegisteredConnectionCount
+    {
+        get
+        {
+            lock (_registeredEnrolmentGate)
+            {
+                return _registeredEnrolments.Count;
+            }
+        }
+    }
+
+    internal int RegisteredEnrolmentCount
+    {
+        get
+        {
+            lock (_registeredEnrolmentGate)
+            {
+                return _registeredEnrolments.Values.Sum();
+            }
+        }
+    }
 
     internal MaintenanceStageObservation Draining { get; } = new();
 
@@ -192,12 +243,57 @@ internal sealed class ObservingCovenantConnectionDrain(CovenantConnectionDrain i
 
     private IDisposable Observe(SqliteConnection connection, IDisposable registration)
     {
-        DrainEnrolmentObservation observation = new(connection, registration);
+        lock (_registeredEnrolmentGate)
+        {
+            _registeredEnrolments[connection] = _registeredEnrolments.TryGetValue(connection, out int count)
+                ? count + 1
+                : 1;
+        }
+
+        DrainEnrolmentObservation observation = new(connection, registration, () => Release(connection));
 
         _enrolments.Enqueue(observation);
 
         return observation;
     }
+
+    internal int OpenEnrolmentCountFor(SqliteConnection connection)
+    {
+        lock (_registeredEnrolmentGate)
+        {
+            return IsPhysicallyOpen(connection)
+                ? _registeredEnrolments.GetValueOrDefault(connection)
+                : 0;
+        }
+    }
+
+    internal int RegisteredEnrolmentCountFor(SqliteConnection connection)
+    {
+        lock (_registeredEnrolmentGate)
+        {
+            return _registeredEnrolments.GetValueOrDefault(connection);
+        }
+    }
+
+    private void Release(SqliteConnection connection)
+    {
+        lock (_registeredEnrolmentGate)
+        {
+            int remaining = _registeredEnrolments[connection] - 1;
+
+            if (remaining == 0)
+            {
+                _registeredEnrolments.Remove(connection);
+
+                return;
+            }
+
+            _registeredEnrolments[connection] = remaining;
+        }
+    }
+
+    private static bool IsPhysicallyOpen(SqliteConnection connection) =>
+        connection.State != System.Data.ConnectionState.Closed;
 
     public Result ClearExactPoolAfterClose(SqliteConnection connection)
     {
@@ -227,19 +323,49 @@ internal sealed class ObservingCovenantConnectionDrain(CovenantConnectionDrain i
 
 internal sealed record PoolClearObservation(SqliteConnection Connection, System.Data.ConnectionState StateBefore, Result Result);
 
-internal sealed class DrainEnrolmentObservation(SqliteConnection connection, IDisposable registration) : IDisposable
+internal sealed class DrainEnrolmentObservation : IDisposable
 {
+    private readonly Action _release;
+
     private int _disposals;
 
-    internal SqliteConnection Connection { get; } = connection;
+    private IDisposable? _registration;
+
+    internal DrainEnrolmentObservation(
+        SqliteConnection connection,
+        IDisposable registration,
+        Action release)
+    {
+        Connection = connection;
+
+        _registration = registration;
+
+        _release = release;
+    }
+
+    internal SqliteConnection Connection { get; }
 
     internal int Disposals => Volatile.Read(ref _disposals);
 
     public void Dispose()
     {
-        registration.Dispose();
+        IDisposable? registration = Interlocked.Exchange(ref _registration, null);
 
-        Interlocked.Increment(ref _disposals);
+        if (registration is null)
+        {
+            return;
+        }
+
+        try
+        {
+            registration.Dispose();
+        }
+        finally
+        {
+            _release();
+
+            Interlocked.Increment(ref _disposals);
+        }
     }
 }
 
@@ -318,9 +444,15 @@ internal sealed class ControlledWeaveService(WeaveService inner) : IWeaveService
 // Only the real indexing worker receives this factory; inspection/request scopes remain separate.
 internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
 {
+    private readonly Lock _scopeGate = new();
+
+    private readonly Dictionary<int, WorkerScopeDisposalBarrier> _disposalBarriers = [];
+
     private readonly ConcurrentQueue<WorkerScopeObservation> _scopes = new();
 
     private readonly TaskCompletionSource<WorkerScopeObservation> _firstScope = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private int _createdScopes;
 
     internal IReadOnlyList<WorkerScopeObservation> Scopes => _scopes.ToArray();
 
@@ -331,11 +463,44 @@ internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : 
         await first.WaitUntilDisposedAsync();
     }
 
+    internal WorkerScopeDisposalBarrier HoldAfterScopeDisposal(int scopeOrdinal)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(scopeOrdinal);
+
+        lock (_scopeGate)
+        {
+            if (scopeOrdinal <= _createdScopes)
+            {
+                throw new InvalidOperationException(
+                    $"Worker scope {scopeOrdinal} was already created.");
+            }
+
+            WorkerScopeDisposalBarrier barrier = new();
+
+            if (!_disposalBarriers.TryAdd(scopeOrdinal, barrier))
+            {
+                throw new InvalidOperationException(
+                    $"Worker scope {scopeOrdinal} already has a disposal barrier.");
+            }
+
+            return barrier;
+        }
+    }
+
     public IServiceScope CreateScope()
     {
         IServiceScope scope = inner.CreateScope();
 
-        WorkerScopeObservation observation = new();
+        WorkerScopeDisposalBarrier? barrier;
+
+        lock (_scopeGate)
+        {
+            int ordinal = ++_createdScopes;
+
+            _ = _disposalBarriers.Remove(ordinal, out barrier);
+        }
+
+        WorkerScopeObservation observation = new(barrier);
 
         _scopes.Enqueue(observation);
 
@@ -352,7 +517,7 @@ internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : 
         {
             innerScope.Dispose();
 
-            observation.Disposed();
+            observation.DisposedAsync().AsTask().GetAwaiter().GetResult();
         }
 
         public async ValueTask DisposeAsync()
@@ -366,12 +531,23 @@ internal sealed class ObservingWorkerScopeFactory(IServiceScopeFactory inner) : 
                 innerScope.Dispose();
             }
 
-            observation.Disposed();
+            await observation.DisposedAsync();
         }
     }
 }
 
-internal sealed class WorkerScopeObservation
+internal sealed class WorkerScopeDisposalBarrier
+{
+    private readonly MaintenanceCheckpoint _checkpoint = new();
+
+    internal Task WaitUntilReachedAsync() => _checkpoint.WaitUntilReachedAsync();
+
+    internal ValueTask PauseAsync() => _checkpoint.PauseAsync(CancellationToken.None);
+
+    internal void Release() => _checkpoint.Release();
+}
+
+internal sealed class WorkerScopeObservation(WorkerScopeDisposalBarrier? disposalBarrier = null)
 {
     private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -381,11 +557,16 @@ internal sealed class WorkerScopeObservation
 
     internal Task WaitUntilDisposedAsync() => _disposed.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-    internal void Disposed()
+    internal async ValueTask DisposedAsync()
     {
         Interlocked.Increment(ref _disposals);
 
         _disposed.TrySetResult();
+
+        if (disposalBarrier is not null)
+        {
+            await disposalBarrier.PauseAsync();
+        }
     }
 }
 
@@ -905,8 +1086,18 @@ internal readonly record struct OrdinaryMutationCounters(
     long Watermarks,
     long Reconciliations);
 
+internal sealed record IndexingReconciliationObservation(
+    long Ordinal,
+    long Generation);
+
 internal sealed class OrdinaryMutationObservations
 {
+
+    private readonly Lock _reconciliationGate = new();
+
+    private readonly List<IndexingReconciliationObservation> _reconciliationObservations = [];
+
+    private TaskCompletionSource _reconciliationChanged = NewReconciliationSignal();
 
     private long _invocations;
 
@@ -948,13 +1139,74 @@ internal sealed class OrdinaryMutationObservations
 
     internal void WatermarkSucceeded() => Interlocked.Increment(ref _watermarks);
 
-    internal void ReconciliationSucceeded() => Interlocked.Increment(ref _reconciliations);
+    internal async Task<IndexingReconciliationObservation> WaitForNextReconciliationAsync(
+        long completedBefore,
+        long expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(completedBefore);
+
+        if (completedBefore > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(completedBefore));
+        }
+
+        while (true)
+        {
+            Task changed;
+
+            lock (_reconciliationGate)
+            {
+                if (_reconciliationObservations.Count > completedBefore)
+                {
+                    IndexingReconciliationObservation observation =
+                        _reconciliationObservations[checked((int)completedBefore)];
+
+                    if (observation.Ordinal != completedBefore + 1
+                        || observation.Generation != expectedGeneration)
+                    {
+                        throw new InvalidOperationException(
+                            $"Expected reconciliation {completedBefore + 1} in generation {expectedGeneration}, "
+                            + $"but observed reconciliation {observation.Ordinal} in generation {observation.Generation}.");
+                    }
+
+                    return observation;
+                }
+
+                changed = _reconciliationChanged.Task;
+            }
+
+            await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal void ReconciliationSucceeded(long generation)
+    {
+        TaskCompletionSource changed;
+
+        lock (_reconciliationGate)
+        {
+            long ordinal = Interlocked.Increment(ref _reconciliations);
+
+            _reconciliationObservations.Add(new(ordinal, generation));
+
+            changed = _reconciliationChanged;
+
+            _reconciliationChanged = NewReconciliationSignal();
+        }
+
+        changed.TrySetResult();
+    }
+
+    private static TaskCompletionSource NewReconciliationSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
 }
 
 internal sealed class ObservingSessionAttachmentIndexWriter(
     ISessionAttachmentIndexWriter inner,
-    OrdinaryMutationObservations observations) : ISessionAttachmentIndexWriter
+    OrdinaryMutationObservations observations,
+    Func<long> currentGeneration) : ISessionAttachmentIndexWriter
 {
     public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
         int expectedDimensions,
@@ -970,7 +1222,7 @@ internal sealed class ObservingSessionAttachmentIndexWriter(
 
         observations.Succeeded();
 
-        observations.ReconciliationSucceeded();
+        observations.ReconciliationSucceeded(currentGeneration());
 
         return pending;
     }

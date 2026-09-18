@@ -15,6 +15,10 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
     private readonly Action _disposeGrimoire;
 
+    private readonly InMemoryOsCredentialStore _credentialStore;
+
+    private readonly GrimoireDbPassphraseSource _passphraseSource;
+
     private bool _disposed;
 
     internal RestartableArcanumProfileFixture(
@@ -45,9 +49,13 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
         }
 
-        PassphraseSource = passphraseSource;
+        _passphraseSource = passphraseSource;
 
-        CredentialStore = new InMemoryOsCredentialStore();
+        PassphraseSource = _passphraseSource;
+
+        _credentialStore = new InMemoryOsCredentialStore();
+
+        CredentialStore = _credentialStore;
 
         _clearPools = clearPools ?? SqliteConnection.ClearAllPools;
 
@@ -124,7 +132,29 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
                 finally
                 {
 
-                    _disposed = true;
+                    try
+                    {
+
+                        _credentialStore.Clear();
+
+                    }
+                    finally
+                    {
+
+                        try
+                        {
+
+                            _passphraseSource.Clear();
+
+                        }
+                        finally
+                        {
+
+                            _disposed = true;
+
+                        }
+
+                    }
 
                 }
 

@@ -367,7 +367,7 @@ Implement adjacent internal types in `GrimoireMaintenanceParticipantObservers.cs
 - `PausingStatsCommandInterceptor : DbCommandInterceptor`, scoped to the stats command, so the finite request pauses after request admission and native connection opening but before its final Grimoire result is materialized;
 - `PausingEfOpenInterceptor : DbConnectionInterceptor`, registered after `CovenantConnectionEnrolmentInterceptor`, so its `ConnectionOpeningAsync` pause occurs after the production opening ticket exists but before native open;
 - `PausingOrdinaryConnectionFactoryTestSeam : IGrimoireOrdinaryConnectionFactoryTestSeam`, forwarding construction/pool-clear observations and pausing `BeforeNativeOpenAsync`;
-- `ObservingCovenantConnectionDrain : ICovenantConnectionDrain`, forwarding to one real `CovenantConnectionDrain` while counting enrolments and observing `ClearExactPoolAfterClose` on the exact physically closed handle;
+- `ObservingCovenantConnectionDrain : ICovenantConnectionDrain`, forwarding to one real `CovenantConnectionDrain` while recording successful enrolment references separately from the enrolled connections that remain physically open, and observing `ClearExactPoolAfterClose` on the exact physically closed handle;
 - `RecordingLongRunningOperationStore : ILongRunningOperationStore`, forwarding every call while retaining immutable snapshots of successful checkpoint and state transitions for assertions made while ordinary database access is closed;
 - `PostAdmissionEndpointProbe`, installed through a test `IStartupFilter` that calls `next(app)` first and then appends its middleware, whose contract test proves it runs inside `UseArcanumApiKeyAuthentication` and immediately before the selected endpoint; use it to prove an admitted `/v1/models` request executes the probe and a maintenance-refused request never does;
 - `PausingMaintenanceLeaseAdoption : ILongRunningOperationMaintenanceLeaseAdoption`, which delegates to `LongRunningOperationStore`, pauses only after `Acquired == true`, and returns the exact result after release;
@@ -525,8 +525,9 @@ After stage one completes and `CloseConnectionAdmissionAsync` begins:
 1. Assert the EF opening ticket already exists and names the losing generation.
 2. Release the interceptor so native open returns into the changed generation.
 3. Assert `OpenConnectionAsync` fails with `GrimoireMaintenanceUnavailableException`.
-4. Assert the handle is closed, the exact pool was cleared, the ticket reached exactly one terminal outcome and rejects reuse, and the production drain reports zero enrolled handles.
-5. Hold the observer after the real close returns but before the coordinator receives closed authority; assert neither `arcanum.db-wal` nor `arcanum.db-shm` exists, then release closed authority.
+4. Assert the handle is closed, the exact pool was cleared, the ticket reached exactly one terminal outcome and rejects reuse, and this generation-losing handle never enrolled after its failed post-native revalidation.
+5. Prove the cluster's successful participant enrolments were recorded before drain. At the held stage-two boundary, assert zero physically open enrolled handles, while allowing the initiating `LongRunningOperationStore` connection's registration reference to remain until its owning HTTP scope ends.
+6. Hold the observer after the real close returns but before the coordinator receives closed authority; assert neither `arcanum.db-wal` nor `arcanum.db-shm` exists, then release closed authority.
 
 - [ ] **Step 4: Prove commit, retirement, and fresh generation**
 
@@ -540,7 +541,8 @@ Await the authenticated reset response and assert success. Read evidence through
 - the Grimoire observer records one `CommitAndReopen`; the completed durable operation, terminal journal progression, and reopened Covenant owner state prove that the Covenant lease accepted `CommitAndReopen`, while `CovenantOperationGateTests` proves the lease's one-shot rule;
 - normal retirement wrote and reread the `Closed` anchor before deleting the exact journal file, while retaining the closed-anchor tombstone and stable journal key for authenticated absence;
 - fresh authenticated `/api/grimoire/stats`, fresh work lease, and fresh physical open succeed at exactly `losingGeneration + 1`; and
-- all old stream revocation tokens remain cancelled, the prior work lease cannot begin a new effect group, the losing ticket remains terminal, and the disposed maintenance owner cannot be reused.
+- all old stream revocation tokens remain cancelled, the prior work lease cannot begin a new effect group, the losing ticket remains terminal, and the disposed maintenance owner cannot be reused;
+- total enrolment registration references reach zero only after their owning request scopes, including the initiating reset scope, have ended.
 
 Capture `CovenantErasureCoordinator`, request-admission, stream, worker, and connection logs. Assert no Error and no Warning other than an explicitly expected, asserted diagnostic; do not blanket-filter by message text.
 
@@ -611,8 +613,11 @@ For this cluster call the production `IGrimoireOrdinaryConnectionFactory.OpenFre
 - stage two changes generation while native open is paused;
 - the losing handle closes and `AfterExactPoolClear` identifies that exact connection;
 - the returned `Result` carries `GrimoireMaintenanceUnavailableException.Code`;
-- the opening ticket is terminal exactly once and is not reusable; and
-- enrolled handle count and sidecars are zero before closed authority reaches the coordinator.
+- the opening ticket is terminal exactly once and is not reusable;
+- failed post-native revalidation prevents the generation-losing handle from ever enrolling;
+- exact successful participant enrolments are proven before drain;
+- zero enrolled handles remain physically open and both sidecars are absent before closed authority reaches the coordinator, even though the initiating `LongRunningOperationStore` registration remains until its HTTP scope ends; and
+- total enrolment registration references reach zero after the owning request scopes end.
 
 - [ ] **Step 3: Add factory-specific commit assertions**
 
@@ -1111,7 +1116,122 @@ git merge-base --is-ancestor "$base_main" HEAD
 feature_sha=$(git rev-parse HEAD)
 test "${#feature_sha}" -eq 40
 
-issue_242_before=$(gh issue view 242 --repo "$repo_slug" --json state,stateReason,projectItems | jq -S -c .)
+snapshot_issue_metadata() {
+  local issue_number="$1"
+  local repo_owner="${repo_slug%%/*}"
+  local repo_name="${repo_slug#*/}"
+  local issue_json
+  local relationship_json
+
+  case "$issue_number" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  test "$issue_number" -gt 0 || return 1
+  test -n "$repo_owner" || return 1
+  test -n "$repo_name" || return 1
+  test "$repo_owner/$repo_name" = "$repo_slug" || return 1
+
+  issue_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
+    --json id,number,title,body,state,stateReason,labels,assignees,milestone,projectItems,isPinned,issueType,blockedBy,blocking,subIssues,updatedAt) \
+    || return 1
+
+  relationship_json=$(gh api graphql \
+    -f owner="$repo_owner" \
+    -f name="$repo_name" \
+    -F number="$issue_number" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){id number parent{id number repository{nameWithOwner}}}}}') \
+    || return 1
+
+  jq -e -S -c -n \
+    --argjson issue "$issue_json" \
+    --argjson relationship "$relationship_json" \
+    --argjson expected_number "$issue_number" \
+    --arg repository "$repo_slug" '
+      def canonical:
+        if type == "object" then
+          to_entries
+          | sort_by(.key)
+          | map(.value |= canonical)
+          | from_entries
+        elif type == "array" then
+          map(canonical)
+        else
+          .
+        end;
+
+      ($relationship.data.repository.issue // error("issue relationship lookup returned no issue")) as $related
+      | if (($relationship.errors // []) | length) != 0
+          or (($issue | type) != "object")
+          or ((([
+            "id",
+            "number",
+            "title",
+            "body",
+            "state",
+            "stateReason",
+            "labels",
+            "assignees",
+            "milestone",
+            "projectItems",
+            "isPinned",
+            "issueType",
+            "blockedBy",
+            "blocking",
+            "subIssues",
+            "updatedAt"
+          ] - ($issue | keys)) | length) != 0)
+          or (($issue.id | type) != "string")
+          or (($issue.number | type) != "number")
+          or (($issue.title | type) != "string")
+          or (($issue.body | type) != "string")
+          or (($issue.state | type) != "string")
+          or (($issue.stateReason != null) and (($issue.stateReason | type) != "string"))
+          or (($issue.milestone != null) and (($issue.milestone | type) != "object"))
+          or (($issue.issueType != null) and (($issue.issueType | type) != "object"))
+          or (($issue.isPinned | type) != "boolean")
+          or (($issue.updatedAt | type) != "string")
+          or ($issue.id != $related.id)
+          or ($issue.number != $expected_number)
+          or ($related.number != $expected_number)
+          or (($issue.labels | type) != "array")
+          or (($issue.assignees | type) != "array")
+          or (($issue.projectItems | type) != "array")
+          or (($issue.blockedBy | type) != "array")
+          or (($issue.blocking | type) != "array")
+          or (($issue.subIssues | type) != "array")
+        then
+          error("issue metadata snapshot was incomplete or inconsistent")
+        else
+          ($related.parent // null) as $parent
+          | if ($parent != null)
+              and ((($parent.id | type) != "string")
+                or (($parent.number | type) != "number")
+                or (($parent.repository.nameWithOwner | type) != "string"))
+            then
+              error("parent issue identity was incomplete")
+            else
+              ($issue + {
+                repositoryNameWithOwner: $repository,
+                parentIssueIdentity: (
+                  if $parent == null then
+                    null
+                  else
+                    {
+                      id: $parent.id,
+                      number: $parent.number,
+                      repositoryNameWithOwner: $parent.repository.nameWithOwner
+                    }
+                  end)
+              })
+              | canonical
+            end
+        end
+    '
+}
+
+issue_242_before=$(snapshot_issue_metadata 242)
+printf '%s\n' "$issue_242_before" | jq -e '.state == "OPEN"' >/dev/null
 
 require_remote_ref_absent() {
   local ref="$1"
@@ -1129,6 +1249,12 @@ require_remote_ref_absent() {
   test -z "$deleted_ref"
 }
 ```
+
+The normalized #242 snapshot remains only in shell variables used for equality and `OPEN` assertions.
+Do not print it, write it to delivery evidence, or include its title, body, relationship data, or other
+contents in an issue comment. The helper fails closed on a missing field, GraphQL error, issue-identity
+mismatch, malformed relationship, or incomplete response. Object keys are recursively sorted, while
+array order is preserved and compared so all three captures remain deterministic without hiding a reorder.
 
 If either remote base moved from the implementation base, reconcile the feature branch with current `main`, rerun the complete review, freeze a new SHA, and restart this task. Never rewrite published main history.
 
@@ -1252,7 +1378,10 @@ dispatch_not_before=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 gh workflow run ci.yml --repo "$repo_slug" --ref "$feature_branch"
 ```
 
-Resolve the manually dispatched run by immutable commit, then wait for terminal success:
+Resolve the manually dispatched run by immutable commit. Take an immediate discovery snapshot, then
+poll no more often than once every five minutes; after discovery, take one immediate status snapshot
+and apply the same five-minute minimum between later status polls. Do not use the CLI's streaming
+watcher, whose internal polling cadence is neither explicit nor retained as delivery evidence:
 
 ```bash
 set -euo pipefail
@@ -1262,12 +1391,21 @@ run_id=
 for attempt in {1..24}; do
   run_id=$(gh run list --repo "$repo_slug" --workflow ci.yml --event workflow_dispatch --commit "$feature_sha" --limit 1000 --json databaseId,headSha,createdAt | jq -r --arg sha "$feature_sha" --arg boundary "$dispatch_not_before" --argjson prior "$prior_run_ids" '[.[] | select(. as $run | .headSha == $sha and .createdAt >= $boundary and ($prior | index($run.databaseId)) == null)] | sort_by(.createdAt) | last | .databaseId // empty')
   test -n "$run_id" && break
-  sleep 5
+  test "$attempt" -lt 24
+  sleep 300
 done
 
 test -n "$run_id"
-gh run watch "$run_id" --repo "$repo_slug" --exit-status
-gh run view "$run_id" --repo "$repo_slug" --json headSha,status,conclusion,jobs,url > "$delivery_evidence/ci-run.json"
+
+for attempt in {1..48}; do
+  gh run view "$run_id" --repo "$repo_slug" --json headSha,status,conclusion,jobs,url > "$delivery_evidence/ci-run.json"
+  run_status=$(jq -er '.status' "$delivery_evidence/ci-run.json")
+  test "$run_status" = "completed" && break
+  test "$attempt" -lt 48
+  sleep 300
+done
+
+test "$(jq -er '.status' "$delivery_evidence/ci-run.json")" = "completed"
 ```
 
 Require the exact SHA and all seven current job names to be terminal success:
@@ -1307,7 +1445,7 @@ set -euo pipefail
 gh issue comment 257 --repo "$repo_slug" --body "Acceptance deviation approved by the issue owner on 2026-09-11: the original condition that all #239 work remain off main cannot be satisfied because #243-#256 were already merged and released. The accepted non-destructive replacement is to start #257 from current main, add only #257, freeze one reviewed, locally qualified, CI-green SHA, and fast-forward that identical SHA through grimoire-fixes to main. Published history will not be rewritten."
 ```
 
-- [ ] **Step 7: Fast-forward the identical SHA through remote `grimoire-fixes` to `main`**
+- [ ] **Step 7: Push the immutable SHA to `grimoire-fixes`, then delete the feature branches**
 
 Re-fetch and fail closed if either base moved:
 
@@ -1322,7 +1460,7 @@ git merge-base --is-ancestor refs/remotes/origin/main "$feature_sha"
 git merge-base --is-ancestor refs/remotes/origin/grimoire-fixes "$feature_sha"
 ```
 
-Deliver the umbrella ref, prove it, then remove the remote feature ref:
+Deliver the umbrella ref and prove it before deleting any feature artifact:
 
 ```bash
 set -euo pipefail
@@ -1333,42 +1471,133 @@ test "$remote_grimoire_sha" = "$feature_sha"
 
 delivered_sha="$feature_sha"
 test "${#delivered_sha}" -eq 40
-
-git push origin --delete "$feature_branch"
-require_remote_ref_absent "refs/heads/$feature_branch"
 ```
 
-Fast-forward remote main to that exact SHA and prove it from the server and a fresh fetch:
+Remove the clean feature worktree, then delete the local feature branch while its exact upstream still
+proves it merged. Delete the remote feature branch last and prove both refs absent:
 
 ```bash
 set -euo pipefail
 
-git fetch origin main grimoire-fixes
-test "$(git rev-parse refs/remotes/origin/main)" = "$base_main"
-test "$(git rev-parse refs/remotes/origin/grimoire-fixes)" = "$delivered_sha"
-git merge-base --is-ancestor refs/remotes/origin/main "$delivered_sha"
-
-git push origin "$delivered_sha:refs/heads/main"
-remote_main_sha=$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')
-test "$remote_main_sha" = "$delivered_sha"
-
-git fetch origin main
-test "$(git rev-parse refs/remotes/origin/main)" = "$delivered_sha"
-
-git push origin --delete grimoire-fixes
-require_remote_ref_absent refs/heads/grimoire-fixes
-```
-
-- [ ] **Step 8: Remove task-created worktree/branches without changing the dirty checkout**
-
-First remove the clean feature worktree, but retain the local feature branch until local `main` points at the delivered SHA:
-
-```bash
-set -euo pipefail
+test "$(git -C "$feature_tree" rev-parse HEAD)" = "$delivered_sha"
+test -z "$(git -C "$feature_tree" status --porcelain --untracked-files=all)"
+remote_feature_sha=$(git -C "$repo_root" ls-remote --exit-code origin "refs/heads/$feature_branch" | awk 'NR == 1 { print $1 }')
+test "$remote_feature_sha" = "$delivered_sha"
 
 cd /private/tmp
 git -C "$repo_root" worktree remove "$feature_tree"
 test ! -e "$feature_tree"
+
+test "$(git -C "$repo_root" rev-parse "refs/heads/$feature_branch")" = "$delivered_sha"
+git -C "$repo_root" branch -d "$feature_branch"
+test -z "$(git -C "$repo_root" for-each-ref --format='%(refname)' "refs/heads/$feature_branch")"
+
+git -C "$repo_root" push origin --delete "$feature_branch"
+require_remote_ref_absent "refs/heads/$feature_branch"
+```
+
+- [ ] **Step 8: Post evidence and close #257, then #239**
+
+Post concise evidence under exact headings `Local`, `AOT`, `Native`, and `CI`. Include the immutable SHA,
+local commands/results, SDK path/version, AOT and SQLCipher results, CI URL/run ID/head SHA/seven job
+conclusions, exact remote `grimoire-fixes` equality, and feature-branch/worktree removal. Do not include
+credential values, user document contents, temp secrets, or internal transition owner/path detail.
+Construct the evidence only from already-validated variables and the redacted CI result:
+
+```bash
+set -euo pipefail
+
+ci_url=$(jq -er '.url' "$delivery_evidence/ci-run.json")
+ci_head_sha=$(jq -er '.headSha' "$delivery_evidence/ci-run.json")
+ci_job_results=$(jq -er '.jobs | sort_by(.name)[] | "- \(.name): \(.conclusion)"' "$delivery_evidence/ci-run.json")
+test "$ci_head_sha" = "$delivered_sha"
+test "$(git -C "$repo_root" ls-remote --exit-code origin refs/heads/grimoire-fixes | awk 'NR == 1 { print $1 }')" = "$delivered_sha"
+test -z "$(git -C "$repo_root" for-each-ref --format='%(refname)' "refs/heads/$feature_branch")"
+require_remote_ref_absent "refs/heads/$feature_branch"
+
+evidence_body="$delivery_evidence/issue-257-evidence.md"
+{
+  printf '## Local\n\n'
+  printf -- '- Immutable SHA: `%s`\n' "$delivered_sha"
+  printf -- '- Official private SDK: `/private/tmp/arcanum-dotnet-10.0.401` (`10.0.401`).\n'
+  printf -- '- Exact local matrix results:\n'
+  sed -n 'p' "$delivery_evidence/local-matrix.md"
+  printf -- '- Every applicable local leg completed with zero unclassified warnings or errors.\n'
+  printf -- '- Remote `grimoire-fixes` resolved to the immutable SHA; the task-created feature worktree and both feature-branch refs were removed before issue closure.\n\n'
+  printf '## AOT\n\n'
+  printf -- '- `verify_aot_il_warnings_test.sh`, `verify-aot-il-warnings.sh`, and `verify-shipping-publish.sh --rid osx-arm64`: PASS.\n\n'
+  printf '## Native\n\n'
+  printf -- '- `verify-native-sqlcipher.sh --rid osx-arm64`: PASS.\n\n'
+  printf '## CI\n\n'
+  printf -- '- Run: %s (ID `%s`, head `%s`).\n' "$ci_url" "$run_id" "$ci_head_sha"
+  printf '%s\n' "$ci_job_results"
+} > "$evidence_body"
+
+gh issue comment 257 --repo "$repo_slug" --body-file "$evidence_body"
+```
+
+Close #257 first, verify the complete child set, then close #239. Verify #242 remains exactly as
+captured and open:
+
+```bash
+set -euo pipefail
+
+gh issue close 257 --repo "$repo_slug" --reason completed
+gh issue view 257 --repo "$repo_slug" --json state,stateReason,projectItems \
+  | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
+
+gh api graphql \
+  -f owner='Retro-Downfall' \
+  -f name='RetroDownfall.Arcanum' \
+  -F number=239 \
+  -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){subIssues(first:100){nodes{number state stateReason}}}}}' \
+  | jq -e '.data.repository.issue.subIssues.nodes | ((map(.number) | sort) == [243,244,245,246,247,248,249,250,251,252,253,254,255,256,257] and all(.[]; .state == "CLOSED" and .stateReason == "COMPLETED"))'
+
+gh issue close 239 --repo "$repo_slug" --reason completed
+gh issue view 239 --repo "$repo_slug" --json state,stateReason,projectItems \
+  | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
+
+issue_242_after=$(snapshot_issue_metadata 242)
+test "$issue_242_after" = "$issue_242_before"
+printf '%s\n' "$issue_242_after" | jq -e '.state == "OPEN"' >/dev/null
+```
+
+Require all fifteen parent children (#243 through #257) and both target issues to report `CLOSED`/`COMPLETED`. If the live relationship count or membership differs, inspect the parent before closing it rather than trusting the historical range. If a project item has appeared, inspect its real field/options and move it to the repository's actual Done value; do not invent a project or status. Verify #242 remains unchanged and open.
+
+- [ ] **Step 9: Advance `main`, delete `grimoire-fixes`, and preserve the dirty checkout**
+
+Only after both target issues are closed, fetch both delivery refs again and fail closed unless remote
+`main` is still the approved base and remote `grimoire-fixes` is still the exact delivered SHA:
+
+```bash
+set -euo pipefail
+
+git -C "$repo_root" fetch origin main grimoire-fixes
+test "$(git -C "$repo_root" rev-parse refs/remotes/origin/main)" = "$base_main"
+test "$(git -C "$repo_root" rev-parse refs/remotes/origin/grimoire-fixes)" = "$delivered_sha"
+git -C "$repo_root" merge-base --is-ancestor refs/remotes/origin/main "$delivered_sha"
+
+gh issue view 257 --repo "$repo_slug" --json state,stateReason \
+  | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
+gh issue view 239 --repo "$repo_slug" --json state,stateReason \
+  | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
+```
+
+Fast-forward remote `main` to that exact SHA and prove it from the server and a fresh fetch, then delete
+remote `grimoire-fixes` and prove it absent:
+
+```bash
+set -euo pipefail
+
+git -C "$repo_root" push origin "$delivered_sha:refs/heads/main"
+remote_main_sha=$(git -C "$repo_root" ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')
+test "$remote_main_sha" = "$delivered_sha"
+
+git -C "$repo_root" fetch origin main
+test "$(git -C "$repo_root" rev-parse refs/remotes/origin/main)" = "$delivered_sha"
+
+git -C "$repo_root" push origin --delete grimoire-fixes
+require_remote_ref_absent refs/heads/grimoire-fixes
 ```
 
 Capture the dirty primary checkout without publishing file contents:
@@ -1448,72 +1677,13 @@ cmp "$primary_evidence/before.tracked.diff.sha256" "$primary_evidence/after.trac
 cmp "$primary_evidence/before.untracked-paths" "$primary_evidence/after.untracked-paths"
 cmp "$primary_evidence/before.untracked.sha256" "$primary_evidence/after.untracked.sha256"
 
-git -C "$repo_root" branch -d "$feature_branch"
 git -C "$repo_root" branch -d grimoire-fixes
 ```
 
-If any blob, collision, inventory, or digest guard fails, preserve the local branches and primary checkout exactly as they are; never force the switch or deletion. Do not prune the two unrelated stale detached-worktree registrations.
-
-- [ ] **Step 9: Post evidence and close #257, then #239**
-
-Post concise evidence under exact headings `Local`, `AOT`, `Native`, and `CI`. Include the immutable SHA, local commands/results, SDK path/version, AOT and SQLCipher results, CI URL/run ID/head SHA/seven job conclusions, delivery-ref equality, and dirty-checkout digest equality. Do not include credential values, user document contents, temp secrets, or internal transition owner/path detail. Construct the evidence only from already-validated variables and the redacted CI result:
-
-```bash
-set -euo pipefail
-
-ci_url=$(jq -er '.url' "$delivery_evidence/ci-run.json")
-ci_head_sha=$(jq -er '.headSha' "$delivery_evidence/ci-run.json")
-ci_job_results=$(jq -er '.jobs | sort_by(.name)[] | "- \(.name): \(.conclusion)"' "$delivery_evidence/ci-run.json")
-test "$ci_head_sha" = "$delivered_sha"
-
-evidence_body="$delivery_evidence/issue-257-evidence.md"
-{
-  printf '## Local\n\n'
-  printf -- '- Immutable SHA: `%s`\n' "$delivered_sha"
-  printf -- '- Official private SDK: `/private/tmp/arcanum-dotnet-10.0.401` (`10.0.401`).\n'
-  printf -- '- Exact local matrix results:\n'
-  sed -n 'p' "$delivery_evidence/local-matrix.md"
-  printf -- '- Every applicable local leg completed with zero unclassified warnings or errors.\n'
-  printf -- '- Remote `grimoire-fixes` and `main` both resolved to the immutable SHA during delivery; the primary checkout dirty-path inventory and SHA-256 digests matched exactly before and after its guarded switch to `main`.\n\n'
-  printf '## AOT\n\n'
-  printf -- '- `verify_aot_il_warnings_test.sh`, `verify-aot-il-warnings.sh`, and `verify-shipping-publish.sh --rid osx-arm64`: PASS.\n\n'
-  printf '## Native\n\n'
-  printf -- '- `verify-native-sqlcipher.sh --rid osx-arm64`: PASS.\n\n'
-  printf '## CI\n\n'
-  printf -- '- Run: %s (ID `%s`, head `%s`).\n' "$ci_url" "$run_id" "$ci_head_sha"
-  printf '%s\n' "$ci_job_results"
-} > "$evidence_body"
-
-gh issue comment 257 --repo "$repo_slug" --body-file "$evidence_body"
-```
-
-Then close and verify:
-
-```bash
-set -euo pipefail
-
-gh issue close 257 --repo "$repo_slug" --reason completed
-gh issue view 257 --repo "$repo_slug" --json state,stateReason,projectItems \
-  | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
-
-gh api graphql \
-  -f owner='Retro-Downfall' \
-  -f name='RetroDownfall.Arcanum' \
-  -F number=239 \
-  -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){subIssues(first:100){nodes{number state stateReason}}}}}' \
-  | jq -e '.data.repository.issue.subIssues.nodes | ((map(.number) | sort) == [243,244,245,246,247,248,249,250,251,252,253,254,255,256,257] and all(.[]; .state == "CLOSED" and .stateReason == "COMPLETED"))'
-
-gh issue close 239 --repo "$repo_slug" --reason completed
-gh issue view 239 --repo "$repo_slug" --json state,stateReason,projectItems \
-  | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
-
-issue_242_after=$(gh issue view 242 --repo "$repo_slug" --json state,stateReason,projectItems | jq -S -c .)
-test "$issue_242_after" = "$issue_242_before"
-gh issue view 242 --repo "$repo_slug" --json state \
-  | jq -e '.state == "OPEN"'
-```
-
-Require all fifteen parent children (#243 through #257) and both target issues to report `CLOSED`/`COMPLETED`. If the live relationship count or membership differs, inspect the parent before closing it rather than trusting the historical range. If a project item has appeared, inspect its real field/options and move it to the repository's actual Done value; do not invent a project or status. Verify #242 remains unchanged and open.
+If any blob, collision, inventory, or digest guard fails, preserve the local `grimoire-fixes` branch
+and primary checkout exactly as they are; never force the switch or deletion. Remote cleanup is
+independent and may already be complete. Do not prune the two unrelated stale detached-worktree
+registrations.
 
 - [ ] **Step 10: Run the fresh delivered-main Native AOT Ollama proof**
 
@@ -1628,8 +1798,9 @@ gh issue view 257 --repo "$repo_slug" --json state,stateReason \
   | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
 gh issue view 239 --repo "$repo_slug" --json state,stateReason \
   | jq -e '.state == "CLOSED" and .stateReason == "COMPLETED"'
-issue_242_final=$(gh issue view 242 --repo "$repo_slug" --json state,stateReason,projectItems | jq -S -c .)
+issue_242_final=$(snapshot_issue_metadata 242)
 test "$issue_242_final" = "$issue_242_before"
+printf '%s\n' "$issue_242_final" | jq -e '.state == "OPEN"' >/dev/null
 
 git -C "$repo_root" diff --cached --quiet
 git -C "$repo_root" status --porcelain=v2 -z > "$primary_evidence/final.status"
@@ -1687,6 +1858,7 @@ The final primary status must still show the user's exact pre-existing documenta
 - [ ] Complete diff review has no unresolved Critical or Important finding.
 - [ ] Exact local matrix is green on one immutable 10.0.401 SHA with zero unclassified warnings/errors.
 - [ ] All seven CI jobs, including Windows x64 and ARM64, succeed on that same SHA.
-- [ ] The identical SHA moves through remote `grimoire-fixes` to remote `main`; task branches and `grimoire-fixes` are removed under the dirty-checkout guard.
-- [ ] Issues #257 and #239 are closed as completed; #242 is unchanged.
+- [ ] The identical SHA is pushed to remote `grimoire-fixes`, then every task-created feature worktree and branch is removed.
+- [ ] Issues #257 and #239 are closed as completed in that order; #242 is unchanged.
+- [ ] Only after issue closure, the identical SHA advances remote `main`; remote and local `grimoire-fixes` are removed under the dirty-checkout guard.
 - [ ] Fresh detached-main Native AOT `gemma4:e4b` three-turn/vision qualification passes against the pinned stop-sign image.

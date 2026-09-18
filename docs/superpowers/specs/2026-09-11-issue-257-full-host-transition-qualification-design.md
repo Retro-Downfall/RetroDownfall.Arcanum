@@ -226,10 +226,16 @@ Each quiesceable stream must finish the current complete frame, emit no partial 
 frame, observe its prior revocation token cancelled, stop its producer, dispose its enumerator and
 request scope, emit exactly one route-owned `[DONE]`, and end cleanly.
 
-The physical-open observer must prove its opening ticket exists before the native-open barrier is
-released. When stage two changes generation, the losing native handle must be closed, its ticket must
-reach one terminal disposition and never be reused, an exact pool clear must occur, enrolled-handle
-count must reach zero, and no catalog `-wal` or `-shm` file may remain before closed authority issues.
+The drain observer must prove each successful participant enrolment before the drain begins. The
+physical-open observer must separately prove its opening ticket exists before the native-open barrier
+is released. When stage two changes generation, that losing native handle must be closed, its ticket
+must reach one terminal disposition and never be reused, and an exact pool clear must occur; because
+post-native revalidation fails, that handle never enrols. At the held stage-two boundary, zero enrolled
+handles may remain physically open and no catalog `-wal` or `-shm` file may remain before closed
+authority issues. That is deliberately not a zero-registration assertion: `LongRunningOperationStore`
+pre-enrols its scoped connection, `DrainAsync` physically closes it without unregistering it, and the
+registration reference remains until the owning HTTP request scope ends. Total registration references
+reach zero only after every owning request scope has ended.
 
 The transition then commits, privately verifies the reopened catalog, publishes runtime authority,
 reconciles the database, proves the standalone factory launch has no parent receipt, retires the journal,
@@ -457,17 +463,31 @@ history will not be rewritten. The intent of the exact-SHA rule is preserved as 
    `origin/grimoire-fixes` and `origin/main` remote-tracking refs resolve to the same exact base. The
    remote `refs/heads/grimoire-fixes` update that established that equality occurs before worktree
    creation; never mutate a remote-tracking ref directly. Leave the older local `grimoire-fixes` branch
-   checked out in the dirty primary checkout untouched until step 8.
+   checked out in the dirty primary checkout untouched until the guarded local cleanup after `main`
+   advances.
 2. Post the issue owner's approved acceptance deviation from Section 2.1 to #257 before delivery; do
    not reinterpret or silently omit the original wording.
 3. Freeze one reviewed, locally qualified, CI-green feature SHA.
 4. Push the feature SHA directly to remote `refs/heads/grimoire-fixes` as a fast-forward and verify the
    remote ref resolves exactly to that SHA; do not move the dirty checkout's local branch.
-5. Delete the task-created remote feature branch only after the remote target is proven; remove its
-   local branch and worktree after no remaining verification needs them.
-6. Retain that immutable 40-character feature SHA as `delivered_sha`, then fast-forward `main` to it
-   without rebuilding or creating a merge commit.
-7. Verify both the GitHub ref and a fresh fetch resolve `main` to that SHA.
+5. Retain that immutable 40-character feature SHA as `delivered_sha`. Once remote
+   `grimoire-fixes` is proven at that SHA, remove the task-created feature worktree, delete its local
+   feature branch while its exact upstream still proves the merge, then delete and verify absence of
+   the remote feature branch. No task-created feature branch remains after this step.
+6. Post concise evidence under four explicit headings—`Local`, `AOT`, `Native`, and `CI`—including the
+   commands or workflow jobs, conclusions, exact SHA, run ID, proven remote `grimoire-fixes` ref, and
+   feature-branch cleanup. Close #257 with reason `COMPLETED`, verify every child of #239 is closed as
+   completed, then close #239 with reason `COMPLETED`; verify #242 is still open and byte-for-byte
+   unchanged through one normalized private snapshot helper. That snapshot covers the issue identity,
+   title, body, state and reason, update time, pin and issue type, labels, assignees, milestone, project
+   items, blocking and sub-issue relationships, and the live parent issue identity queried directly
+   through GitHub GraphQL. It remains in shell variables used only for equality and open-state checks;
+   none of its content is logged or posted. GitHub currently exposes no project item for either target
+   issue; closing as completed is the available Done mutation unless a tracker item becomes visible.
+7. Only after both issues are closed, fetch `main` and `grimoire-fixes` again, require `main` still at
+   the approved base and remote `grimoire-fixes` still at `delivered_sha`, then fast-forward `main` to
+   that exact SHA without rebuilding or creating a merge commit. Verify both the GitHub ref and a fresh
+   fetch resolve `main` to that SHA.
 8. After the delivered `main` ref is proven, delete remote `grimoire-fixes`. Before touching the local
    branch, record the primary checkout's porcelain path/status inventory, the binary diff digest for
    all tracked changes, and SHA-256 digests for every untracked file (currently two). Confirm the final
@@ -476,11 +496,6 @@ history will not be rewritten. The intent of the exact-SHA rule is preserved as 
    re-record the same inventory and digests, and require exact equality before deleting local
    `grimoire-fixes`. If any preflight, checkout, or comparison fails, stop and preserve the local branch
    and dirty checkout exactly; remote cleanup is independent and may still proceed.
-9. Post concise evidence under four explicit headings—`Local`, `AOT`, `Native`, and `CI`—including the
-   commands or workflow jobs, conclusions, exact SHA, and run ID where applicable. Then close #257 with
-   reason `COMPLETED`, followed by #239 with reason `COMPLETED`. GitHub currently exposes no project item
-   for either issue; closing as completed is the available Done mutation unless a tracker item becomes
-   visible before delivery.
 
 Feature-branch and worktree cleanup is limited to artifacts created by this task. Deleting the
 pre-existing `grimoire-fixes` umbrella branch is separately and explicitly authorized by the user's
@@ -561,7 +576,8 @@ an external blocker.
 
 ## 11. Completion criteria
 
-Issue #257 and parent #239 are complete only when all of the following are true:
+The implementation and delivery of issue #257 and parent #239 are complete only when all of the
+following are true:
 
 - both authenticated transition entry points pass their deterministic full-host race clusters;
 - commit, rollback, `KeepClosed`, recovery, retirement, and next-generation contracts pass;
@@ -572,10 +588,11 @@ Issue #257 and parent #239 are complete only when all of the following are true:
   the qualification rule above;
 - CI passes on that same SHA, including Windows x64 and Windows ARM64;
 - the issue evidence distinguishes `Local`, `AOT`, `Native`, and `CI` results;
+- the immutable SHA is proven on remote `grimoire-fixes`, every task-created feature branch is removed,
+  then GitHub reports #257 and #239 closed as completed;
 - `origin/main` resolves to that SHA;
-- task-created feature and remote `grimoire-fixes` branches are removed, and local `grimoire-fixes` is
-  removed unless Git's dirty-checkout protection requires preserving it;
-- GitHub reports #257 and #239 closed as completed.
+- remote `grimoire-fixes` is removed, and local `grimoire-fixes` is removed unless Git's dirty-checkout
+  protection requires preserving it.
 
 The overall user request is complete only after those issue criteria and the fresh delivered-main
 Native AOT Ollama multi-turn/vision verifier both pass against `gemma4:e4b` and the pinned stop-sign

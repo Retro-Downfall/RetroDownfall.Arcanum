@@ -321,10 +321,10 @@ public sealed class CovenantConnectionDrainTests
     /// database open costs the exclusive maintenance connection one busy timeout per wal-index lock it
     /// has to take, which is tens of seconds of waiting followed by <c>database is locked</c>.
     ///
-    /// <para>Driven through the real host rather than a scratch database because enrolment is a
-    /// composition property, not a connection property: what decides whether a held handle is drained
-    /// is which services the scope happens to resolve, and only the production registrations say
-    /// that.</para>
+    /// <para>Driven through the real host rather than a scratch database because production
+    /// composition must route the scoped context through explicit ordinary admission. The retained
+    /// lease enrolls this exact handle before it opens and keeps that enrollment until the scope is
+    /// disposed; a scratch connection would bypass the registration contract under test.</para>
     /// </remarks>
     [SkippableFact]
     public async Task A_scope_holding_the_Grimoire_open_for_Covenant_is_closed_by_the_drain()
@@ -339,9 +339,9 @@ public sealed class CovenantConnectionDrainTests
             },
         };
 
-        // The maintenance sweeps resolve exactly this and nothing that enrols a handle, so the scope
-        // below is the one the sweep driver builds, minus the sweeps. Reading Services is what starts
-        // the host, so the registrations under test are the ones the server composes.
+        // The maintenance sweeps resolve exactly this connection source, so the scope below is the
+        // one the sweep driver builds, minus the sweeps. Reading Services starts the host and proves
+        // the production registrations retain this exact admitted handle for the scope lifetime.
         await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
 
         SqliteConnection held = await scope.ServiceProvider
