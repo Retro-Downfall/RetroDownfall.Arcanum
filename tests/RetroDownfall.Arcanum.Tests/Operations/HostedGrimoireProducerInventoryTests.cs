@@ -1649,7 +1649,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     + "private readonly record struct ClosedGrimoire(bool IsFailure, AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle Value); "
                     + "private readonly record struct CandidateResult(bool IsFailure, LongRunningOperation Value); "
                     + "private sealed class Gate { internal Task<ResumedCovenant> ResumeExclusiveAsync(AuthenticatedJournalRecoveryOwnerEvidence evidence, CancellationToken cancellationToken) => Task.FromResult(new ResumedCovenant(false, new())); } private readonly Gate _gate = new(); "
-                    + "private Task<ClosedGrimoire> CloseGrimoireAsync(AuthenticatedJournalRecoveryOwnerEvidence evidence, AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant, CancellationToken cancellationToken, bool keepClosedOnFailure) => Task.FromResult(new ClosedGrimoire(false, new())); "
+                    + "private Task<ClosedGrimoire> CloseGrimoireAsync(AuthenticatedJournalRecoveryOwnerEvidence evidence, AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant, CancellationToken cancellationToken, object? stranded, bool keepClosedOnFailure) => Task.FromResult(new ClosedGrimoire(false, new())); "
                     + "private static async Task<RetroDownfall.Arcanum.Core.Primitives.Result<T>> WithRequiredLedgerAsync<T>(AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle grimoire, Func<CancellationToken, Task<RetroDownfall.Arcanum.Core.Primitives.Result<T>>> work, CancellationToken cancellationToken) => await work(cancellationToken); "
                     + "private static async Task KeepCovenantClosedAsync(AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant) { _ = await covenant.CompleteAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await covenant.DisposeAsync(); } "
                     + "private static async Task KeepRecoveryClosedAsync(AuthenticatedCovenantErasureRecoveryAdmission.CovenantHandle covenant, AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle grimoire) { _ = await grimoire.ReleaseAsync(RetroDownfall.Arcanum.Core.Covenant.CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None); await KeepCovenantClosedAsync(covenant); } "
@@ -1669,7 +1669,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     + "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken); "
                     + "if (resumed.IsFailure) { return new(true, null!); } "
                     + "var covenant = resumed.Value; AuthenticatedCovenantErasureRecoveryAdmission.GrimoireHandle? grimoire = null; try { "
-                    + "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true); "
+                    + "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true); "
                     + "if (closed.IsFailure) { await KeepCovenantClosedAsync(covenant); return new(true, null!); } "
                     + "grimoire = closed.Value; "
                     + "var candidate = await WithRequiredLedgerAsync(grimoire, token => Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperation>.Success(new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4))), cancellationToken); "
@@ -4126,21 +4126,21 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         "var resumed = await _gate.ResumeExclusiveAsync(evidence, cancellationToken);",
         "var resumed = DateTime.UtcNow.Ticks > 0 ? await _gate.ResumeExclusiveAsync(evidence, cancellationToken) : await _gate.ResumeExclusiveAsync(evidence, cancellationToken);")]
     [InlineData(
-        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);",
-        "var closed = true ? new ClosedGrimoire(false, new()) : await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);")]
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true);",
+        "var closed = true ? new ClosedGrimoire(false, new()) : await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true);")]
     [InlineData(
-        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);",
-        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true); closed = new ClosedGrimoire(false, new());")]
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true);",
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true); closed = new ClosedGrimoire(false, new());")]
     [InlineData(
-        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);",
-        "var closed = DateTime.UtcNow.Ticks > 0 ? await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true) : await CloseGrimoireAsync(evidence, covenant, cancellationToken, keepClosedOnFailure: true);")]
+        "var closed = await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true);",
+        "var closed = DateTime.UtcNow.Ticks > 0 ? await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true) : await CloseGrimoireAsync(evidence, covenant, cancellationToken, stranded: null, keepClosedOnFailure: true);")]
     [InlineData("keepClosedOnFailure: true", "keepClosedOnFailure: false")]
     [InlineData(
         "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult> adopted = await WithRequiredLedgerAsync(",
         "RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult> adopted = true ? RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new LongRunningOperationLeaseResult(true, new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4) { Revision = evidence.ExpectedOperation.Revision + 1 })) : await WithRequiredLedgerAsync(")]
     [InlineData(
-        "async token => RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(\n                                await adoption",
-        "async token => true ? RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new LongRunningOperationLeaseResult(true, new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4) { Revision = evidence.ExpectedOperation.Revision + 1 })) : RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(\n                                await adoption")]
+        "async token => RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(\n                await adoption",
+        "async token => true ? RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(new LongRunningOperationLeaseResult(true, new LongRunningOperation(LongRunningOperationKinds.DataRetentionMutation, 4) { Revision = evidence.ExpectedOperation.Revision + 1 })) : RetroDownfall.Arcanum.Core.Primitives.Result<LongRunningOperationLeaseResult>.Success(\n                await adoption")]
     public void AuthenticatedAdmissionAuthoritiesRequireExactDirectOrigins(
         string exact,
         string mutation)
@@ -4158,6 +4158,37 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 includeLaunchGapRoot: false);
 
         Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+    }
+
+    [Fact]
+    public void AuthenticatedAdmissionCloseRejectsNonNullStrandedState()
+    {
+        string baseline = ProductionShapedAuthenticatedAdmissionFixture();
+
+        HostedProducerDiscovery<HostedProducerSite> exact =
+            DiscoverOfflineTransitionDispatchFixture(
+                baseline,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.DoesNotContain(exact.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
+
+        string source = baseline.Replace(
+            "stranded: null",
+            "stranded: new object()",
+            StringComparison.Ordinal);
+
+        Assert.NotEqual(baseline, source);
+
+        HostedProducerDiscovery<HostedProducerSite> mutated =
+            DiscoverOfflineTransitionDispatchFixture(
+                source,
+                includeAuthenticatedRoot: true,
+                includeLaunchGapRoot: false);
+
+        Assert.Contains(mutated.Diagnostics, static diagnostic =>
             diagnostic.Code == "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN");
     }
 
@@ -14542,8 +14573,10 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
                 R2Source(R2Admission + cleanupBody, cleanupTypes));
 
-            Assert.Contains(result.Diagnostics, static diagnostic =>
-                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+            Assert.True(
+                result.Diagnostics.Any(static diagnostic =>
+                    diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"),
+                cleanupBody);
         }
 
         void AssertCollisionCleanupUnresolved()
@@ -14985,32 +15018,31 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void ProductionCovenantHostedSweepRetainsExactCleanupProvenanceAtBoundedStateCap()
     {
-        IReadOnlyList<CSharpCompilation> compilations =
-            HostedGrimoireProducerInventory.ProductionCompilations;
-
         HostedProducerServiceEntry service =
             HostedGrimoireProducerInventory.Catalog.Single(static candidate =>
                 candidate.ServiceType == "CovenantMaintenanceHostedService");
 
+        HostedProducerOperationEntry operation = Assert.Single(service.Operations);
+
         HostedProducerDiscovery<HostedProducerSite> result =
-            HostedGrimoireProducerInventory.DiscoverProducerSites(
-                compilations,
-                new(["CovenantMaintenanceHostedService"], []),
-                [service],
-                [],
-                maximumAnalyzedStatesPerRoot: 1024);
+            HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        HostedProducerInventoryDiagnostic[] unresolved = result.Diagnostics
-            .Where(static diagnostic =>
-                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED")
-            .ToArray();
+        HostedProducerRootTraversalMetric root = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RootTraversals,
+            candidate => candidate.RootType == service.ServiceType
+                && candidate.RootOperation == operation.OperationId);
 
-        Assert.True(
-            unresolved.Length == 0,
-            string.Join(
-                global::System.Environment.NewLine,
-                unresolved.Select(static diagnostic =>
-                    $"{diagnostic.Identity}: {diagnostic.Detail}")));
+        Assert.InRange(root.AnalyzedStates, 1, 1024);
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code is (
+                "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                    or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED")
+            && (diagnostic.Identity == operation.OperationId
+                || diagnostic.Identity.StartsWith(
+                    operation.OperationId + "/",
+                    StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -22957,6 +22989,102 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 && diagnostic.Detail.StartsWith(
                     "ModelContextProtocol.Protocol.ElicitResult.",
                     StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(
+        "System.Collections.Generic.IReadOnlyList<string> values = new System.Collections.Generic.List<string> { \"one\" }; _ = values[0];",
+        "System.Collections.Generic.IReadOnlyList`1.this[]")]
+    [InlineData(
+        "System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(\"one\", \"(?<value>one)\"); _ = match.Groups[\"value\"];",
+        "System.Text.RegularExpressions.GroupCollection.this[]")]
+    [InlineData(
+        "System.Collections.IDictionary values = new System.Collections.Hashtable(); values[\"key\"] = \"value\";",
+        "System.Collections.IDictionary.this[] setter")]
+    public void ExactFrameworkCollectionIndexersAreMechanicalWhenReceiverIsProven(
+        string body,
+        string indexer)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body));
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == indexer);
+    }
+
+    [Theory]
+    [InlineData(
+        "System.Collections.Generic.IReadOnlyList<string> values = null!; _ = values[0];",
+        "System.Collections.Generic.IReadOnlyList`1.this[]")]
+    [InlineData(
+        "System.Collections.IDictionary values = null!; values[\"key\"] = \"value\";",
+        "System.Collections.IDictionary.this[] setter")]
+    public void FrameworkCollectionIndexerInterfacesRequireProvenReceivers(
+        string body,
+        string indexer)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body));
+
+        Assert.Contains(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == indexer);
+    }
+
+    [Fact]
+    public void SameNamedFrameworkCollectionIndexerSpoofsRemainUnclassified()
+    {
+        CSharpCompilation foreign = Compile(
+                "[assembly: global::System.Reflection.AssemblyVersionAttribute(\"99.0.0.0\")] "
+                    + "namespace System.Collections.Generic { public interface IReadOnlyList<T> { T this[int index] { get; } } } "
+                    + "namespace System.Text.RegularExpressions { public sealed class GroupCollection { public object this[string name] => null!; } } "
+                    + "namespace System.Collections { public interface IDictionary { object this[object key] { get; set; } } }")
+            .WithAssemblyName("Framework.Collection.Indexer.Spoof");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("foreign")));
+
+        string body =
+            "foreign::System.Collections.Generic.IReadOnlyList<string> list = null!; _ = list[0]; "
+            + "foreign::System.Text.RegularExpressions.GroupCollection groups = null!; _ = groups[\"value\"]; "
+            + "foreign::System.Collections.IDictionary dictionary = null!; dictionary[\"key\"] = \"value\";";
+
+        CSharpCompilation consumer = Compile(
+                "extern alias foreign; " + FixtureSource(body))
+            .AddReferences(reference)
+            .WithAssemblyName("Framework.Collection.Indexer.Spoof.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                HostedGrimoireProducerInventory
+                    .DiscoverApplicationHostedServices([consumer]),
+                [],
+                []);
+
+        HostedProducerInventoryDiagnostic[] unclassified = result.Diagnostics
+            .Where(static diagnostic => diagnostic.Code
+                == "HOSTED_SITE_UNCLASSIFIED")
+            .ToArray();
+
+        Assert.Contains(unclassified, static diagnostic =>
+            diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
+
+        Assert.Contains(unclassified, static diagnostic =>
+            diagnostic.Detail == "System.Text.RegularExpressions.GroupCollection.this[]");
+
+        Assert.Contains(unclassified, static diagnostic =>
+            diagnostic.Detail == "System.Collections.IDictionary.this[] setter");
     }
 
     [Theory]

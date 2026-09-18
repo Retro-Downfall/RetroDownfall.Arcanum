@@ -2647,16 +2647,13 @@ internal static class HostedGrimoireProducerInventory
 
             string fallbackRecovery = "";
 
-            if (environmentToken is not int exactToken
-                || !tokenEvaluationEnvironmentFingerprints.TryGetValue(
-                    exactToken,
-                    out EvaluationEnvironmentFingerprint certifiedEnvironment)
-                || !certifiedEnvironment.Complete
-                || certifiedEnvironment.ContainsBackreference)
-            {
-                EvaluationEnvironmentFingerprint environment =
-                    EvaluationEnvironmentIdentity(member);
+            EvaluationEnvironmentFingerprint environment =
+                EvaluationEnvironmentIdentity(member, environmentToken);
 
+            if (environmentToken is not int
+                || !environment.Complete
+                || environment.ContainsBackreference)
+            {
                 if (environmentToken is int candidateToken
                     && environment.Complete
                     && !environment.ContainsBackreference)
@@ -2738,7 +2735,22 @@ internal static class HostedGrimoireProducerInventory
                             + pair.Value.Disposition)));
 
         private EvaluationEnvironmentFingerprint EvaluationEnvironmentIdentity(
-            AuthoredMember member)
+            AuthoredMember member) => EvaluationEnvironmentIdentity(
+                member,
+                environmentToken: null,
+                environmentTokenObtained: false);
+
+        private EvaluationEnvironmentFingerprint EvaluationEnvironmentIdentity(
+            AuthoredMember member,
+            int? environmentToken) => EvaluationEnvironmentIdentity(
+                member,
+                environmentToken,
+                environmentTokenObtained: true);
+
+        private EvaluationEnvironmentFingerprint EvaluationEnvironmentIdentity(
+            AuthoredMember member,
+            int? environmentToken,
+            bool environmentTokenObtained)
         {
             string metricMember = MethodKey(member.Symbol);
 
@@ -2760,7 +2772,9 @@ internal static class HostedGrimoireProducerInventory
                 return cached;
             }
 
-            int? token = TryRegisterEvaluationEnvironmentToken(member);
+            int? token = environmentTokenObtained
+                ? environmentToken
+                : TryRegisterEvaluationEnvironmentToken(member);
 
             if (token is int exactToken
                 && tokenEvaluationEnvironmentFingerprints.TryGetValue(
@@ -12744,7 +12758,13 @@ internal static class HostedGrimoireProducerInventory
                     IMethodSymbol
                     {
                         Parameters:
-                        [_, _, _, IParameterSymbol { Name: "keepClosedOnFailure" }],
+                        [
+                            _,
+                            _,
+                            _,
+                            IParameterSymbol { Name: "stranded" },
+                            IParameterSymbol { Name: "keepClosedOnFailure" },
+                        ],
                     } closeMethod
                 || !SymbolEqualityComparer.Default.Equals(
                     closeMethod.ContainingType,
@@ -12759,6 +12779,7 @@ internal static class HostedGrimoireProducerInventory
                         ArgumentSyntax closeEvidence,
                         ArgumentSyntax closeCovenant,
                         ArgumentSyntax closeToken,
+                        ArgumentSyntax closeStranded,
                         ArgumentSyntax closeKeepClosed,
                     ]
                 || !ExactPropertyPath(
@@ -12778,6 +12799,8 @@ internal static class HostedGrimoireProducerInventory
                     factory,
                     closeToken.Expression,
                     cancellationToken)
+                || factory.Model.GetConstantValue(closeStranded.Expression) is not
+                    { HasValue: true, Value: null }
                 || factory.Model.GetConstantValue(closeKeepClosed.Expression) is not
                     { HasValue: true, Value: true }
                 || !SymbolIsStableBetween(
@@ -20295,6 +20318,12 @@ internal static class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
+                || IsReviewedFrameworkCollectionIndexer(
+                    property,
+                    mutation,
+                    node,
+                    model,
+                    context)
                 || IsReviewedNonProducerExternalMember(property, mutation))
             {
                 return false;
@@ -20886,6 +20915,125 @@ internal static class HostedGrimoireProducerInventory
                 model,
                 new HashSet<ISymbol>(SymbolEqualityComparer.Default),
                 context);
+        }
+
+        private bool IsReviewedFrameworkCollectionIndexer(
+            IPropertySymbol property,
+            bool mutation,
+            SyntaxNode? node,
+            SemanticModel? model,
+            AuthoredMember? context)
+        {
+            if (!property.IsIndexer
+                || property.Parameters is not [IParameterSymbol parameter]
+                || node is not ElementAccessExpressionSyntax access
+                || model is null
+                || property.Locations.Any(static location => location.IsInSource))
+            {
+                return false;
+            }
+
+            string type = TypeKey(property.ContainingType);
+
+            bool exactGetter = !mutation
+                && property.GetMethod is not null
+                && property.SetMethod is null;
+
+            bool exactSetter = mutation
+                && property.SetMethod is not null;
+
+            bool exactFrameworkProperty = type switch
+            {
+                "System.Collections.Generic.IReadOnlyList`1" =>
+                    exactGetter
+                    && parameter.Type.SpecialType == SpecialType.System_Int32
+                    && FrameworkAssemblyIdentityMatches(
+                        property.ContainingAssembly.Identity,
+                        typeof(IReadOnlyList<>).Assembly.GetName()),
+                "System.Text.RegularExpressions.GroupCollection" =>
+                    exactGetter
+                    && parameter.Type.SpecialType is
+                        SpecialType.System_Int32 or SpecialType.System_String
+                    && FrameworkAssemblyIdentityMatches(
+                        property.ContainingAssembly.Identity,
+                        typeof(System.Text.RegularExpressions.GroupCollection)
+                            .Assembly.GetName()),
+                "System.Collections.IDictionary" =>
+                    exactSetter
+                    && parameter.Type.SpecialType == SpecialType.System_Object
+                    && FrameworkAssemblyIdentityMatches(
+                        property.ContainingAssembly.Identity,
+                        typeof(System.Collections.IDictionary).Assembly.GetName()),
+                _ => false,
+            };
+
+            if (!exactFrameworkProperty)
+            {
+                return false;
+            }
+
+            if (type == "System.Text.RegularExpressions.GroupCollection")
+            {
+                return true;
+            }
+
+            return HasReviewedFrameworkCollectionIndexerReceiver(
+                access.Expression,
+                model,
+                new HashSet<ISymbol>(SymbolEqualityComparer.Default),
+                context,
+                type);
+        }
+
+        private bool HasReviewedFrameworkCollectionIndexerReceiver(
+            ExpressionSyntax expression,
+            SemanticModel model,
+            HashSet<ISymbol> path,
+            AuthoredMember? context,
+            string contract)
+        {
+            expression = StripTransparentExpression(expression);
+
+            ITypeSymbol? type = model.GetTypeInfo(expression).Type;
+
+            if (contract == "System.Collections.Generic.IReadOnlyList`1"
+                && type is IArrayTypeSymbol)
+            {
+                return true;
+            }
+
+            if (type is INamedTypeSymbol named
+                && TypeKey(named) is
+                    "System.Collections.Generic.List`1"
+                        or "System.Collections.ObjectModel.ReadOnlyCollection`1"
+                        or "System.Collections.Immutable.ImmutableArray`1"
+                        or "System.Collections.Hashtable"
+                && !named.Locations.Any(static location => location.IsInSource)
+                && FrameworkAssemblyIdentityMatches(
+                    named.ContainingAssembly.Identity,
+                    contract == "System.Collections.IDictionary"
+                        ? typeof(System.Collections.Hashtable).Assembly.GetName()
+                        : TypeKey(named)
+                            == "System.Collections.Immutable.ImmutableArray`1"
+                                ? typeof(System.Collections.Immutable.ImmutableArray<>).Assembly
+                                    .GetName()
+                                : typeof(List<>).Assembly.GetName()))
+            {
+                return true;
+            }
+
+            return HasOnlyReviewedValueSources(
+                expression,
+                model,
+                path,
+                context,
+                (source, sourceModel, sourcePath, sourceContext) =>
+                    HasReviewedFrameworkCollectionIndexerReceiver(
+                        source,
+                        sourceModel,
+                        sourcePath,
+                        sourceContext,
+                        contract));
         }
 
         private bool HasReviewedEnumeratorProvenance(
@@ -28006,7 +28154,17 @@ internal static class HostedGrimoireProducerInventory
 
             List<ExternalCleanupResolution> externalEffects = [];
 
-            bool exactCandidatesResolved = exactCandidates.Length != 0;
+            bool exactCandidatesResolved = exactCandidates.Length != 0
+                && !(staticType is INamedTypeSymbol
+                    {
+                        TypeKind: TypeKind.Class,
+                        IsSealed: false,
+                    } openStaticType
+                    && exactCandidates.Any(candidate => !SameBoundType(
+                        candidate.Type,
+                        member.Model.Compilation,
+                        openStaticType,
+                        member.Model.Compilation)));
 
             foreach (CleanupTypeCandidate candidate in exactCandidates)
             {
@@ -28182,10 +28340,16 @@ internal static class HostedGrimoireProducerInventory
                 distinctExternalEffects = [];
             }
 
+            bool unknownCleanupContractCanExecute = resource is not null
+                && !IsSemanticallyEmptyCleanupValue(member.Model, resource)
+                && staticType is INamedTypeSymbol cleanupContract
+                && IsCleanupContract(cleanupContract, name);
+
             bool cleanupCanExecute = resource is null
                 || !provenance.Complete
                 || candidates.Length != 0
-                || dynamicStreamRequiresExactTarget;
+                || dynamicStreamRequiresExactTarget
+                || unknownCleanupContractCanExecute;
 
             bool resolved = exactCandidates.Length != 0
                 ? exactCandidatesResolved
@@ -31312,7 +31476,8 @@ internal static class HostedGrimoireProducerInventory
                 }
             }
 
-            if (boundImplementations is [AuthoredMember bound]
+            if ((!receiverProvenance.Complete || receiverTypes.Length == 0)
+                && boundImplementations is [AuthoredMember bound]
                 && IsExactDiBoundCleanupReceiver(
                     member,
                     receiver,
