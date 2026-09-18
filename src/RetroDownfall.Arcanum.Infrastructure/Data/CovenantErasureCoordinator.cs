@@ -653,8 +653,6 @@ internal sealed class CovenantErasureCoordinator(
 
     private const string ResetSummary = "Erasing the Covenant family.";
 
-    private const string LedgerCleanupErrorDataKey = "CovenantLedgerCleanupError";
-
     private readonly ILongRunningOperationCoordinator _operations =
         operations ?? throw new ArgumentNullException(nameof(operations));
 
@@ -1566,13 +1564,6 @@ internal sealed class CovenantErasureCoordinator(
 
         if (workFailure is DataRetentionLeaseLostException or OperationCanceledException)
         {
-
-            if (cleanupError is { } concurrentCleanupFailure)
-            {
-
-                workFailure.Data[LedgerCleanupErrorDataKey] = concurrentCleanupFailure;
-
-            }
 
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(workFailure).Throw();
 

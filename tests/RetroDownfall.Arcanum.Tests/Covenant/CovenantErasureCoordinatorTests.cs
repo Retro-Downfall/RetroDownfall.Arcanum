@@ -692,9 +692,7 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Same(original, observed);
 
-        Error cleanup = Assert.IsType<Error>(Assert.Single(observed.Data.Values.Cast<object>()));
-
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, cleanup.Code);
+        Assert.Empty(observed.Data);
 
         Assert.Equal(1, drain.ClearCalls);
 
@@ -702,6 +700,48 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Equal(1, permit.Handle.DisposalCalls);
 
+    }
+
+    [Fact]
+    public async Task A_cleanup_refusal_does_not_invoke_virtual_cancellation_Data()
+    {
+        CovenantExclusiveRecoveryOwner owner = new(
+            OperationId,
+            CovenantExclusiveOperation.CovenantReset,
+            CovenantOperationGateFixture.Digest(7));
+
+        List<string> steps = [];
+
+        CleanupRefusingLedgerPermit permit = new(LedgerCleanupFailure.None, steps);
+
+        CleanupRefusingLedgerDrain drain = new(LedgerCleanupFailure.ExactPoolClear, steps);
+
+        RecordingClosedPeriodLedger ledger = new(steps);
+
+        CovenantErasureCoordinator.CovenantGrimoireClosure closure = new(
+            null!, new LedgerClosedLease(owner), new LedgerLane(owner), permit, ledger, drain);
+
+        ThrowingDataCancellation original = new();
+
+        Task<Result> execution = Assert.IsType<Task<Result>>(
+            LedgerWindowHelper().MakeGenericMethod(typeof(Result)).Invoke(null,
+            [
+                closure,
+                new Func<CancellationToken, Task<Result>>(_ => Task.FromException<Result>(original)),
+                CancellationToken.None,
+            ]));
+
+        ThrowingDataCancellation observed = await Assert.ThrowsAsync<ThrowingDataCancellation>(() => execution);
+
+        Assert.Same(original, observed);
+
+        Assert.Equal(0, original.DataReads);
+
+        Assert.Equal(1, drain.ClearCalls);
+
+        Assert.Equal(1, permit.Handle.PhysicalCloseReportCalls);
+
+        Assert.Equal(1, permit.Handle.DisposalCalls);
     }
 
     [Fact]
@@ -723,9 +763,7 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Same(original, observed);
 
-        Error cleanup = Assert.IsType<Error>(Assert.Single(observed.Data.Values.Cast<object>()));
-
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, cleanup.Code);
+        Assert.Empty(observed.Data);
 
         Assert.Equal(1, drain.ClearCalls);
 
@@ -2459,6 +2497,21 @@ public sealed class CovenantErasureCoordinatorTests
 
         Cancellation,
 
+    }
+
+    private sealed class ThrowingDataCancellation : OperationCanceledException
+    {
+        internal int DataReads { get; private set; }
+
+        public override System.Collections.IDictionary Data
+        {
+            get
+            {
+                DataReads++;
+
+                throw new InvalidOperationException("A cancellation Data getter must not run during ledger cleanup.");
+            }
+        }
     }
 
     private sealed class CleanupRefusingLedgerPermit(
