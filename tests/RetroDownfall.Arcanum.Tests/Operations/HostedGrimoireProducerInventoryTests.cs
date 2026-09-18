@@ -23201,8 +23201,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             + "_ = values[0];";
 
         const string helpers =
-            "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { "
-            + "string System.Collections.Generic.IReadOnlyList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } } }";
+            "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IList<string> { "
+            + "string System.Collections.Generic.IList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } set { base[index] = value; } } }";
 
         HostedProducerDiscovery<HostedProducerSite> result = Discover(
             FixtureSource(body, helpers));
