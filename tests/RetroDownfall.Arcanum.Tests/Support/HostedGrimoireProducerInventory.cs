@@ -1924,6 +1924,13 @@ internal static class HostedGrimoireProducerInventory
             Unknown = 3,
         }
 
+        private enum CleanupDispatchMechanism : byte
+        {
+            Interface = 1,
+
+            Pattern = 2,
+        }
+
         private readonly record struct BoundTypeIdentity(AssemblyIdentity Assembly, int? Compilation, string Type);
 
         private sealed record CleanupTypeCandidate(
@@ -27174,18 +27181,24 @@ internal static class HostedGrimoireProducerInventory
         private static IMethodSymbol[] SelectEffectiveCleanupMembers(
             ITypeSymbol concreteType,
             ITypeSymbol staticType,
-            string name)
+            string name,
+            bool configuredAsync)
         {
             IMethodSymbol[] candidateMembers =
                 SelectEffectiveCleanupMembers(concreteType, name);
 
             if (candidateMembers is not [IMethodSymbol candidate]
-                || candidate.ExplicitInterfaceImplementations.Length == 0
                 || concreteType is not INamedTypeSymbol concrete
-                || staticType is not INamedTypeSymbol
-                {
-                    TypeKind: TypeKind.Class,
-                } dispatchType)
+                || staticType is not INamedTypeSymbol dispatchType
+                || SelectCleanupDispatchMechanism(
+                    dispatchType,
+                    name,
+                    configuredAsync) is not { } mechanism)
+            {
+                return [];
+            }
+
+            if (mechanism == CleanupDispatchMechanism.Interface)
             {
                 return candidateMembers;
             }
@@ -27194,20 +27207,55 @@ internal static class HostedGrimoireProducerInventory
                 dispatchType,
                 name);
 
-            if (patternSlots.Length == 0)
-            {
-                return candidateMembers;
-            }
-
             if (patternSlots is not [IMethodSymbol patternSlot])
             {
                 return [];
             }
 
-            return [MostDerivedCleanupOverride(
+            IMethodSymbol selected = MostDerivedCleanupOverride(
                 concrete,
                 patternSlot,
-                name)];
+                name);
+
+            return SameCleanupMemberIdentity(candidate, selected)
+                ? candidateMembers
+                : [selected];
+        }
+
+        private static CleanupDispatchMechanism?
+            SelectCleanupDispatchMechanism(
+                INamedTypeSymbol staticType,
+                string name,
+                bool configuredAsync)
+        {
+            bool hasInterfaceContract = IsCleanupContract(staticType, name)
+                || staticType.AllInterfaces.Any(
+                    contract => IsCleanupContract(contract, name));
+
+            if (configuredAsync
+                || name == "Dispose" && hasInterfaceContract)
+            {
+                return hasInterfaceContract
+                    ? CleanupDispatchMechanism.Interface
+                    : null;
+            }
+
+            if (staticType.TypeKind == TypeKind.Interface)
+            {
+                return hasInterfaceContract
+                    ? CleanupDispatchMechanism.Interface
+                    : null;
+            }
+
+            if (SelectPatternCleanupMembers(staticType, name) is
+                [IMethodSymbol])
+            {
+                return CleanupDispatchMechanism.Pattern;
+            }
+
+            return hasInterfaceContract
+                ? CleanupDispatchMechanism.Interface
+                : null;
         }
 
         private static bool IsTrustedCleanupDispatchBase(ITypeSymbol type)
@@ -27270,9 +27318,11 @@ internal static class HostedGrimoireProducerInventory
                         overridden is not null;
                         overridden = overridden.OverriddenMethod)
                     {
-                        if (SymbolEqualityComparer.Default.Equals(
-                            overridden.OriginalDefinition,
-                            implementation.OriginalDefinition))
+                        if (SameCleanupSlot(
+                            overridden,
+                            implementation,
+                            candidate.Locations.Any(static location =>
+                                location.IsInSource)))
                         {
                             return candidate;
                         }
@@ -27282,6 +27332,26 @@ internal static class HostedGrimoireProducerInventory
 
             return implementation;
         }
+
+        private static bool SameCleanupSlot(
+            IMethodSymbol left,
+            IMethodSymbol right,
+            bool authoredCandidate) =>
+            SymbolEqualityComparer.Default.Equals(
+                left.OriginalDefinition,
+                right.OriginalDefinition)
+            || authoredCandidate
+                && SameCleanupMemberIdentity(left, right);
+
+        private static bool SameCleanupMemberIdentity(
+            IMethodSymbol left,
+            IMethodSymbol right) =>
+            MethodKey(left) == MethodKey(right)
+            && (left.ContainingAssembly.Identity.Equals(
+                    right.ContainingAssembly.Identity)
+                || IsTrustedCleanupDispatchBase(left.ContainingType)
+                    && IsTrustedCleanupDispatchBase(
+                        right.ContainingType));
 
         private AuthoredMember? ResolveClosedAuthoredInterfaceCleanup(
             ITypeSymbol staticType,
@@ -28338,11 +28408,15 @@ internal static class HostedGrimoireProducerInventory
             ExpressionSyntax? resource,
             string name)
         {
+            bool configuredAsync = false;
+
             if (resource is not null
                 && TryConfiguredAsyncDisposableReceiver(
                     member,
                     resource) is { } unconfigured)
             {
+                configuredAsync = true;
+
                 resource = unconfigured;
 
                 staticType = member.Model.GetTypeInfo(unconfigured).Type
@@ -28414,7 +28488,8 @@ internal static class HostedGrimoireProducerInventory
                 if (SelectEffectiveCleanupMembers(
                         candidate.Type,
                         staticType,
-                        name) is not
+                        name,
+                        configuredAsync) is not
                     [IMethodSymbol cleanup])
                 {
                     exactCandidatesResolved = false;

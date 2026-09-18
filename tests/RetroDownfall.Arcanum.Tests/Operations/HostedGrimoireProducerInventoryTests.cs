@@ -20944,6 +20944,88 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void UsingPreservesSynchronousInterfaceCleanupForDualCleanup()
+    {
+        const string helper =
+            "internal sealed class DualCleanup : System.IDisposable { "
+            + "public void Dispose() => System.IO.File.Exists(\"public-sync-cleanup\"); "
+            + "void System.IDisposable.Dispose() => System.IO.File.Delete(\"interface-sync-cleanup\"); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission + "using DualCleanup cleanup = new();",
+                helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "DualCleanup"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "DualCleanup"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
+    public void ConfiguredAwaitUsingPreservesAsyncInterfaceCleanup()
+    {
+        const string helper =
+            "internal sealed class ConfiguredSplitStream : System.IO.MemoryStream, System.IAsyncDisposable { "
+            + "public override System.Threading.Tasks.ValueTask DisposeAsync() { "
+            + "System.IO.File.Exists(\"public-configured-cleanup\"); return default; } "
+            + "System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { "
+            + "System.IO.File.Delete(\"interface-configured-cleanup\"); return default; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "await using (new ConfiguredSplitStream().ConfigureAwait(false)) { }",
+                helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "ConfiguredSplitStream"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ConfiguredSplitStream"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
+    public void AwaitUsingStreamPreservesVirtualSlotAcrossImplicitInterfaceReimplementation()
+    {
+        const string helper =
+            "internal class IntermediateSplitStream : System.IO.MemoryStream { "
+            + "public override System.Threading.Tasks.ValueTask DisposeAsync() { "
+            + "System.IO.File.Delete(\"intermediate-virtual-cleanup\"); return default; } } "
+            + "internal sealed class ReimplementedSplitStream : IntermediateSplitStream, System.IAsyncDisposable { "
+            + "public new System.Threading.Tasks.ValueTask DisposeAsync() { "
+            + "System.IO.File.Exists(\"derived-interface-cleanup\"); return default; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "await using System.IO.Stream cleanup = new ReimplementedSplitStream();",
+                helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Single(result.Items, static site =>
+            site.EnclosingType == "IntermediateSplitStream"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "ReimplementedSplitStream"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
     public void AwaitUsingLiftsMostDerivedStreamCleanupAcrossCanonicalCompilations()
     {
         CSharpCompilation infrastructure = Compile(
