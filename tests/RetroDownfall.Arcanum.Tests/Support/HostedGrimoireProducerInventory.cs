@@ -2654,37 +2654,26 @@ internal static class HostedGrimoireProducerInventory
                 || !environment.Complete
                 || environment.ContainsBackreference)
             {
-                if (environmentToken is int candidateToken
-                    && environment.Complete
-                    && !environment.ContainsBackreference)
+                environmentToken = null;
+
+                if (!environment.Complete
+                    && limitedEvaluationEnvironments.Add(rootType + "|" + rootOperation))
                 {
-                    tokenEvaluationEnvironmentFingerprints.TryAdd(
-                        candidateToken,
-                        environment);
+                    diagnostics.Add(new(
+                        "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED",
+                        rootOperation,
+                        $"The exact bound evaluation environment exceeded {evaluationEnvironmentMaximumMembers} members or {evaluationEnvironmentMaximumDepth} levels for one authority root."));
                 }
-                else
-                {
-                    environmentToken = null;
 
-                    if (!environment.Complete
-                        && limitedEvaluationEnvironments.Add(rootType + "|" + rootOperation))
-                    {
-                        diagnostics.Add(new(
-                            "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED",
-                            rootOperation,
-                            $"The exact bound evaluation environment exceeded {evaluationEnvironmentMaximumMembers} members or {evaluationEnvironmentMaximumDepth} levels for one authority root."));
-                    }
+                fallbackAdmission = AdmissionBindingIdentity(member);
 
-                    fallbackAdmission = AdmissionBindingIdentity(member);
+                fallbackEnvironment = environment.Identity;
 
-                    fallbackEnvironment = environment.Identity;
+                fallbackValue = "included-in-evaluation-environment";
 
-                    fallbackValue = "included-in-evaluation-environment";
+                fallbackConcrete = ConcreteBindingIdentity(member);
 
-                    fallbackConcrete = ConcreteBindingIdentity(member);
-
-                    fallbackRecovery = RecoveryBindingIdentity(member);
-                }
+                fallbackRecovery = RecoveryBindingIdentity(member);
             }
 
             return new(
@@ -21002,10 +20991,37 @@ internal static class HostedGrimoireProducerInventory
                 return true;
             }
 
+            if (type is INamedTypeSymbol readOnlyCollection
+                && TypeKey(readOnlyCollection)
+                    == "System.Collections.ObjectModel.ReadOnlyCollection`1"
+                && !readOnlyCollection.Locations.Any(
+                    static location => location.IsInSource)
+                && FrameworkAssemblyIdentityMatches(
+                    readOnlyCollection.ContainingAssembly.Identity,
+                    typeof(System.Collections.ObjectModel.ReadOnlyCollection<>).Assembly
+                        .GetName())
+                && expression is BaseObjectCreationExpressionSyntax creation
+                && model.GetOperation(creation) is IObjectCreationOperation operation
+                && operation.Arguments.SingleOrDefault(static argument =>
+                    argument.Parameter?.Ordinal == 0) is { } backingArgument
+                && (backingArgument.Syntax switch
+                    {
+                        ArgumentSyntax argument => argument.Expression,
+                        ExpressionSyntax argument => argument,
+                        _ => backingArgument.Value.Syntax as ExpressionSyntax,
+                    }) is { } backing)
+            {
+                return HasReviewedFrameworkCollectionIndexerReceiver(
+                    backing,
+                    model,
+                    path,
+                    context,
+                    contract);
+            }
+
             if (type is INamedTypeSymbol named
                 && TypeKey(named) is
                     "System.Collections.Generic.List`1"
-                        or "System.Collections.ObjectModel.ReadOnlyCollection`1"
                         or "System.Collections.Immutable.ImmutableArray`1"
                         or "System.Collections.Hashtable"
                 && !named.Locations.Any(static location => location.IsInSource)
@@ -21168,6 +21184,14 @@ internal static class HostedGrimoireProducerInventory
 
             try
             {
+                if (symbol is IFieldSymbol { IsReadOnly: false }
+                    || symbol is IPropertySymbol { SetMethod: not null }
+                    || (symbol is IFieldSymbol or IPropertySymbol
+                        && HasAuthoredStorageWrite(symbol)))
+                {
+                    return false;
+                }
+
                 ExpressionSyntax[] sources = symbol.DeclaringSyntaxReferences
                     .Select(reference => reference.GetSyntax())
                     .Select(static syntax => syntax switch
@@ -21235,6 +21259,16 @@ internal static class HostedGrimoireProducerInventory
                 path.Remove(symbol);
             }
         }
+
+        private bool HasAuthoredStorageWrite(ISymbol storage) =>
+            storage.ContainingType?.DeclaringSyntaxReferences
+                .SelectMany(static reference => reference.GetSyntax()
+                    .DescendantNodes()
+                    .OfType<AssignmentExpressionSyntax>())
+                .Any(assignment => SymbolEqualityComparer.Default.Equals(
+                    semanticModels[assignment.SyntaxTree]
+                        .GetSymbolInfo(assignment.Left).Symbol,
+                    storage)) == true;
 
         private static ExpressionSyntax StripTransparentExpression(
             ExpressionSyntax expression) => expression switch

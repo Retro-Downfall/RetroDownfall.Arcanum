@@ -23001,6 +23001,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData(
         "System.Collections.IDictionary values = new System.Collections.Hashtable(); values[\"key\"] = \"value\";",
         "System.Collections.IDictionary.this[] setter")]
+    [InlineData(
+        "System.Collections.Generic.IReadOnlyList<string> values = new System.Collections.ObjectModel.ReadOnlyCollection<string>(new System.Collections.Generic.List<string> { \"one\" }); _ = values[0];",
+        "System.Collections.Generic.IReadOnlyList`1.this[]")]
     public void ExactFrameworkCollectionIndexersAreMechanicalWhenReceiverIsProven(
         string body,
         string indexer)
@@ -23086,6 +23089,120 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             + "System.Collections.Generic.IReadOnlyList<string> values = backing; _ = values[0]; } } "
             + "internal static class UnknownFrameworkList { "
             + "internal static System.Collections.Generic.List<string> Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Fact]
+    public void FrameworkCollectionIndexerRejectsMutableFrameworkBaseField()
+    {
+        const string body = "MutableFrameworkListField.Read();";
+
+        const string helpers =
+            "internal static class MutableFrameworkListField { "
+            + "private static System.Collections.Generic.List<string> Values = new() { \"safe\" }; "
+            + "internal static void Read() { Values = new EvilList { \"evil\" }; "
+            + "System.Collections.Generic.IReadOnlyList<string> values = Values; _ = values[0]; } } "
+            + "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { "
+            + "string System.Collections.Generic.IReadOnlyList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Fact]
+    public void FrameworkCollectionIndexerRejectsSettableFrameworkBaseProperty()
+    {
+        const string body = "MutableFrameworkListProperty.Read();";
+
+        const string helpers =
+            "internal static class MutableFrameworkListProperty { "
+            + "private static System.Collections.Generic.List<string> Values { get; set; } = new() { \"safe\" }; "
+            + "internal static void Read() { Values = new EvilList { \"evil\" }; "
+            + "System.Collections.Generic.IReadOnlyList<string> values = Values; _ = values[0]; } } "
+            + "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { "
+            + "string System.Collections.Generic.IReadOnlyList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(body, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Theory]
+    [InlineData(
+        "private static readonly System.Collections.Generic.List<string> Values = new() { \"safe\" };")]
+    [InlineData(
+        "private static System.Collections.Generic.List<string> Values { get; } = new() { \"safe\" };")]
+    public void FrameworkCollectionIndexerAcceptsStableFrameworkBaseStorage(
+        string storage)
+    {
+        string helpers =
+            "internal static class StableFrameworkListStorage { "
+            + storage
+            + " internal static void Read() { System.Collections.Generic.IReadOnlyList<string> values = Values; _ = values[0]; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource("StableFrameworkListStorage.Read();", helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Theory]
+    [InlineData(
+        "private static readonly System.Collections.Generic.List<string> Values = new() { \"safe\" };")]
+    [InlineData(
+        "private static System.Collections.Generic.List<string> Values { get; } = new() { \"safe\" };")]
+    public void FrameworkCollectionIndexerRejectsConstructorWritesToStableStorage(
+        string storage)
+    {
+        string helpers =
+            "internal static class ConstructorAssignedFrameworkListStorage { "
+            + storage
+            + " static ConstructorAssignedFrameworkListStorage() { Values = new EvilList { \"evil\" }; } "
+            + "internal static void Read() { System.Collections.Generic.IReadOnlyList<string> values = Values; _ = values[0]; } } "
+            + "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { "
+            + "string System.Collections.Generic.IReadOnlyList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(
+                "ConstructorAssignedFrameworkListStorage.Read();",
+                helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail
+                == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Fact]
+    public void FrameworkCollectionIndexerRejectsReadOnlyCollectionWithAuthoredBacking()
+    {
+        const string body =
+            "System.Collections.Generic.IReadOnlyList<string> values = "
+            + "new System.Collections.ObjectModel.ReadOnlyCollection<string>(new EvilList { \"evil\" }); "
+            + "_ = values[0];";
+
+        const string helpers =
+            "internal sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { "
+            + "string System.Collections.Generic.IReadOnlyList<string>.this[int index] { get { System.IO.File.Delete(\"evil-indexer\"); return base[index]; } } }";
 
         HostedProducerDiscovery<HostedProducerSite> result = Discover(
             FixtureSource(body, helpers));
