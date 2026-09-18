@@ -23719,6 +23719,83 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void FrameworkCollectionIndexerTracksInterfaceDispatchedAsyncFactories(
+        bool evil)
+    {
+        string value = evil
+            ? "new EvilList()"
+            : "new System.Collections.Generic.List<string> { \"safe\" }";
+
+        string fixture = RegistrationSource(
+                "services.AddSingleton<IReader, Reader>(); services.AddHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService",
+                "public class Worker(IReader reader) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { System.Collections.Generic.IReadOnlyList<string> rows = await reader.ReadAsync().ConfigureAwait(false); _ = rows[0]; }",
+                StringComparison.Ordinal)
+            .Replace(
+                "new Worker();",
+                "new Worker(provider.GetRequiredService<IReader>());",
+                StringComparison.Ordinal)
+            + "public interface IReader { Task<System.Collections.Generic.IReadOnlyList<string>> ReadAsync(); } "
+            + "sealed class Reader : IReader { public async Task<System.Collections.Generic.IReadOnlyList<string>> ReadAsync() { await Task.CompletedTask.ConfigureAwait(false); return "
+            + value
+            + "; } } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(
+            evil,
+            Discover(fixture).Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerUsesProductionReferencePackIdentity(bool evil)
+    {
+        string value = evil
+            ? "new EvilList()"
+            : "new System.Collections.Generic.List<string> { \"safe\" }";
+
+        string source =
+            "using System.Threading; using System.Threading.Tasks; "
+            + "public sealed class Worker { public async Task StartAsync(CancellationToken token) { await Task.Yield(); System.Collections.Generic.IReadOnlyList<string> values = "
+            + value
+            + "; _ = values[0]; } } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Equal(
+            evil,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void FrameworkCollectionIndexerTracksNestedStaticCatalogValues(bool evil)
     {
         string value = evil

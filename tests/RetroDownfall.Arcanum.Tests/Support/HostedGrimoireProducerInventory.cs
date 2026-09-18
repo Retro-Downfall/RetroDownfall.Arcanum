@@ -27122,6 +27122,7 @@ internal static class HostedGrimoireProducerInventory
 
             string? contractName = actual.Name switch
             {
+                "System.Collections" => "System.Collections",
                 "System.Runtime" => "System.Runtime",
                 "System.Threading" => "System.Threading",
                 _ => null,
