@@ -23592,9 +23592,15 @@ internal static class HostedGrimoireProducerInventory
 
         private static AuthoredMember ValueExpressionContext(
             AuthoredMember member,
-            ExpressionSyntax expression)
+            ExpressionSyntax expression,
+            SemanticModel? sourceModel = null)
         {
-            if (expression.SyntaxTree == member.Model.SyntaxTree
+            SemanticModel model = sourceModel
+                ?? (expression.SyntaxTree == member.Model.SyntaxTree
+                    ? member.Model
+                    : member.Model.Compilation.GetSemanticModel(expression.SyntaxTree));
+
+            if (ReferenceEquals(model, member.Model)
                 && expression.SyntaxTree == member.Syntax.SyntaxTree)
             {
                 return member;
@@ -23605,7 +23611,7 @@ internal static class HostedGrimoireProducerInventory
             return member with
             {
                 Syntax = expression,
-                Model = member.Model.Compilation.GetSemanticModel(expression.SyntaxTree),
+                Model = model,
             };
         }
 
@@ -30193,10 +30199,7 @@ internal static class HostedGrimoireProducerInventory
                         && !IsSemanticallyEmptyCleanupValue(model, initializer))
                     {
                         values.Add(new(
-                            member with
-                            {
-                                Model = model,
-                            },
+                            ValueExpressionContext(member, initializer, model),
                             initializer));
                     }
                 }
@@ -31540,7 +31543,9 @@ internal static class HostedGrimoireProducerInventory
 
                 if (initializer is not null)
                 {
-                    sources.Add(new(member with { Model = semanticModels[initializer.SyntaxTree] }, initializer));
+                    sources.Add(new(
+                        ValueExpressionContext(member, initializer, semanticModels[initializer.SyntaxTree]),
+                        initializer));
                 }
             }
 
@@ -32373,10 +32378,7 @@ internal static class HostedGrimoireProducerInventory
                 }
 
                 values.Add(new(
-                    member with
-                    {
-                        Model = model,
-                    },
+                    ValueExpressionContext(member, initializer, model),
                     initializer));
             }
 

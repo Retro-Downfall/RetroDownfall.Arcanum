@@ -23489,6 +23489,69 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void FrameworkCollectionIndexerKeepsEqualSpanStaticInitializersDistinct(bool reverse, bool property)
+    {
+        string branches = reverse ? "evil : safe" : "safe : evil";
+
+        CSharpCompilation compilation = Compile(FixtureSource("Consumer.Read(token.IsCancellationRequested);",
+            "public static partial class Consumer { public static void Read(bool flag) { var values = flag ? "
+                + branches + "; _ = values[0]; } } public sealed class Evil : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int index] => \"evil\"; }"))
+            .AddSyntaxTrees(new[] { "safe", "evil" }.Select(field => CSharpSyntaxTree.ParseText(
+                "using List = System.Collections.Generic.List<string>; public static partial class Consumer { private static "
+                    + (property ? "" : "readonly ") + "System.Collections.Generic.IReadOnlyList<string> "
+                    + field + (property ? " { get; }" : "") + " = new " + (field == "safe" ? "List" : "Evil") + "(); }",
+                path: "src/Consumer." + field + ".cs")));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Microsoft.CodeAnalysis.Text.TextSpan[] initializerSpans = compilation.SyntaxTrees.Skip(1)
+            .Select(tree => tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>().Single().Value.Span)
+            .ToArray();
+
+        Assert.Equal(initializerSpans[0], initializerSpans[1]);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]), [], []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CleanupKeepsEqualSpanPartialFieldInitializersDistinct(bool reverse)
+    {
+        string branches = reverse ? "evil : safe" : "safe : evil";
+
+        CSharpCompilation compilation = Compile(R2Source(R2Admission + "await new Consumer().ReadAsync(token.IsCancellationRequested);",
+            "public sealed partial class Consumer { public async System.Threading.Tasks.Task ReadAsync(bool flag) { await using System.IO.Stream value = flag ? "
+                + branches + "; } } public sealed class Good : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"safe\"); return default; } } "
+                + "public sealed class Evil : System.IO.MemoryStream { public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"evil\"); return default; } }"))
+            .AddSyntaxTrees(new[] { "safe", "evil" }.Select(field => CSharpSyntaxTree.ParseText(
+                "public sealed partial class Consumer { private System.IO.Stream " + field + " = new "
+                    + (field == "safe" ? "Good" : "Evil") + "(); }",
+                path: "src/Consumer." + field + ".cs")));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Microsoft.CodeAnalysis.Text.TextSpan[] initializerSpans = compilation.SyntaxTrees.Skip(1)
+            .Select(tree => tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>().Single().Value.Span)
+            .ToArray();
+
+        Assert.Equal(initializerSpans[0], initializerSpans[1]);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Theory]
     [InlineData("collection", false)]
     [InlineData("sync", false)]
     [InlineData("async", false)]
