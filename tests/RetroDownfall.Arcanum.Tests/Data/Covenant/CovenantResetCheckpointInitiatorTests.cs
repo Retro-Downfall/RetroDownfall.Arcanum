@@ -34,20 +34,17 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantResetCheckpointInitiatorTests
 {
-
     private static readonly Guid Dataset = Guid.Parse("77777777-7777-7777-7777-777777777777");
 
     private static readonly FakeTimeProvider Clock = NewClock();
 
     private static FakeTimeProvider NewClock()
     {
-
         FakeTimeProvider clock = new();
 
         clock.SetUtcNow(new DateTimeOffset(2026, 8, 18, 12, 0, 0, TimeSpan.Zero));
 
         return clock;
-
     }
 
     private static CovenantErasureEffectDigestInput Effect(
@@ -80,7 +77,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     private static async Task<(FakeLongRunningOperationStore Store, LongRunningOperation Operation)>
         RunningMutationAsync()
     {
-
         FakeLongRunningOperationStore store = new(Clock);
 
         LongRunningOperation operation = store.Seed(
@@ -94,13 +90,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
             Clock.GetUtcNow().AddMinutes(2));
 
         return (store, (await store.GetAsync(operation.Id))!);
-
     }
 
     private static async Task<(FakeLongRunningOperationStore Store, LongRunningOperation Operation)>
         RunningFactoryAsync()
     {
-
         FakeLongRunningOperationStore store = new(Clock);
 
         LongRunningOperation operation = store.Seed(
@@ -114,7 +108,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
             Clock.GetUtcNow().AddMinutes(2));
 
         return (store, (await store.GetAsync(operation.Id))!);
-
     }
 
     private static async Task<(
@@ -124,7 +117,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         CovenantErasureEffectDigestInput Effect)> RunningNamedFactoryAsync(
             CovenantDigest? storedEffect = null)
     {
-
         FakeLongRunningOperationStore store = new(Clock);
 
         Guid requested = Guid.Parse("33333333-3333-4333-8333-333333333333");
@@ -155,7 +147,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
             Clock.GetUtcNow().AddMinutes(2));
 
         return (store, (await store.GetAsync(operation.Id))!, requested, effect);
-
     }
 
     /// <summary>
@@ -174,19 +165,16 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task A_server_generated_reset_commits_inventory_prepared_before_it_yields_an_owner()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
         StubOfflineTransitionSource inventory = new()
         {
-
             AcceleratorEpoch = 4,
 
             KeyReclamationEpoch = 9,
 
             EnvelopeKeyEpoch = 16,
-
         };
 
         long observedRevision = operation.Revision;
@@ -247,7 +235,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(observedRevision, launch.StartingRevision);
 
         Assert.Equal(observedRevision + 1, stored.Revision);
-
     }
 
     /// <summary>
@@ -257,7 +244,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task The_admitted_owner_is_the_owner_recovery_rebuilds_from_the_checkpoint()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -279,7 +265,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(
             CovenantRecoveryCheckpointCodec.RecoveryOwner(launch).Value,
             admitted.Value.Owner);
-
     }
 
     /// <summary>
@@ -295,7 +280,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task The_admitted_launch_is_the_launch_the_committed_row_carries()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -330,7 +314,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
                     .DecodeCovenantOfflineTransitionLaunch(stored.CheckpointPayload!)
                     .Value).Value,
             admitted.Value.Owner);
-
     }
 
     /// <summary>
@@ -347,7 +330,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task A_lost_checkpoint_commit_yields_no_owner()
     {
-
         FakeLongRunningOperationStore store = new(Clock);
 
         LongRunningOperation seeded = store.Seed(
@@ -379,7 +361,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(1, stored.CheckpointVersion);
 
         Assert.Null(stored.CheckpointPayload);
-
     }
 
     /// <summary>
@@ -396,7 +377,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task A_caller_that_does_not_hold_the_lease_commits_nothing()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -418,13 +398,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(0, stored.CheckpointVersion);
 
         Assert.Null(stored.CheckpointPayload);
-
     }
 
     [Fact]
     public async Task The_all_null_requested_arm_never_reads_a_nonexistent_identity_row()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -437,13 +415,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
             CancellationToken.None);
 
         Assert.Equal(0, store.RequestIdentityLookupCount);
-
     }
 
     [Fact]
     public async Task A_requested_reset_must_match_the_normalized_identity_row()
     {
-
         FakeLongRunningOperationStore store = new(Clock);
 
         Guid requested = Guid.Parse("88888888-8888-8888-8888-888888888888");
@@ -500,13 +476,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
                     (await store.GetAsync(operation.Id))!.CheckpointPayload!)
                 .Value
                 .OperationId);
-
     }
 
     [Fact]
     public async Task A_requested_reset_whose_row_names_a_different_effect_is_refused_before_any_checkpoint()
     {
-
         FakeLongRunningOperationStore store = new(Clock);
 
         Guid requested = Guid.Parse("99999999-9999-9999-9999-999999999999");
@@ -544,13 +518,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, admitted.Error.Code);
 
         Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
-
     }
 
     [Fact]
     public async Task A_requested_reset_with_no_identity_row_at_all_is_refused()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -566,7 +538,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.True(admitted.IsFailure);
 
         Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
-
     }
 
     /// <summary>
@@ -583,7 +554,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task A_healthy_catalog_factory_erasure_commits_its_own_transition_launch()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
@@ -593,13 +563,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         StubOfflineTransitionSource inventory = new()
         {
-
             AcceleratorEpoch = 3,
 
             KeyReclamationEpoch = 25,
 
             EnvelopeKeyEpoch = 61,
-
         };
 
         long observedRevision = operation.Revision;
@@ -669,13 +637,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(observedRevision, launch.StartingRevision);
 
         Assert.Equal(observedRevision + 1, stored.Revision);
-
     }
 
     [Fact]
     public async Task Factory_requested_identity_is_verified_before_the_launch_is_published()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
         (FakeLongRunningOperationStore store, LongRunningOperation operation, Guid requested, CovenantErasureEffectDigestInput effect) =
@@ -720,7 +686,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(operation.Id, admitted.Value.Owner.OperationId);
 
         Assert.NotEqual(requested, admitted.Value.Owner.OperationId);
-
     }
 
     [Theory]
@@ -729,7 +694,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     public async Task Factory_requested_identity_mismatch_prevents_launch_publication(
         bool mismatchRequestedId)
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
         CovenantDigest? storedEffect = mismatchRequestedId
@@ -765,13 +729,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(0, stored.CheckpointVersion);
 
         Assert.Null(stored.CheckpointPayload);
-
     }
 
     [Fact]
     public async Task Factory_preparation_uses_the_callers_exact_installation_snapshot_without_nesting()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
@@ -784,12 +746,9 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         await using (readLease.ConfigureAwait(false))
         {
-
             StubOfflineTransitionSource inventory = new()
             {
-
                 DatasetGeneration = readLease.Snapshot.DatasetGeneration!.Value,
-
             };
 
             Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(
@@ -802,9 +761,7 @@ public sealed class CovenantResetCheckpointInitiatorTests
                     "owner-118",
                     Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure) with
                     {
-
                         DatasetGeneration = readLease.Snapshot.DatasetGeneration!.Value,
-
                     },
                     requestedOperationId: null,
                     readLease,
@@ -817,17 +774,14 @@ public sealed class CovenantResetCheckpointInitiatorTests
             Assert.Equal(1, gate.PeakConcurrentLeases);
 
             Assert.Equal(1, gate.LiveLeases);
-
         }
 
         Assert.Equal(0, gate.LiveLeases);
-
     }
 
     [Fact]
     public async Task Factory_preparation_refuses_a_different_planning_snapshot_before_catalog_or_checkpoint()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningFactoryAsync();
 
@@ -838,7 +792,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         await using (readLease.ConfigureAwait(false))
         {
-
             CountingDigestCalculator digests = new();
 
             Result<CovenantResetCheckpointInitiator.GateAdmission> refused = await Initiator(
@@ -863,15 +816,12 @@ public sealed class CovenantResetCheckpointInitiatorTests
             Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
 
             Assert.Equal(["installation-read"], gate.Acquisitions);
-
         }
-
     }
 
     [Fact]
     public async Task Damaged_factory_catalog_refuses_before_digest_checkpoint_or_admission()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
         await database.ExecuteAsync("DROP TRIGGER covenant_entries_guard_delete;", CancellationToken.None);
@@ -914,13 +864,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.True((await lease.CompleteAsync(
             CovenantExclusiveLeaseDisposition.RollbackAndReopen,
             CancellationToken.None)).IsSuccess);
-
     }
 
     [Fact]
     public async Task Exclusive_replacement_cannot_win_between_catalog_proof_and_checkpoint_commit()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyCatalogAsync();
 
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
@@ -930,16 +878,37 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
-        Task<Result<CovenantResetCheckpointInitiator.GateAdmission>> preparing = Task.Run(
-            async () => await Initiator(store, digests, CatalogGuard(database), gate)
-                .PrepareFactoryErasureInventoryAsync(
-                    operation,
-                    "owner-118",
-                    Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure),
-                    requestedOperationId: null,
-                    CancellationToken.None));
+        Task<Result<CovenantResetCheckpointInitiator.GateAdmission>> preparing =
+            Task.Factory.StartNew(
+                    async () => await Initiator(store, digests, CatalogGuard(database), gate)
+                        .PrepareFactoryErasureInventoryAsync(
+                            operation,
+                            "owner-118",
+                            Effect(CovenantExclusiveOperation.HealthyCatalogFactoryErasure),
+                            requestedOperationId: null,
+                            CancellationToken.None),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
+                .Unwrap();
 
-        await digests.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        Task entered = digests.Entered;
+
+        Task first = await Task.WhenAny(entered, preparing)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        if (ReferenceEquals(first, preparing))
+        {
+            Result<CovenantResetCheckpointInitiator.GateAdmission> early =
+                await preparing;
+
+            Assert.Fail(
+                early.IsFailure
+                    ? early.Error.Message
+                    : "Checkpoint preparation completed before reaching the blocking digest seam.");
+        }
+
+        await entered;
 
         Task<Result<CovenantExclusiveLease>> replacement = gate.AcquireExclusiveAsync(
                 CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
@@ -948,11 +917,9 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         try
         {
-
             Assert.False(replacement.IsCompleted);
 
             Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
-
         }
         finally
         {
@@ -976,13 +943,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.True((await lease.CompleteAsync(
             CovenantExclusiveLeaseDisposition.RollbackAndReopen,
             CancellationToken.None)).IsSuccess);
-
     }
 
     [Fact]
     public async Task Covenant_memory_reset_does_not_acquire_the_factory_catalog_read_lease()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -1002,7 +967,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.True(admitted.IsSuccess);
 
         Assert.Empty(gate.Acquisitions);
-
     }
 
     /// <summary>
@@ -1012,7 +976,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task Neither_path_accepts_the_other_operations_effect_input()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -1028,7 +991,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.True(crossed.IsFailure);
 
         Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
-
     }
 
     /// <summary>
@@ -1043,7 +1005,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [InlineData(MemoryResetScope.Lexicon)]
     public async Task No_other_memory_scope_can_prepare_a_covenant_reset(MemoryResetScope scope)
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -1059,13 +1020,11 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.True(refused.IsFailure);
 
         Assert.Equal(0, (await store.GetAsync(operation.Id))!.CheckpointVersion);
-
     }
 
     [Fact]
     public async Task Preparing_the_same_inventory_twice_neither_advances_nor_rewrites_the_phase()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
@@ -1095,7 +1054,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(afterFirst.CheckpointVersion, afterSecond.CheckpointVersion);
 
         Assert.Equal(afterFirst.CheckpointPayload, afterSecond.CheckpointPayload);
-
     }
 
     /// <summary>
@@ -1113,15 +1071,12 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task A_source_state_naming_a_different_dataset_is_refused_before_any_checkpoint()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
         StubOfflineTransitionSource elsewhere = new()
         {
-
             DatasetGeneration = Guid.Parse("55555555-5555-4555-8555-555555555555"),
-
         };
 
         Result<CovenantResetCheckpointInitiator.GateAdmission> refused = await Initiator(
@@ -1144,7 +1099,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(0, stored.CheckpointVersion);
 
         Assert.Null(stored.CheckpointPayload);
-
     }
 
     /// <summary>
@@ -1161,19 +1115,16 @@ public sealed class CovenantResetCheckpointInitiatorTests
     [Fact]
     public async Task Each_preselected_target_epoch_is_the_successor_of_its_own_source()
     {
-
         (FakeLongRunningOperationStore store, LongRunningOperation operation) =
             await RunningMutationAsync();
 
         StubOfflineTransitionSource inventory = new()
         {
-
             AcceleratorEpoch = 7,
 
             KeyReclamationEpoch = 41,
 
             EnvelopeKeyEpoch = 900,
-
         };
 
         Result<CovenantResetCheckpointInitiator.GateAdmission> admitted = await Initiator(
@@ -1201,34 +1152,27 @@ public sealed class CovenantResetCheckpointInitiatorTests
         Assert.Equal(42UL, launch.TargetEpochs.KeyReclamationEpoch);
 
         Assert.Equal(901UL, launch.TargetEpochs.EnvelopeKeyEpoch);
-
     }
 
     private static async Task<CovenantSchemaScratchDatabase> HealthyCatalogAsync()
     {
-
         CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         try
         {
-
             await database.InstallHealthyCovenantCatalogAsync(
                 withAccelerator: true,
                 CancellationToken.None);
 
             return database;
-
         }
         catch
         {
-
             await database.DisposeAsync();
 
             throw;
-
         }
-
     }
 
     private static CovenantHealthyCatalogErasureGuard CatalogGuard(
@@ -1263,7 +1207,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
     /// </remarks>
     private sealed class StubOfflineTransitionSource : ICovenantErasureInventorySource
     {
-
         internal Guid DatasetGeneration { get; init; } = Dataset;
 
         internal ulong AcceleratorEpoch { get; init; } = 1;
@@ -1315,30 +1258,24 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         private static NotSupportedException OutsidePreparation() =>
             new("Checkpoint preparation reads only the offline-transition source state.");
-
     }
 
     private sealed class CountingDigestCalculator : ICovenantErasureEffectDigestCalculator
     {
-
         private readonly CovenantErasureEffectDigestCalculator _inner = new();
 
         internal int ComputeCount { get; private set; }
 
         public Result<CovenantDigest> Compute(CovenantErasureEffectDigestInput input)
         {
-
             ComputeCount++;
 
             return _inner.Compute(input);
-
         }
-
     }
 
     private sealed class BlockingDigestCalculator : ICovenantErasureEffectDigestCalculator, IDisposable
     {
-
         private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(30);
 
         private readonly TaskCompletionSource<bool> _entered =
@@ -1354,7 +1291,6 @@ public sealed class CovenantResetCheckpointInitiatorTests
 
         public Result<CovenantDigest> Compute(CovenantErasureEffectDigestInput input)
         {
-
             _ = _entered.TrySetResult(true);
 
             // The production caller parks here while it holds its lock. A test that fails before it calls
@@ -1363,24 +1299,19 @@ public sealed class CovenantResetCheckpointInitiatorTests
             _release.Wait(ReleaseTimeout);
 
             return _inner.Compute(input);
-
         }
 
         public void Dispose()
         {
-
             _release.Set();
 
             _release.Dispose();
-
         }
-
     }
 
     private sealed class UnreachableOrdinaryConnectionFactory
         : IGrimoireOrdinaryConnectionFactory
     {
-
         public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
@@ -1392,7 +1323,5 @@ public sealed class CovenantResetCheckpointInitiatorTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException(
                 "Covenant memory-reset preparation must not inspect the factory catalog.");
-
     }
-
 }

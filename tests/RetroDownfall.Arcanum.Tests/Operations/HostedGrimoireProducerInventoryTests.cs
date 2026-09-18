@@ -1891,7 +1891,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null,
         int? evaluationEnvironmentMaximumMembers = null)
     {
-
         HostedProducerOperationEntry hosted = OrdinaryRoot() with
         {
             Authority = hostedAuthority,
@@ -13871,7 +13870,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Contains(result.Items, static site =>
             site.Callee == "System.IO.File.Delete");
-
     }
 
     [Fact]
@@ -14027,7 +14025,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Contains(result.Items, static site =>
             site.Callee == "System.IO.File.Delete");
-
     }
 
     [Fact]
@@ -14099,7 +14096,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Contains(result.Items, static site =>
             site.Callee == "System.IO.File.Exists");
-
     }
 
     [Fact]
@@ -14906,7 +14902,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && diagnostic.Detail.StartsWith(
                 "System.IO.Stream.Dispose;",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
@@ -19182,6 +19177,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     internal SecureStream() : base("path", System.IO.FileMode.OpenOrCreate) { }
                 }
             }
+
             internal static class TemporaryFactory
             {
                 internal static object Create(out System.IO.FileStream stream)
@@ -19315,6 +19311,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         stream = Unknown;
                         return true;
                     }
+
                     return false;
                 }
 
@@ -19326,11 +19323,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         stream = System.IO.File.OpenRead("path");
                         return true;
                     }
+
                     if (System.Environment.TickCount == 1)
                     {
                         stream = new System.IO.MemoryStream();
                         return true;
                     }
+
                     return false;
                 }
 
@@ -21586,12 +21585,10 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Fact]
     public void CapsuleManifestUpdateTreatsAMissingReviewedFileAsEmptyRawContent()
     {
-
         DirectoryInfo root = Directory.CreateTempSubdirectory("arcanum-hosted-manifest-");
 
         try
         {
-
             string path = Path.Combine(root.FullName, "reviewed.tsv");
 
             const string expected = "# header\n# columns\nrow\n";
@@ -21608,11 +21605,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     updateRequested: true,
                     report =>
                     {
-
                         reportedBeforeWrite = !File.Exists(path);
 
                         reports.Add(report);
-
                     });
 
             string report = Assert.Single(reports);
@@ -21638,26 +21633,20 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Equal(expected, update.Reviewed);
 
             Assert.Equal(expected, File.ReadAllText(path));
-
         }
         finally
         {
-
             root.Delete(recursive: true);
-
         }
-
     }
 
     [Fact]
     public void CapsuleManifestUpdateReportsMalformedHeadersBeforeReplacingThem()
     {
-
         DirectoryInfo root = Directory.CreateTempSubdirectory("arcanum-hosted-manifest-");
 
         try
         {
-
             string path = Path.Combine(root.FullName, "reviewed.tsv");
 
             const string reviewed = "# wrong-version\n# columns\nold\n";
@@ -21678,11 +21667,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     updateRequested: true,
                     report =>
                     {
-
                         observedBeforeWrite = File.ReadAllText(path);
 
                         reportedContent = report;
-
                     });
 
             Assert.Equal(reviewed, observedBeforeWrite);
@@ -21702,26 +21689,20 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Equal(expected, update.Reviewed);
 
             Assert.Equal(expected, File.ReadAllText(path));
-
         }
         finally
         {
-
             root.Delete(recursive: true);
-
         }
-
     }
 
     [Fact]
     public void CapsuleManifestUpdateDoesNotWriteWhenDiscoveryDiagnosticsExist()
     {
-
         DirectoryInfo root = Directory.CreateTempSubdirectory("arcanum-hosted-manifest-");
 
         try
         {
-
             string path = Path.Combine(root.FullName, "reviewed.tsv");
 
             const string reviewed = "# wrong-version\n";
@@ -21747,15 +21728,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Equal(reviewed, update.Reviewed);
 
             Assert.Equal(reviewed, File.ReadAllText(path));
-
         }
         finally
         {
-
             root.Delete(recursive: true);
-
         }
-
     }
 
     [Fact]
@@ -22225,7 +22202,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             result.Diagnostics,
             static diagnostic => diagnostic.Code
                 == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
-
     }
 
     [Fact]
@@ -23698,6 +23674,178 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(evil, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerTracksAsyncFactoriesAcrossForwardedParameters(
+        bool evil)
+    {
+        string source = evil
+            ? "new EvilList()"
+            : "new System.Collections.Generic.List<string> { \"safe\" }";
+
+        string helper =
+            "static class Factory { public static async Task<System.Collections.Generic.IReadOnlyList<string>> ReadAsync() { await Task.CompletedTask.ConfigureAwait(false); System.Collections.Generic.List<string> values = "
+            + source
+            + "; return values; } } "
+            + "static class Consumer { public static bool Check(System.Collections.Generic.IReadOnlyList<string> values) => values.Count == 1 && values[0].Length > 0; } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        string fixture = FixtureSource(
+                "_ = Consumer.Check(await Factory.ReadAsync().ConfigureAwait(false));",
+                helper)
+            .Replace(
+                "public Task StartAsync(CancellationToken token)",
+                "public async Task StartAsync(CancellationToken token)",
+                StringComparison.Ordinal)
+            .Replace(
+                "return Task.CompletedTask;",
+                "return;",
+                StringComparison.Ordinal);
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(
+            evil,
+            Discover(fixture).Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerTracksNestedStaticCatalogValues(bool evil)
+    {
+        string value = evil
+            ? "new EvilList()"
+            : "new System.Collections.Generic.List<string> { \"safe\" }";
+
+        string helper =
+            "sealed record Payload(System.Collections.Generic.IReadOnlyList<string> Values); "
+            + "static class Catalog { public static System.Collections.Generic.IReadOnlyList<Payload> All { get; } = [new Payload("
+            + value
+            + ")]; } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        string fixture = FixtureSource(
+            "Payload payload = Catalog.All[0]; _ = payload.Values[0];",
+            helper);
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(
+            evil,
+            Discover(fixture).Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerTracksAsyncResultPageValues(bool evil)
+    {
+        string value = evil
+            ? "new EvilList()"
+            : "new System.Collections.Generic.List<string> { \"safe\" }";
+
+        string helper =
+            "sealed record Page<T>(T Value); "
+            + "static class Reader { public static async Task<Page<System.Collections.Generic.IReadOnlyList<string>>> ReadAsync() { await Task.CompletedTask.ConfigureAwait(false); System.Collections.Generic.List<string> rows = "
+            + value
+            + "; return new Page<System.Collections.Generic.IReadOnlyList<string>>(rows); } } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        string fixture = FixtureSource(
+                "Page<System.Collections.Generic.IReadOnlyList<string>> page = await Reader.ReadAsync().ConfigureAwait(false); _ = page.Value[^1];",
+                helper)
+            .Replace(
+                "public Task StartAsync(CancellationToken token)",
+                "public async Task StartAsync(CancellationToken token)",
+                StringComparison.Ordinal)
+            .Replace(
+                "return Task.CompletedTask;",
+                "return;",
+                StringComparison.Ordinal);
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(
+            evil,
+            Discover(fixture).Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerTracksOutConstructedReadonlyStructValues(
+        bool evil)
+    {
+        string value = evil
+            ? "new EvilList()"
+            : "new System.Collections.Generic.List<string> { \"safe\" }";
+
+        string helper =
+            "readonly struct Parsed { private readonly System.Collections.Generic.IReadOnlyList<string>? values; public Parsed(System.Collections.Generic.IReadOnlyList<string> input) { values = input; } public System.Collections.Generic.IReadOnlyList<string> Values => values ?? []; } "
+            + "static class Parser { public static bool TryParse(bool fail, out Parsed parsed) { parsed = default; if (fail) { return false; } System.Collections.Generic.List<string> values = "
+            + value
+            + "; parsed = new Parsed(values); return true; } } "
+            + "static class Consumer { public static bool Same(Parsed left, Parsed right) => left.Values[0] == right.Values[0]; } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        string fixture = FixtureSource(
+            "if (!Parser.TryParse(token.IsCancellationRequested, out Parsed parsed) || parsed.Values.Count == 0) { return Task.CompletedTask; } _ = Consumer.Same(parsed, parsed);",
+            helper);
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(
+            evil,
+            Discover(fixture).Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerAllowsElementMutationWithoutLosingReceiverProof(
+        bool evil)
+    {
+        string value = evil
+            ? "new EvilList { \"original\" }"
+            : "new System.Collections.Generic.List<string> { \"original\" }";
+
+        string helper =
+            "static class Consumer { public static void Read(System.Collections.Generic.List<string> values) { values[0] = \"updated\"; System.Collections.Generic.IReadOnlyList<string> view = values; _ = view[0]; } } "
+            + "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        string fixture = FixtureSource(
+            "Consumer.Read(" + value + ");",
+            helper);
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(
+            evil,
+            Discover(fixture).Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail
+                    == "System.Collections.Generic.IReadOnlyList`1.this[]"));
     }
 
     [Theory]

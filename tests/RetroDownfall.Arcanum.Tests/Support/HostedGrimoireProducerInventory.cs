@@ -1663,7 +1663,6 @@ internal static class HostedGrimoireProducerInventory
         bool updateRequested,
         Action<string> reportBeforeWrite)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
         ArgumentNullException.ThrowIfNull(expected);
@@ -1684,22 +1683,17 @@ internal static class HostedGrimoireProducerInventory
 
         if (updateRequested && diagnostics.Count == 0)
         {
-
             if (!comparison.ExactTextMatch)
             {
-
                 reportBeforeWrite(report);
-
             }
 
             File.WriteAllText(path, expected);
 
             reviewed = File.ReadAllText(path);
-
         }
 
         return new(reviewed, report);
-
     }
 
     private static IReadOnlyList<string> CapsuleManifestRows(string manifest)
@@ -2568,7 +2562,6 @@ internal static class HostedGrimoireProducerInventory
                         }
                     }
                 }
-
             }
 
             foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
@@ -6167,6 +6160,7 @@ internal static class HostedGrimoireProducerInventory
                     }
                 }
             }
+
             while (added);
 
             return aliases;
@@ -6876,6 +6870,7 @@ internal static class HostedGrimoireProducerInventory
                     }
                 }
             }
+
             while (changed);
 
             HashSet<InvocationExpressionSyntax> reachableCalls = new(
@@ -24316,6 +24311,24 @@ internal static class HostedGrimoireProducerInventory
                 return true;
             }
 
+            if (target.Syntax.DescendantNodesAndSelf(node =>
+                        node == target.Syntax
+                        || node is not AnonymousFunctionExpressionSyntax
+                            and not LocalFunctionStatementSyntax)
+                    .OfType<ElementAccessExpressionSyntax>()
+                    .Any(access => target.Model.GetTypeInfo(
+                                access.Expression).Type is { } receiverType
+                            && RequiresSourceProvenance(receiverType)
+                            && ExpressionDependsOnSymbol(
+                                target,
+                                access.Expression,
+                                parameter,
+                                new HashSet<ISymbol>(
+                                    SymbolEqualityComparer.Default))))
+            {
+                return true;
+            }
+
             bool cleanupCapable =
                 TypeMayCarryCleanupProvenance(parameter.Type);
 
@@ -30490,11 +30503,20 @@ internal static class HostedGrimoireProducerInventory
                     IsStatic: false,
                 } field]
                 || !field.IsReadOnly
-                    && !HasExactGuardedFieldReadSemantics(field)
-                || leaves.Any(leaf => !SymbolEqualityComparer.Default.Equals(
+                    && !HasExactGuardedFieldReadSemantics(field))
+            {
+                return null;
+            }
+
+            ExpressionSyntax[] alternateLeaves = leaves
+                .Where(leaf => !SymbolEqualityComparer.Default.Equals(
                     getter.Model.GetSymbolInfo(
                         StripTransparentExpression(leaf)).Symbol,
-                    field)))
+                    field))
+                .ToArray();
+
+            if (!context.CollectionIndexerProof
+                && alternateLeaves.Length != 0)
             {
                 return null;
             }
@@ -30564,8 +30586,19 @@ internal static class HostedGrimoireProducerInventory
                 fieldValueExpression,
                 context);
 
-            return fieldValue.Complete
-                ? fieldValue with
+            CleanupValueFlow value = alternateLeaves.Length == 0
+                ? fieldValue
+                : MergeCleanupValueFlow(
+                    [
+                        fieldValue,
+                        .. alternateLeaves.Select(leaf => CleanupValueFlowOf(
+                            ValueExpressionContext(getter, leaf),
+                            leaf,
+                            context)),
+                    ]);
+
+            return value.Complete
+                ? value with
                 {
                     HasAuthoredSource = true,
                 }
@@ -31033,7 +31066,10 @@ internal static class HostedGrimoireProducerInventory
             foreach (BoundValueSource value in flow.Values)
             {
                 EvaluationEnvironmentFingerprint environment =
-                    EvaluationEnvironmentIdentity(value.Caller);
+                    EvaluationEnvironmentIdentity(
+                        ProjectEvaluationEnvironment(
+                            value.Caller,
+                            value.Expression));
 
                 CleanupProvenance provenance = CleanupProvenanceOf(
                     value.Caller,
@@ -31210,11 +31246,28 @@ internal static class HostedGrimoireProducerInventory
             {
                 ISymbol? storage = member.Model.GetSymbolInfo(expression).Symbol;
 
+                if (storage is ILocalSymbol authoredOutLocal
+                    && authoredOutLocal.DeclaringSyntaxReferences
+                        .SingleOrDefault()?.GetSyntax() is
+                        SingleVariableDesignationSyntax designation
+                    && ExactAuthoredOutLocalCleanupValueFlow(
+                        member,
+                        expression,
+                        authoredOutLocal,
+                        designation,
+                        context) is { } authoredOutFlow)
+                {
+                    return authoredOutFlow;
+                }
+
                 // Lexically later writes can reach this use through loop back-edges,
                 // including writes in invoked callbacks and local functions.
                 if (storage is IParameterSymbol parameter
                     && (parameter.RefKind != RefKind.None
-                        || HasCollectionValueReplacement(member, parameter))
+                        || HasCollectionValueReplacement(
+                            member,
+                            parameter,
+                            rejectElementWrites: false))
                     || storage is ILocalSymbol collectionLocal
                         && HasCollectionValueReplacement(member, collectionLocal, rejectElementWrites: false))
                 {
@@ -31608,6 +31661,33 @@ internal static class HostedGrimoireProducerInventory
             {
                 ISymbol? symbol = member.Model.GetSymbolInfo(expression).Symbol;
 
+                if (symbol is IFieldSymbol { IsStatic: true, IsReadOnly: true }
+                    or IPropertySymbol { IsStatic: true, SetMethod: null })
+                {
+                    CleanupValueFlow stable = StableCollectionStorageValueFlow(
+                        member,
+                        symbol,
+                        context);
+
+                    if (!stable.Complete || stable.Values.Count == 0)
+                    {
+                        return new([], false, stable.HasAuthoredSource);
+                    }
+
+                    CleanupValueFlow elements = MergeCleanupValueFlow(
+                        stable.Values.Select(value => CollectionElementValueFlow(
+                            value.Caller,
+                            value.Expression,
+                            context)));
+
+                    return elements with
+                    {
+                        Complete = elements.Complete && stable.Complete,
+                        HasAuthoredSource = elements.HasAuthoredSource
+                            || stable.HasAuthoredSource,
+                    };
+                }
+
                 if (symbol is ILocalSymbol local)
                 {
                     if (HasCollectionValueReplacement(member, local)
@@ -31830,6 +31910,16 @@ internal static class HostedGrimoireProducerInventory
 
             if (declaration is SingleVariableDesignationSyntax designation)
             {
+                if (ExactAuthoredOutLocalCleanupValueFlow(
+                        member,
+                        use,
+                        local,
+                        designation,
+                        context) is { } outFlow)
+                {
+                    return outFlow;
+                }
+
                 CleanupProvenance? guarded =
                     ExactConfiguredSqlitePatternLocalProvenance(
                         member,
@@ -31959,7 +32049,10 @@ internal static class HostedGrimoireProducerInventory
                 static value => value.Values))
             {
                 EvaluationEnvironmentFingerprint environment =
-                    EvaluationEnvironmentIdentity(value.Caller);
+                    EvaluationEnvironmentIdentity(
+                        ProjectEvaluationEnvironment(
+                            value.Caller,
+                            value.Expression));
 
                 if (!environment.Complete
                     || environment.ContainsBackreference)
@@ -33000,6 +33093,67 @@ internal static class HostedGrimoireProducerInventory
             SingleVariableDesignationSyntax designation,
             CleanupProvenanceContext context)
         {
+            if (TryExactAuthoredOutLocalAssignments(
+                    member,
+                    use,
+                    local,
+                    designation,
+                    context) is not { } exact)
+            {
+                return null;
+            }
+
+            CleanupProvenance result = MergeCleanupProvenance(
+                exact.Assignments.Select(assignment => CleanupProvenanceOf(
+                    exact.Bound,
+                    assignment.Right,
+                    context)));
+
+            return result with
+            {
+                Complete = result.Complete,
+                HasAuthoredSource = true,
+            };
+        }
+
+        private CleanupValueFlow? ExactAuthoredOutLocalCleanupValueFlow(
+            AuthoredMember member,
+            ExpressionSyntax use,
+            ILocalSymbol local,
+            SingleVariableDesignationSyntax designation,
+            CleanupProvenanceContext context)
+        {
+            if (TryExactAuthoredOutLocalAssignments(
+                    member,
+                    use,
+                    local,
+                    designation,
+                    context) is not { } exact)
+            {
+                return null;
+            }
+
+            CleanupValueFlow result = MergeCleanupValueFlow(
+                exact.Assignments.Select(assignment => CleanupValueFlowOf(
+                    exact.Bound,
+                    assignment.Right,
+                    context)));
+
+            return result with
+            {
+                Complete = result.Complete,
+                HasAuthoredSource = true,
+            };
+        }
+
+        private (AuthoredMember Bound, AssignmentExpressionSyntax[] Assignments)?
+            TryExactAuthoredOutLocalAssignments(
+                AuthoredMember member,
+                ExpressionSyntax use,
+                ILocalSymbol local,
+                SingleVariableDesignationSyntax designation,
+                CleanupProvenanceContext context)
+        {
             if (designation.Ancestors().OfType<ArgumentSyntax>()
                     .FirstOrDefault() is not
                 {
@@ -33018,7 +33172,12 @@ internal static class HostedGrimoireProducerInventory
                     IMethodSymbol method
                 || ResolveInvocationTarget(method, member, call) is not
                     { } target
-                || sourceParameter.Ordinal >= target.Symbol.Parameters.Length)
+                || sourceParameter.Ordinal >= target.Symbol.Parameters.Length
+                || !SymbolIsStableWithin(
+                    member,
+                    local,
+                    call.Span.End,
+                    use.SpanStart))
             {
                 return null;
             }
@@ -33157,17 +33316,7 @@ internal static class HostedGrimoireProducerInventory
                 }
             }
 
-            CleanupProvenance result = MergeCleanupProvenance(
-                exactAssignments.Select(assignment => CleanupProvenanceOf(
-                    bound,
-                    assignment.Right,
-                    context)));
-
-            return result with
-            {
-                Complete = result.Complete,
-                HasAuthoredSource = true,
-            };
+            return (bound, exactAssignments);
         }
 
         private static bool TryExactSuccessfulOutReturn(
@@ -33209,6 +33358,84 @@ internal static class HostedGrimoireProducerInventory
                     or BreakStatementSyntax
                 || statement is BlockSyntax { Statements.Count: > 0 } block
                     && Terminates(block.Statements[^1]);
+
+            bool RejectsFalse(ExpressionSyntax expression)
+            {
+                expression = StripTransparentExpression(expression);
+
+                return expression switch
+                {
+                    PrefixUnaryExpressionSyntax negation
+                        when negation.IsKind(
+                                SyntaxKind.LogicalNotExpression)
+                            && MatchesResult(
+                                StripTransparentExpression(
+                                    negation.Operand)) => true,
+                    BinaryExpressionSyntax disjunction
+                        when disjunction.IsKind(
+                            SyntaxKind.LogicalOrExpression) =>
+                        RejectsFalse(disjunction.Left)
+                        || RejectsFalse(disjunction.Right),
+                    _ => false,
+                };
+            }
+
+            bool booleanSuccessRequired =
+                target.Symbol.ReturnType.SpecialType
+                    == SpecialType.System_Boolean
+                && caller.Syntax.DescendantNodesAndSelf(node =>
+                        node == caller.Syntax
+                        || node is not AnonymousFunctionExpressionSyntax
+                            and not LocalFunctionStatementSyntax)
+                    .OfType<IfStatementSyntax>()
+                    .Any(guard => guard.Span.End < use.SpanStart
+                        && Terminates(guard.Statement)
+                        && guard.Parent is BlockSyntax block
+                        && call.AncestorsAndSelf()
+                            .OfType<StatementSyntax>()
+                            .Any(statement => statement.Parent == block
+                                && (statement == guard
+                                    || statement.Span.End
+                                        < guard.SpanStart))
+                        && use.AncestorsAndSelf()
+                            .OfType<StatementSyntax>()
+                            .Any(statement => statement.Parent == block
+                                && statement.SpanStart > guard.Span.End)
+                        && RejectsFalse(guard.Condition));
+
+            if (booleanSuccessRequired)
+            {
+                List<AssignmentExpressionSyntax> exactBooleanAssignments = [];
+
+                for (int index = 0; index < returns.Count; index++)
+                {
+                    if (target.Model.GetConstantValue(
+                            returns[index].Expression!) is not
+                        {
+                            HasValue: true,
+                            Value: bool result,
+                        })
+                    {
+                        return false;
+                    }
+
+                    if (!result)
+                    {
+                        continue;
+                    }
+
+                    if (reaching[index] is not { } assignment)
+                    {
+                        return false;
+                    }
+
+                    exactBooleanAssignments.Add(assignment);
+                }
+
+                successful = exactBooleanAssignments.ToArray();
+
+                return successful.Length != 0;
+            }
 
             ISymbol? successSymbol = null;
 
