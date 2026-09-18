@@ -23213,6 +23213,224 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 == "System.Collections.Generic.IReadOnlyList`1.this[]");
     }
 
+    [Theory]
+    [InlineData("collection", false)]
+    [InlineData("sync", false)]
+    [InlineData("async", false)]
+    [InlineData("forward", false)]
+    [InlineData("callback", false)]
+    [InlineData("primary", false)]
+    [InlineData("constructor", false)]
+    [InlineData("record", false)]
+    [InlineData("init", false)]
+    [InlineData("tolist", false)]
+    [InlineData("toarray", false)]
+    [InlineData("conditional", false)]
+    [InlineData("coalesce", false)]
+    [InlineData("result", false)]
+    [InlineData("projection", false)]
+    [InlineData("static-constructor", false)]
+    [InlineData("get-only", false)]
+    [InlineData("field-initializer-and-constructor", false)]
+    [InlineData("property-initializer-and-constructor", false)]
+    [InlineData("sync", true)]
+    [InlineData("async", true)]
+    [InlineData("forward", true)]
+    [InlineData("callback", true)]
+    [InlineData("primary", true)]
+    [InlineData("constructor", true)]
+    [InlineData("record", true)]
+    [InlineData("init", true)]
+    [InlineData("conditional", true)]
+    [InlineData("coalesce", true)]
+    [InlineData("result", true)]
+    [InlineData("projection", true)]
+    [InlineData("static-constructor", true)]
+    [InlineData("get-only", true)]
+    [InlineData("field-initializer-and-constructor", true)]
+    [InlineData("property-initializer-and-constructor", true)]
+    public void FrameworkCollectionIndexerTracksExactValueFlow(string shape, bool evil)
+    {
+        string source = evil ? "new EvilList()" : "new List<string>()";
+
+        string body = "IReadOnlyList<string> values = " + source + "; _ = values[0];";
+
+        string helper = "";
+
+        switch (shape)
+        {
+            case "collection": body = "IReadOnlyList<string> values = [\"one\"]; _ = values[0];"; break;
+            case "sync":
+            case "async":
+                helper = shape == "sync"
+                    ? "static class Factory { public static IReadOnlyList<string> Get() { List<string> local = " + source + "; return local; } }"
+                    : "static class Factory { public static async Task<IReadOnlyList<string>> Get() { await Task.CompletedTask.ConfigureAwait(false); List<string> local = " + source + "; return local; } }";
+
+                body = shape == "sync" ? "var values = Factory.Get(); _ = values[0];" : "var values = await Factory.Get().ConfigureAwait(false); _ = values[0];";
+
+                break;
+            case "forward":
+            case "callback":
+                helper = "static class Consumer { public static void Read(List<string> values) => Forward(values); static void Forward(IReadOnlyList<string> values) { _ = values[0]; } }";
+
+                body = shape == "forward" ? "Consumer.Read(" + source + ");" : "Action<List<string>> callback = Consumer.Read; callback(" + source + ");";
+
+                break;
+            case "primary":
+                helper = "sealed class Consumer(IReadOnlyList<string> input) { readonly IReadOnlyList<string> values = input; public void Read() { _ = values[0]; } }";
+
+                body = "new Consumer(" + (evil ? source : "[\"one\"]") + ").Read();";
+
+                break;
+            case "constructor":
+                helper = "sealed class Consumer { readonly IReadOnlyList<string>? values; public Consumer(IReadOnlyList<string> input) { values = input; } IReadOnlyList<string> Values => values ?? []; public void Read() { _ = Values[0]; } }";
+
+                body = "new Consumer(" + source + ").Read();";
+
+                break;
+            case "record":
+                helper = "sealed record Payload(IReadOnlyList<string> Values);";
+
+                body = "var payload = new Payload(" + source + "); _ = payload.Values[0];";
+
+                break;
+            case "init":
+                helper = "sealed class Payload { public IReadOnlyList<string> Values { get; init; } = null!; }";
+
+                body = "var payload = new Payload { Values = " + source + " }; _ = payload.Values[0];";
+
+                break;
+            case "tolist": body = "IReadOnlyList<string> values = System.Linq.Enumerable.ToList(new[] { \"one\" }); _ = values[0];"; break;
+            case "toarray": body = "IReadOnlyList<string> values = System.Linq.Enumerable.ToArray(new[] { \"one\" }); _ = values[0];"; break;
+            case "conditional": body = "IReadOnlyList<string> values = token.IsCancellationRequested ? new List<string>() : " + source + "; _ = values[0];"; break;
+            case "coalesce": body = "IReadOnlyList<string>? first = " + source + "; IReadOnlyList<string> values = first ?? []; _ = values[0];"; break;
+            case "result":
+                helper = "sealed class Result<T> { readonly T value; private Result(T input) { value = input; } public bool IsSuccess => true; public T Value => IsSuccess ? value : throw new InvalidOperationException(); public static Result<T> Success(T input) => new(input); }";
+
+                body = "var result = Result<IReadOnlyList<string>>.Success(" + source + "); if (result.IsSuccess) { _ = result.Value[0]; }";
+
+                break;
+            case "projection":
+                helper = "sealed record Payload(IReadOnlyList<string> Values);";
+
+                body = "var payloads = new[] { new Payload(" + source + ") }; var values = System.Linq.Enumerable.Select(payloads, item => item.Values); foreach (var value in values) { _ = value[0]; }";
+
+                break;
+            case "static-constructor":
+                helper = "static class Consumer { static readonly IReadOnlyList<string> Values; static Consumer() { Values = " + source + "; } public static void Read() { _ = Values[0]; } }";
+
+                body = "Consumer.Read();";
+
+                break;
+            case "get-only":
+                helper = "sealed class Consumer { public IReadOnlyList<string> Values { get; } public Consumer(IReadOnlyList<string> input) { Values = input; } }";
+
+                body = "var consumer = new Consumer(" + source + "); _ = consumer.Values[0];";
+
+                break;
+            case "field-initializer-and-constructor":
+                helper = "sealed class Consumer { readonly IReadOnlyList<string> values = new List<string>(); public Consumer(IReadOnlyList<string> input) { values = input; } public void Read() { _ = values[0]; } }";
+
+                body = "new Consumer(" + source + ").Read();";
+
+                break;
+            case "property-initializer-and-constructor":
+                helper = "sealed class Consumer { public IReadOnlyList<string> Values { get; } = new List<string>(); public Consumer(IReadOnlyList<string> input) { Values = input; } }";
+
+                body = "var consumer = new Consumer(" + source + "); _ = consumer.Values[0];";
+
+                break;
+        }
+
+        helper += " sealed class EvilList : List<string>, IReadOnlyList<string> { string IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }";
+
+        string fixture = "using System.Collections.Generic; " + FixtureSource(body, helper);
+
+        if (shape == "async")
+        {
+            fixture = fixture.Replace("public Task StartAsync(CancellationToken token)", "public async Task StartAsync(CancellationToken token)", StringComparison.Ordinal)
+                .Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal);
+        }
+
+        CSharpCompilation compilation = Compile(fixture);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(fixture);
+
+        Assert.Equal(evil, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData("Consumer.Read(new List<string>());", "static class Consumer { public static void Read(List<string> input) { input = new EvilList(); IReadOnlyList<string> values = input; _ = values[0]; } }")]
+    [InlineData("IReadOnlyList<string> values = new List<string>(); (values, _) = (new EvilList(), 1); _ = values[0];", "")]
+    [InlineData("IReadOnlyList<string> values = new List<string>(); Change(ref values); _ = values[0];", "static void Change(ref IReadOnlyList<string> values) => values = new EvilList();")]
+    [InlineData("var payload = new Payload(new List<string>()); payload = payload with { Values = new EvilList() }; _ = payload.Values[0];", "sealed record Payload(IReadOnlyList<string> Values);")]
+    [InlineData("var payloads = new[] { new Payload(new List<string>()) }; var alias = payloads; alias[0] = new Payload(new EvilList()); foreach (var value in payloads) { _ = value.Values[0]; }", "sealed record Payload(IReadOnlyList<string> Values);")]
+    [InlineData("var payloads = new[] { new Payload(new List<string>()) }; Mutate(payloads); foreach (var value in payloads) { _ = value.Values[0]; }", "static void Mutate(Payload[] payloads) => payloads[0] = new Payload(new EvilList());")]
+    [InlineData("var payloads = new List<Payload>(new[] { new Payload(new EvilList()) }) { new Payload(new List<string>()) }; foreach (var value in payloads) { _ = value.Values[0]; }", "sealed record Payload(IReadOnlyList<string> Values);")]
+    [InlineData("Consumer.Read(new List<string>()); Consumer.Read(new EvilList());", "static class Consumer { public static void Read(List<string> input) { IReadOnlyList<string> values = input; _ = values[0]; } }")]
+    [InlineData("IReadOnlyList<string> values = Factory.Get(token.IsCancellationRequested); _ = values[0];", "static class Factory { public static IReadOnlyList<string> Get(bool flag) { if(flag) return new List<string>(); return new EvilList(); } }")]
+    [InlineData("IReadOnlyList<string> values = System.Text.Json.JsonSerializer.Deserialize<List<string>>(\"[]\")!; _ = values[0];", "")]
+    [InlineData("IReadOnlyList<string> values = Factory.Get(); _ = values[0];", "static class Factory { public static IReadOnlyList<string> Get() => Get(); }")]
+    [InlineData("new Consumer().Read();", "sealed class Consumer { readonly List<string> values = new(); public Consumer() { Mutate(ref values); } static void Mutate(ref List<string> value) { value = new EvilList(); } public void Read() { IReadOnlyList<string> view = values; _ = view[0]; } }")]
+    public void FrameworkCollectionIndexerRejectsReplacementSources(string body, string helper)
+    {
+        string fixture = "using System.Collections.Generic; " + FixtureSource(body, helper
+            + " sealed class EvilList : List<string>, IReadOnlyList<string> { string IReadOnlyList<string>.this[int i] => \"evil\"; }");
+
+        // A local function belongs inside the worker method.
+        if (helper.StartsWith("static void", StringComparison.Ordinal))
+        {
+            fixture = "using System.Collections.Generic; " + FixtureSource(body + helper,
+                "sealed record Payload(IReadOnlyList<string> Values); sealed class EvilList : List<string>, IReadOnlyList<string> { string IReadOnlyList<string>.this[int i] => \"evil\"; }");
+        }
+
+        CSharpCompilation compilation = Compile(fixture);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Contains(Discover(fixture).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FrameworkCollectionIndexerPreservesDiFactoryArgumentProvenance(bool evil)
+    {
+        string collection = evil ? "new EvilList()" : "new System.Collections.Generic.List<string>()";
+
+        string fixture = FixtureSource("_ = values[0];",
+                "sealed class EvilList : System.Collections.Generic.List<string>, System.Collections.Generic.IReadOnlyList<string> { string System.Collections.Generic.IReadOnlyList<string>.this[int i] => \"evil\"; }")
+            .Replace("services.AddHostedService<Worker>();", "services.AddHostedService<Worker>(provider => new Worker(" + collection + "));", StringComparison.Ordinal)
+            .Replace("public class Worker : IHostedService", "public sealed class Worker(System.Collections.Generic.IReadOnlyList<string> input) : IHostedService", StringComparison.Ordinal)
+            .Replace("new Worker()", "new Worker(" + collection + ")", StringComparison.Ordinal)
+            .Replace("public Task StartAsync", "private readonly System.Collections.Generic.IReadOnlyList<string> values = input; public Task StartAsync", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(fixture);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(evil, Discover(fixture).Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Fact]
+    public void FrameworkCollectionIndexerRejectsUnprovenVirtualExceptionData()
+    {
+        string fixture = FixtureSource("Consumer.Record(new EvilCancellation());",
+            "static class Consumer { public static void Record(OperationCanceledException failure) { failure.Data[\"cleanup\"] = \"error\"; } } "
+            + "sealed class EvilCancellation : OperationCanceledException { public override System.Collections.IDictionary Data => new EvilDictionary(); } "
+            + "sealed class EvilDictionary : System.Collections.Hashtable { public override object? this[object key] { get => null; set { System.IO.File.Delete(\"evil\"); } } }");
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Contains(Discover(fixture).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.IDictionary.this[] setter");
+    }
+
     [Fact]
     public void SameNamedFrameworkCollectionIndexerSpoofsRemainUnclassified()
     {
