@@ -12662,11 +12662,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(2, metric.EquivalentKeyNodes);
 
-        Assert.Equal(129, metric.InternerRequests);
+        Assert.Equal(128, metric.InternerRequests);
 
         Assert.Equal(64, metric.InternerIdentityBuilds);
 
-        Assert.Equal(128, metric.InternerHits);
+        Assert.Equal(127, metric.InternerHits);
 
         Assert.Equal(1, metric.InternerRegistrations);
     }
@@ -12725,11 +12725,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(4, metric.EquivalentKeyNodes);
 
-        Assert.Equal(130, metric.InternerRequests);
+        Assert.Equal(128, metric.InternerRequests);
 
         Assert.Equal(64, metric.InternerIdentityBuilds);
 
-        Assert.Equal(128, metric.InternerHits);
+        Assert.Equal(126, metric.InternerHits);
 
         Assert.Equal(2, metric.InternerRegistrations);
     }
@@ -12791,11 +12791,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(2, metric.EquivalentKeyNodes);
 
-        Assert.Equal(129, metric.InternerRequests);
+        Assert.Equal(128, metric.InternerRequests);
 
         Assert.Equal(64, metric.InternerIdentityBuilds);
 
-        Assert.Equal(128, metric.InternerHits);
+        Assert.Equal(127, metric.InternerHits);
 
         Assert.Equal(1, metric.InternerRegistrations);
     }
@@ -12861,11 +12861,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(4, metric.EquivalentKeyNodes);
 
-        Assert.Equal(130, metric.InternerRequests);
+        Assert.Equal(128, metric.InternerRequests);
 
         Assert.Equal(64, metric.InternerIdentityBuilds);
 
-        Assert.Equal(128, metric.InternerHits);
+        Assert.Equal(126, metric.InternerHits);
 
         Assert.Equal(2, metric.InternerRegistrations);
     }
@@ -13668,7 +13668,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 "M:RetainedValueDelegateTarget.Retain(",
                 StringComparison.Ordinal));
 
-        Assert.True(metric.FingerprintRequests >= 32);
+        Assert.Equal(1, metric.FingerprintRequests);
 
         Assert.Equal(1, metric.FingerprintBuilds);
 

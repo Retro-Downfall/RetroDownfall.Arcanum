@@ -2651,8 +2651,25 @@ internal static class HostedGrimoireProducerInventory
 
             string fallbackRecovery = "";
 
-            EvaluationEnvironmentFingerprint environment =
-                EvaluationEnvironmentIdentity(member, environmentToken);
+            EvaluationEnvironmentFingerprint environment;
+
+            if (environmentToken is int exactToken
+                && tokenEvaluationEnvironmentFingerprints.TryGetValue(
+                    exactToken,
+                    out EvaluationEnvironmentFingerprint certifiedEnvironment)
+                && certifiedEnvironment.Complete
+                && !certifiedEnvironment.ContainsBackreference)
+            {
+                environment = certifiedEnvironment;
+            }
+            else
+            {
+                environment = environmentToken is int
+                    ? EvaluationEnvironmentIdentity(
+                        member,
+                        environmentToken)
+                    : EvaluationEnvironmentIdentity(member);
+            }
 
             if (environmentToken is not int
                 || !environment.Complete
@@ -27156,6 +27173,41 @@ internal static class HostedGrimoireProducerInventory
                 : SelectPatternCleanupMembers(concrete, name);
         }
 
+        private static bool IsTrustedCleanupDispatchBase(ITypeSymbol type)
+        {
+            string typeName = TypeKey(type);
+
+            AssemblyName? trustedAssembly = typeName switch
+            {
+                "System.Data.Common.DbCommand" =>
+                    typeof(System.Data.Common.DbCommand).Assembly.GetName(),
+                "System.Data.Common.DbConnection" =>
+                    typeof(System.Data.Common.DbConnection).Assembly.GetName(),
+                "System.Data.Common.DbDataReader" =>
+                    typeof(System.Data.Common.DbDataReader).Assembly.GetName(),
+                "System.Data.Common.DbTransaction" =>
+                    typeof(System.Data.Common.DbTransaction).Assembly.GetName(),
+                "System.IO.Stream" =>
+                    typeof(System.IO.Stream).Assembly.GetName(),
+                "System.Runtime.InteropServices.SafeHandle" =>
+                    typeof(System.Runtime.InteropServices.SafeHandle).Assembly
+                        .GetName(),
+                "Microsoft.Data.Sqlite.SqliteCommand"
+                    or "Microsoft.Data.Sqlite.SqliteConnection"
+                    or "Microsoft.Data.Sqlite.SqliteDataReader"
+                    or "Microsoft.Data.Sqlite.SqliteTransaction" =>
+                    typeof(Microsoft.Data.Sqlite.SqliteConnection).Assembly
+                        .GetName(),
+                _ => null,
+            };
+
+            return trustedAssembly is not null
+                && IsExactFrameworkType(
+                    type,
+                    typeName,
+                    trustedAssembly);
+        }
+
         private static IMethodSymbol MostDerivedCleanupOverride(
             INamedTypeSymbol concrete,
             IMethodSymbol implementation,
@@ -28313,6 +28365,7 @@ internal static class HostedGrimoireProducerInventory
                         TypeKind: TypeKind.Class,
                         IsSealed: false,
                     } openStaticType
+                    && !IsTrustedCleanupDispatchBase(openStaticType)
                     && exactCandidates.Any(candidate => !SameBoundType(
                         candidate.Type,
                         member.Model.Compilation,
@@ -31869,18 +31922,6 @@ internal static class HostedGrimoireProducerInventory
                 || AdmissionReceiver(member, call) is not { } receiver)
             {
                 return ResolveInvocationTarget(method, member, call);
-            }
-
-            AuthoredMember? exactReceiverTarget = ResolveInvocationTarget(
-                method,
-                member,
-                call);
-
-            if (exactReceiverTarget is not null
-                && exactReceiverTarget.Symbol.ContainingType.TypeKind
-                    != TypeKind.Interface)
-            {
-                return exactReceiverTarget;
             }
 
             CleanupProvenance receiverProvenance = CleanupProvenanceOf(
