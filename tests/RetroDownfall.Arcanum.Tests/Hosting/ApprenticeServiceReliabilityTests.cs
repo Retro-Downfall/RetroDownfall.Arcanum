@@ -24,6 +24,39 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 public sealed class ApprenticeServiceReliabilityTests
 {
     [Fact]
+    public async Task ReweaveAsync_MaterializesPlanBeforeValidationIndexesIt()
+    {
+        Apprentice apprentice = TestApprentice(Guid.NewGuid());
+
+        apprentice.Status = ApprenticeStatus.Paused.ToString();
+
+        InMemoryApprenticeRepository repository = new(apprentice);
+
+        ApprenticeService service = CreateService(
+            repository,
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>());
+
+        IndexerRejectingPlanSteps steps = new(
+        [
+            new PlanStep { Description = "Use the stable plan snapshot." },
+        ]);
+
+        Result<ApprenticeDetailDto> result = await service.ReweaveAsync(
+            apprentice.Id,
+            steps,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(
+            "Use the stable plan snapshot.",
+            ApprenticeRepository.DeserializePlan(repository.Get(apprentice.Id).Plan)
+                .Single()
+                .Description);
+    }
+
+    [Fact]
     public async Task ExecuteStepStream_StructuredToolDenial_FailsRegardlessOfWording()
     {
         Guid apprenticeId = Guid.NewGuid();
@@ -4662,6 +4695,20 @@ public sealed class ApprenticeServiceReliabilityTests
         {
             throw new NotImplementedException();
         }
+    }
+
+    private sealed class IndexerRejectingPlanSteps(
+        IReadOnlyList<PlanStep> steps) : IReadOnlyList<PlanStep>
+    {
+        public int Count => steps.Count;
+
+        public PlanStep this[int index] => throw new InvalidOperationException(
+            "An authored IReadOnlyList indexer must not run past the service boundary.");
+
+        public IEnumerator<PlanStep> GetEnumerator() => steps.GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
     }
 
     private sealed class CancellationSensitiveRepository(params Apprentice[] apprentices)
