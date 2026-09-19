@@ -791,7 +791,9 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         Assert.True(
             settled.State is LongRunningOperationState.Completed
                 or LongRunningOperationState.Failed
-                or LongRunningOperationState.Abandoned);
+                or LongRunningOperationState.Abandoned,
+            $"Expected the launch-gap operation to be terminal, but it remained {settled.State} "
+                + $"at revision {settled.Revision} with owner '{settled.LeaseOwner}'.");
 
         Assert.True(provider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
 

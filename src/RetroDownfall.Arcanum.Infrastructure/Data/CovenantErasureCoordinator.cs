@@ -3983,15 +3983,20 @@ internal sealed class CovenantErasureCoordinator(
         // A parked transition keeps its journal. It is the only durable statement of where this
         // erasure stopped, and retiring it to tidy up would discard the evidence the next process
         // needs to decide whether the effects behind it happened.
-        // A null session means the transition never opened a journal, because nothing durable had
-        // happened yet when it stopped. There is no progress to record and nothing to retire.
+        // A null session means the transition never opened a journal, because no storage effect had
+        // happened yet when it stopped. There is no phase progress to record and nothing to retire,
+        // but a rollback still has to terminalize its exact adopted launch row before admission opens.
         Result<ReconciliationSuffix> suffix;
 
         try
         {
 
             suffix = phases is null
-                ? Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal)
+                ? await ReconcileBeforeFirstJournalAsync(
+                    operation,
+                    ownerId,
+                    disposition,
+                    lifecycle.Token).ConfigureAwait(false)
                 : disposition is CovenantExclusiveLeaseDisposition.KeepClosed
                     ? Parked(await phases.ParkAsync(lifecycle.Token).ConfigureAwait(false))
                     : await ReconcileBeforeDispositionAsync(phases, disposition, closure, lifecycle.Token)
@@ -4226,6 +4231,93 @@ internal sealed class CovenantErasureCoordinator(
                 blockingErrorCode));
 
     }
+
+    /// <summary>
+    /// Records the only terminal answer available before the first transition journal exists.
+    /// </summary>
+    /// <remarks>
+    /// A quiesce refusal proves no effect was attempted, so rollback may reopen only after the exact
+    /// adopted launch row records that pre-effect failure. There is no journal to carry a launch
+    /// binding through the ordinary reconciliation suffix yet; the adopted row and its lease owner
+    /// are therefore the compare-exchange boundary. A kept-closed result remains nonterminal for the
+    /// next recovery attempt, and a commit without a journal is structurally impossible.
+    /// </remarks>
+    private async Task<Result<ReconciliationSuffix>> ReconcileBeforeFirstJournalAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        CovenantExclusiveLeaseDisposition disposition,
+        CancellationToken cancellationToken)
+    {
+
+        if (disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
+        {
+
+            return Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal);
+
+        }
+
+        if (disposition is not CovenantExclusiveLeaseDisposition.RollbackAndReopen
+            || string.IsNullOrWhiteSpace(ownerId)
+            || !string.Equals(operation.LeaseOwner, ownerId, StringComparison.Ordinal))
+        {
+
+            return Result<ReconciliationSuffix>.Failure(MaintenanceFailure());
+
+        }
+
+        bool transitioned = await _store.TryTransitionAsync(
+            operation.Id,
+            operation.Revision,
+            ownerId,
+            LongRunningOperationState.Failed,
+            _timeProvider.GetUtcNow(),
+            GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!transitioned)
+        {
+
+            return Result<ReconciliationSuffix>.Failure(MaintenanceFailure());
+
+        }
+
+        LongRunningOperation? settled = await _store
+            .GetAsync(operation.Id, cancellationToken)
+            .ConfigureAwait(false);
+
+        return settled is not null
+            && DescribesSameLaunch(operation, settled)
+            && settled.State is LongRunningOperationState.Failed
+            && settled.Revision == operation.Revision + 1
+            && settled.CompletedAt is not null
+            && settled.LeaseOwner is null
+            && settled.LeaseExpiresAt is null
+            && string.Equals(
+                settled.TerminalErrorCode,
+                GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode,
+                StringComparison.Ordinal)
+                ? Result<ReconciliationSuffix>.Success(ReconciliationSuffix.NoJournal)
+                : Result<ReconciliationSuffix>.Failure(MaintenanceFailure());
+
+    }
+
+    private static bool DescribesSameLaunch(
+        LongRunningOperation expected,
+        LongRunningOperation actual) =>
+        actual.Id == expected.Id
+        && string.Equals(actual.Kind, expected.Kind, StringComparison.Ordinal)
+        && actual.RecoveryPolicy == expected.RecoveryPolicy
+        && actual.CheckpointVersion == expected.CheckpointVersion
+        && string.Equals(
+            actual.CheckpointReference,
+            expected.CheckpointReference,
+            StringComparison.Ordinal)
+        && NullableSequenceEqual(actual.CheckpointPayload, expected.CheckpointPayload);
+
+    private static bool NullableSequenceEqual(byte[]? left, byte[]? right) =>
+        left is null
+            ? right is null
+            : right is not null && left.AsSpan().SequenceEqual(right);
 
     /// <summary>
     /// Publishes the reconciliation suffix up to the point the one disposition may be spent.

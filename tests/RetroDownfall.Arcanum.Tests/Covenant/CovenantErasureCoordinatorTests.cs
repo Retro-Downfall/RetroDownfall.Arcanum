@@ -1411,11 +1411,14 @@ public sealed class CovenantErasureCoordinatorTests
 
     }
 
-    [Fact]
-    public async Task A_quiesce_failure_before_any_erasure_rolls_back_and_reopens()
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task A_quiesce_failure_before_any_erasure_rolls_back_and_reopens(
+        CovenantExclusiveOperation operation)
     {
 
-        CoordinatorHarness harness = new();
+        CoordinatorHarness harness = new(operation);
 
         harness.DisclosureWriter.QuiesceFails = true;
 
@@ -1438,7 +1441,91 @@ public sealed class CovenantErasureCoordinatorTests
 
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
+        LongRunningOperation settled = Assert.IsType<LongRunningOperation>(
+            await harness.Store.GetAsync(OperationId));
+
+        Assert.Equal(LongRunningOperationState.Failed, settled.State);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode,
+            settled.TerminalErrorCode);
+
         Assert.True(await harness.AdmissionIsOpenAsync());
+
+    }
+
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task A_pre_journal_terminal_write_refusal_keeps_admission_closed(
+        CovenantExclusiveOperation operation)
+    {
+
+        CoordinatorHarness harness = new(operation);
+
+        harness.DisclosureWriter.QuiesceFails = true;
+
+        harness.Store.TryTransitionOverride = static _ => false;
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, completion.Error.Code);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+        LongRunningOperation unsettled = Assert.IsType<LongRunningOperation>(
+            await harness.Store.GetAsync(OperationId));
+
+        Assert.Equal(LongRunningOperationState.Running, unsettled.State);
+
+    }
+
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task A_lost_pre_journal_terminal_write_does_not_trust_a_matching_reread(
+        CovenantExclusiveOperation operation)
+    {
+
+        CoordinatorHarness harness = new(operation);
+
+        harness.DisclosureWriter.QuiesceFails = true;
+
+        harness.Store.TryTransitionOverride = observed =>
+        {
+
+            harness.Store.GetOverride = current => current is null
+                ? null
+                : current with
+                {
+                    State = LongRunningOperationState.Failed,
+                    CompletedAt = DateTimeOffset.UnixEpoch.AddHours(1),
+                    LeaseOwner = null,
+                    LeaseExpiresAt = null,
+                    TerminalErrorCode =
+                        GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode,
+                    Revision = current.Revision + 1,
+                };
+
+            return false;
+
+        };
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(
+            CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, completion.Error.Code);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+        Assert.Equal(
+            LongRunningOperationState.Running,
+            Assert.Single(harness.Store.Operations).State);
 
     }
 
