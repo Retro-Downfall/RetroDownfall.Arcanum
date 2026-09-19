@@ -12,6 +12,8 @@ using Microsoft.Extensions.Hosting;
 
 using RetroDownfall.Arcanum.Api;
 
+using RetroDownfall.Arcanum.Tests.Collections;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -22,6 +24,7 @@ using Xunit.Abstractions;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
+[Collection(HostedProducerAnalysisCollection.Name)]
 public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper output)
 {
     private static string R2Source(string body, string extra = "") => RegistrationSource("services.AddHostedService<Worker>();").Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal) + AdmissionTypes + extra;
