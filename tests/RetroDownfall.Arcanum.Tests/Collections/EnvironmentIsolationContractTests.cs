@@ -773,6 +773,10 @@ public sealed class EnvironmentIsolationContractTests
             .Select(OutermostDeclaring)
             // The factory's own lambdas capture it; the fixture itself is not a test class.
             .Where(static type => type != typeof(ArcanumWebApplicationFactory))
+            // Helpers can hold the factory, but xUnit collection attributes only serialize tests.
+            // The transitive environment-mutation scan above closes through those helpers and
+            // verifies every test class that calls them.
+            .Where(IsTestClass)
             .Distinct()
             .OrderBy(static type => type.FullName, StringComparer.Ordinal)
             .ToArray();
