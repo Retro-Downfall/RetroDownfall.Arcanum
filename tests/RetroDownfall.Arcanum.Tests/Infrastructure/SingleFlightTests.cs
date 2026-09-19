@@ -17,15 +17,16 @@ public sealed class SingleFlightTests
 
         int invocations = 0;
 
-        Barrier barrier = new(concurrency);
+        int joined = 0;
+
+        TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         Task<int>[] tasks = Enumerable.Range(0, concurrency)
             .Select(_ => Task.Run(async () =>
             {
 
-                barrier.SignalAndWait();
-
-                return await SingleFlight.CoalesceAsync(
+                Task<int> flight = SingleFlight.CoalesceAsync(
                     inFlight,
                     "shared-key",
                     async () =>
@@ -33,11 +34,20 @@ public sealed class SingleFlightTests
 
                         Interlocked.Increment(ref invocations);
 
-                        await Task.Delay(50);
+                        await release.Task;
 
                         return 42;
 
                     });
+
+                if (Interlocked.Increment(ref joined) == concurrency)
+                {
+
+                    release.SetResult();
+
+                }
+
+                return await flight;
 
             }))
             .ToArray();
