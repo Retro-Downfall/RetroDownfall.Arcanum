@@ -31,12 +31,18 @@ class CoverageWorkflowTests(unittest.TestCase):
         executable = self.root / "dotnet"
         executable.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, os, pathlib, sys, xml.etree.ElementTree as ET\n"
+            "import json, os, pathlib, select, sys, xml.etree.ElementTree as ET\n"
             "args = sys.argv[1:]\n"
             "with open(os.environ['CALL_LOG'], 'a') as log:\n"
             "    log.write(json.dumps(args) + '\\n')\n"
             "if args[0] == 'test':\n"
             "    covered = any(a.startswith('--collect:') for a in args)\n"
+            "    if covered and os.environ.get('PROBE_RUNTIME_STDIN'):\n"
+            "        tty = os.isatty(0)\n"
+            "        ready, _, _ = select.select([0], [], [], 1)\n"
+            "        eof = bool(ready) and os.read(0, 1) == b''\n"
+            "        print(f'runtime stdin: tty={tty} eof={eof}')\n"
+            "        if tty or not eof: sys.exit(82)\n"
             "    listing = '--list-tests' in args\n"
             "    if listing:\n"
             "        print('The following Tests are available:')\n"
@@ -126,6 +132,31 @@ class CoverageWorkflowTests(unittest.TestCase):
         result, calls = self.run_gate("--threshold", ANALYSIS_EXIT="17")
         self.assertEqual(17, result.returncode)
         self.assertEqual(5, len(calls))
+
+    @unittest.skipUnless(os.name == "posix", "requires a POSIX PTY")
+    def test_runtime_stdin_is_redirected_and_eof_when_parent_has_pty(self):
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        result = subprocess.run(
+            [
+                "bash", "-c",
+                'test -t 0 || exit 81; exec bash "$1" --feature',
+                "coverage-pty-test", str(self.root / "scripts/coverage.sh"),
+            ],
+            stdin=slave,
+            env=dict(self.environment, PROBE_RUNTIME_STDIN="1"),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("runtime stdin: tty=False eof=True", result.stdout)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        runtime = [call for call in calls if call[0] == "test"]
+        self.assertEqual(1, len(runtime))
+        self.assertIn("Category!=Perf&Category!=HostedProducerAnalysis", runtime[0])
+        self.assertIn("--collect:XPlat Code Coverage", runtime[0])
 
     def test_skipped_analysis_fails_delivery(self):
         result, calls = self.run_gate("--threshold", SKIP_ANALYSIS="1")

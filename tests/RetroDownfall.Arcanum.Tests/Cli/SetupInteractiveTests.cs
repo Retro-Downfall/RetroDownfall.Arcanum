@@ -191,7 +191,11 @@ public sealed class SetupInteractiveTests : IDisposable
 
         ServiceCollection services = CreateServices(world);
 
-        services.AddSingleton<ISetupPrompt, ConsoleSetupPrompt>();
+        services.AddSingleton<ISetupPrompt>(provider => new ConsoleSetupPrompt(
+            provider.GetRequiredService<IConsoleDispatcher>(),
+            provider.GetRequiredService<ICliInvocationContext>(),
+            new RejectTerminalSecretPrompt(),
+            inputRedirected: static () => true));
 
         CliTestResult result = await CliTestHarness.RunAsync(
             services,
@@ -203,7 +207,7 @@ public sealed class SetupInteractiveTests : IDisposable
 
         using JsonDocument document = JsonDocument.Parse(result.Output);
 
-        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+        Assert.True(result.ExitCode == (int)CliExitCode.Success, result.Error);
 
         Assert.True(document.RootElement.GetProperty("committed").GetBoolean());
 
@@ -291,10 +295,46 @@ public sealed class SetupInteractiveTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task A_redirected_credential_uses_scripted_input_under_json_without_reading_terminal_keys()
+    {
+        TextReader priorInput = Console.In;
+
+        Console.SetIn(new StringReader("scripted-provider-key\n"));
+
+        try
+        {
+            ConsoleSetupPrompt prompt = new(
+                new ConsoleDispatcher(new CliInvocationContext()),
+                new JsonInvocationContext(),
+                new RejectTerminalSecretPrompt(),
+                inputRedirected: static () => true);
+
+            string? secret = await prompt.AskSecretAsync(
+                "Provider API key (input is hidden)",
+                CancellationToken.None);
+
+            Assert.Equal("scripted-provider-key", secret);
+        }
+        finally
+        {
+            Console.SetIn(priorInput);
+        }
+    }
+
     private sealed class JsonInvocationContext : ICliInvocationContext
     {
         public CliInvocationOptions Options { get; } =
             new(Json: true, Plain: false, Yes: false);
+    }
+
+    private sealed class RejectTerminalSecretPrompt : IBackupPassphrasePrompt
+    {
+        public ValueTask<char[]> ReadHiddenAsync(
+            string prompt,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "Scripted setup input must not read terminal keys.");
     }
 
     private sealed class RecordingSecretPrompt(string secret) : IBackupPassphrasePrompt

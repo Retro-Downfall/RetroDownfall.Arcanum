@@ -54,11 +54,12 @@ dotnet tool restore >/dev/null
 # Category=Perf is the manual wall-clock baseline harness (Tests/Performance): its
 # assertions are machine-load sensitive and would fail the gate for reasons unrelated
 # to any code change, especially under coverlet instrumentation on a loaded runner.
+# Runtime tests must see redirected EOF even when this runner inherits a terminal.
 dotnet test "$TEST_PROJECT" \
   --collect:"XPlat Code Coverage" \
   --settings "$RUNSETTINGS" \
   --filter "Category!=Perf&Category!=HostedProducerAnalysis" \
-  --results-directory "$OUT_DIR"
+  --results-directory "$OUT_DIR" </dev/null
 
 COBERTURA="$(find "$OUT_DIR" -name 'coverage.cobertura.xml' | head -n 1)"
 
