@@ -42,6 +42,8 @@ public sealed class ArcanumWebApplicationFactoryTests
 
             Guid markerId;
 
+            Guid databaseIdentityBeforeRestart;
+
             string installationIdentityAccount;
 
             byte[] installationIdentityBytes = [];
@@ -84,6 +86,8 @@ public sealed class ArcanumWebApplicationFactoryTests
                         .ReadAsync(CancellationToken.None);
 
                     Assert.True(databaseIdentity.IsSuccess, databaseIdentity.Error.Message);
+
+                    databaseIdentityBeforeRestart = databaseIdentity.Value;
 
                     string grimoireDirectory = Path.Combine(tempHome, ".config", "arcanum");
 
@@ -148,9 +152,11 @@ public sealed class ArcanumWebApplicationFactoryTests
 
                     Assert.Equal(catalogBytes, await File.ReadAllBytesAsync(databasePath));
 
-                    using IServiceScope secondScope = secondFactory.Services.CreateScope();
+                    Assert.Equal(sidecarBytes, await File.ReadAllBytesAsync(sidecarPath));
 
-                    Assert.Equal(catalogBytes, await File.ReadAllBytesAsync(databasePath));
+                    // Starting the host opens writable SQLite handles. Compare files only while
+                    // quiescent; verify the live restart through durable data and identity below.
+                    using IServiceScope secondScope = secondFactory.Services.CreateScope();
 
                     Assert.Same(
                         profile.CredentialStore,
@@ -164,6 +170,16 @@ public sealed class ArcanumWebApplicationFactoryTests
                         profile.CredentialStore,
                         installationIdentityAccount,
                         installationIdentityBytes);
+
+                    Result<Guid> retainedDatabaseIdentity = await secondScope.ServiceProvider
+                        .GetRequiredService<IInstallationResetDatabaseIdentityReader>()
+                        .ReadAsync(CancellationToken.None);
+
+                    Assert.True(retainedDatabaseIdentity.IsSuccess, retainedDatabaseIdentity.Error.Message);
+
+                    Assert.True(
+                        databaseIdentityBeforeRestart == retainedDatabaseIdentity.Value,
+                        "The database installation identity changed across the host restart.");
 
                     ISessionRepository sessions = secondScope.ServiceProvider
                         .GetRequiredService<ISessionRepository>();
