@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection(RetroDownfall.Arcanum.Tests.Collections.HostedProducerAnalysisCollection.Name)]
 public sealed class ArcanumAuthenticatedHttpSenderTests
 {
     private static readonly HashSet<string> HttpTransportMethods = new(StringComparer.Ordinal)
@@ -538,6 +539,8 @@ public sealed class ArcanumAuthenticatedHttpSenderTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Every_cli_http_send_uses_the_authenticated_sender_or_an_exact_narrow_allowance()
     {
         CSharpCompilation compilation = CliCompilation();
@@ -566,6 +569,8 @@ public sealed class ArcanumAuthenticatedHttpSenderTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Every_cli_http_client_construction_belongs_to_the_closed_transport_composition()
     {
         CSharpCompilation compilation = CliCompilation();
@@ -599,6 +604,8 @@ public sealed class ArcanumAuthenticatedHttpSenderTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Semantic_transport_inventory_recognizes_real_static_conditional_and_method_group_sends()
     {
         CSharpCompilation compilation = CompileTransportFixture(
@@ -646,6 +653,8 @@ public sealed class ArcanumAuthenticatedHttpSenderTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Semantic_transport_inventory_ignores_spelling_shadows()
     {
         CSharpCompilation compilation = CompileTransportFixture(
@@ -706,6 +715,8 @@ public sealed class ArcanumAuthenticatedHttpSenderTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Semantic_client_inventory_recognizes_named_factory_method_groups_and_target_typed_new()
     {
         CSharpCompilation compilation = CompileTransportFixture(

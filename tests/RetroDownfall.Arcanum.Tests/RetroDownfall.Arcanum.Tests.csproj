@@ -79,6 +79,8 @@
 
   <ItemGroup>
 
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+
     <Content Include="TestData\**\*">
 
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

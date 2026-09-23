@@ -1059,6 +1059,13 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         GrimoireMaintenanceAdmissionHarness? unexpected = null;
 
+        InvalidOperationException? refusal = null;
+
+        bool expectsTerminalSuffixInvocation = mutation is not (
+            "corrupt-journal"
+            or "terminal-nonfinal-phase"
+            or "terminal-inflight-phase");
+
         Task<GrimoireMaintenanceAdmissionHarness> starting = Task.Factory.StartNew(
             () => GrimoireMaintenanceAdmissionHarness.StartRecoveryAsync(profile, adoption, startup),
             CancellationToken.None,
@@ -1067,19 +1074,38 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         try
         {
-            Task firstBoundary = await Task.WhenAny(starting, startup.TerminalSuffixReached)
-                .WaitAsync(timeout.Token);
-
-            if (ReferenceEquals(firstBoundary, startup.TerminalSuffixReached))
+            if (expectsTerminalSuffixInvocation)
             {
-                startup.ReleaseTerminalSuffix();
+                Task invocationBoundary = await Task.WhenAny(
+                    starting,
+                    startup.TerminalSuffixInvoked).WaitAsync(timeout.Token);
+
+                if (ReferenceEquals(invocationBoundary, starting))
+                {
+                    unexpected = await starting.WaitAsync(timeout.Token);
+                }
             }
 
-            unexpected = await starting.WaitAsync(timeout.Token);
-        }
-        catch (InvalidOperationException)
-        {
-            // Exact refusal is surfaced by hosted-service startup failure.
+            try
+            {
+                if (unexpected is null)
+                {
+                    Task firstBoundary = await Task.WhenAny(
+                        starting,
+                        startup.TerminalSuffixReached).WaitAsync(timeout.Token);
+
+                    if (ReferenceEquals(firstBoundary, startup.TerminalSuffixReached))
+                    {
+                        startup.ReleaseTerminalSuffix();
+                    }
+
+                    unexpected = await starting.WaitAsync(timeout.Token);
+                }
+            }
+            catch (InvalidOperationException failure)
+            {
+                refusal = failure;
+            }
         }
         finally
         {
@@ -1102,15 +1128,26 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             Assert.Fail($"The {mutation} terminal candidate unexpectedly reached readiness.");
         }
 
+        Assert.NotNull(refusal);
+
+        Assert.Contains(
+            expectsTerminalSuffixInvocation
+                ? "An offline Grimoire transition is active. Resume it before starting the host."
+                : "Installation reset recovery state could not be read safely.",
+            refusal.ToString(),
+            StringComparison.Ordinal);
+
         Assert.False(startup.Readiness.IsReady);
 
         Assert.False(startup.FinalHostedServiceStarted.IsCompleted);
 
         Assert.Equal(
-            mutation is "corrupt-journal" or "terminal-nonfinal-phase" or "terminal-inflight-phase"
-                ? 0
-                : 1,
+            expectsTerminalSuffixInvocation ? 1 : 0,
             Volatile.Read(ref startup.TerminalSuffixCalls));
+
+        Assert.Equal(
+            expectsTerminalSuffixInvocation,
+            startup.TerminalSuffixInvoked.IsCompletedSuccessfully);
 
         Assert.Equal(0, adoption.Calls);
 
@@ -1578,26 +1615,59 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         GrimoireOfflineTransitionJournalPublication current = Assert.IsType<
             GrimoireOfflineTransitionJournalPublication>(recovered.Publication);
 
-        JsonNode payload = Assert.IsAssignableFrom<JsonNode>(JsonNode.Parse(current.PayloadBytes));
+        byte[] nextPayload;
 
         if (mutation is "launch-binding-digest-drift")
         {
-            payload["binding"]!["databaseOperationLaunchBindingDigest"]!["bytes"] =
-                Convert.ToBase64String(Enumerable.Repeat((byte)0xA6, 32).ToArray());
-        }
-        else if (mutation is "terminal-nonfinal-phase")
-        {
-            payload["lastCompletedPhase"] = nameof(CovenantResetPhase.FinalWalTruncated);
+            Result<GrimoireOfflineTransitionDecodedPayload> decoded =
+                GrimoireOfflineTransitionHandlerRegistry.Production.DecodeAuthenticated(
+                    current.Envelope.Kind,
+                    current.Envelope.PayloadVersion,
+                    current.PayloadBytes,
+                    current.Envelope.OperationId,
+                    current.Envelope.SlotEpoch);
+
+            Assert.True(decoded.IsSuccess, decoded.IsFailure ? decoded.Error.Message : null);
+
+            CovenantResetOfflineTransitionPayloadV1 payload = Assert.IsType<
+                CovenantResetOfflineTransitionPayloadV1>(decoded.Value.Payload);
+
+            CovenantResetOfflineTransitionPayloadV1 drifted = payload with
+            {
+                Binding = payload.Binding with
+                {
+                    DatabaseOperationLaunchBindingDigest = new CovenantDigest(
+                        Enumerable.Repeat((byte)0xA6, 32).ToArray()),
+                },
+            };
+
+            Result<byte[]> encoded = GrimoireOfflineTransitionHandlerRegistry.Production
+                .Encode(drifted);
+
+            Assert.True(encoded.IsSuccess, encoded.IsFailure ? encoded.Error.Message : null);
+
+            nextPayload = encoded.Value;
         }
         else
         {
-            payload["inFlightPhase"] = nameof(CovenantResetPhase.ReopenedVerified);
+            JsonNode payload = Assert.IsAssignableFrom<JsonNode>(JsonNode.Parse(current.PayloadBytes));
+
+            if (mutation is "terminal-nonfinal-phase")
+            {
+                payload["lastCompletedPhase"] = nameof(CovenantResetPhase.FinalWalTruncated);
+            }
+            else
+            {
+                payload["inFlightPhase"] = nameof(CovenantResetPhase.ReopenedVerified);
+            }
+
+            nextPayload = Encoding.UTF8.GetBytes(payload.ToJsonString());
         }
 
         Result<GrimoireOfflineTransitionJournalPublication> advanced = await store.AdvanceAsync(
             held,
             current,
-            Encoding.UTF8.GetBytes(payload.ToJsonString()),
+            nextPayload,
             cancellationToken);
 
         Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);

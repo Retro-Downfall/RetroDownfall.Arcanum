@@ -951,6 +951,9 @@ internal sealed class RecoveryHostStartupObservation
     private readonly TaskCompletionSource<GrimoireMaintenanceAdmissionHarness> _harnessCreated =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    private readonly TaskCompletionSource _terminalSuffixInvoked =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly TaskCompletionSource<GrimoireOfflineTransitionTerminalSuffixBoundary>
         _terminalSuffixReached = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -996,6 +999,8 @@ internal sealed class RecoveryHostStartupObservation
     internal Task FinalHostedServiceStarted => _finalHostedServiceStarted.Task;
 
     internal Task<GrimoireMaintenanceAdmissionHarness> HarnessCreated => _harnessCreated.Task;
+
+    internal Task TerminalSuffixInvoked => _terminalSuffixInvoked.Task;
 
     internal Task<GrimoireOfflineTransitionTerminalSuffixBoundary> TerminalSuffixReached =>
         _terminalSuffixReached.Task;
@@ -1057,6 +1062,13 @@ internal sealed class RecoveryHostStartupObservation
 
     internal void ObserveHarness(GrimoireMaintenanceAdmissionHarness harness) =>
         _harnessCreated.TrySetResult(harness);
+
+    internal void ObserveTerminalSuffixInvocation()
+    {
+        _ = Interlocked.Increment(ref TerminalSuffixCalls);
+
+        _ = _terminalSuffixInvoked.TrySetResult();
+    }
 
     internal async Task<Result> ObserveTerminalSuffixAsync(
         GrimoireOfflineTransitionTerminalSuffixBoundary boundary,
@@ -1178,7 +1190,7 @@ internal sealed class ObservingTerminalSuffixFinisher(
         GrimoireOfflineTransitionRecoveryEvidence evidence,
         CancellationToken cancellationToken)
     {
-        _ = Interlocked.Increment(ref observation.TerminalSuffixCalls);
+        observation.ObserveTerminalSuffixInvocation();
 
         return inner.FinishAsync(
             heldInstallationLock,

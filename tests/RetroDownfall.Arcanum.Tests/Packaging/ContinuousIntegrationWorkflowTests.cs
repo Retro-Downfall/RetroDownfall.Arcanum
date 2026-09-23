@@ -15,6 +15,100 @@ public sealed class ContinuousIntegrationWorkflowTests
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
 
     [Fact]
+    public void Macos_source_analysis_limits_concurrent_processes_to_the_runner_memory_budget()
+    {
+        WorkflowJob lane = Assert.Single(
+            ContinuousIntegrationJobs(FindRepositoryRoot()),
+            static job => job.Id == "build-test");
+
+        Assert.Contains("ARCANUM_ANALYSIS_JOBS: \"2\"", lane.Body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("windows-suite", "x64")]
+    [InlineData("windows-arm64-suite", "arm64")]
+    public void Windows_source_analysis_is_a_bounded_native_gate_with_retained_progress(
+        string jobId,
+        string architecture)
+    {
+        WorkflowJob lane = Assert.Single(
+            ContinuousIntegrationJobs(FindRepositoryRoot()),
+            job => job.Id == jobId);
+
+        string[] steps = lane.Body
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
+
+        string python = Assert.Single(
+            steps,
+            static step => step.Contains("uses: actions/setup-python@", StringComparison.Ordinal));
+
+        Assert.Contains("python-version: \"3.13\"", python, StringComparison.Ordinal);
+
+        Assert.Contains($"architecture: \"{architecture}\"", python, StringComparison.Ordinal);
+
+        string runtime = Assert.Single(
+            steps,
+            static step => step.StartsWith(" Test Arcanum\n", StringComparison.Ordinal));
+
+        Assert.Contains(
+            "--filter \"Category!=Perf&Category!=HostedProducerAnalysis\"",
+            runtime,
+            StringComparison.Ordinal);
+
+        string runnerTests = Assert.Single(
+            steps,
+            static step => step.Contains(
+                "python -m unittest scripts/hosted_producer_analysis_runner_test.py",
+                StringComparison.Ordinal));
+
+        string analysis = Assert.Single(
+            steps,
+            static step => step.Contains(
+                "python scripts/hosted_producer_analysis_runner.py",
+                StringComparison.Ordinal));
+
+        Assert.Contains("timeout-minutes: 30", analysis, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("continue-on-error:", analysis, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("\n        if:", analysis, StringComparison.Ordinal);
+
+        Assert.Contains("--configuration Release", analysis, StringComparison.Ordinal);
+
+        Assert.Contains("--jobs 4", analysis, StringComparison.Ordinal);
+
+        Assert.Contains("--timeout-seconds 1740", analysis, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "--project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj",
+            analysis,
+            StringComparison.Ordinal);
+
+        Assert.Contains("--results-directory .tmp/coverage/analysis", analysis, StringComparison.Ordinal);
+
+        Assert.Contains("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", analysis, StringComparison.Ordinal);
+
+        Assert.Contains("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", runnerTests, StringComparison.Ordinal);
+
+        Assert.True(Array.IndexOf(steps, python) < Array.IndexOf(steps, runnerTests));
+
+        Assert.True(Array.IndexOf(steps, runnerTests) < Array.IndexOf(steps, analysis));
+
+        string artifact = Assert.Single(
+            steps,
+            step => step.Contains($"name: hosted-producer-analysis-win-{architecture}", StringComparison.Ordinal));
+
+        Assert.Contains("uses: actions/upload-artifact@", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("if: always()", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("path: .tmp/coverage/analysis/", artifact, StringComparison.Ordinal);
+
+        Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, analysis));
+    }
+
+    [Fact]
     public void Unconditional_macos_aot_lane_builds_and_executes_the_dedicated_admission_smoke()
     {
         WorkflowJob[] matching = ContinuousIntegrationJobs(FindRepositoryRoot())

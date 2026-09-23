@@ -1,13 +1,25 @@
+using System.Threading.Channels;
+
 using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
+
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Operations;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Telemetry;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -199,18 +211,20 @@ public sealed class SubagentRunnerTests
 
         await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // Push the child well past the 15-minute lease ceiling one simulated minute at a time,
-        // giving each renewal a chance to arm its next delay.
-        Assert.True(
-            await WaitForAsync(
-                () =>
-                {
-                    time.Advance(TimeSpan.FromMinutes(1));
+        // Advance only an armed delay. Each next timer proves the previous heartbeat completed;
+        // advancing time inside a polling predicate races the asynchronous renewal continuation.
+        for (int renewal = 0; renewal < 4; renewal++)
+        {
+            Assert.Equal(TimeSpan.FromMinutes(5), await time.NextTimerAsync());
 
-                    return operations.HeartbeatCalls >= 3;
-                },
-                TimeSpan.FromSeconds(10)),
-            $"expected at least three lease renewals, saw {operations.HeartbeatCalls}");
+            time.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        Assert.Equal(TimeSpan.FromMinutes(5), await time.NextTimerAsync());
+
+        Assert.Equal(4, operations.HeartbeatCalls);
+
+        Assert.Equal(DateTimeOffset.UnixEpoch.AddMinutes(20), time.GetUtcNow());
 
         childGate.SetResult();
 
@@ -270,16 +284,9 @@ public sealed class SubagentRunnerTests
 
         await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.True(
-            await WaitForAsync(
-                () =>
-                {
-                    time.Advance(TimeSpan.FromMinutes(1));
+        time.Advance(await time.NextTimerAsync());
 
-                    return operations.HeartbeatAttempts >= 1;
-                },
-                TimeSpan.FromSeconds(10)),
-            "expected the renewal loop to attempt at least one heartbeat");
+        await operations.HeartbeatAttempted.WaitAsync(TimeSpan.FromSeconds(10));
 
         childGate.SetResult();
 
@@ -343,16 +350,9 @@ public sealed class SubagentRunnerTests
 
         await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.True(
-            await WaitForAsync(
-                () =>
-                {
-                    time.Advance(TimeSpan.FromMinutes(1));
+        time.Advance(await time.NextTimerAsync());
 
-                    return operations.HeartbeatAttempts >= 1;
-                },
-                TimeSpan.FromSeconds(10)),
-            "expected the renewal loop to attempt at least one heartbeat");
+        await operations.HeartbeatAttempted.WaitAsync(TimeSpan.FromSeconds(10));
 
         await cancellation.CancelAsync();
 
@@ -396,23 +396,6 @@ public sealed class SubagentRunnerTests
         Assert.Equal(1, operations.CompleteCalls);
         Assert.Equal(1, operations.FailCalls);
         Assert.Equal(SubagentFailureCodes.ChildFailed, operations.FailureCode);
-    }
-
-    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow.Add(timeout);
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return true;
-            }
-
-            await Task.Delay(10);
-        }
-
-        return condition();
     }
 
     private sealed class CapturingTurnFacade(
@@ -477,7 +460,8 @@ public sealed class SubagentRunnerTests
     {
         private int _heartbeatCalls;
 
-        private int _heartbeatAttempts;
+        private readonly TaskCompletionSource _heartbeatAttempted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public LongRunningOperationCreateRequest? StartRequest { get; private set; }
 
@@ -491,7 +475,7 @@ public sealed class SubagentRunnerTests
 
         public int HeartbeatCalls => Volatile.Read(ref _heartbeatCalls);
 
-        public int HeartbeatAttempts => Volatile.Read(ref _heartbeatAttempts);
+        public Task HeartbeatAttempted => _heartbeatAttempted.Task;
 
         public long? LastCompleteRevision { get; private set; }
 
@@ -612,7 +596,7 @@ public sealed class SubagentRunnerTests
             _ = operationId;
             _ = ownerId;
             cancellationToken.ThrowIfCancellationRequested();
-            Interlocked.Increment(ref _heartbeatAttempts);
+            _heartbeatAttempted.TrySetResult();
 
             if (HeartbeatFailure is not null)
             {
@@ -651,6 +635,8 @@ public sealed class SubagentRunnerTests
 
         private readonly List<ManualTimer> _timers = [];
 
+        private readonly Channel<TimeSpan> _scheduled = Channel.CreateUnbounded<TimeSpan>();
+
         private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
 
         public override DateTimeOffset GetUtcNow()
@@ -674,8 +660,13 @@ public sealed class SubagentRunnerTests
                 _timers.Add(timer);
             }
 
+            _scheduled.Writer.TryWrite(dueTime);
+
             return timer;
         }
+
+        public Task<TimeSpan> NextTimerAsync() =>
+            _scheduled.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
 
         public void Advance(TimeSpan delta)
         {

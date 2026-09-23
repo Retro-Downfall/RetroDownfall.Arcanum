@@ -780,16 +780,13 @@ public sealed class ArcanumApiClientTests
     [Fact]
     public async Task AskAsync_returns_timeout_when_bounded_client_exceeds_deadline()
     {
-        RecordingHandler handler = new(async (_, cancellationToken) =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+        // Only the client's deadline can finish this request. A second success timer can win
+        // when a suspended thread pool resumes with both timers already overdue.
+        TaskCompletionSource<HttpResponseMessage> response = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
-            return CreatePromptResponse(
-                new ApiResponse<PromptResponseDto>(
-                    new PromptResponseDto("late", null),
-                    true,
-                    null));
-        });
+        RecordingHandler handler = new((_, cancellationToken) =>
+            response.Task.WaitAsync(cancellationToken));
 
         ArcanumApiClient client = CreateClient(
             handler,
@@ -798,7 +795,9 @@ public sealed class ArcanumApiClientTests
 
         PingRequest body = new("hello");
 
-        Result<string> result = await client.AskAsync(body, CancellationToken.None);
+        // Preserve the fixture's original five-second bound as a hang guard, not a success path.
+        Result<string> result = await client.AskAsync(body, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(result.IsFailure);
 

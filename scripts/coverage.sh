@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Run the test suite with coverage, render an HTML report, and (optionally)
+# Run runtime coverage and mandatory uninstrumented producer analysis, and (optionally)
 # enforce the tiered coverage gates documented in docs/Arcanum.DESIGN.md section 13.
 #
 # Usage:
 #   scripts/coverage.sh              # collect coverage + write HTML report
 #   scripts/coverage.sh --threshold  # also enforce line/branch/security gates
+#   scripts/coverage.sh --feature    # fast feedback only; not delivery qualification
 #
 # Exit codes:
 #   0  coverage collected (and thresholds met, when --threshold is passed)
@@ -23,9 +24,12 @@ REPORT_DIR="$OUT_DIR/report"
 
 THRESHOLD=0
 
+FEATURE=0
+
 for arg in "$@"; do
   case "$arg" in
     --threshold) THRESHOLD=1 ;;
+    --feature) FEATURE=1 ;;
     -h | --help)
       sed -n '2,12p' "$0"
       exit 0
@@ -53,7 +57,7 @@ dotnet tool restore >/dev/null
 dotnet test "$TEST_PROJECT" \
   --collect:"XPlat Code Coverage" \
   --settings "$RUNSETTINGS" \
-  --filter "Category!=Perf" \
+  --filter "Category!=Perf&Category!=HostedProducerAnalysis" \
   --results-directory "$OUT_DIR"
 
 COBERTURA="$(find "$OUT_DIR" -name 'coverage.cobertura.xml' | head -n 1)"
@@ -88,4 +92,26 @@ if [ "$THRESHOLD" -eq 1 ]; then
     echo "coverage.sh: Python or PowerShell is required to enforce thresholds" >&2
     exit 1
   fi
+fi
+
+# This source analyzer lives in the excluded test assembly and analyzes Roslyn syntax;
+# it does not execute the production graph it proves. Keep its full correctness gate,
+# without coverlet. One serial lane owns the shared production graph while independent
+# fixture methods run in bounded worker processes with live test/root progress logs.
+if [ "$FEATURE" -eq 1 ]; then
+  echo "Feature feedback only: not delivery qualification; producer analysis remains required."
+else
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+    ANALYSIS_PYTHON=python3
+  elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+    ANALYSIS_PYTHON=python
+  else
+    echo "coverage.sh: Python is required for bounded producer analysis" >&2
+    exit 1
+  fi
+
+  "$ANALYSIS_PYTHON" "$ROOT/scripts/hosted_producer_analysis_runner.py" \
+    --dotnet dotnet \
+    --project "$TEST_PROJECT" \
+    --results-directory "$OUT_DIR/analysis"
 fi

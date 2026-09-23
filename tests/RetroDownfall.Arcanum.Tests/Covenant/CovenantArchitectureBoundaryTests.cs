@@ -36,6 +36,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// search port, or a Core type that learned about SQLite would each be a change that compiles, ships,
 /// and quietly removes a guarantee the rest of the tier assumes.
 /// </remarks>
+[Collection(RetroDownfall.Arcanum.Tests.Collections.HostedProducerAnalysisCollection.Name)]
 public sealed class CovenantArchitectureBoundaryTests
 {
     private static readonly Assembly CoreAssembly = typeof(CovenantOperationScope).Assembly;
@@ -43,6 +44,8 @@ public sealed class CovenantArchitectureBoundaryTests
     private static readonly Assembly InfrastructureAssembly = typeof(CovenantOperationGate).Assembly;
 
     [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Owner_evidence_has_exactly_two_path_specific_issuers()
     {
         CSharpCompilation compilation = Assert.Single(
@@ -168,12 +171,8 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.Empty(reachableCreationMembers);
     }
 
-    [Fact]
-    public void Every_effectful_recovery_handler_has_an_exact_admission_classification()
-    {
-        // Required callees are concrete external effects. Typed recovery handoffs are graph edges,
-        // not effects; HostedGrimoireProducerInventoryTests proves those closed graphs separately.
-        RecoveryEffectContract[] contracts =
+    // Shared literal expectations connect the source proof to its covered runtime classifications.
+    private static RecoveryEffectContract[] RecoveryEffectContracts() =>
         [
             new(
                 "RetroDownfall.Arcanum.Api.Intelligence.BatchOperationRecoveryHandler",
@@ -251,6 +250,13 @@ public sealed class CovenantArchitectureBoundaryTests
                 ["RetroDownfall.Arcanum.Infrastructure.A2A.IA2AClientService.CancelRemoteTaskAsync"])
         ];
 
+    [Fact]
+    [Trait("Category", "HostedProducerAnalysis")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void Every_effectful_recovery_handler_has_the_required_source_effects()
+    {
+        RecoveryEffectContract[] contracts = RecoveryEffectContracts();
+
         IReadOnlyList<CSharpCompilation> compilations =
             HostedGrimoireProducerInventory.ProductionCompilations;
 
@@ -321,7 +327,18 @@ public sealed class CovenantArchitectureBoundaryTests
                     missingEffectSites.Add(contract.HandlerType + " -> " + callee);
                 }
             }
+        }
 
+        Assert.True(
+            missingEffectSites.Count == 0,
+            "Required recovery effect sites were not discovered:\n" + string.Join("\n", missingEffectSites));
+    }
+
+    [Fact]
+    public void Every_effectful_recovery_handler_has_an_exact_admission_classification()
+    {
+        foreach (RecoveryEffectContract contract in RecoveryEffectContracts())
+        {
             foreach (int checkpointVersion in contract.ExternalCheckpointVersions)
             {
                 LongRunningRecoveryAdmissionDecision decision =
@@ -346,10 +363,6 @@ public sealed class CovenantArchitectureBoundaryTests
                     decision.Kind);
             }
         }
-
-        Assert.True(
-            missingEffectSites.Count == 0,
-            "Required recovery effect sites were not discovered:\n" + string.Join("\n", missingEffectSites));
 
         Assert.Equal(
             LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,

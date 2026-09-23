@@ -138,7 +138,7 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         IDaemonExecutionMutationGate gate = repository;
 
-        IAsyncDisposable lease = await gate.AcquireExclusiveAsync(
+        await using IAsyncDisposable lease = await gate.AcquireExclusiveAsync(
             CancellationToken.None);
 
         Task<string> start = repository.StartAsync(
@@ -146,8 +146,7 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
             "Daemon Gated",
             CancellationToken.None);
 
-        await Task.Yield();
-
+        // StartAsync runs synchronously up to the held semaphore; no scheduler turn is needed.
         Assert.False(start.IsCompleted);
 
         await lease.DisposeAsync();
@@ -175,7 +174,7 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         IDaemonExecutionMutationGate gate = repository;
 
-        IAsyncDisposable lease = await gate.AcquireExclusiveAsync(
+        await using IAsyncDisposable lease = await gate.AcquireExclusiveAsync(
             CancellationToken.None);
 
         Task<bool> start = repository.TryStartAsync(
@@ -183,8 +182,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
             "Daemon Gated Try",
             "gated-execution",
             CancellationToken.None);
-
-        await Task.Yield();
 
         Assert.False(start.IsCompleted);
 

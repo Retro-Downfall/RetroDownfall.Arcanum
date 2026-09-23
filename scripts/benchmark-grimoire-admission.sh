@@ -16,7 +16,7 @@ child_pid=''
 watchdog_pid=''
 
 # Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup()
 {
     [ -n "$temp_root" ] && [ -n "$temp_parent" ] && [ -n "$temp_root_identity" ] || return 0
@@ -37,7 +37,7 @@ cleanup()
 }
 
 # Invoked indirectly by the INT and TERM traps.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cancel()
 {
     trap - INT TERM

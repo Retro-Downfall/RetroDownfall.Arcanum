@@ -25,6 +25,7 @@ using Xunit.Abstractions;
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
 [Collection(HostedProducerAnalysisCollection.Name)]
+[Trait("Category", "HostedProducerAnalysis")]
 public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper output)
 {
     private static string R2Source(string body, string extra = "") => RegistrationSource("services.AddHostedService<Worker>();").Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal) + AdmissionTypes + extra;
@@ -6137,6 +6138,87 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void ExactValueProvenanceScansSharedDiamondOncePerQuery()
+    {
+        string helpers = "internal static class ProvenanceDiamond { "
+            + "internal static void Layer0(bool branch) { _ = branch; System.IO.File.Exists(\"diamond-tail\"); } "
+            + string.Join(
+                " ",
+                Enumerable.Range(1, 8).Select(index =>
+                    $"internal static void Layer{index}(bool branch) {{ if (branch) {{ Layer{index - 1}(branch); }} else {{ Layer{index - 1}(branch); }} }}"))
+            + " }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission + "ProvenanceDiamond.Layer8(System.DateTime.UtcNow.Ticks > 0);",
+                helpers));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ProvenanceDiamond"
+            && site.Member == "Layer0"
+            && site.Callee == "System.IO.File.Exists");
+
+        int visits = Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+            .EvaluationEnvironments
+            .Where(static metric => metric.Member.Contains(
+                "ProvenanceDiamond.Layer",
+                StringComparison.Ordinal))
+            .Sum(static metric => metric.ExactValueProvenanceVisits);
+
+        Assert.InRange(visits, 9, 81);
+    }
+
+    [Fact]
+    public void ExactValueProvenanceCycleCutoffsDoNotHideLaterCleanupQueries()
+    {
+        const string helpers = """
+            internal static class ProvenanceCycle
+            {
+                internal static System.Data.Common.DbConnection Open() =>
+                    new Microsoft.Data.Sqlite.SqliteConnection();
+
+                internal static async System.Threading.Tasks.Task First(System.Data.Common.DbConnection connection)
+                {
+                    await Second(connection);
+                    await Cleanup(connection);
+                }
+
+                internal static async System.Threading.Tasks.Task Second(System.Data.Common.DbConnection connection)
+                {
+                    if (System.DateTime.UtcNow.Ticks > 0)
+                    {
+                        await First(connection);
+                    }
+                }
+
+                private static async System.Threading.Tasks.Task Cleanup(System.Data.Common.DbConnection connection)
+                {
+                    await using System.Data.Common.DbCommand command = connection.CreateCommand();
+                    System.IO.File.Exists("cycle-cleanup-tail");
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "await ProvenanceCycle.First(ProvenanceCycle.Open()); "
+                    + "await ProvenanceCycle.Second(ProvenanceCycle.Open());",
+                helpers));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ProvenanceCycle"
+            && site.Member == "Cleanup"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.Data.Common.DbCommand.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void EvaluationEnvironmentCanonicalizesReboundSchedulerCycles()
     {
         const string helpers =
@@ -7568,13 +7650,17 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         string helper =
             "internal static class ClosedCallableCacheTarget { "
-            + "private static readonly Action Callback = Emit; "
+            + "private static readonly Action Callback; "
+            + "static ClosedCallableCacheTarget() { Callback = Emit; } "
             + "internal static void Run() { "
             + invocations
             + " } private static void Emit() => System.IO.File.Exists(\"cached\"); }";
 
         HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
             R2Source(R2Admission + "ClosedCallableCacheTarget.Run();", helper));
+
+        Assert.Single(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists");
 
         HostedProducerClosedCallableMetric metric = Assert.Single(
             Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
@@ -9241,6 +9327,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionCompilationsResolveGeneratedJsonSymbols()
     {
         foreach (CSharpCompilation compilation in HostedGrimoireProducerInventory.ProductionCompilations)
@@ -10023,6 +10110,51 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Equal(1, metric.MaximumEvaluationsPerTraversalState);
 
         Assert.True(metric.TotalEvaluationsAcrossTraversalStates >= 1);
+    }
+
+    [Fact]
+    public void RecoveryValueSharedAssignmentDagHasBoundedQueries()
+    {
+        const int levels = 12;
+
+        string locals =
+            "bool value0 = operation.Kind == LongRunningOperationKinds.Owner; "
+            + string.Join(
+                " ",
+                Enumerable.Range(1, levels).Select(index =>
+                    $"bool value{index} = value{index - 1}; "
+                        + $"if (value{index - 1}) value{index} = value{index - 1};"));
+
+        string source = RecoveryMatrixFixture().Replace(
+            "System.IO.File.Delete(\"cli-owner\");",
+            locals
+                + $" if (value{levels}) System.IO.File.Exists(\"reachable\"); "
+                + "else System.IO.File.Delete(\"unreachable\");",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType.EndsWith(
+                ".CliOwnerRecoveryHandler",
+                StringComparison.Ordinal)
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Empty(result.Diagnostics);
+
+        HostedProducerRecoveryConditionMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RecoveryConditions,
+            static candidate => candidate.Member.StartsWith(
+                "M:RetroDownfall.Arcanum.Infrastructure.Operations.CliOwnerRecoveryHandler.RecoverAsync(",
+                StringComparison.Ordinal));
+
+        output.WriteLine(
+            "Recovery-value queries: {0}",
+            metric.RecoveryValueQueries);
+
+        Assert.InRange(metric.RecoveryValueQueries, 1, levels * 32);
     }
 
     [Fact]
@@ -11608,6 +11740,68 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.True(metric.StructuralInspections >= 1_024);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OrdinaryProjectionPreservesRecoveryMembershipAcrossRootOrder(bool exactFirst)
+    {
+        const string target = "RetroDownfall.Arcanum.Infrastructure.Operations.RecoveryMembershipTarget";
+
+        string source = RecoveryMatrixFixture()
+            + " namespace RetroDownfall.Arcanum.Infrastructure.Operations { "
+            + "using RetroDownfall.Arcanum.Core.Operations; "
+            + "internal static class RecoveryMembershipTarget { "
+            + "internal static void Unbound() => Shared(null!); "
+            + "internal static void Exact() => Shared(new LongRunningOperation(LongRunningOperationKinds.Db, 0)); "
+            + "private static void Shared(LongRunningOperation ignored) { "
+            + "System.IO.File.Exists(\"reachable\"); "
+            + "if (false) System.IO.File.Delete(\"unreachable\"); } } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        string[] roots = exactFirst ? ["Exact", "Unbound"] : ["Unbound", "Exact"];
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new([], []),
+                [],
+                roots.Select(method => new NonHostedProducerChainEntry(
+                    target + "." + method,
+                    "src/Fixture.cs",
+                    target,
+                    method,
+                    HostedProducerAuthorityKind.PreReadinessStartup,
+                    "recovery membership order fixture",
+                    []))
+                    .Append(new NonHostedProducerChainEntry(
+                        "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot.Run",
+                        "src/Fixture.cs",
+                        "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot",
+                        "Run",
+                        HostedProducerAuthorityKind.OwnerBoundRecovery,
+                        "exact owner fixture",
+                        []))
+                    .ToArray());
+
+        Assert.Contains(result.Items, static site =>
+            site.AuthorityOperationId == target + ".Exact"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.AuthorityOperationId == target + ".Exact"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Items, static site =>
+            site.AuthorityOperationId == target + ".Unbound"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Empty(result.Diagnostics);
+    }
+
     [Fact]
     public void EquivalentRecoveryProjectionDecisionsShareOneWholeMemberScan()
     {
@@ -11707,6 +11901,454 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Equal(1, condition.PlanBuilds);
 
         Assert.Equal(1, condition.MaximumEvaluationsPerTraversalState);
+    }
+
+    [Fact]
+    public void ExpressionDependencyQueriesMemoizeCompletedSharedLocalsWithoutChangingOrderingOrCycles()
+    {
+        const int depth = 8;
+
+        string diamond = "object shared0 = source; object left0 = shared0; object right0 = shared0; ";
+
+        for (int index = 1; index <= depth; index++)
+        {
+            diamond += "object left"
+                + index
+                + " = Merge(left"
+                + (index - 1)
+                + ", right"
+                + (index - 1)
+                + "); object right"
+                + index
+                + " = Merge(right"
+                + (index - 1)
+                + ", left"
+                + (index - 1)
+                + "); ";
+        }
+
+        CSharpCompilation compilation = Compile(
+            "namespace DependencyFixture { internal static class Target { "
+                + "private static object Merge(object left, object right) => left; "
+                + "private static void Diamond(object value) { } private static void Before(object value) { } private static void After(object value) { } private static void Cycle(object value) { } "
+                + "internal static void Run(object source, object required) { "
+                + diamond
+                + "Diamond(Merge(left"
+                + depth
+                + ", right"
+                + depth
+                + ")); object ordered = source; Before(ordered); ordered = required; After(ordered); object cycleA = source; object cycleB = cycleA; cycleA = cycleB; Cycle(cycleA); } } }");
+
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(
+            compilation.GetTypeByMetadataName("DependencyFixture.Target"));
+
+        IMethodSymbol method = Assert.Single(
+            type.GetMembers("Run").OfType<IMethodSymbol>());
+
+        MethodDeclarationSyntax syntax = Assert.IsType<MethodDeclarationSyntax>(
+            Assert.Single(method.DeclaringSyntaxReferences).GetSyntax());
+
+        SemanticModel model = compilation.GetSemanticModel(syntax.SyntaxTree);
+
+        IParameterSymbol required = Assert.Single(
+            method.Parameters,
+            static parameter => parameter.Name == "required");
+
+        ExpressionSyntax Argument(string invocation) =>
+            Assert.Single(
+                Assert.Single(
+                    syntax.DescendantNodes()
+                        .OfType<InvocationExpressionSyntax>(),
+                    call => model.GetSymbolInfo(call).Symbol?.Name == invocation)
+                .ArgumentList.Arguments)
+            .Expression;
+
+        HostedProducerExpressionDependencyProbe shared =
+            HostedGrimoireProducerInventory.ProbeExpressionDependency(
+                compilation,
+                method,
+                Argument("Diamond"),
+                required);
+
+        Assert.False(shared.Depends);
+
+        Assert.InRange(shared.DependencyNodes, 1, 256);
+
+        Assert.True(shared.DependencyCacheHits >= depth);
+
+        Assert.False(
+            HostedGrimoireProducerInventory.ProbeExpressionDependency(
+                compilation,
+                method,
+                Argument("Before"),
+                required)
+            .Depends);
+
+        Assert.True(
+            HostedGrimoireProducerInventory.ProbeExpressionDependency(
+                compilation,
+                method,
+                Argument("After"),
+                required)
+            .Depends);
+
+        HostedProducerExpressionDependencyProbe cycle =
+            HostedGrimoireProducerInventory.ProbeExpressionDependency(
+                compilation,
+                method,
+                Argument("Cycle"),
+                required);
+
+        Assert.False(cycle.Depends);
+
+        Assert.InRange(cycle.DependencyNodes, 1, 32);
+    }
+
+    [Theory]
+    [InlineData("Before", false, true, 2, 2, 2, 2)]
+    [InlineData("After", true, true, 3, 2, 4, 4)]
+    [InlineData("Cycle", false, false, 4, 2, 6, 8)]
+    [InlineData("Null", false, true, 1, 1, 1, 1)]
+    public void DependencySymbolLookupsReuseOnlyExactImmutableCompilerQueries(
+        string invocation,
+        bool depends,
+        bool complete,
+        int nodes,
+        int sourceNodes,
+        int coldBuilds,
+        int symbolRequests)
+    {
+        CSharpCompilation compilation = Compile("""
+            namespace DependencyFixture;
+            internal static class Target
+            {
+                private static void Before(object value) { }
+                private static void After(object value) { }
+                private static void Cycle(object value) { }
+                private static void Null(object value) { }
+                internal static void Run(object source, object required)
+                {
+                    object ordered = source;
+                    Before(ordered);
+                    ordered = required;
+                    After(ordered);
+                    object cycleA = source;
+                    object cycleB = cycleA;
+                    cycleA = cycleB;
+                    Cycle(cycleA);
+                    Null(null);
+                }
+            }
+            """);
+
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("DependencyFixture.Target"));
+
+        IMethodSymbol method = Assert.Single(type.GetMembers("Run").OfType<IMethodSymbol>());
+
+        SyntaxNode syntax = Assert.Single(method.DeclaringSyntaxReferences).GetSyntax();
+
+        SemanticModel model = compilation.GetSemanticModel(syntax.SyntaxTree);
+
+        SemanticModel otherModel = compilation.GetSemanticModel(syntax.SyntaxTree);
+
+        Assert.NotSame(model, otherModel);
+
+        ExpressionSyntax expression = Assert.Single(syntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == invocation).ArgumentList.Arguments.Single().Expression;
+
+        IParameterSymbol required = method.Parameters[1];
+
+        IParameterSymbol source = method.Parameters[0];
+
+        (SemanticModel Model, ExpressionSyntax Expression, ISymbol Required, bool BindingClone)[] queries =
+        [
+            (model, expression, required, false),
+            (model, expression, required, false),
+            (model, expression, required, true),
+            (model, expression, source, true),
+            (otherModel, expression, required, false),
+        ];
+
+        IReadOnlyList<HostedProducerDependencySymbolProbe> results = HostedGrimoireProducerInventory.ProbeDependencySymbolLookups(compilation, method, queries);
+
+        foreach (int index in new[] { 0, 1, 2, 4 })
+        {
+            Assert.Equal(depends, results[index].Depends);
+
+            Assert.Equal(complete, results[index].Complete);
+
+            Assert.Equal(nodes, results[index].DependencyNodes);
+        }
+
+        Assert.Equal(invocation != "Null", results[3].Depends);
+
+        Assert.True(results[3].Complete);
+
+        Assert.Equal(sourceNodes, results[3].DependencyNodes);
+
+        Assert.Equal(coldBuilds, results[0].SymbolBuilds);
+
+        Assert.Equal(symbolRequests, results[0].SymbolRequests);
+
+        foreach (int index in new[] { 1, 2, 3 })
+        {
+            Assert.Equal(0, results[index].SymbolBuilds);
+
+            Assert.Equal(results[index].SymbolRequests, results[index].SymbolHits);
+        }
+
+        Assert.Equal(coldBuilds, results[4].SymbolBuilds);
+
+        Assert.Equal(invocation == "Null" ? 1 : 0, results[0].NullBuilds);
+
+        Assert.Equal(0, results[1].NullBuilds);
+
+        HostedProducerDependencySymbolProbe coldGraph = Assert.Single(HostedGrimoireProducerInventory.ProbeDependencySymbolLookups(compilation, method, [queries[0]]));
+
+        Assert.Equal(depends, coldGraph.Depends);
+
+        Assert.Equal(complete, coldGraph.Complete);
+
+        Assert.Equal(nodes, coldGraph.DependencyNodes);
+
+        Assert.Equal(coldBuilds, coldGraph.SymbolBuilds);
+
+        Assert.Equal(symbolRequests, coldGraph.SymbolRequests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RepeatedProjectionReusesRawSymbolsWithoutChangingAnyBindingMap(bool partial)
+    {
+        CSharpCompilation compilation = Compile("namespace ProjectionFixture; internal static class Target { private static object Merge(object left, object right) => left; internal static object Run(object source, object unused) => " + (partial ? "Merge(source, source)" : "Merge(source, unused)") + "; }");
+
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("ProjectionFixture.Target"));
+
+        IMethodSymbol method = Assert.Single(type.GetMembers("Run").OfType<IMethodSymbol>());
+
+        MethodDeclarationSyntax syntax = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(method.DeclaringSyntaxReferences).GetSyntax());
+
+        ExpressionSyntax expression = syntax.ExpressionBody!.Expression;
+
+        IReadOnlyList<HostedProducerProjectionSymbolProbe> results = HostedGrimoireProducerInventory.ProbeProjectionSymbolLookups(compilation, method, expression, 16);
+
+        Assert.Equal(16, results.Count);
+
+        foreach (HostedProducerProjectionSymbolProbe result in results)
+        {
+            Assert.Equal(6, result.BindingKeys.Count);
+
+            Assert.All(result.BindingKeys, names => Assert.Equal(partial ? "source" : "source,unused", names));
+
+            Assert.Equal(7, result.DependencyNodes);
+        }
+
+        Assert.Equal(4, results[0].PhysicalSymbolQueries);
+
+        Assert.All(results.Skip(1), result => Assert.Equal(0, result.PhysicalSymbolQueries));
+    }
+
+    [Fact]
+    public void RepeatedAssignmentEnumerationPreservesQueryOrderingCyclesAndBindings()
+    {
+        string source = "namespace AssignmentFixture; internal static class Target { private static void Before(string value) { } private static void After(string value) { } private static void Cycle(string value) { } internal static void Run(string source, string required) { "
+            + string.Join(" ", Enumerable.Range(0, 64).Select(static index => $"string noise{index} = source;"))
+            + " string ordered = source; Before(ordered); ordered += source; string extra = source; extra = (extra = source); ordered = required; After(ordered); string cycleA = source; string cycleB = cycleA; cycleA = cycleB; Cycle(cycleA); } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        CSharpCompilation otherCompilation = Compile(source);
+
+        static IMethodSymbol Method(CSharpCompilation value) => value.GetTypeByMetadataName("AssignmentFixture.Target")!.GetMembers("Run").OfType<IMethodSymbol>().Single();
+
+        IMethodSymbol method = Method(compilation);
+
+        IMethodSymbol otherMethod = Method(otherCompilation);
+
+        SyntaxNode scope = method.DeclaringSyntaxReferences.Single().GetSyntax();
+
+        SyntaxNode otherScope = otherMethod.DeclaringSyntaxReferences.Single().GetSyntax();
+
+        Assert.NotSame(scope, otherScope);
+
+        Assert.Equal(scope.Span, otherScope.Span);
+
+        Assert.Equal(scope.SyntaxTree.FilePath, otherScope.SyntaxTree.FilePath);
+
+        SemanticModel model = compilation.GetSemanticModel(scope.SyntaxTree);
+
+        SemanticModel otherModel = compilation.GetSemanticModel(scope.SyntaxTree);
+
+        Assert.NotSame(model, otherModel);
+
+        static ExpressionSyntax Argument(SyntaxNode syntax, string name) => syntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Single(call => call.Expression.ToString() == name).ArgumentList.Arguments.Single().Expression;
+
+        HostedProducerDependencyScopeQuery before = new(method, scope, model, Argument(scope, "Before"), method.Parameters[1]);
+
+        HostedProducerDependencyScopeQuery after = before with { Expression = Argument(scope, "After") };
+
+        HostedProducerDependencyScopeQuery[] queries = [before, after, after with { BindingClone = true }, before with { Expression = Argument(scope, "Cycle") }, after with { Required = method.Parameters[0] }, before with { Model = otherModel }, new(otherMethod, otherScope, otherCompilation.GetSemanticModel(otherScope.SyntaxTree), Argument(otherScope, "Before"), otherMethod.Parameters[1])];
+
+        IReadOnlyList<HostedProducerDependencyScopeProbe> results = HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, queries);
+
+        IReadOnlyList<HostedProducerDependencyScopeProbe> fallback = HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, queries, useContext: false);
+
+        bool[] depends = [false, true, true, false, true, false, false];
+
+        bool[] complete = [true, true, true, false, true, true, true];
+
+        int[] nodes = [2, 3, 3, 4, 2, 2, 2];
+
+        int[] inspections = [5, 4, 4, 10, 0, 5, 5];
+
+        int[] scans = [1, 1, 1, 2, 0, 1, 1];
+
+        int[] builds = [1, 0, 0, 0, 0, 0, 1];
+
+        for (int index = 0; index < queries.Length; index++)
+        {
+            foreach (HostedProducerDependencyScopeProbe result in new[] { results[index], fallback[index] })
+            {
+                Assert.Equal(depends[index], result.Depends);
+
+                Assert.Equal(complete[index], result.Complete);
+
+                Assert.Equal(nodes[index], result.DependencyNodes);
+
+                Assert.Equal(inspections[index], result.AssignmentInspections);
+
+                Assert.Equal(scans[index], result.AssignmentScans);
+            }
+
+            Assert.Equal(builds[index], results[index].PhysicalEnumerations);
+
+            Assert.Equal(builds[index], results[index].AssignmentBuilds);
+
+            Assert.Equal(scans[index], results[index].AssignmentRequests);
+
+            Assert.Equal(scans[index] - builds[index], results[index].AssignmentHits);
+
+            Assert.Equal(scans[index], fallback[index].PhysicalEnumerations);
+        }
+
+        Assert.True(results[5].SymbolBuilds > 0);
+
+        Assert.True(results[6].SymbolBuilds > 0);
+
+        HostedProducerDependencyScopeProbe cold = Assert.Single(HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, [before]));
+
+        Assert.False(cold.Depends);
+
+        Assert.True(cold.Complete);
+
+        Assert.Equal(2, cold.DependencyNodes);
+
+        Assert.Equal(5, cold.AssignmentInspections);
+
+        Assert.Equal(1, cold.PhysicalEnumerations);
+    }
+
+    [Fact]
+    public void AssignmentEnumerationKeepsExactScopesAndNestedCallableRootException()
+    {
+        CSharpCompilation compilation = Compile("""
+            namespace AssignmentScopeFixture;
+            internal static class Target
+            {
+                private static void Observe(string value) { }
+                internal static void Run(string source, string required)
+                {
+                    string value = source;
+                    System.Action action = () => { value = required; Observe(value); };
+                    void Local() { value = required; Observe(value); }
+                    Observe(value);
+                    value = required;
+                    { Observe(value); }
+                }
+            }
+            """);
+
+        IMethodSymbol method = compilation.GetTypeByMetadataName("AssignmentScopeFixture.Target")!.GetMembers("Run").OfType<IMethodSymbol>().Single();
+
+        MethodDeclarationSyntax scope = Assert.IsType<MethodDeclarationSyntax>(method.DeclaringSyntaxReferences.Single().GetSyntax());
+
+        SemanticModel model = compilation.GetSemanticModel(scope.SyntaxTree);
+
+        AnonymousFunctionExpressionSyntax lambda = Assert.Single(scope.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>());
+
+        LocalFunctionStatementSyntax local = Assert.Single(scope.DescendantNodes().OfType<LocalFunctionStatementSyntax>());
+
+        BlockSyntax narrow = Assert.IsType<BlockSyntax>(scope.Body!.Statements.Last());
+
+        static ExpressionSyntax Argument(SyntaxNode node) => node.DescendantNodes().OfType<InvocationExpressionSyntax>().Single().ArgumentList.Arguments.Single().Expression;
+
+        ExpressionSyntax outside = scope.Body.Statements.OfType<ExpressionStatementSyntax>().Select(static statement => statement.Expression).OfType<InvocationExpressionSyntax>().Single().ArgumentList.Arguments.Single().Expression;
+
+        HostedProducerDependencyScopeQuery query = new(method, scope, model, outside, method.Parameters[1]);
+
+        HostedProducerDependencyScopeQuery[] queries = [query, query with { Expression = Argument(lambda) }, query with { Scope = lambda, Expression = Argument(lambda) }, query with { Expression = Argument(local) }, query with { Scope = local, Expression = Argument(local) }, query with { Expression = Argument(narrow) }, query with { Scope = narrow, Expression = Argument(narrow) }, query with { Scope = narrow, Expression = Argument(narrow), BindingClone = true }];
+
+        IReadOnlyList<HostedProducerDependencyScopeProbe> results = HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, queries);
+
+        IReadOnlyList<HostedProducerDependencyScopeProbe> fallback = HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, queries, useContext: false);
+
+        bool[] depends = [false, false, true, false, true, true, false, false];
+
+        int[] nodes = [2, 2, 3, 2, 3, 3, 2, 2];
+
+        int[] inspections = [1, 1, 1, 1, 1, 1, 0, 0];
+
+        int[] builds = [1, 0, 1, 0, 1, 0, 1, 0];
+
+        for (int index = 0; index < queries.Length; index++)
+        {
+            foreach (HostedProducerDependencyScopeProbe result in new[] { results[index], fallback[index] })
+            {
+                Assert.Equal(depends[index], result.Depends);
+
+                Assert.True(result.Complete);
+
+                Assert.Equal(nodes[index], result.DependencyNodes);
+
+                Assert.Equal(inspections[index], result.AssignmentInspections);
+
+                Assert.Equal(1, result.AssignmentScans);
+            }
+
+            Assert.Equal(builds[index], results[index].PhysicalEnumerations);
+
+            Assert.Equal(1, fallback[index].PhysicalEnumerations);
+        }
+    }
+
+    [Fact]
+    public void EmptyAssignmentScopesAreCachedButInitializerProofStillExitsEarly()
+    {
+        CSharpCompilation compilation = Compile("namespace EmptyAssignmentFixture; internal static class Target { private static void Observe(string value) { } internal static void Run(string source, string required) { string value = source; Observe(value); } }");
+
+        IMethodSymbol method = compilation.GetTypeByMetadataName("EmptyAssignmentFixture.Target")!.GetMembers("Run").OfType<IMethodSymbol>().Single();
+
+        SyntaxNode scope = method.DeclaringSyntaxReferences.Single().GetSyntax();
+
+        ExpressionSyntax expression = scope.DescendantNodes().OfType<InvocationExpressionSyntax>().Single().ArgumentList.Arguments.Single().Expression;
+
+        HostedProducerDependencyScopeQuery early = new(method, scope, compilation.GetSemanticModel(scope.SyntaxTree), expression, method.Parameters[0]);
+
+        HostedProducerDependencyScopeQuery absent = early with { Required = method.Parameters[1] };
+
+        IReadOnlyList<HostedProducerDependencyScopeProbe> results = HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, [early, absent, absent with { BindingClone = true }, early]);
+
+        Assert.All(results, static result => Assert.True(result.Complete));
+
+        Assert.All(results, static result => Assert.Equal(2, result.DependencyNodes));
+
+        Assert.All(results, static result => Assert.Equal(0, result.AssignmentInspections));
+
+        Assert.Equal(new[] { true, false, false, true }, results.Select(static result => result.Depends));
+
+        Assert.Equal(new[] { 0, 1, 1, 0 }, results.Select(static result => result.AssignmentRequests));
+
+        Assert.Equal(new[] { 0, 1, 0, 0 }, results.Select(static result => result.PhysicalEnumerations));
     }
 
     [Fact]
@@ -12543,6 +13185,91 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void RootTraversalProgressIsFlushedAsEachRootStartsAndCompletes()
+    {
+        string progressPath = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-hosted-analysis-" + Guid.NewGuid().ToString("N") + ".log");
+
+        string? previous = global::System.Environment.GetEnvironmentVariable(
+            "ARCANUM_HOSTED_ANALYSIS_PROGRESS");
+
+        try
+        {
+            global::System.Environment.SetEnvironmentVariable(
+                "ARCANUM_HOSTED_ANALYSIS_PROGRESS",
+                progressPath);
+
+            HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+                R2Source(
+                    R2Admission + "System.IO.File.Exists(\"progress\");"));
+
+            Assert.Empty(result.Diagnostics);
+
+            string[] lines = File.ReadAllLines(progressPath);
+
+            string[] starts = lines
+                .Where(static line => line.Contains("\tphase=start\t", StringComparison.Ordinal))
+                .ToArray();
+
+            string[] completions = lines
+                .Where(static line => line.Contains("\tphase=complete\t", StringComparison.Ordinal))
+                .ToArray();
+
+            string[] states = lines
+                .Where(static line => line.StartsWith(
+                    "HOSTED_STATE_PROGRESS\t",
+                    StringComparison.Ordinal))
+                .ToArray();
+
+            Assert.NotEmpty(starts);
+
+            Assert.Equal(starts.Length, completions.Length);
+
+            Assert.NotEmpty(states);
+
+            Assert.All(starts, static line =>
+            {
+                Assert.Contains("\tsequence=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\troot_type=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\troot=", line, StringComparison.Ordinal);
+            });
+
+            Assert.All(completions, static line =>
+            {
+                Assert.Contains("\telapsed_ms=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\tstates=", line, StringComparison.Ordinal);
+            });
+
+            Assert.All(states, static line =>
+            {
+                Assert.Contains("\tstates=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\tmember_states=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\tmember=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\ttop_members=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\troot_type=", line, StringComparison.Ordinal);
+
+                Assert.Contains("\troot=", line, StringComparison.Ordinal);
+            });
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(
+                "ARCANUM_HOSTED_ANALYSIS_PROGRESS",
+                previous);
+
+            File.Delete(progressPath);
+        }
+    }
+
+    [Fact]
     public void CleanupCacheMetricRenderingIsStableAndMostReusedFirst()
     {
         HostedProducerAnalysisMetrics metrics = new(
@@ -12674,6 +13401,115 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void RepeatedExactBoundValueNormalizationBuildsOncePerImmutableSource()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat(
+                "RepeatedNormalizationTarget.Route(stream);",
+                16));
+
+        const string helper =
+            "internal static class RepeatedNormalizationTarget { "
+            + "internal static void Route(System.IO.Stream stream) { "
+            + "using System.IO.StreamReader reader = new(stream, System.Text.Encoding.UTF8, true, 1024, leaveOpen: true); _ = reader.ReadToEnd(); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(
+            FixtureSource(
+                "using System.IO.Stream stream = System.IO.File.OpenRead(\"normalization-cache\"); "
+                    + calls,
+                helper));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "RepeatedNormalizationTarget"
+            && site.Callee == "System.IO.StreamReader.ReadToEnd");
+
+        HostedProducerAnalysisMetrics metrics =
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics);
+
+        int requests = metrics.EvaluationEnvironments.Sum(
+            static metric => metric.ValueNormalizationRequests);
+
+        int builds = metrics.EvaluationEnvironments.Sum(
+            static metric => metric.ValueNormalizationBuilds);
+
+        int hits = metrics.EvaluationEnvironments.Sum(
+            static metric => metric.ValueNormalizationHits);
+
+        Assert.True(requests >= 16);
+
+        Assert.True(
+            builds < requests,
+            $"requests={requests}, builds={builds}, hits={hits}");
+
+        Assert.Equal(requests - builds, hits);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RepeatedResultPropertyCleanupKeepsUnchangedProjectionWorkBounded(bool emptyEnvironment)
+    {
+        const int calls = 16;
+
+        string body = "IProjectedCleanup cleanup = new ProjectedCleanup(); "
+            + string.Join(" ", Enumerable.Repeat("await ProjectedCleanupPipeline.RunAsync(cleanup);", calls));
+
+        const string helper =
+            "internal interface IProjectedCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class ProjectedCleanup : IProjectedCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"projection-cleanup\"); return default; } } "
+            + "internal sealed class ProjectedResult<T> { private readonly T value; private ProjectedResult(T value) { this.value = value; } internal T Value => value; internal static ProjectedResult<T> Success(T value) => new(value); } "
+            + "internal static class ProjectedCleanupPipeline { internal static async System.Threading.Tasks.Task RunAsync(IProjectedCleanup cleanup) { ProjectedResult<IProjectedCleanup> first = Wrap(cleanup); ProjectedResult<IProjectedCleanup> second = Wrap(first.Value); ProjectedResult<IProjectedCleanup> third = Wrap(second.Value); await using (third.Value) { await System.Threading.Tasks.Task.Yield(); } } private static ProjectedResult<IProjectedCleanup> Wrap(IProjectedCleanup cleanup) => ProjectedResult<IProjectedCleanup>.Success(cleanup); private static ProjectedResult<IProjectedCleanup> Empty() => ProjectedResult<IProjectedCleanup>.Success(new ProjectedCleanup()); }";
+
+        string source = R2Source(body, helper);
+
+        if (emptyEnvironment)
+        {
+            source = source.Replace("first = Wrap(cleanup)", "first = Empty()", StringComparison.Ordinal);
+        }
+
+        CSharpCompilation compilation = Compile(source);
+
+        MethodDeclarationSyntax method = compilation.SyntaxTrees.Single().GetRoot()
+            .DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(candidate => candidate.Identifier.ValueText == (emptyEnvironment ? "Empty" : "Wrap"));
+
+        IMethodSymbol sourceMethod = Assert.IsAssignableFrom<IMethodSymbol>(compilation.GetSemanticModel(method.SyntaxTree).GetDeclaredSymbol(method));
+
+        ExpressionSyntax sourceExpression = Assert.IsType<InvocationExpressionSyntax>(method.ExpressionBody!.Expression).ArgumentList.Arguments.Single().Expression;
+
+        var probe = HostedGrimoireProducerInventory.ProbeRepeatedExactSourceProjection(
+            compilation,
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: repeated exact result cleanup projection",
+            },
+            sourceMethod,
+            sourceExpression,
+            calls);
+
+        HostedProducerDiscovery<HostedProducerSite> result = probe.Discovery;
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ProjectedCleanup"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.True(probe.Complete);
+
+        Assert.Equal(1, probe.DistinctFingerprints);
+
+        output.WriteLine($"Repeated result cleanup work: normalizations={probe.NormalizationBuilds}; fingerprints={probe.FingerprintBuilds}");
+
+        Assert.InRange(probe.NormalizationBuilds, 0, 1);
+
+        Assert.InRange(probe.FingerprintBuilds, 0, 1);
+    }
+
+    [Fact]
     public void DivergentNestedCallableEnvironmentsCertifyDistinctTraversalTokens()
     {
         string calls = string.Join(
@@ -12734,6 +13570,214 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Equal(126, metric.InternerHits);
 
         Assert.Equal(2, metric.InternerRegistrations);
+    }
+
+    [Fact]
+    public void StableLocalUseSitesConvergeBeforeTraversalStateIdentity()
+    {
+        string calls = string.Join(
+            " ",
+            Enumerable.Repeat(
+                "StableLocalUseTarget.Read(stream);",
+                32));
+
+        const string helper =
+            "internal static class StableLocalUseTarget { "
+            + "internal static void Read(System.IO.Stream stream) { "
+            + "_ = stream.CanRead; System.IO.File.Exists(\"stable-local-tail\"); } }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(
+                "using System.IO.Stream stream = System.IO.File.OpenRead(\"stable-local\"); "
+                    + calls,
+                helper));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: stable local use-site fixture",
+                }])],
+                [],
+                maximumAnalyzedStatesPerRoot: 16);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StableLocalUseTarget"
+            && site.Member == "Read"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:StableLocalUseTarget.Read(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(1, metric.InternerRegistrations);
+
+        HostedProducerEvaluationEnvironmentMetric sourceMetric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:Worker.StartAsync(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(32, sourceMetric.StableLocalProofBuilds);
+
+        string metrics = $"Stable local requests/builds/hits: {sourceMetric.StableLocalProofRequests}/{sourceMetric.StableLocalProofBuilds}/{sourceMetric.StableLocalProofHits}; normalization: {sourceMetric.ValueNormalizationRequests}/{sourceMetric.ValueNormalizationBuilds}/{sourceMetric.ValueNormalizationHits}; target interner requests/hits/registrations: {metric.InternerRequests}/{metric.InternerHits}/{metric.InternerRegistrations}";
+
+        Assert.True(
+            sourceMetric.StableLocalProofHits
+                + sourceMetric.ValueNormalizationHits > 0,
+            metrics);
+
+        Assert.Equal(
+            sourceMetric.StableLocalProofRequests
+                - sourceMetric.StableLocalProofBuilds,
+            sourceMetric.StableLocalProofHits);
+
+        Assert.Equal(
+            sourceMetric.ValueNormalizationRequests
+                - sourceMetric.ValueNormalizationBuilds,
+            sourceMetric.ValueNormalizationHits);
+    }
+
+    [Fact]
+    public void ForeignOrdinaryParameterBindingsDoNotLeakIntoInstanceHelpers()
+    {
+        string noise = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                $"internal static void Noise{index}() {{ }}"));
+
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, 32).Select(index =>
+                "new ForeignParameterProjectionTarget().Run("
+                    + $"ForeignParameterProjectionTarget.Noise{index});"));
+
+        string helper =
+            "internal sealed class ForeignParameterProjectionTarget { "
+            + "internal void Run(System.Action noise) { _ = noise; Read(); } "
+            + "private void Read() => Tail(); "
+            + "private void Tail() => "
+            + "System.IO.File.Exists(\"foreign-parameter-projection\"); "
+            + noise
+            + " }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(calls, helper));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: foreign parameter projection fixture",
+                }])],
+                [],
+                maximumAnalyzedStatesPerRoot: 96);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ForeignParameterProjectionTarget"
+            && site.Member == "Tail"
+            && site.Callee == "System.IO.File.Exists");
+
+        HostedProducerRootTraversalMetric traversal = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RootTraversals,
+            static candidate => candidate.RootOperation == "Worker.StartAsync");
+
+        Assert.InRange(traversal.AnalyzedStates, 1, 96);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void ReassignedLocalCleanupSourceDoesNotCanonicalizeToInitializer()
+    {
+        const string helper =
+            "internal abstract class CleanupBase : System.IDisposable { "
+            + "public abstract void Dispose(); } "
+            + "internal sealed class Good : CleanupBase { "
+            + "public override void Dispose() { "
+            + "System.IO.File.Exists(\"good-cleanup\"); } } "
+            + "internal sealed class Evil : CleanupBase { "
+            + "public override void Dispose() { "
+            + "System.IO.File.Delete(\"evil-cleanup\"); } } "
+            + "internal static class StableLocalCleanup { "
+            + "internal static void Dispose(CleanupBase value) { using (value) { } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            FixtureSource(
+                "CleanupBase cleanup = new Good(); "
+                    + "if (token.CanBeCanceled) { cleanup = new Evil(); } "
+                    + "StableLocalCleanup.Dispose(cleanup);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: reassigned local cleanup fixture",
+            });
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void StableLocalProofCacheSeparatesUsePositionsAcrossReassignment()
+    {
+        const string helper =
+            "internal static class StableLocalProofTarget { "
+            + "internal static void Before(System.IO.Stream stream) { "
+            + "_ = stream.CanRead; System.IO.File.Exists(\"before\"); } "
+            + "internal static void After(System.IO.Stream stream) { "
+            + "_ = stream.CanWrite; System.IO.Directory.Delete(\"after\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            FixtureSource(
+                "System.IO.Stream stream = System.IO.File.OpenRead(\"before-source\"); "
+                    + "StableLocalProofTarget.Before(stream); "
+                    + "stream = System.IO.File.OpenWrite(\"after-source\"); "
+                    + "StableLocalProofTarget.After(stream);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: stable local proof cache use-position fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StableLocalProofTarget"
+            && site.Member == "Before"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StableLocalProofTarget"
+            && site.Member == "After"
+            && site.Callee == "System.IO.Directory.Delete");
+
+        HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .EvaluationEnvironments,
+            static candidate => candidate.Member.StartsWith(
+                "M:Worker.StartAsync(",
+                StringComparison.Ordinal));
+
+        Assert.Equal(2, metric.StableLocalProofBuilds);
     }
 
     [Fact]
@@ -13782,9 +14826,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(0, metric.InternerRegistrations);
 
-        Assert.Equal(2, metric.FingerprintRequests);
+        // Projection and traversal each rebuild the two fail-closed incomplete
+        // fingerprints; token registration itself still occurs only once.
+        Assert.Equal(4, metric.FingerprintRequests);
 
-        Assert.Equal(2, metric.FingerprintBuilds);
+        Assert.Equal(4, metric.FingerprintBuilds);
     }
 
     [Fact]
@@ -14151,6 +15197,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void EveryApplicationHostedServiceHasExactlyOneEntry()
     {
         System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -14172,6 +15219,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionBatchCarrierHasOneExceptionSafePublicationLifetime()
     {
         _ = HostedGrimoireProducerInventory.Catalog.Single(
@@ -14187,6 +15235,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionDataRetentionSweepGraphRetainsItsExactWorkLease()
     {
         _ =
@@ -14205,6 +15254,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionDataRetentionSweepGraphRetainsItsCandidateEffectFrontier()
     {
         _ =
@@ -14231,6 +15281,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("SessionAttachmentIndexingService")]
     [InlineData("UnseenServantService")]
     [InlineData("WorkspaceIndexingService")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionOrdinaryHostedGraphsRetainTheirExactLifetimes(
         string serviceType)
     {
@@ -14259,6 +15310,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionGraphsRetainExactCollectionIndexerProvenance()
     {
         HostedProducerDiscovery<HostedProducerSite> discovery =
@@ -14277,6 +15329,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("BackupRestoreService", "RestoreAsync")]
     [InlineData("InstallationResetService", "ApplyFullUnderMaintenanceLockAsync")]
     [InlineData("GrimoireOfflineTransitionStartupRecovery", "RecoverBeforeBootstrapAsync")]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionNonHostedGraphsRetainTheirExactLifetimes(
         string enclosingType,
         string member)
@@ -14309,6 +15362,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionCompilerGraphUsesCanonicalProjectReferences()
     {
         IReadOnlyList<CSharpCompilation> compilations =
@@ -14365,6 +15419,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionRecoveryGraphsRetainTheirClosedExactAuthority()
     {
         HostedProducerDiscovery<HostedProducerSite> discovery =
@@ -14887,6 +15942,843 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("mutable", true)]
+    [InlineData("ambiguous", true)]
+    [InlineData("ref-alias", true)]
+    [InlineData("other-instance", true)]
+    public void ReadonlyInterfaceConnectionFactoryRetainsExactConstructedReceiver(string sourceKind, bool unresolved)
+    {
+        string factory = sourceKind switch
+        {
+            "unknown" => "UnknownConnectionFactory.Value",
+            "ambiguous" => "token.CanBeCanceled ? new ExactConnectionFactory(new Microsoft.Data.Sqlite.SqliteConnection()) : new ExactConnectionFactory(UnknownConnectionFactory.Connection)",
+            _ => "new ExactConnectionFactory(new Microsoft.Data.Sqlite.SqliteConnection())",
+        };
+
+        string field = sourceKind == "mutable" ? "private IConnectionFactory _factory;" : "private readonly IConnectionFactory _factory;";
+
+        string mutation = sourceKind == "mutable" ? "_factory = UnknownConnectionFactory.Value;" : string.Empty;
+
+        string constructorMutation = sourceKind == "ref-alias" ? "ref IConnectionFactory alias = ref _factory; alias = UnknownConnectionFactory.Value;" : string.Empty;
+
+        string receiver = sourceKind == "other-instance" ? "other._factory" : "_factory";
+
+        string helpers = $$"""
+            internal interface IConnectionFactory { Microsoft.Data.Sqlite.SqliteConnection Borrow(); }
+
+            internal sealed class ExactConnectionFactory(Microsoft.Data.Sqlite.SqliteConnection connection) : IConnectionFactory
+            {
+                public Microsoft.Data.Sqlite.SqliteConnection Borrow() => connection;
+            }
+
+            internal static class UnknownConnectionFactory
+            {
+                internal static IConnectionFactory Value { get; set; } = null!;
+
+                internal static Microsoft.Data.Sqlite.SqliteConnection Connection { get; set; } = null!;
+            }
+
+            internal sealed class FactoryConsumer
+            {
+                {{field}}
+
+                internal FactoryConsumer(IConnectionFactory factory) { _factory = factory; {{constructorMutation}} }
+
+                internal async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token, FactoryConsumer other)
+                {
+                    {{mutation}}
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command = {{receiver}}.Borrow().CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token);
+
+                    _ = System.IO.File.Exists("readonly-factory-reached");
+                }
+            }
+            """;
+
+        string source = R2Source(R2Admission + "FactoryConsumer consumer = new(" + factory + "); await consumer.RunAsync(token, new FactoryConsumer(UnknownConnectionFactory.Value));", helpers).Replace("services.AddHostedService<Worker>();", "services.AddTransient<IConnectionFactory, ExactConnectionFactory>(); services.AddHostedService<Worker>();", StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(unresolved, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED" && diagnostic.Detail.StartsWith("Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;", StringComparison.Ordinal)));
+
+        if (!unresolved)
+        {
+            Assert.Empty(result.Diagnostics);
+
+            Assert.Contains(result.Items, static site => site.EnclosingType == "FactoryConsumer" && site.Callee == "System.IO.File.Exists");
+        }
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("custom-scope", true)]
+    [InlineData("missing", true)]
+    [InlineData("ambiguous", true)]
+    [InlineData("ref-alias", true)]
+    [InlineData("scope-write", true)]
+    [InlineData("local-alias", true)]
+    [InlineData("pattern-else-write", true)]
+    [InlineData("forwarded-factory", false)]
+    [InlineData("forwarded-custom", true)]
+    [InlineData("forwarded-write", true)]
+    [InlineData("forwarded-alias", true)]
+    [InlineData("forwarded-callback", false)]
+    [InlineData("forwarded-earlier-mutation", true)]
+    [InlineData("constructor-chain", false)]
+    [InlineData("constructor-chain-alias", false)]
+    [InlineData("constructor-chain-custom", true)]
+    [InlineData("constructor-chain-write", true)]
+    [InlineData("constructor-chain-ref", true)]
+    [InlineData("constructor-chain-ordinary", false)]
+    [InlineData("constructor-chain-alias-only", true)]
+    [InlineData("constructor-chain-alias-custom", true)]
+    public void NullableManualFactoryRetainsOnlyExactOptionalScopedService(string sourceKind, bool unresolved)
+    {
+        string registration = sourceKind == "missing" ? string.Empty : "services.AddScoped<IOptionalFactory, OptionalFactory>(); ";
+
+        if (sourceKind == "ambiguous") registration += "services.AddScoped<IOptionalFactory, UnknownOptionalFactory>(); ";
+
+        string factory = sourceKind == "custom-scope" ? "UnknownScopes.Value" : "scopeFactory";
+
+        string body = R2Admission + "await using AsyncServiceScope scope = " + factory + ".CreateAsyncScope(); if (OptionalConsumer.Create(scope, token.CanBeCanceled) is not { } consumer) return; await consumer.RunAsync(token);";
+
+        string forwardingHelper = string.Empty;
+
+        if (sourceKind is "forwarded-factory" or "forwarded-custom" or "forwarded-write" or "forwarded-alias" or "forwarded-callback" or "forwarded-earlier-mutation")
+        {
+            string mutation = sourceKind switch
+            {
+                "forwarded-write" => "scopeFactory = UnknownScopes.Value; ",
+                "forwarded-alias" => "ref IServiceScopeFactory alias = ref scopeFactory; alias = UnknownScopes.Value; ",
+                _ => string.Empty,
+            };
+
+            forwardingHelper = "internal static class OptionalEntry { internal static async System.Threading.Tasks.Task RunAsync(IServiceScopeFactory scopeFactory, CancellationToken token) { " + mutation + body[R2Admission.Length..] + " } }";
+
+            body = R2Admission + "await OptionalEntry.RunAsync(" + (sourceKind == "forwarded-custom" ? "UnknownScopes.Value" : "scopeFactory") + ", token);";
+
+            if (sourceKind is "forwarded-callback" or "forwarded-earlier-mutation")
+            {
+                forwardingHelper = forwardingHelper.Replace("RunAsync(IServiceScopeFactory scopeFactory, CancellationToken token)", "RunAsync(IServiceScopeFactory scopeFactory, CancellationToken token, Action callback)", StringComparison.Ordinal)
+                    .Replace("internal static class OptionalEntry {", "internal static class OptionalEntry { internal static System.Threading.Tasks.Task Forward(IServiceScopeFactory scopeFactory, CancellationToken token, Action callback) => RunAsync(scopeFactory, token, callback); ", StringComparison.Ordinal);
+
+                body = R2Admission + "await OptionalEntry.Forward(scopeFactory, token, () => { });";
+
+                if (sourceKind == "forwarded-earlier-mutation")
+                {
+                    forwardingHelper = forwardingHelper.Replace("=> RunAsync(scopeFactory, token, callback);", "{ int Mutate() { scopeFactory = UnknownScopes.Value; return 0; } return Pick(Mutate(), RunAsync(scopeFactory, token, callback)); } private static System.Threading.Tasks.Task Pick(int ignored, System.Threading.Tasks.Task task) => task;", StringComparison.Ordinal);
+                }
+            }
+        }
+
+        if (sourceKind == "pattern-else-write") body = body.Replace("consumer) return; await", "consumer) return; else consumer = OptionalConsumer.CreateUnknown(); await", StringComparison.Ordinal);
+
+        string constructorMutation = sourceKind == "ref-alias" ? "ref IOptionalFactory? alias = ref _factory; alias = new UnknownOptionalFactory();" : string.Empty;
+
+        string scopeMutation = sourceKind == "scope-write" ? "scope = default;" : string.Empty;
+
+        string construct = sourceKind == "local-alias"
+            ? "IOptionalFactory? resolved = scope.ServiceProvider.GetService<IOptionalFactory>(); ref IOptionalFactory? alias = ref resolved; alias = new UnknownOptionalFactory(); return new OptionalConsumer(resolved);"
+            : "return new OptionalConsumer(withAuthority ? scope.ServiceProvider.GetService<IOptionalFactory>() : null);";
+
+        string helpers = $$"""
+            internal interface IOptionalFactory { Microsoft.Data.Sqlite.SqliteConnection Borrow(); }
+
+            internal sealed class OptionalFactory : IOptionalFactory
+            {
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection = new();
+
+                public Microsoft.Data.Sqlite.SqliteConnection Borrow() => _connection;
+            }
+
+            internal sealed class UnknownOptionalFactory : IOptionalFactory
+            {
+                public Microsoft.Data.Sqlite.SqliteConnection Borrow() => UnknownScopes.Connection;
+            }
+
+            internal static class UnknownScopes
+            {
+                internal static Microsoft.Extensions.DependencyInjection.IServiceScopeFactory Value { get; set; } = null!;
+
+                internal static Microsoft.Data.Sqlite.SqliteConnection Connection { get; set; } = null!;
+            }
+
+            internal sealed class OptionalConsumer
+            {
+                private readonly IOptionalFactory? _factory;
+
+                private OptionalConsumer(IOptionalFactory? factory) { _factory = factory; {{constructorMutation}} }
+
+                internal static OptionalConsumer? Create(Microsoft.Extensions.DependencyInjection.AsyncServiceScope scope, bool withAuthority)
+                {
+                    if (!withAuthority) return null;
+
+                    {{scopeMutation}}
+
+                    {{construct}}
+                }
+
+                internal static OptionalConsumer CreateUnknown() => new(new UnknownOptionalFactory());
+
+                internal async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token)
+                {
+                    if (_factory is null) return;
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command = _factory.Borrow().CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token);
+
+                    _ = System.IO.File.Exists("optional-factory-reached");
+                }
+            }
+            """;
+
+        string source = R2Source(body, helpers + forwardingHelper)
+            .Replace("services.AddHostedService<Worker>();", registration + "services.AddHostedService<Worker>();", StringComparison.Ordinal)
+            .Replace("public class Worker : IHostedService", "public sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService", StringComparison.Ordinal)
+            .Replace("static Worker Factory(IServiceProvider provider) => new Worker();", "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());", StringComparison.Ordinal);
+
+        if (sourceKind.StartsWith("constructor-chain", StringComparison.Ordinal))
+        {
+            string argument = sourceKind == "constructor-chain-custom" ? "UnknownScopes.Value" : "scopeFactory";
+
+            string mutation = sourceKind switch
+            {
+                "constructor-chain-write" => "scopeFactory = UnknownScopes.Value;",
+                "constructor-chain-ref" => "ref IServiceScopeFactory alias = ref scopeFactory; alias = UnknownScopes.Value;",
+                _ => string.Empty,
+            };
+
+            string constructors = "internal Worker(IServiceScopeFactory scopeFactory, int first) : this(scopeFactory) { } "
+                + "internal Worker(IServiceScopeFactory scopeFactory, int first, string second) : this(" + argument + ", first) { " + mutation + " } "
+                + "internal Worker(IServiceScopeFactory scopeFactory, int first, string second, bool third) : this(scopeFactory, first, second) { } ";
+
+            source = source.Replace("public sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService\n{", "public sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService\n{" + constructors, StringComparison.Ordinal)
+                .Replace("services.AddHostedService<Worker>();", "services.AddSingleton(static sp => new Worker(sp.GetRequiredService<IServiceScopeFactory>(), 0, string.Empty, true)); " + (sourceKind == "constructor-chain-alias" ? "services.AddHostedService(static sp => sp.GetRequiredService<Worker>());" : "services.AddHostedService<Worker>();"), StringComparison.Ordinal);
+
+            if (sourceKind == "constructor-chain-ordinary")
+            {
+                source = source.Replace("public sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService\n{" + constructors,
+                    "public sealed class Worker : IHostedService\n{ private readonly IServiceScopeFactory scopeFactory; public Worker(IServiceScopeFactory scopeFactory) { this.scopeFactory = scopeFactory; } internal Worker(IServiceScopeFactory scopeFactory, int first, string second, bool third) : this(scopeFactory) { } ", StringComparison.Ordinal);
+            }
+
+            if (sourceKind == "constructor-chain-alias-only")
+            {
+                source = source.Replace("services.AddSingleton(static sp => new Worker(sp.GetRequiredService<IServiceScopeFactory>(), 0, string.Empty, true)); services.AddHostedService<Worker>();", "services.AddHostedService(static sp => sp.GetRequiredService<Worker>());", StringComparison.Ordinal);
+            }
+
+            if (sourceKind == "constructor-chain-alias-custom")
+            {
+                source = source.Replace("services.AddHostedService<Worker>();", "services.AddHostedService(static sp => UnknownProviders.Value.GetRequiredService<Worker>());", StringComparison.Ordinal)
+                    + " internal static class UnknownProviders { internal static IServiceProvider Value { get; set; } = null!; }";
+            }
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(unresolved, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED" && diagnostic.Detail.StartsWith("Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;", StringComparison.Ordinal)));
+
+        if (!unresolved)
+        {
+            Assert.Empty(result.Diagnostics);
+
+            Assert.Contains(result.Items, static site => site.EnclosingType == "OptionalConsumer" && site.Callee == "System.IO.File.Exists");
+        }
+    }
+
+    [Fact]
+    public void HostedTypeActivationDoesNotBorrowSeparateSingletonFactoryContext()
+    {
+        string source = RegistrationSource(
+                "services.AddSingleton(static sp => new Worker(true)); services.AddHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService\n{",
+                "public class Worker : IHostedService\n{ private readonly System.IAsyncDisposable _cleanup; public Worker() { _cleanup = UnknownCleanup.Value; } internal Worker(bool _) { _cleanup = new KnownCleanup(); }",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using (_cleanup) { } }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + " internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"known-hosted-cleanup\"); return default; } }"
+            + " internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IAsyncDisposable.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownCleanup"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
+    public void HostedAliasDoesNotIgnoreCompetingServiceActivation()
+    {
+        string source = RegistrationSource(
+                "services.AddSingleton(static sp => new Worker(new KnownCleanup())); services.AddTransient(static sp => new Worker(UnknownCleanup.Value)); services.AddHostedService(static sp => sp.GetRequiredService<Worker>());")
+            .Replace(
+                "public class Worker : IHostedService\n{",
+                "public class Worker : IHostedService\n{ private readonly System.IAsyncDisposable _cleanup; public Worker(System.IAsyncDisposable cleanup) { _cleanup = cleanup; }",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using (_cleanup) { } }",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(UnknownCleanup.Value);",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + " internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"known-hosted-alias-cleanup\"); return default; } }"
+            + " internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IAsyncDisposable.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownCleanup"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Fact]
+    public void HostedAliasRequiresSingletonRegisteredAsLifecycleType()
+    {
+        string source = RegistrationSource(
+                "services.AddSingleton<IWorker>(static sp => new Worker(new KnownCleanup())); services.AddHostedService(static sp => sp.GetRequiredService<Worker>());")
+            .Replace(
+                "public class Worker : IHostedService\n{",
+                "public interface IWorker { } public class Worker : IWorker, IHostedService\n{ private readonly System.IAsyncDisposable _cleanup; public Worker(System.IAsyncDisposable cleanup) { _cleanup = cleanup; }",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using (_cleanup) { } }",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(UnknownCleanup.Value);",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + " internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"wrong-contract-hosted-alias-cleanup\"); return default; } }"
+            + " internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IAsyncDisposable.DisposeAsync;",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownCleanup"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("exact-factory", false)]
+    [InlineData("factory-unknown", true)]
+    [InlineData("manual", true)]
+    [InlineData("ambiguous", true)]
+    [InlineData("custom", true)]
+    [InlineData("multiple-public", true)]
+    public void DiBoundReceiverCarriesOnlyItsExactImplementationConstructor(
+        string sourceKind,
+        bool unresolved)
+    {
+        string registration = sourceKind switch
+        {
+            "ambiguous" =>
+                "services.AddScoped<IRepository, Repository>(); services.AddScoped<IRepository, UnknownRepository>(); services.AddSingleton<KnownCleanup>(); ",
+            "custom" =>
+                "Lookalike.AddScoped<IRepository, Repository>(services); services.AddSingleton<KnownCleanup>(); ",
+            "multiple-public" =>
+                "services.AddScoped<IRepository, Repository>(); services.AddSingleton<KnownCleanup>(); services.AddSingleton<UnknownDependency>(); ",
+            "exact-factory" =>
+                "services.AddScoped<IRepository>(static sp => new Repository(sp.GetRequiredService<KnownCleanup>())); services.AddSingleton<KnownCleanup>(); ",
+            "factory-unknown" =>
+                "services.AddScoped<IRepository>(static sp => new Repository(UnknownCleanup.Value, string.Empty)); services.AddSingleton<KnownCleanup>(); ",
+            _ =>
+                "services.AddScoped<IRepository, Repository>(); services.AddSingleton<KnownCleanup>(); ",
+        };
+
+        string receiver = sourceKind == "manual"
+            ? "UnknownRepository.Value"
+            : "repository";
+
+        string additionalConstructor = sourceKind == "multiple-public"
+            ? "public Repository(KnownCleanup cleanup, UnknownDependency _) { _cleanup = UnknownCleanup.Value; }"
+            : string.Empty;
+
+        string source = R2Source(
+                R2Admission
+                    + "await "
+                    + receiver
+                    + ".RunAsync(token).ConfigureAwait(false);",
+                "public interface IRepository { System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token); } "
+                    + "internal sealed class Repository : IRepository { private readonly System.IAsyncDisposable _cleanup; public Repository(KnownCleanup cleanup) : this(cleanup, string.Empty) { } internal Repository(System.IAsyncDisposable cleanup, string _) { _cleanup = cleanup; } internal Repository(System.IAsyncDisposable cleanup, bool _) { _cleanup = UnknownCleanup.Value; } "
+                    + additionalConstructor
+                    + " public async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { await using (_cleanup) { await System.Threading.Tasks.Task.Yield(); } } } "
+                    + "internal sealed class UnknownRepository : IRepository { public static IRepository Value { get; set; } = null!; public async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { await using (UnknownCleanup.Value) { await System.Threading.Tasks.Task.Yield(); } } } "
+                    + "internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"di-bound-receiver-cleanup\"); return default; } } "
+                    + "internal sealed class UnknownDependency { } "
+                    + "internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; } "
+                    + "internal static class Lookalike { internal static void AddScoped<TService, TImplementation>(Microsoft.Extensions.DependencyInjection.IServiceCollection services) where TImplementation : class, TService { } }")
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                registration + "services.AddHostedService<Worker>();",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(IRepository repository) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IRepository>());",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        bool found = result.Items.Any(static site =>
+                site.EnclosingType == "KnownCleanup"
+                && site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(!unresolved, found);
+
+        if (!unresolved)
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+                diagnostic.Code is "HOSTED_CALL_TARGET_UNRESOLVED"
+                    or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+        }
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("custom", true)]
+    [InlineData("factory-write", true)]
+    [InlineData("provider-write", true)]
+    public void SyncScopedDiReceiverRequiresExactStableFrameworkScope(
+        string sourceKind,
+        bool unresolved)
+    {
+        string scopeCreation = sourceKind == "custom"
+            ? "UnknownScopes.CreateScope(scopeFactory)"
+            : "scopeFactory.CreateScope()";
+
+        string factoryMutation = sourceKind == "factory-write"
+            ? "scopeFactory = UnknownScopes.Factory; "
+            : string.Empty;
+
+        string resolution = sourceKind == "provider-write"
+            ? "System.IServiceProvider provider = scope.ServiceProvider; provider = UnknownScopes.Provider; IRepository repository = provider.GetRequiredService<IRepository>(); "
+            : "IRepository repository = scope.ServiceProvider.GetRequiredService<IRepository>(); ";
+
+        string source = R2Source(
+                R2Admission
+                    + factoryMutation
+                    + "using Microsoft.Extensions.DependencyInjection.IServiceScope scope = "
+                    + scopeCreation
+                    + "; "
+                    + resolution
+                    + "await repository.RunAsync(token).ConfigureAwait(false);",
+                "public interface IRepository { System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token); } "
+                    + "internal sealed class Repository : IRepository { private readonly System.IAsyncDisposable _cleanup; public Repository(KnownCleanup cleanup) : this(cleanup, string.Empty) { } internal Repository(System.IAsyncDisposable cleanup, string _) { _cleanup = cleanup; } internal Repository(System.IAsyncDisposable cleanup, bool _) { _cleanup = UnknownCleanup.Value; } public async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { await using (_cleanup) { await System.Threading.Tasks.Task.Yield(); } } } "
+                    + "internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"sync-scoped-di-cleanup\"); return default; } } "
+                    + "internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; } "
+                    + "internal static class UnknownScopes { internal static Microsoft.Extensions.DependencyInjection.IServiceScope Scope { get; set; } = null!; internal static Microsoft.Extensions.DependencyInjection.IServiceScopeFactory Factory { get; set; } = null!; internal static System.IServiceProvider Provider { get; set; } = null!; internal static Microsoft.Extensions.DependencyInjection.IServiceScope CreateScope(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory _) => Scope; }")
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                "services.AddScoped<IRepository, Repository>(); services.AddSingleton<KnownCleanup>(); services.AddHostedService<Worker>();",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "KnownCleanup"
+                && site.Callee == "System.IO.File.Exists");
+        }
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Theory]
+    [InlineData("direct", false)]
+    [InlineData("helper", false)]
+    [InlineData("getter", false)]
+    [InlineData("local-function", false)]
+    [InlineData("callback-helper", false)]
+    [InlineData("local-function-helper", false)]
+    [InlineData("callback-helper-mutated", true)]
+    [InlineData("callback-helper-mutated-after-capture", true)]
+    [InlineData("forwarded-callback-helper", false)]
+    [InlineData("forwarded-callback-helper-mutated-after-capture", true)]
+    [InlineData("manual", true)]
+    public void DiReceiverProjectsUnusedConstructorStateButRetainsPrimaryParameterDemand(
+        string sourceKind,
+        bool unresolved)
+    {
+        string invocation = sourceKind switch
+        {
+            "helper" => "await DisposeThroughHelperAsync().ConfigureAwait(false);",
+            "getter" => "await using (Cleanup) { await System.Threading.Tasks.Task.Yield(); }",
+            "local-function" => "async System.Threading.Tasks.Task DisposeLocalAsync() { await using (cleanup) { await System.Threading.Tasks.Task.Yield(); } } await DisposeLocalAsync().ConfigureAwait(false);",
+            "callback-helper" => "System.Func<System.Threading.Tasks.Task> dispose = async () => await this.DisposeThroughHelperAsync().ConfigureAwait(false); await dispose().ConfigureAwait(false);",
+            "callback-helper-mutated" => "cleanup = UnknownCleanup.Value; System.Func<System.Threading.Tasks.Task> dispose = async () => await this.DisposeThroughHelperAsync().ConfigureAwait(false); await dispose().ConfigureAwait(false);",
+            "callback-helper-mutated-after-capture" => "System.Func<System.Threading.Tasks.Task> dispose = async () => await this.DisposeThroughHelperAsync().ConfigureAwait(false); cleanup = UnknownCleanup.Value; await dispose().ConfigureAwait(false);",
+            "forwarded-callback-helper" => "System.Func<System.Threading.Tasks.Task> dispose = async () => await this.DisposeThroughHelperAsync().ConfigureAwait(false); await InvokeAsync(dispose).ConfigureAwait(false);",
+            "forwarded-callback-helper-mutated-after-capture" => "System.Func<System.Threading.Tasks.Task> dispose = async () => await this.DisposeThroughHelperAsync().ConfigureAwait(false); cleanup = UnknownCleanup.Value; await InvokeAsync(dispose).ConfigureAwait(false);",
+            "local-function-helper" => "async System.Threading.Tasks.Task DisposeLocalAsync() { await DisposeThroughHelperAsync().ConfigureAwait(false); } await DisposeLocalAsync().ConfigureAwait(false);",
+            _ => "await using (cleanup) { await System.Threading.Tasks.Task.Yield(); }",
+        };
+
+        string receiver = sourceKind == "manual"
+            ? "UnknownRepository.Value"
+            : "repository";
+
+        string source = R2Source(
+                R2Admission
+                    + "await "
+                    + receiver
+                    + ".RunAsync(token).ConfigureAwait(false);",
+                "public interface IRepository { System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token); } "
+                    + "internal sealed class Repository(System.IAsyncDisposable cleanup, Noise n1, Noise n2, Noise n3, Noise n4, Noise n5, Noise n6, Noise n7, Noise n8) : IRepository { private readonly Noise _n1 = n1; private readonly Noise _n2 = n2; private readonly Noise _n3 = n3; private readonly Noise _n4 = n4; private readonly Noise _n5 = n5; private readonly Noise _n6 = n6; private readonly Noise _n7 = n7; private readonly Noise _n8 = n8; internal Repository(bool _) : this(UnknownCleanup.Value, new(), new(), new(), new(), new(), new(), new(), new()) { } public async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { _ = token; "
+                    + invocation
+                    + (sourceKind.StartsWith("forwarded-callback", StringComparison.Ordinal)
+                        ? " } private static System.Threading.Tasks.Task InvokeAsync(System.Func<System.Threading.Tasks.Task> callback) { return callback();"
+                        : string.Empty)
+                    + " } private System.IAsyncDisposable Cleanup => cleanup; private async System.Threading.Tasks.Task DisposeThroughHelperAsync() { await using (cleanup) { await System.Threading.Tasks.Task.Yield(); } } } "
+                    + "internal sealed class Noise { } "
+                    + "internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"projected-primary-cleanup\"); return default; } } "
+                    + "internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; } "
+                    + "internal static class UnknownRepository { internal static IRepository Value { get; set; } = null!; }")
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                "services.AddScoped<IRepository>(static _ => new Repository(new KnownCleanup(), new(), new(), new(), new(), new(), new(), new(), new())); services.AddHostedService<Worker>();",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(IRepository repository) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IRepository>());",
+                StringComparison.Ordinal);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(
+            !unresolved,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownCleanup"
+                && site.Callee == "System.IO.File.Exists"));
+
+        if (!unresolved)
+        {
+            HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
+                Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                    .EvaluationEnvironments,
+                static candidate => candidate.Member.StartsWith(
+                    "M:Repository.RunAsync(",
+                    StringComparison.Ordinal));
+
+            Assert.True(metric.EquivalentKeyNodes <= 8);
+        }
+    }
+
+    [Theory]
+    [InlineData("callback", false, true, false)]
+    [InlineData("callback", true, true, false)]
+    [InlineData("local-function", false, true, false)]
+    [InlineData("direct-callback", false, true, false)]
+    [InlineData("uninvoked-local-function", false, false, false)]
+    [InlineData("other-instance", false, false, true)]
+    [InlineData("manual", false, false, true)]
+    public void ScopedDiReceiverRetainsOnlyItsOwnReadonlyFieldDemandThroughContainedHelpers(
+        string shape,
+        bool productionReferences,
+        bool effect,
+        bool unresolved)
+    {
+        string cleanup = shape switch
+        {
+            "direct-callback" => "_cleanup",
+            "other-instance" => "new Repository(UnknownCleanup.Value, string.Empty).GetCleanup()",
+            _ => "this.GetCleanup()",
+        };
+
+        string body = "await using (" + cleanup + ") { await Task.Yield(); }";
+
+        string invocation = shape switch
+        {
+            "local-function" => "async Task DisposeLocalAsync() { " + body + " } await DisposeLocalAsync();",
+            "uninvoked-local-function" => "async Task DisposeLocalAsync() { " + body + " } _ = token;",
+            _ => "await Retry(async () => { " + body + " });",
+        };
+
+        string receiver = shape == "manual"
+            ? "new Repository(UnknownCleanup.Value, string.Empty)"
+            : "repository";
+
+        string source = R2Source(
+                R2Admission
+                    + "await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope(); "
+                    + "IRepository repository = scope.ServiceProvider.GetRequiredService<IRepository>(); "
+                    + "await " + receiver + ".RunAsync(token);",
+                $$"""
+                public interface IRepository { Task RunAsync(CancellationToken token); }
+
+                internal sealed class Repository : IRepository
+                {
+                    private readonly IAsyncDisposable _cleanup;
+
+                    public Repository(KnownCleanup cleanup) : this(cleanup, string.Empty) { }
+
+                    internal Repository(IAsyncDisposable cleanup, string unused) { _cleanup = cleanup; }
+
+                    public async Task RunAsync(CancellationToken token) { {{invocation}} }
+
+                    private IAsyncDisposable GetCleanup() => _cleanup;
+
+                    private static Task Retry(Func<Task> operation) => operation();
+                }
+
+                internal sealed class KnownCleanup : IAsyncDisposable
+                {
+                    public ValueTask DisposeAsync()
+                    {
+                        System.IO.File.Exists("callback-helper-cleanup");
+
+                        return default;
+                    }
+                }
+
+                internal static class UnknownCleanup
+                {
+                    internal static IAsyncDisposable Value { get; set; } = null!;
+                }
+                """)
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                "services.AddScoped<IRepository, Repository>(); services.AddSingleton<KnownCleanup>(); services.AddHostedService<Worker>();",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());",
+                StringComparison.Ordinal);
+
+        CSharpCompilation compilation = productionReferences
+            ? CompileWithProductionReferencePack(
+                source,
+                "RetroDownfall.Arcanum.Infrastructure")
+            : Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Equal(unresolved, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(effect, result.Items.Any(static site =>
+            site.EnclosingType == "KnownCleanup"
+            && site.Member == "DisposeAsync"
+            && site.Callee == "System.IO.File.Exists"));
+    }
+
+    [Theory]
+    [InlineData("local-function", true)]
+    [InlineData("callback", true)]
+    [InlineData("uninvoked-local-function", false)]
+    public void DiReceiverRetainsReadonlyFieldCapturedByContainedCallableWithoutExecutingUninvokedBody(
+        string sourceKind,
+        bool executes)
+    {
+        string invocation = sourceKind switch
+        {
+            "callback" => "System.Func<System.Threading.Tasks.Task> dispose = async () => { await using (_cleanup) { await System.Threading.Tasks.Task.Yield(); } }; await dispose().ConfigureAwait(false);",
+            "local-function" => "async System.Threading.Tasks.Task DisposeLocalAsync() { await using (_cleanup) { await System.Threading.Tasks.Task.Yield(); } } await DisposeLocalAsync().ConfigureAwait(false);",
+            _ => "async System.Threading.Tasks.Task DisposeLocalAsync() { await using (_cleanup) { await System.Threading.Tasks.Task.Yield(); } } _ = token;",
+        };
+
+        string source = R2Source(
+                R2Admission
+                    + "await repository.RunAsync(token).ConfigureAwait(false);",
+                "public interface IRepository { System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token); } "
+                    + "internal sealed class Repository : IRepository { private readonly System.IAsyncDisposable _cleanup; private readonly Noise _noise; internal Repository(System.IAsyncDisposable cleanup, Noise noise) { _cleanup = cleanup; _noise = noise; } internal Repository(bool _) { _cleanup = UnknownCleanup.Value; _noise = new(); } public async System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken token) { "
+                    + invocation
+                    + " } } "
+                    + "internal sealed class Noise { } "
+                    + "internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"projected-captured-field-cleanup\"); return default; } } "
+                    + "internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; }")
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                "services.AddScoped<IRepository>(static _ => new Repository(new KnownCleanup(), new())); services.AddHostedService<Worker>();",
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(IRepository repository) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IRepository>());",
+                StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(
+            executes,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownCleanup"
+                && site.Callee == "System.IO.File.Exists"));
+
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReadonlyConnectionCarrierPreservesOnlyItsExactConstructedSource(bool unknown)
+    {
+        string source = unknown
+            ? "UnknownReadonlyConnection.Value"
+            : "new Microsoft.Data.Sqlite.SqliteConnection()";
+
+        string body = "ReadonlyConnectionCarrier carrier = new(new ReadonlyConnectionLease("
+            + source
+            + ")); ReadonlyConnectionStore store = new(carrier.BorrowCoreConnection()); "
+            + "await store.ReadAsync(token).ConfigureAwait(false);";
+
+        const string helpers = """
+            internal static class UnknownReadonlyConnection
+            {
+                internal static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!;
+            }
+
+            internal sealed class ReadonlyConnectionLease : System.IAsyncDisposable
+            {
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+
+                internal ReadonlyConnectionLease(Microsoft.Data.Sqlite.SqliteConnection connection)
+                {
+                    _connection = connection;
+                }
+
+                internal Microsoft.Data.Sqlite.SqliteConnection Connection => _connection;
+
+                public System.Threading.Tasks.ValueTask DisposeAsync() => _connection.DisposeAsync();
+            }
+
+            internal sealed class ReadonlyConnectionCarrier
+            {
+                private readonly ReadonlyConnectionLease _lease;
+
+                internal ReadonlyConnectionCarrier(ReadonlyConnectionLease lease)
+                {
+                    _lease = lease;
+                }
+
+                internal Microsoft.Data.Sqlite.SqliteConnection BorrowCoreConnection() => _lease.Connection;
+            }
+
+            internal sealed class ReadonlyConnectionStore
+            {
+                private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+
+                internal ReadonlyConnectionStore(Microsoft.Data.Sqlite.SqliteConnection connection)
+                {
+                    _connection = connection;
+                }
+
+                internal async System.Threading.Tasks.Task ReadAsync(System.Threading.CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteCommand command = _connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                    ReadBlob(reader);
+                }
+
+                private static void ReadBlob(Microsoft.Data.Sqlite.SqliteDataReader reader)
+                {
+                    using System.IO.Stream stream = reader.GetStream(0);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helpers));
+
+        string[] cleanupTypes =
+        [
+            "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
+            "Microsoft.Data.Sqlite.SqliteDataReader.DisposeAsync;",
+            "System.IO.Stream.Dispose;",
+        ];
+
+        Assert.All(cleanupTypes, prefix => Assert.Equal(
+            unknown,
+            result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(prefix, StringComparison.Ordinal))));
+    }
+
     [Fact]
     public void ExactSqliteReaderForwardedToAuthoredBlobHelperRetainsGetStreamProvenance()
     {
@@ -15083,6 +16975,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionCovenantHostedSweepRetainsExactCleanupProvenanceAtBoundedStateCap()
     {
         HostedProducerServiceEntry service =
@@ -15961,13 +17854,18 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("multiply-assigned-field", true)]
     [InlineData("unguarded", false)]
     [InlineData("multiple-session-source", true)]
+    [InlineData("local-exact", false)]
+    [InlineData("local-unknown", true)]
+    [InlineData("local-derived", true)]
+    [InlineData("local-reassigned", true)]
     public void ProductionShapedSessionCleanupRetainsOnlyExactReadonlyReceiverState(
         string shape,
         bool unresolved)
     {
         string connectionSource = shape switch
         {
-            "unknown" => "UnknownResetConnection.Value",
+            "unknown" or "local-unknown" => "UnknownResetConnection.Value",
+            "local-derived" => "new DerivedResetConnection()",
             "exact-derived" =>
                 "token.CanBeCanceled ? new Microsoft.Data.Sqlite.SqliteConnection() : new DerivedResetConnection()",
             "derived-exact" =>
@@ -15983,9 +17881,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             ? "private Microsoft.Data.Sqlite.SqliteConnection _connection;"
             : "private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;";
 
-        string fieldAssignments = shape == "multiply-assigned-field"
-            ? "_connection = lease.Connection; _connection = UnknownResetConnection.Value;"
-            : "_connection = lease.Connection;";
+        string fieldAssignments = shape switch
+        {
+            "multiply-assigned-field" => "_connection = lease.Connection; _connection = UnknownResetConnection.Value;",
+            "local-exact" or "local-unknown" or "local-derived" => "Microsoft.Data.Sqlite.SqliteConnection selected = lease.Connection; _connection = selected;",
+            "local-reassigned" => "Microsoft.Data.Sqlite.SqliteConnection selected = lease.Connection; selected = UnknownResetConnection.Value; _connection = selected;",
+            _ => "_connection = lease.Connection;",
+        };
 
         string mutation = shape == "mutable-field"
             ? "internal void Replace(Microsoft.Data.Sqlite.SqliteConnection connection) => _connection = connection;"
@@ -16003,7 +17905,10 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             "ResetDatabase database = new(); "
             + "ResetResult<ResetSession> opened = await database.OpenAsync(token).ConfigureAwait(false); "
             + guard
-            + "await using ResetSession session = opened.Value;";
+            + "await using ResetSession session = opened.Value;"
+            + (shape.StartsWith("local-", StringComparison.Ordinal)
+                ? "await session.ReadAsync().ConfigureAwait(false);"
+                : string.Empty);
 
         string helpers = $$"""
             internal sealed class ResetResult<T>
@@ -16078,6 +17983,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
                 {{mutation}}
 
+                {{(shape.StartsWith("local-", StringComparison.Ordinal) ? "internal System.Threading.Tasks.Task ReadAsync() => ExecuteAsync();" : string.Empty)}}
+
                 public async System.Threading.Tasks.ValueTask DisposeAsync()
                 {
                     await TryRollbackAsync().ConfigureAwait(false);
@@ -16112,8 +18019,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             }
             """;
 
-        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
-            R2Source(R2Admission + body, helpers));
+        string source = R2Source(R2Admission + body, helpers);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
 
         Assert.Equal(
             unresolved,
@@ -16130,6 +18041,39 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 && site.Kind == HostedProducerSiteKind.DatabaseAccess
                 && site.Callee
                     == "System.Data.Common.DbCommand.ExecuteNonQueryAsync");
+        }
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("Replace(ref connection);", false)]
+    [InlineData("ReplaceOut(out connection);", false)]
+    [InlineData("ref Microsoft.Data.Sqlite.SqliteConnection alias = ref connection; alias = Unknown.Value;", false)]
+    [InlineData("Replace(ref connection);", true)]
+    public void ConstructedReadonlySqliteReceiverRejectsByReferenceReplacement(string mutation, bool delegated)
+    {
+        string constructor = delegated
+            ? "private SqliteConsumer(Microsoft.Data.Sqlite.SqliteConnection input, int unused) { connection = input; } public SqliteConsumer(Microsoft.Data.Sqlite.SqliteConnection input) : this(input, 0) { " + mutation + " }"
+            : "public SqliteConsumer(Microsoft.Data.Sqlite.SqliteConnection input) { connection = input; " + mutation + " }";
+
+        string source = R2Source(
+            R2Admission + "await new SqliteConsumer(new Microsoft.Data.Sqlite.SqliteConnection()).ReadAsync(token);",
+            "sealed class SqliteConsumer { private readonly Microsoft.Data.Sqlite.SqliteConnection connection = new(); "
+                + constructor
+                + " static void Replace(ref Microsoft.Data.Sqlite.SqliteConnection target) { target = Unknown.Value; } static void ReplaceOut(out Microsoft.Data.Sqlite.SqliteConnection target) { target = Unknown.Value; } "
+                + "public async Task ReadAsync(CancellationToken token) { await using var command = connection.CreateCommand(); await using var reader = await command.ExecuteReaderAsync(token); } } "
+                + "static class Unknown { public static Microsoft.Data.Sqlite.SqliteConnection Value { get; set; } = null!; }");
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        foreach (string type in new[] { "SqliteCommand", "SqliteDataReader" })
+        {
+            Assert.Equal(mutation.Length != 0, result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("Microsoft.Data.Sqlite." + type + ".DisposeAsync;", StringComparison.Ordinal)));
         }
     }
 
@@ -17065,6 +19009,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 consumer));
     }
 
+
     [Theory]
     [InlineData("exact", false)]
     [InlineData("unknown", true)]
@@ -17274,6 +19219,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("get-only-property", "exact", false)]
     [InlineData("get-only-property", "unknown", true)]
     [InlineData("get-only-property", "derived", true)]
+    [InlineData("get-only-property", "other-instance", true)]
+    [InlineData("get-only-property", "other-constructor", true)]
     public void ConventionalConstructorNonDisposableServiceForwardingRetainsOnlyExactCleanupState(
         string carrier,
         string sourceKind,
@@ -17281,7 +19228,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     {
         string connection = sourceKind switch
         {
-            "exact" => "new Microsoft.Data.Sqlite.SqliteConnection()",
+            "exact" or "other-instance" or "other-constructor" => "new Microsoft.Data.Sqlite.SqliteConnection()",
             "unknown" => "UnknownForwardedConnection.Value",
             "derived" => "new DerivedForwardedSqliteConnection()",
             _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
@@ -17303,7 +19250,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         string body =
             "await using Microsoft.Data.Sqlite.SqliteConnection connection = "
             + connection
-            + "; ConventionalForwardingService service = new(new CleanupService(connection)); "
+            + "; ConventionalForwardingService service = new("
+            + (sourceKind == "other-constructor" ? "0" : "new CleanupService(connection)")
+            + "); "
             + "await service.RunAsync(token).ConfigureAwait(false);";
 
         string helper = $$"""
@@ -17316,9 +19265,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     {{assignment}}
                 }
 
+                {{(sourceKind == "other-constructor" ? "internal ConventionalForwardingService(int _) { }" : string.Empty)}}
+
                 internal System.Threading.Tasks.Task RunAsync(
                     System.Threading.CancellationToken token) =>
-                    {{receiver}}.RunAsync(token);
+                    {{(sourceKind == "other-instance" ? "new ConventionalForwardingService(new CleanupService(UnknownForwardedConnection.Value)).Service" : receiver)}}.RunAsync(token);
             }
 
             internal sealed class CleanupService
@@ -17352,8 +19303,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             }
             """;
 
-        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
-            R2Source(R2Admission + body, helper));
+        string source = R2Source(R2Admission + body, helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
 
         bool commandUnresolved = result.Diagnostics.Any(static diagnostic =>
             diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
@@ -17660,10 +19615,15 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("no-public", true, true)]
     [InlineData("explicit-internal-factory", true, false)]
     [InlineData("explicit-internal-factory", false, true)]
+    [InlineData("exact", true, false, true)]
+    [InlineData("unknown", true, true, true)]
+    [InlineData("transformed", true, true, true)]
+    [InlineData("reassigned-forwarded", true, true, true)]
     public void ProductionShapedAsyncScopedStoreRequiresExactPublicDiConstructorForwarding(
         string shape,
         bool configured,
-        bool unresolved)
+        bool unresolved,
+        bool productionReferences = false)
     {
         string constructors = shape switch
         {
@@ -17760,7 +19720,27 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             + AdmissionTypes
             + helpers;
 
-        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+        HostedProducerDiscovery<HostedProducerSite> result;
+
+        if (productionReferences)
+        {
+            CSharpCompilation compilation = CompileWithProductionReferencePack(
+                source,
+                "RetroDownfall.Arcanum.Infrastructure");
+
+            Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error));
+
+            result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+        }
+        else
+        {
+            result = R2Discover(source);
+        }
 
         string[] cleanupTypes =
         [
@@ -17778,9 +19758,151 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     StringComparison.Ordinal))));
     }
 
-    [Fact]
-    public void ProductionShapedConfiguredEfHelperRetainsDbCleanupProvenance()
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ScopedEfReceiverRetainsConfiguredCleanupThroughRetryHelper(
+        bool configured,
+        bool unresolved)
     {
+        const string constructors =
+            "public UploadedFileRepository(ExactBatchSqliteContext db) : this(db, \"root\") { } internal UploadedFileRepository(ExactBatchSqliteContext db, string root) { _ = root; _db = db; }";
+
+        const string storeRegistration =
+            "services.AddScoped<IUploadedFileRepository, UploadedFileRepository>(); ";
+
+        string providerConfiguration = configured
+            ? "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\");"
+            : "options.EnableDetailedErrors();";
+
+        string registration =
+            "services.AddDbContext<ExactBatchSqliteContext>((sp, options) => { "
+            + providerConfiguration
+            + " }); "
+            + storeRegistration
+            + "services.AddHostedService<Worker>();";
+
+        string helpers = $$"""
+            public sealed class ExactBatchSqliteContext(
+                Microsoft.EntityFrameworkCore.DbContextOptions<ExactBatchSqliteContext> options) :
+                Microsoft.EntityFrameworkCore.DbContext(options)
+            {
+            }
+
+            internal interface IUploadedFileRepository
+            {
+                System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token);
+            }
+
+            internal sealed class UploadedFileRepository : IUploadedFileRepository
+            {
+                private readonly ExactBatchSqliteContext _db;
+
+                {{constructors}}
+
+                public async System.Threading.Tasks.Task ReadAsync(
+                    System.Threading.CancellationToken token)
+                {
+                    await Retry(async () =>
+                    {
+                        System.Data.Common.DbConnection connection =
+                            await this.OpenConnectionAsync(token).ConfigureAwait(false);
+
+                        await using System.Data.Common.DbCommand command =
+                            connection.CreateCommand();
+
+                        await using System.Data.Common.DbDataReader reader =
+                            await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                        await using System.Data.Common.DbTransaction transaction =
+                            await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+                    }).ConfigureAwait(false);
+                }
+
+                private System.Threading.Tasks.Task<System.Data.Common.DbConnection>
+                    OpenConnectionAsync(System.Threading.CancellationToken token) =>
+                    System.Threading.Tasks.Task.FromResult(
+                        Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions
+                            .GetDbConnection(_db.Database));
+
+                private static System.Threading.Tasks.Task Retry(
+                    System.Func<System.Threading.Tasks.Task> operation) => operation();
+            }
+
+            internal static class UnknownBatchSqliteContext
+            {
+                internal static ExactBatchSqliteContext Value { get; set; } = null!;
+            }
+            """;
+
+        string source = RegistrationSource(registration)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(IServiceScopeFactory scopeFactory) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<IServiceScopeFactory>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { "
+                    + R2Admission
+                    + "await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope(); "
+                    + "IUploadedFileRepository store = scope.ServiceProvider.GetRequiredService<IUploadedFileRepository>(); "
+                    + "await store.ReadAsync(token).ConfigureAwait(false); }",
+                StringComparison.Ordinal)
+            + AdmissionTypes
+            + helpers;
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            source,
+            "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.Data.Common.DbCommand.ExecuteReaderAsync");
+
+        string[] cleanupTypes =
+        [
+            "System.Data.Common.DbCommand.DisposeAsync;",
+            "System.Data.Common.DbDataReader.DisposeAsync;",
+            "System.Data.Common.DbTransaction.DisposeAsync;",
+        ];
+
+        Assert.All(cleanupTypes, prefix => Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    prefix,
+                    StringComparison.Ordinal))));
+    }
+
+    [Theory]
+    [InlineData("bound", false)]
+    [InlineData("unknown", true)]
+    public void ProductionShapedConfiguredEfHelperRequiresExactDbCleanupProvenance(
+        string sourceKind,
+        bool unresolved)
+    {
+        string storeArgument = sourceKind switch
+        {
+            "bound" => "db",
+            "unknown" => "UnknownHelperSqliteContext.Value",
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceKind)),
+        };
+
         const string registration =
             "services.AddDbContextPool<ExactHelperSqliteContext>((sp, options) => "
             + "ExactOptionsConfigurator.Configure(options)); "
@@ -17821,8 +19943,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         connection.CreateCommand();
 
                     await using System.Data.Common.DbDataReader reader =
-                        await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                    await command.ExecuteReaderAsync(token).ConfigureAwait(false);
                 }
+            }
+
+            internal static class UnknownHelperSqliteContext
+            {
+                internal static ExactHelperSqliteContext Value { get; set; } = null!;
             }
             """;
 
@@ -17839,21 +19966,23 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
                 "public async Task StartAsync(CancellationToken token) { "
                     + R2Admission
-                    + "await new ExactHelperStore(db).ReadAsync(token).ConfigureAwait(false); }",
+                    + $"await new ExactHelperStore({storeArgument}).ReadAsync(token).ConfigureAwait(false); }}",
                 StringComparison.Ordinal)
             + AdmissionTypes
             + helpers;
 
         HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
 
-        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
-            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
-            && (diagnostic.Detail.StartsWith(
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && (diagnostic.Detail.StartsWith(
                     "System.Data.Common.DbCommand.DisposeAsync;",
                     StringComparison.Ordinal)
-                || diagnostic.Detail.StartsWith(
+                    || diagnostic.Detail.StartsWith(
                     "System.Data.Common.DbDataReader.DisposeAsync;",
-                    StringComparison.Ordinal)));
+                    StringComparison.Ordinal))));
     }
 
     [Theory]
@@ -19092,6 +21221,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionReferencePackResolvesThreadingMechanicalCleanupIdentities()
     {
         const string source =
@@ -19311,6 +21441,86 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void AuthoredOutFileStreamSubtypeRetainsAuthoredCleanupOverride()
+    {
+        const string helpers = """
+            internal static class OverridingFileFactory
+            {
+                internal static void Open(out System.IO.FileStream stream) =>
+                    stream = new OverridingFileStream();
+
+                private sealed class OverridingFileStream : System.IO.FileStream
+                {
+                    internal OverridingFileStream()
+                        : base("path", System.IO.FileMode.OpenOrCreate) { }
+
+                    public override System.Threading.Tasks.ValueTask DisposeAsync()
+                    {
+                        System.IO.File.Delete("authored-subtype-cleanup");
+                        return base.DisposeAsync();
+                    }
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "OverridingFileFactory.Open(out System.IO.FileStream stream); "
+                    + "await using (stream.ConfigureAwait(false)) { }",
+                helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType
+                == "OverridingFileFactory.OverridingFileStream"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void AuthoredOutFiniteExternalCleanupRetainsFileSystemEffect()
+    {
+        const string helpers = """
+            internal static class ExternalStreamFactory
+            {
+                internal static bool TryOpen(out System.IO.Stream? stream)
+                {
+                    stream = null;
+                    if (System.Environment.TickCount == 0)
+                    {
+                        stream = System.IO.File.OpenRead("path");
+                        return true;
+                    }
+
+                    if (System.Environment.TickCount == 1)
+                    {
+                        stream = new System.IO.MemoryStream();
+                        return true;
+                    }
+
+                    return false;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission
+                    + "if (!ExternalStreamFactory.TryOpen(out System.IO.Stream? stream) || stream is null) return; "
+                    + "using (stream) { }",
+                helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileStream.Dispose");
+    }
+
+    [Fact]
     public void AuthoredOutCleanupRetainsUnknownMultiTargetAndRefFailures()
     {
         const string helpers = """
@@ -19337,17 +21547,31 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     stream = null;
                     if (System.Environment.TickCount == 0)
                     {
-                        stream = System.IO.File.OpenRead("path");
+                        stream = new FirstCleanupStream();
                         return true;
                     }
 
                     if (System.Environment.TickCount == 1)
                     {
-                        stream = new System.IO.MemoryStream();
+                        stream = new SecondCleanupStream();
                         return true;
                     }
 
                     return false;
+                }
+
+                private sealed class FirstCleanupStream
+                    : System.IO.MemoryStream, System.IDisposable
+                {
+                    void System.IDisposable.Dispose() =>
+                        System.IO.File.Delete("first-cleanup");
+                }
+
+                private sealed class SecondCleanupStream
+                    : System.IO.MemoryStream, System.IDisposable
+                {
+                    void System.IDisposable.Dispose() =>
+                        System.IO.File.Delete("second-cleanup");
                 }
 
                 internal static void Replace(ref System.IO.FileStream? stream) =>
@@ -19764,12 +21988,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("derived")]
     [InlineData("unrelated")]
     [InlineData("factory-unrelated")]
+    [InlineData("factory-other-provider")]
+    [InlineData("factory-mismatched-argument")]
     [InlineData("fake-registration")]
     public void AwaitUsingRequiresExactBoundSourceProvenanceForTrustedSqliteFactories(
         string sourceKind)
     {
-        CSharpCompilation infrastructure = Compile(
-                "using Microsoft.Data.Sqlite; "
+        string infrastructureSource = "using Microsoft.Data.Sqlite; "
                     + "namespace ProductionSqlite { "
                     + "public interface IConnectionLease { SqliteConnection Connection { get; } } "
                     + "public sealed class ConnectionLease(SqliteConnection connection) : IConnectionLease { public SqliteConnection Connection { get; } = connection; } "
@@ -19787,13 +22012,25 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     + "public static class UnrelatedConnectionSource { public static IConnectionSource Value { get; set; } = new DerivedConnectionSource(); } "
                     + "public sealed class MutationTransaction(SqliteConnection connection) { public SqliteConnection Connection { get; } = connection; public SqliteCommand CreateCommand() => Connection.CreateCommand(); } "
                     + "public static class Pipeline { public static async System.Threading.Tasks.Task RunAsync(SqliteConnection connection, System.Threading.CancellationToken token) { await using SqliteCommand direct = connection.CreateCommand(); await using SqliteDataReader reader = await direct.ExecuteReaderAsync(token).ConfigureAwait(false); await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, token).ConfigureAwait(false); await using SqliteCommand wrapped = new MutationTransaction(connection).CreateCommand(); } } "
-                    + "}")
+                    + "}";
+
+        if (sourceKind == "factory-mismatched-argument")
+        {
+            infrastructureSource = infrastructureSource.Replace(
+                "ConnectionSource(ConnectionMarker marker, IConnectionFactory factory)",
+                "ConnectionSource(ConnectionMarker marker, IConnectionFactory factory, IConnectionFactory decoy)",
+                StringComparison.Ordinal);
+        }
+
+        CSharpCompilation infrastructure = Compile(infrastructureSource)
             .WithAssemblyName("Cleanup.Sqlite.Infrastructure");
 
         string sourceRegistration = sourceKind switch
         {
             "exact" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.ConnectionSource>(); services.AddHostedService<Worker>();",
             "exact-factory" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource>(sp => new ProductionSqlite.ConnectionSource(sp.GetRequiredService<ProductionSqlite.ConnectionMarker>(), sp.GetRequiredService<ProductionSqlite.IConnectionFactory>())); services.AddHostedService<Worker>();",
+            "factory-other-provider" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource>(sp => new ProductionSqlite.ConnectionSource(sp.GetRequiredService<ProductionSqlite.ConnectionMarker>(), UnknownFactoryInputs.Provider.GetRequiredService<ProductionSqlite.IConnectionFactory>())); services.AddHostedService<Worker>();",
+            "factory-mismatched-argument" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource>(sp => new ProductionSqlite.ConnectionSource(sp.GetRequiredService<ProductionSqlite.ConnectionMarker>(), UnknownFactoryInputs.Factory, sp.GetRequiredService<ProductionSqlite.IConnectionFactory>())); services.AddHostedService<Worker>();",
             "unknown" => "services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.UnknownConnectionSource>(); services.AddHostedService<Worker>();",
             "derived" => "services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.DerivedConnectionSource>(); services.AddHostedService<Worker>();",
             "unrelated" => "services.AddSingleton<ProductionSqlite.ConnectionMarker>(); services.AddSingleton<ProductionSqlite.IConnectionFactory, ProductionSqlite.ConnectionFactory>(); services.AddSingleton<ProductionSqlite.IConnectionSource, ProductionSqlite.ConnectionSource>(); services.AddHostedService<Worker>();",
@@ -19833,6 +22070,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 "using Microsoft.Extensions.Hosting; using Microsoft.Data.Sqlite;",
                 StringComparison.Ordinal)
             + AdmissionTypes
+            + (sourceKind is "factory-other-provider" or "factory-mismatched-argument"
+                ? " internal static class UnknownFactoryInputs { internal static System.IServiceProvider Provider { get; set; } = null!; internal static ProductionSqlite.IConnectionFactory Factory { get; set; } = null!; }"
+                : string.Empty)
             + (sourceKind == "fake-registration"
                 ? " namespace Microsoft.Extensions.DependencyInjection { internal static class FakeRegistrations { internal static IServiceCollection AddSingleton<TContract, TImplementation>(IServiceCollection services) => services; } }"
                 : string.Empty);
@@ -19866,7 +22106,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             .ToArray();
 
         if (sourceKind is "unknown" or "derived" or "unrelated"
-            or "factory-unrelated" or "fake-registration")
+            or "factory-unrelated" or "factory-other-provider"
+            or "factory-mismatched-argument" or "fake-registration")
         {
             Assert.Contains(unresolved, static detail => detail.StartsWith(
                 "Microsoft.Data.Sqlite.SqliteCommand.DisposeAsync;",
@@ -20107,11 +22348,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         + index
                         + "~"
                         + fingerprint) with
-                {
-                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
-                    WorkKind = null,
-                    Proof = "Worker.StartAsync: equivalent cleanup cache fixture",
-                })
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: equivalent cleanup cache fixture",
+            })
             .ToArray();
 
         HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
@@ -20183,11 +22424,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                         + index
                         + "~"
                         + fingerprint) with
-                {
-                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
-                    WorkKind = null,
-                    Proof = "Worker.StartAsync: incomplete cleanup cache fixture",
-                })
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: incomplete cleanup cache fixture",
+            })
             .ToArray();
 
         CSharpCompilation compilation = Compile(source);
@@ -20590,6 +22831,542 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Contains(result.Diagnostics, static diagnostic =>
             diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("missing", true)]
+    [InlineData("ambiguous", true)]
+    [InlineData("custom", true)]
+    [InlineData("manual-call", true)]
+    [InlineData("other-instance", true)]
+    [InlineData("new-unknown-instance", true)]
+    public void DeclaredRootUsesOnlyItsExactRegisteredFactoryConstruction(
+        string sourceKind,
+        bool unresolved)
+    {
+        string registration = sourceKind switch
+        {
+            "missing" => "services.AddHostedService<Worker>();",
+            "ambiguous" =>
+                "services.AddSingleton(static sp => new RegisteredRoot(new RootOptions { Lease = new KnownPropertyCleanup() })); "
+                    + "services.AddSingleton(static sp => new RegisteredRoot(UnknownRoot.Options)); services.AddHostedService<Worker>();",
+            "custom" =>
+                "Lookalike.AddSingleton<RegisteredRoot>(services, static sp => new RegisteredRoot(new RootOptions { Lease = new KnownPropertyCleanup() })); services.AddHostedService<Worker>();",
+            _ =>
+                "services.AddSingleton(static sp => new RegisteredRoot(new RootOptions { Lease = new KnownPropertyCleanup() })); services.AddHostedService<Worker>();",
+        };
+
+        string source = RegistrationSource(registration)
+            + "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"registered-root-cleanup\"); return default; } } "
+            + "internal sealed class RootOptions { internal IPropertyCleanup Lease { get; init; } = null!; } "
+            + "internal sealed class RegisteredRoot { private readonly RootOptions _options; internal RegisteredRoot(RootOptions options) { _options = options; } internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync(); private async System.Threading.Tasks.Task RunCoreAsync() { await using (_options.Lease.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } "
+            + "internal static class UnknownRoot { internal static RootOptions Options { get; set; } = null!; internal static RegisteredRoot Value { get; set; } = null!; } "
+            + "internal static class Lookalike { internal static void AddSingleton<T>(Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Func<System.IServiceProvider, T> factory) { } }";
+
+        if (sourceKind == "manual-call")
+        {
+            source = source.Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public Task StartAsync(CancellationToken token) => UnknownRoot.Value.RunAsync();",
+                StringComparison.Ordinal);
+        }
+
+        if (sourceKind == "other-instance")
+        {
+            source = source.Replace(
+                "internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync();",
+                "internal System.Threading.Tasks.Task RunAsync() => UnknownRoot.Value.RunCoreAsync();",
+                StringComparison.Ordinal);
+        }
+
+        if (sourceKind == "new-unknown-instance")
+        {
+            source = source.Replace(
+                "internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync();",
+                "internal System.Threading.Tasks.Task RunAsync() => new RegisteredRoot(UnknownRoot.Options).RunCoreAsync();",
+                StringComparison.Ordinal);
+        }
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "RegisteredRoot.RunAsync",
+            "src/Fixture.cs",
+            "RegisteredRoot",
+            "RunAsync",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "RegisteredRoot.RunAsync: exact declared root fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "KnownPropertyCleanup"
+                && site.Callee == "System.IO.File.Exists");
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void DeclaredRootRetainsConstructorDependencyThroughReadOnlySiblingField(
+        bool readOnlySibling,
+        bool unresolved)
+    {
+        string optionsField = readOnlySibling
+            ? "private readonly RootOptions _options;"
+            : "private RootOptions _options;";
+
+        string source = RegistrationSource(
+                "services.AddSingleton(static sp => new RegisteredRoot(new RootOptions { Lease = new KnownPropertyCleanup() })); services.AddHostedService<Worker>();")
+            + "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"transitive-root-cleanup\"); return default; } } "
+            + "internal sealed class RootOptions { internal IPropertyCleanup? Lease { get; init; } } "
+            + "internal sealed class RegisteredRoot { "
+            + optionsField
+            + " private readonly IPropertyCleanup? _cleanup; "
+            + "internal RegisteredRoot(RootOptions options) { _options = options; _cleanup = _options.Lease; } "
+            + "internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync(); "
+            + "private async System.Threading.Tasks.Task RunCoreAsync() { await using (_cleanup!.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "RegisteredRoot.RunAsync",
+            "src/Fixture.cs",
+            "RegisteredRoot",
+            "RunAsync",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "RegisteredRoot.RunAsync: transitive constructor dependency fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        output.WriteLine(string.Join(
+            "\n",
+            result.Diagnostics.Select(static diagnostic =>
+                diagnostic.Code + ": " + diagnostic.Detail)));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "KnownPropertyCleanup"
+                && site.Callee == "System.IO.File.Exists");
+        }
+    }
+
+    [Theory]
+    [InlineData("assignment")]
+    [InlineData("member")]
+    [InlineData("ref")]
+    [InlineData("out")]
+    public void DeclaredRootRejectsMutatedTransitiveConstructorDependency(
+        string mutation)
+    {
+        string mutationStatement = mutation switch
+        {
+            "assignment" => "options = UnknownRoot.Options;",
+            "member" => "options.Lease = UnknownRoot.Cleanup;",
+            "ref" => "Mutate(ref options);",
+            "out" => "MutateOut(out options);",
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
+        };
+
+        string source = RegistrationSource(
+                "services.AddSingleton(static sp => new RegisteredRoot(new RootOptions { Lease = new KnownPropertyCleanup() })); services.AddHostedService<Worker>();")
+            + "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"mutated-transitive-root-cleanup\"); return default; } } "
+            + "internal sealed class RootOptions { internal IPropertyCleanup? Lease { get; set; } } "
+            + "internal static class UnknownRoot { internal static RootOptions Options { get; set; } = null!; internal static IPropertyCleanup Cleanup { get; set; } = null!; } "
+            + "internal sealed class RegisteredRoot { "
+            + "private readonly RootOptions _options; private readonly IPropertyCleanup? _cleanup; "
+            + "internal RegisteredRoot(RootOptions options) { "
+            + mutationStatement
+            + " _options = options; _cleanup = _options.Lease; } "
+            + "private static void Mutate(ref RootOptions options) => options = UnknownRoot.Options; "
+            + "private static void MutateOut(out RootOptions options) => options = UnknownRoot.Options; "
+            + "internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync(); "
+            + "private async System.Threading.Tasks.Task RunCoreAsync() { await using (_cleanup!.ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "RegisteredRoot.RunAsync",
+            "src/Fixture.cs",
+            "RegisteredRoot",
+            "RunAsync",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "RegisteredRoot.RunAsync: mutated transitive constructor dependency fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.EnclosingType == "KnownPropertyCleanup"
+            && site.Callee == "System.IO.File.Exists");
+    }
+
+    [Theory]
+    [InlineData("constructed-left", false)]
+    [InlineData("constructed-right", false)]
+    [InlineData("conflicting-arm", true)]
+    [InlineData("missing-registration", true)]
+    [InlineData("ambiguous-registration", true)]
+    [InlineData("custom-registration", true)]
+    [InlineData("mutated-provider", true)]
+    [InlineData("mutated-helper-provider", true)]
+    [InlineData("mutated-resolved-local", true)]
+    [InlineData("missing-null-guard", true)]
+    [InlineData("other-constructor-assignment", true)]
+    [InlineData("zero-parameter-other-constructor-assignment", true)]
+    [InlineData("implicit-parameterless-struct-constructor", true)]
+    [InlineData("default-struct-other-constructor-assignment", true)]
+    [InlineData("nonzero-selected-other-constructor-assignment", true)]
+    [InlineData("mutated-constructor-dependency", true)]
+    [InlineData("secondary-record-constructor", true)]
+    public void DeclaredRootAuthenticatesConditionalDiRecordReceiverContext(
+        string sourceKind,
+        bool unresolved)
+    {
+        string conditional = sourceKind switch
+        {
+            "constructed-right" =>
+                "System.DateTime.UtcNow.Ticks > 0 ? null : new CleanupCoordinator(CleanupComposition.Resolve(sp)!)",
+            "conflicting-arm" =>
+                "System.DateTime.UtcNow.Ticks > 0 ? new CleanupCoordinator(CleanupComposition.Resolve(sp)!) : new CleanupCoordinator(UnknownServices.Value)",
+            _ =>
+                "System.DateTime.UtcNow.Ticks > 0 ? new CleanupCoordinator(CleanupComposition.Resolve(sp)!) : null",
+        };
+
+        if (sourceKind == "other-constructor-assignment")
+        {
+            conditional = conditional.Replace(
+                "new CleanupCoordinator(CleanupComposition.Resolve(sp)!)",
+                "new CleanupCoordinator(CleanupComposition.Resolve(sp)!, true)",
+                StringComparison.Ordinal);
+        }
+
+        if (sourceKind == "zero-parameter-other-constructor-assignment")
+        {
+            conditional = conditional.Replace(
+                "new CleanupCoordinator(CleanupComposition.Resolve(sp)!)",
+                "new CleanupCoordinator()",
+                StringComparison.Ordinal);
+        }
+
+        if (sourceKind == "implicit-parameterless-struct-constructor")
+        {
+            conditional = "new CleanupCoordinator()";
+        }
+
+        if (sourceKind == "default-struct-other-constructor-assignment")
+        {
+            conditional = "default(CleanupCoordinator)";
+        }
+
+        if (sourceKind == "nonzero-selected-other-constructor-assignment")
+        {
+            conditional = "new CleanupCoordinator(0)";
+        }
+
+        string cleanupRegistration = sourceKind switch
+        {
+            "missing-registration" => string.Empty,
+            "ambiguous-registration" =>
+                "services.AddScoped<IMarkerLifecycle>(static sp => new KnownMarkerLifecycle()); services.AddScoped<IMarkerLifecycle>(static sp => new KnownMarkerLifecycle());",
+            "custom-registration" =>
+                "Lookalike.AddScoped<IMarkerLifecycle>(services, static sp => new KnownMarkerLifecycle());",
+            _ =>
+                "services.AddScoped<IMarkerLifecycle>(static sp => new KnownMarkerLifecycle());",
+        };
+
+        string rootRegistration = sourceKind == "mutated-provider"
+            ? "services.AddSingleton(sp => { sp = UnknownProvider.Value; return new RegisteredRoot("
+                + conditional
+                + "); });"
+            : "services.AddSingleton(sp => new RegisteredRoot("
+                + conditional
+                + "));";
+
+        string nullGuard = sourceKind == "missing-null-guard"
+            ? string.Empty
+            : "if (markers is null) return null;";
+
+        string helperPrefix = sourceKind == "mutated-helper-provider"
+            ? "sp = UnknownProvider.Value; "
+            : string.Empty;
+
+        string localMutation = sourceKind == "mutated-resolved-local"
+            ? "void Replace() { markers = UnknownMarker.Value; } Replace(); "
+            : string.Empty;
+
+        string servicesConstruction = sourceKind == "secondary-record-constructor"
+            ? "new CleanupServices(markers!, true)"
+            : "new CleanupServices(markers!)";
+
+        string servicesDeclaration = sourceKind == "secondary-record-constructor"
+            ? "internal sealed record CleanupServices(IMarkerLifecycle Markers) { internal CleanupServices(IMarkerLifecycle decoy, bool _) : this(UnknownMarker.Value) { } } "
+            : "internal sealed record CleanupServices(IMarkerLifecycle Markers); ";
+
+        string coordinatorDeclaration = sourceKind switch
+        {
+            "other-constructor-assignment" =>
+                "internal sealed class CleanupCoordinator { private readonly CleanupServices? _services; private readonly System.IAsyncDisposable _sentinel = new SentinelCleanup(); internal CleanupCoordinator(CleanupServices services, bool _) { } internal CleanupCoordinator(CleanupServices services) { _services = new CleanupServices(new KnownMarkerLifecycle()); } internal async System.Threading.Tasks.Task RunAsync() { _ = _sentinel; await using (_services!.Markers.CreateCleanup().ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } ",
+            "zero-parameter-other-constructor-assignment" =>
+                "internal sealed class CleanupCoordinator { private readonly CleanupServices? _services; private readonly System.IAsyncDisposable _sentinel = new SentinelCleanup(); internal CleanupCoordinator() { } internal CleanupCoordinator(CleanupServices services) { _services = new CleanupServices(new KnownMarkerLifecycle()); } internal async System.Threading.Tasks.Task RunAsync() { _ = _sentinel; await using (_services!.Markers.CreateCleanup().ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } ",
+            "implicit-parameterless-struct-constructor" or
+                "default-struct-other-constructor-assignment" =>
+                "internal struct CleanupCoordinator { private readonly CleanupServices? _services; internal CleanupCoordinator(CleanupServices services) { _services = new CleanupServices(new KnownMarkerLifecycle()); } internal async System.Threading.Tasks.Task RunAsync() { await using (_services!.Markers.CreateCleanup().ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } ",
+            "nonzero-selected-other-constructor-assignment" =>
+                "internal sealed class CleanupCoordinator { private readonly CleanupServices? _services; internal CleanupCoordinator(int _) { } internal CleanupCoordinator(string _) { _services = new CleanupServices(new KnownMarkerLifecycle()); } internal async System.Threading.Tasks.Task RunAsync() { await using (_services!.Markers.CreateCleanup().ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } ",
+            "mutated-constructor-dependency" =>
+                "internal sealed class CleanupCoordinator { private readonly CleanupServices _services; private readonly System.IAsyncDisposable _sentinel; internal CleanupCoordinator(CleanupServices services) { services = UnknownServices.Value; _services = services; _sentinel = new SentinelCleanup(); } internal async System.Threading.Tasks.Task RunAsync() { _ = _sentinel; await using (_services.Markers.CreateCleanup().ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } ",
+            _ =>
+                "internal sealed class CleanupCoordinator { private readonly CleanupServices _services; private readonly System.IAsyncDisposable _sentinel; internal CleanupCoordinator(CleanupServices services) { _services = services ?? throw new System.ArgumentNullException(nameof(services)); _sentinel = new SentinelCleanup(); } internal async System.Threading.Tasks.Task RunAsync() { _ = _sentinel; await using (_services.Markers.CreateCleanup().ConfigureAwait(false)) { await System.Threading.Tasks.Task.Yield(); } } } ",
+        };
+
+        string source = RegistrationSource(
+                cleanupRegistration
+                    + rootRegistration
+                    + " services.AddHostedService<Worker>();")
+            + "public interface IMarkerLifecycle { System.IAsyncDisposable CreateCleanup(); } "
+            + "internal sealed class KnownMarkerLifecycle : IMarkerLifecycle { public System.IAsyncDisposable CreateCleanup() => new KnownPropertyCleanup(); } "
+            + "internal sealed class KnownPropertyCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"authenticated-provider-cleanup\"); return default; } } "
+            + "internal sealed class SentinelCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => default; } "
+            + servicesDeclaration
+            + coordinatorDeclaration
+            + (sourceKind is "implicit-parameterless-struct-constructor"
+                    or "default-struct-other-constructor-assignment"
+                ? "internal sealed class RegisteredRoot { private readonly CleanupCoordinator _coordinator; internal RegisteredRoot(CleanupCoordinator coordinator) { _coordinator = coordinator; } internal async System.Threading.Tasks.Task RunAsync() { await _coordinator.RunAsync().ConfigureAwait(false); } } "
+                : "internal sealed class RegisteredRoot { private readonly CleanupCoordinator? _coordinator; internal RegisteredRoot(CleanupCoordinator? coordinator) { _coordinator = coordinator; } internal async System.Threading.Tasks.Task RunAsync() { await _coordinator!.RunAsync().ConfigureAwait(false); } } ")
+            + "internal static class UnknownServices { internal static CleanupServices Value { get; set; } = null!; } "
+            + "internal static class UnknownMarker { internal static IMarkerLifecycle Value { get; set; } = null!; } "
+            + "internal static class UnknownProvider { internal static System.IServiceProvider Value { get; set; } = null!; } "
+            + "internal static class Lookalike { internal static void AddScoped<T>(Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Func<System.IServiceProvider, T> factory) { } } "
+            + "internal static class CleanupComposition { internal static CleanupServices? Resolve(System.IServiceProvider sp) { "
+            + helperPrefix
+            + "IMarkerLifecycle? markers = sp.GetService<IMarkerLifecycle>(); "
+            + localMutation
+            + nullGuard
+            + " return "
+            + servicesConstruction
+            + "; } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "RegisteredRoot.RunAsync",
+            "src/Fixture.cs",
+            "RegisteredRoot",
+            "RunAsync",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "RegisteredRoot.RunAsync: conditional DI record receiver fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        bool found = result.Items.Any(static site =>
+            site.EnclosingType == "KnownPropertyCleanup"
+            && site.Callee == "System.IO.File.Exists");
+
+        output.WriteLine(string.Join(
+            "\n",
+            result.Diagnostics.Select(static diagnostic =>
+                diagnostic.Code + ": " + diagnostic.Detail)));
+
+        Assert.Equal(!unresolved, found);
+
+        if (!unresolved)
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+                diagnostic.Code is "HOSTED_CALL_TARGET_UNRESOLVED"
+                    or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+        }
+    }
+
+    [Fact]
+    public void AwaitUsingAcceptsTargetAutoInitAlongsideSafeSiblingInitializers()
+    {
+        const string body =
+            "CleanupAdmission admission = new() { Lease = new KnownPropertyCleanup(), Label = \"safe\", Revision = 1 }; await using (admission.Lease.ConfigureAwait(false)) { }";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"multi-init-cleanup\"); return default; } } "
+            + "internal sealed class CleanupAdmission { internal IPropertyCleanup Lease { get; init; } = null!; internal string Label { get; init; } = string.Empty; internal int Revision { get; init; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "KnownPropertyCleanup"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("implicit-default", false)]
+    [InlineData("property-initializer", true)]
+    [InlineData("constructor-assignment", true)]
+    [InlineData("record-copy", true)]
+    [InlineData("inherited-override", true)]
+    public void AwaitUsingTreatsOnlyImplicitlyDefaultedAutoInitAsEmpty(
+        string sourceKind,
+        bool unresolved)
+    {
+        string admission = sourceKind switch
+        {
+            "property-initializer" =>
+                "internal sealed class CleanupAdmission { internal IPropertyCleanup? Lease { get; init; } = UnknownPropertyCleanup.Value; } ",
+            "constructor-assignment" =>
+                "internal sealed class CleanupAdmission { internal CleanupAdmission() { Lease = UnknownPropertyCleanup.Value; } internal IPropertyCleanup? Lease { get; init; } } ",
+            "record-copy" =>
+                "internal sealed record CleanupAdmission { internal IPropertyCleanup? Lease { get; init; } internal CleanupAdmission Copy() => new(this); } ",
+            "inherited-override" =>
+                "internal abstract class CleanupAdmissionBase { protected CleanupAdmissionBase() { Lease = UnknownPropertyCleanup.Value; } internal abstract IPropertyCleanup? Lease { get; init; } } internal sealed class CleanupAdmission : CleanupAdmissionBase { internal override IPropertyCleanup? Lease { get; init; } } ",
+            _ =>
+                "internal sealed class CleanupAdmission { internal IPropertyCleanup? Lease { get; init; } } ",
+        };
+
+        string fallback = sourceKind == "record-copy"
+            ? "new CleanupAdmission { Lease = UnknownPropertyCleanup.Value }.Copy()"
+            : "new CleanupAdmission()";
+
+        string body =
+            "CleanupAdmission admission = UnknownPropertyCleanup.SelectKnown ? new CleanupAdmission() { Lease = new KnownPropertyCleanup() } : "
+                + fallback
+                + "; await using ((admission.Lease ?? new KnownPropertyCleanup()).ConfigureAwait(false)) { }";
+
+        string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+                + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"implicit-default-cleanup\"); return default; } } "
+                + admission
+                + "internal static class UnknownPropertyCleanup { internal static bool SelectKnown { get; set; } internal static IPropertyCleanup Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "KnownPropertyCleanup"
+                && site.Callee == "System.IO.File.Delete");
+        }
+    }
+
+    [Theory]
+    [InlineData("positive", false)]
+    [InlineData("wrong-arm", true)]
+    [InlineData("write", true)]
+    [InlineData("ref-alias", true)]
+    [InlineData("nested", true)]
+    public void ConditionalEmptyPatternLocalUsesOnlyItsStableTrueArm(
+        string sourceKind,
+        bool unresolved)
+    {
+        string selection = sourceKind switch
+        {
+            "wrong-arm" =>
+                "source is not { } selected ? fallback : selected",
+            "write" =>
+                "source is { } selected ? (selected = UnknownPropertyCleanup.Value) : fallback",
+            "ref-alias" =>
+                "source is { } selected ? ConditionalCleanup.Passthrough(ref selected) : fallback",
+            "nested" =>
+                "wrapper is { Lease: { } selected } ? selected : fallback",
+            _ => "source is { } selected ? selected : fallback",
+        };
+
+        string body =
+            "IPropertyCleanup? source = new KnownPropertyCleanup(); "
+                + "CleanupWrapper wrapper = new() { Lease = source }; "
+                + "IPropertyCleanup fallback = new KnownPropertyCleanup(); "
+                + "IPropertyCleanup chosen = "
+                + selection
+                + "; await using (chosen.ConfigureAwait(false)) { }";
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"pattern-known\"); return default; } } "
+            + "internal sealed class CleanupWrapper { internal IPropertyCleanup? Lease { get; init; } } "
+            + "internal static class UnknownPropertyCleanup { internal static IPropertyCleanup Value { get; set; } = null!; } "
+            + "internal static class ConditionalCleanup { internal static IPropertyCleanup Passthrough(ref IPropertyCleanup value) => value; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "KnownPropertyCleanup"
+                && site.Callee == "System.IO.File.Delete");
+
+        }
     }
 
     [Fact]
@@ -21171,6 +23948,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void EveryDiscoveredProducerSiteIsCataloguedExactlyOnce()
     {
         HostedProducerInventoryValidation validation =
@@ -21323,56 +24101,20 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Single(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Exists");
     }
 
-    private static readonly string[] ExpectedHostedServices =
-    [
-        "GrimoireDatabaseHostedService",
-        "CovenantFeatureConfigurationPublisher",
-        "PidFileService",
-        "FileEncryptionKeyBootstrapHostedService",
-        "LongRunningOperationStartupHostedService",
-        "SessionAttachmentPendingGcHostedService",
-        "CovenantMaintenanceHostedService",
-        "GrimoireSchemaTransitionHostedService",
-        "EntryWeavingService",
-        "SessionAttachmentIndexingService",
-        "WorkspaceIndexingService",
-        "SagaExtractionService",
-        "TapestryWeavingService",
-        "ArcanumSettingsClampStartupLogger",
-        "ArcanumSecurityStartupChecks",
-        "DataRetentionSweepHostedService",
-        "A2ASendingLeaseRenewer",
-        "Loremaster",
-        "ApprenticeService",
-        "McpServerBootstrapHostedService",
-        "ProviderHealthProbeService",
-        "UnseenServantService",
-        "BatchProcessingService",
-    ];
-
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionRegistrationsMatchRuntimeDescriptorsAndClosedVocabulary()
     {
         HostedProducerDiscovery<string> result = HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(HostedGrimoireProducerInventory.ProductionCompilations);
 
         Assert.Empty(result.Diagnostics);
 
-        Assert.Equal(ExpectedHostedServices.Order(StringComparer.Ordinal), result.Items.Order(StringComparer.Ordinal));
-
-        ServiceCollection services = [];
-
-        services.AddArcanumApiServices(new ConfigurationBuilder().Build());
-
-        ServiceDescriptor[] hosted = services.Where(static descriptor => descriptor.ServiceType == typeof(IHostedService)).ToArray();
-
-        // AddDataProtection contributes this one framework-owned descriptor. No application descriptor,
-        // factory descriptor, or unknown framework descriptor is excluded from the count.
-        Assert.Single(hosted, static descriptor => descriptor.ImplementationType?.FullName == "Microsoft.AspNetCore.DataProtection.Internal.DataProtectionHostedService" && descriptor.ImplementationType.Assembly.GetName().Name == "Microsoft.AspNetCore.DataProtection");
-
-        Assert.Equal(result.Items.Count + 1, hosted.Length);
+        // The matching runtime half runs under coverage without constructing Roslyn compilations.
+        Assert.Equal(HostedRuntimeRegistrationTests.ExpectedHostedServices.Order(StringComparer.Ordinal), result.Items.Order(StringComparer.Ordinal));
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionIncludesEveryFirstPartyDependencyAndApiCliRoots()
     {
         Assert.Equal(["RetroDownfall.Arcanum.Core", "RetroDownfall.Arcanum.Secrets", "RetroDownfall.Arcanum.Infrastructure", "RetroDownfall.Arcanum.Api", "RetroDownfall.Arcanum.Cli"], HostedGrimoireProducerInventory.ProductionCompilations.Select(static compilation => compilation.AssemblyName));
@@ -21381,6 +24123,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void BackupLiveSourceHasExactCliCallerAuthority()
     {
         NonHostedProducerChainEntry chain = Assert.Single(HostedGrimoireProducerInventory.NonHostedCatalog, static entry => entry.EnclosingType == "RetroDownfall.Arcanum.Cli.Commands.BackupCommands" && entry.Member == "Create");
@@ -21397,6 +24140,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void RestoreSafetyBackupHasExactStoppedHostOrOwner()
     {
         NonHostedProducerChainEntry chain = Assert.Single(HostedGrimoireProducerInventory.NonHostedCatalog, static entry => entry.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService" && entry.Member == "RestoreAsync");
@@ -21407,6 +24151,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void NonHostedBackupChainsDoNotEnterHostedRegistrationBijection()
     {
         HostedProducerDiscovery<string> registrations = HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(HostedGrimoireProducerInventory.ProductionCompilations);
@@ -21417,6 +24162,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void LiveSourceCannotBecomeReachableFromHostedOrUnadmittedCaller()
     {
         HostedProducerSite[] liveSourceSites = HostedGrimoireProducerInventory.ProductionSiteDiscovery.Items.Where(static site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Backup.BackupDatabaseSnapshotter").ToArray();
@@ -21427,6 +24173,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void SchemaBackfillStrategyTableMatchesEveryConfiguredConcreteImplementation()
     {
         CSharpCompilation infrastructure = Assert.Single(HostedGrimoireProducerInventory.ProductionCompilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
@@ -21753,6 +24500,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ReviewedCapsuleManifestExactlyMatchesProductionDiscovery()
     {
         HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
@@ -22248,11 +24996,21 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         HostedProducerDiscovery<HostedProducerSite> unknown = Discover(
             FixtureSource(
-                "Consume(null!);",
-                "static void Consume(System.Collections.Generic.IEnumerator<string> enumerator) { using (enumerator) { } }"));
+                "Consume(UnknownEnumerator.Value);",
+                "static class UnknownEnumerator { internal static System.Collections.Generic.IEnumerator<string> Value { get; set; } = null!; } static void Consume(System.Collections.Generic.IEnumerator<string> enumerator) { using (enumerator) { } }"));
 
         Assert.Contains(
             unknown.Diagnostics,
+            static diagnostic => diagnostic.Code
+                == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        HostedProducerDiscovery<HostedProducerSite> knownNull = Discover(
+            FixtureSource(
+                "Consume(null!);",
+                "static void Consume(System.Collections.Generic.IEnumerator<string> enumerator) { using (enumerator) { } }"));
+
+        Assert.DoesNotContain(
+            knownNull.Diagnostics,
             static diagnostic => diagnostic.Code
                 == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
     }
@@ -22580,6 +25338,219 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             result.Diagnostics.Any(static diagnostic => diagnostic.Code is
                 "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
                     or "HOSTED_SITE_UNCLASSIFIED"));
+    }
+
+    [Fact]
+    public void IrrelevantCallableBindingsConvergeBeforeTraversalStateIdentity()
+    {
+        const int callbackCount = 32;
+
+        string calls = string.Join(
+            " ",
+            Enumerable.Range(0, callbackCount).Select(index =>
+                $"TraversalProjectionTarget.Run(TraversalProjectionTarget.Noise{index});"));
+
+        string callbacks = string.Join(
+            " ",
+            Enumerable.Range(0, callbackCount).Select(index =>
+                $"internal static void Noise{index}() {{ }}"));
+
+        string helper =
+            "internal static class TraversalProjectionTarget { "
+            + "internal static void Run(System.Action callback) { "
+            + "System.IO.File.Exists(\"projected-tail\"); } "
+            + callbacks
+            + " }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(calls, helper));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: irrelevant callable projection fixture",
+                }])],
+                [],
+                maximumAnalyzedStatesPerRoot: 8);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "TraversalProjectionTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void ReferencedCallableBindingsRemainDistinctAfterTraversalProjection()
+    {
+        const string helper =
+            "internal static class ReferencedTraversalProjectionTarget { "
+            + "internal static void Run(System.Action callback) { "
+            + "void Relay() => callback(); Relay(); } "
+            + "internal static void Read() { System.IO.File.Exists(\"projected-read\"); } "
+            + "internal static void Delete() { System.IO.File.Delete(\"projected-delete\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            FixtureSource(
+                "ReferencedTraversalProjectionTarget.Run("
+                    + "ReferencedTraversalProjectionTarget.Read); "
+                    + "ReferencedTraversalProjectionTarget.Run("
+                    + "ReferencedTraversalProjectionTarget.Delete);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: referenced callable projection fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ReferencedTraversalProjectionTarget"
+            && site.Member == "Read"
+            && site.Callee == "System.IO.File.Exists"
+            && site.OperationId.StartsWith(
+                "Worker.StartAsync/",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ReferencedTraversalProjectionTarget"
+            && site.Member == "Delete"
+            && site.Callee == "System.IO.File.Delete"
+            && site.OperationId.StartsWith(
+                "Worker.StartAsync/",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void InheritedCallableBindingsRemainDistinctAcrossSiblingLocalFunctions()
+    {
+        const string helper =
+            "internal static class SiblingTraversalProjectionTarget { "
+            + "internal static void Run(System.Action callback) { "
+            + "void First() => Second(); void Second() => callback(); First(); } "
+            + "internal static void Read() { System.IO.File.Exists(\"sibling-read\"); } "
+            + "internal static void Delete() { System.IO.File.Delete(\"sibling-delete\"); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            FixtureSource(
+                "SiblingTraversalProjectionTarget.Run("
+                    + "SiblingTraversalProjectionTarget.Read); "
+                    + "SiblingTraversalProjectionTarget.Run("
+                    + "SiblingTraversalProjectionTarget.Delete);",
+                helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: sibling projection fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SiblingTraversalProjectionTarget"
+            && site.Member == "Read"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "SiblingTraversalProjectionTarget"
+            && site.Member == "Delete"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void IncompleteEvaluationEnvironmentIsNotProjectedBeforeTraversalIdentity()
+    {
+        const string helper =
+            "internal static class IncompleteTraversalProjectionTarget { "
+            + "internal static void Run(System.Action callback) { "
+            + "System.IO.File.Exists(\"unprojected-tail\"); } "
+            + "internal static void Noise() { } }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(
+                "IncompleteTraversalProjectionTarget.Run("
+                    + "IncompleteTraversalProjectionTarget.Noise);",
+                helper));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: incomplete projection fixture",
+                }])],
+                [],
+                evaluationEnvironmentMaximumMembers: 0);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code
+                == "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public void StaticCallbackDiamondDropsImpossibleOuterParameterCaptures()
+    {
+        const int depth = 5;
+
+        string layers = string.Join(
+            " ",
+            Enumerable.Range(0, depth).Select(index =>
+                "internal static void Layer"
+                + index
+                + "(System.Action callback) { callback(); Layer"
+                + (index + 1)
+                + "(static () => { }); Layer"
+                + (index + 1)
+                + "(static () => { }); }"));
+
+        string helper =
+            "internal static class StaticCallbackDiamond { "
+            + layers
+            + " internal static void Layer"
+            + depth
+            + "(System.Action callback) { callback(); System.IO.File.Exists(\"static-tail\"); } }";
+
+        CSharpCompilation compilation = Compile(
+            FixtureSource(
+                "StaticCallbackDiamond.Layer0(static () => { });",
+                helper));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: static callback diamond fixture",
+                }])],
+                [],
+                maximumAnalyzedStatesPerRoot: 48);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "StaticCallbackDiamond"
+            && site.Member == "Layer5"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        HostedProducerRootTraversalMetric root = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
+                .RootTraversals,
+            static metric => metric.RootOperation == "Worker.StartAsync");
+
+        Assert.InRange(root.AnalyzedStates, 1, 47);
     }
 
     [Fact]
@@ -22918,6 +25889,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionSchemaLazyFactoriesAreProvenAsBoundedData()
     {
         const string catalogType =
@@ -23092,6 +26064,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionSequenceOperationUsesTheSameReviewedComparerProof()
     {
         _ = Assert.Single(
@@ -23120,6 +26093,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionImmutableArraySequenceEqualityUsesDefaultValueEquality()
     {
         const string type =
@@ -23563,6 +26537,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("static-constructor", false)]
     [InlineData("get-only", false)]
     [InlineData("field-initializer-and-constructor", false)]
+    [InlineData("unsafe-field-initializer-and-constructor", false)]
     [InlineData("property-initializer-and-constructor", false)]
     [InlineData("sync", true)]
     [InlineData("async", true)]
@@ -23660,7 +26635,10 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
                 break;
             case "field-initializer-and-constructor":
-                helper = "sealed class Consumer { readonly IReadOnlyList<string> values = new List<string>(); public Consumer(IReadOnlyList<string> input) { values = input; } public void Read() { _ = values[0]; } }";
+            case "unsafe-field-initializer-and-constructor":
+                helper = "sealed class Consumer { readonly IReadOnlyList<string> values = "
+                    + (shape == "unsafe-field-initializer-and-constructor" ? "new EvilList()" : "new List<string>()")
+                    + "; public Consumer(IReadOnlyList<string> input) { values = input; } public void Read() { _ = values[0]; } }";
 
                 body = "new Consumer(" + source + ").Read();";
 
@@ -23691,6 +26669,36 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal(evil, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]"));
+    }
+
+    [Theory]
+    [InlineData("Replace(ref values);", false)]
+    [InlineData("ReplaceOut(out values);", false)]
+    [InlineData("ref IReadOnlyList<string> alias = ref values; alias = new EvilList();", false)]
+    [InlineData("Replace(ref values);", true)]
+    public void ConstructedReadonlyCollectionRejectsByReferenceReplacement(
+        string mutation,
+        bool delegated)
+    {
+        string constructor = delegated
+            ? "private Consumer(IReadOnlyList<string> input, int unused) { values = input; } public Consumer(IReadOnlyList<string> input) : this(input, 0) { " + mutation + " }"
+            : "public Consumer(IReadOnlyList<string> input) { values = input; " + mutation + " }";
+
+        string fixture = "using System.Collections.Generic; " + FixtureSource(
+            "new Consumer(new List<string>()).Read();",
+            "sealed class Consumer { readonly IReadOnlyList<string> values = new List<string>(); "
+                + constructor
+                + " public void Read() { _ = values[0]; } static void Replace(ref IReadOnlyList<string> target) { target = new EvilList(); } static void ReplaceOut(out IReadOnlyList<string> target) { target = new EvilList(); } } "
+                + "sealed class EvilList : List<string>, IReadOnlyList<string> { string IReadOnlyList<string>.this[int i] { get { System.IO.File.Delete(\"evil\"); return \"evil\"; } } }");
+
+        Assert.Empty(Compile(fixture).GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(fixture);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
     }
 
     [Theory]
@@ -23777,6 +26785,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
     public void FrameworkCollectionIndexerUsesProductionReferencePackIdentity(bool evil)
     {
         string value = evil
@@ -24818,25 +27827,66 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             """;
     }
 
-    private static CSharpCompilation Compile(string source)
+    [Fact]
+    public void Fixture_compilations_reuse_platform_metadata_without_sharing_source_symbols()
     {
-        string[] assemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);
+        CSharpCompilation first = Compile("public sealed class FirstFixture { }");
 
-        return CSharpCompilation.Create("InventoryFixture", [CSharpSyntaxTree.ParseText(source, path: "src/Fixture.cs")], assemblies.Select(static path => MetadataReference.CreateFromFile(path)), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        CSharpCompilation second = Compile("public sealed class SecondFixture { }");
+
+        Assert.Empty(first.GetDiagnostics());
+
+        Assert.Empty(second.GetDiagnostics());
+
+        Assert.NotNull(first.GetTypeByMetadataName("FirstFixture"));
+
+        Assert.Null(first.GetTypeByMetadataName("SecondFixture"));
+
+        Assert.NotNull(second.GetTypeByMetadataName("SecondFixture"));
+
+        Assert.Null(second.GetTypeByMetadataName("FirstFixture"));
+
+        MetadataReference[] firstReferences = first.References.ToArray();
+
+        MetadataReference[] secondReferences = second.References.ToArray();
+
+        Assert.NotEmpty(firstReferences);
+
+        Assert.Equal(firstReferences.Length, secondReferences.Length);
+
+        for (int index = 0; index < firstReferences.Length; index++)
+        {
+            // Reference reuse bounds native PE metadata to one copy per platform assembly,
+            // rather than one complete platform image set for every adversarial fixture.
+            Assert.Same(firstReferences[index], secondReferences[index]);
+        }
     }
 
+    private static readonly Lazy<ImmutableArray<PortableExecutableReference>> FixturePlatformReferences = new(
+        static () => ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator)
+            .Select(static path => MetadataReference.CreateFromFile(path))
+            .ToImmutableArray());
+
+    private static CSharpCompilation Compile(string source) =>
+        CSharpCompilation.Create(
+            "InventoryFixture",
+            [CSharpSyntaxTree.ParseText(source, path: "src/Fixture.cs")],
+            FixturePlatformReferences.Value,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
     private static CSharpCompilation CompileWithProductionReferencePack(
-        string source)
+        string source,
+        string assemblyName = "RetroDownfall.Arcanum.Core")
     {
-        CSharpCompilation core = HostedGrimoireProducerInventory
+        CSharpCompilation referenceCompilation = HostedGrimoireProducerInventory
             .ProductionCompilations
-            .Single(static compilation => compilation.AssemblyName
-                == "RetroDownfall.Arcanum.Core");
+            .Single(compilation => compilation.AssemblyName == assemblyName);
 
         return CSharpCompilation.Create(
             "InventoryReferencePackFixture",
             [CSharpSyntaxTree.ParseText(source, path: "src/Fixture.cs")],
-            core.References,
+            referenceCompilation.References,
             new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary));
     }
