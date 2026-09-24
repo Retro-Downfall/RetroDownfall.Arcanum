@@ -186,6 +186,17 @@ internal sealed record HostedProducerProjectionSymbolProbe(
     int DependencyNodes,
     int PhysicalSymbolQueries);
 
+internal sealed record HostedProducerPartialProjectionProbe(
+    HostedProducerDiscovery<HostedProducerSite> Discovery,
+    string OriginalBindings,
+    IReadOnlyList<string> RetainedBindings,
+    int ProjectionBuilds,
+    int TokenIdentityBuilds,
+    int ExactTokenInputs,
+    int NullTokens,
+    int DistinctTokens,
+    bool ContextsPreserved);
+
 internal sealed record HostedProducerDependencyScopeQuery(
     IMethodSymbol Method,
     SyntaxNode Scope,
@@ -1070,8 +1081,6 @@ internal static class HostedGrimoireProducerInventory
         "System.Environment.MachineName",
         "System.Environment.ProcessId",
         "System.GC.SuppressFinalize",
-        "System.IAsyncDisposable.DisposeAsync",
-        "System.IDisposable.Dispose",
         "System.IEquatable`1.Equals",
         "System.IO.DirectoryInfo..ctor",
         "System.IO.DriveInfo..ctor",
@@ -1879,6 +1888,20 @@ internal static class HostedGrimoireProducerInventory
             right,
             rightCompilation);
 
+    internal static HostedProducerPartialProjectionProbe ProbeRepeatedPartialSourceProjection(
+        CSharpCompilation compilation,
+        HostedProducerOperationEntry root,
+        IMethodSymbol sourceMethod,
+        ExpressionSyntax sourceExpression,
+        int repetitions)
+    {
+        ProducerGraph graph = new([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false);
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = graph.Discover(new(["Worker"], []), [new("Worker", [root])], [], null);
+
+        return graph.ProbeRepeatedPartialSourceProjection(discovery, sourceMethod, sourceExpression, repetitions);
+    }
+
     internal static HostedProducerRecoverySpanProbe ProbeRecoveryReachabilitySpans(
         IReadOnlyList<HostedProducerRecoverySpan> intervals,
         IReadOnlyList<HostedProducerRecoverySpan> nodes) =>
@@ -2546,6 +2569,10 @@ internal static class HostedGrimoireProducerInventory
 
         private readonly Dictionary<AuthoredMember, Dictionary<ExpressionSyntax, BoundValueSource>>
             completeEvaluationValueSourceNormalizations =
+                new(ReferenceEqualityComparer.Instance);
+
+        private readonly Dictionary<AuthoredMember, Dictionary<ExpressionSyntax, AuthoredMember>>
+            completedPartialEvaluationProjections =
                 new(ReferenceEqualityComparer.Instance);
 
         private readonly Dictionary<string, RetainedAdmissionAnalysisCounter>
@@ -4277,8 +4304,15 @@ internal static class HostedGrimoireProducerInventory
         private AuthoredMember ProjectEvaluationEnvironment(
             AuthoredMember member,
             ExpressionSyntax expression,
-            TraversalRecoveryProjectionAnalysisCounter? analysis = null)
+            TraversalRecoveryProjectionAnalysisCounter? analysis = null,
+            Action? projectionBuilt = null)
         {
+            if (completedPartialEvaluationProjections.TryGetValue(member, out var projections)
+                && projections.TryGetValue(expression, out AuthoredMember? cached))
+            {
+                return cached;
+            }
+
             HashSet<ISymbol> candidates = new(SymbolEqualityComparer.Default);
 
             candidates.UnionWith(member.AdmissionBindings?.Keys ?? []);
@@ -4315,7 +4349,9 @@ internal static class HostedGrimoireProducerInventory
                 return member;
             }
 
-            return member with
+            projectionBuilt?.Invoke();
+
+            AuthoredMember projected = member with
             {
                 AdmissionBindings = ProjectEvaluationBindings(
                     member.AdmissionBindings,
@@ -4338,6 +4374,17 @@ internal static class HostedGrimoireProducerInventory
                     member.ValueBindings,
                     required),
             };
+
+            if (projections is null)
+            {
+                projections = new(ReferenceEqualityComparer.Instance);
+
+                completedPartialEvaluationProjections.Add(member, projections);
+            }
+
+            projections.Add(expression, projected);
+
+            return projected;
         }
 
         internal IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
@@ -4431,6 +4478,80 @@ internal static class HostedGrimoireProducerInventory
                 evaluationEnvironmentAnalysis.Values.Sum(static value => value.FingerprintBuilds) - fingerprintBefore,
                 fingerprints.Count,
                 complete);
+        }
+
+        internal HostedProducerPartialProjectionProbe ProbeRepeatedPartialSourceProjection(
+            HostedProducerDiscovery<HostedProducerSite> discovery,
+            IMethodSymbol sourceMethod,
+            ExpressionSyntax sourceExpression,
+            int repetitions)
+        {
+            if (repetitions is < 1 or > 64)
+            {
+                throw new ArgumentOutOfRangeException(nameof(repetitions));
+            }
+
+            static string Keys(AuthoredMember member) => string.Join(",", (member.AdmissionBindings?.Keys ?? [])
+                .Concat(member.CallableBindings?.Keys ?? [])
+                .Concat(member.AbsentCallables ?? Enumerable.Empty<ISymbol>())
+                .Concat(member.ConcreteBindings?.Keys ?? [])
+                .Concat(member.RecoveryBindings?.Keys ?? [])
+                .Concat(member.ValueBindings?.Keys ?? [])
+                .Select(static symbol => symbol.Name)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal));
+
+            // Select only a context produced by ordinary discovery. Never seed missing bindings.
+            BoundValueSource source = completeEvaluationValueSourceNormalizations
+                .Where(pair => SymbolEqualityComparer.Default.Equals(pair.Key.Symbol.OriginalDefinition, sourceMethod.OriginalDefinition)
+                    && Keys(pair.Key) == "cleanup,unused")
+                .SelectMany(pair => pair.Value.Keys
+                    .Where(expression => ReferenceEquals(expression, sourceExpression))
+                    .Select(expression => new BoundValueSource(pair.Key, expression)))
+                .FirstOrDefault()
+                ?? throw new InvalidOperationException("Partial projection witness missing: discovery did not retain both real cleanup inputs at the selected exact source.");
+
+            int identityBefore = evaluationEnvironmentAnalysis.Values.Sum(static value => value.InternerIdentityBuilds);
+
+            int projectionBuilds = 0;
+
+            int exactTokenInputs = 0;
+
+            int nullTokens = 0;
+
+            bool contextsPreserved = true;
+
+            List<string> retained = [];
+
+            HashSet<int> tokens = [];
+
+            for (int index = 0; index < repetitions; index++)
+            {
+                AuthoredMember projected = ProjectEvaluationEnvironment(source.Caller, source.Expression, projectionBuilt: () => projectionBuilds++);
+
+                retained.Add(Keys(projected));
+
+                contextsPreserved &= ReferenceEquals(source.Caller.ConstructorContexts, projected.ConstructorContexts)
+                    && source.Caller.RecoveryContext == projected.RecoveryContext;
+
+                if (evaluationEnvironmentTokens.ContainsKey(projected))
+                {
+                    exactTokenInputs++;
+                }
+
+                if (TryRegisterEvaluationEnvironmentToken(projected) is int token)
+                {
+                    tokens.Add(token);
+                }
+                else
+                {
+                    nullTokens++;
+                }
+            }
+
+            return new(discovery, Keys(source.Caller), retained, projectionBuilds,
+                evaluationEnvironmentAnalysis.Values.Sum(static value => value.InternerIdentityBuilds) - identityBefore,
+                exactTokenInputs, nullTokens, tokens.Count, contextsPreserved);
         }
 
         private AuthoredMember ProjectTraversalEvaluationEnvironment(
@@ -17855,6 +17976,53 @@ internal static class HostedGrimoireProducerInventory
 
                         string callee = Normalize(method);
 
+                        if (node is InvocationExpressionSyntax explicitCleanup
+                            && IsTrustedFrameworkCleanupSlot(method)
+                            && AdmissionReceiver(member, explicitCleanup) is { } cleanupReceiver)
+                        {
+                            EffectiveCleanupResolution cleanup = ResolveEffectiveCleanup(
+                                member, method.ContainingType, cleanupReceiver, method.Name);
+
+                            bool joined = !IsAwaitable(method.ReturnType)
+                                || CompletionPoint(member, explicitCleanup, completionOwned) is not null;
+
+                            if (!joined)
+                            {
+                                diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
+                                    operationId + "/call@" + Location(node),
+                                    callee + "; Explicit asynchronous cleanup must complete within its caller's retained lifetime."));
+                            }
+
+                            foreach (AuthoredMember cleanupTarget in cleanup.Targets)
+                            {
+                                emittedEvidence = MergeEvidence(emittedEvidence,
+                                    Traverse(cleanupTarget, rootType, operationId + "/dispose@" + Location(node),
+                                        active, lifecycle, joined ? workAdmitted : null, joined ? effectGroup : null,
+                                        completionOwned: joined, recoveryEffect: joined ? recoveryEffect : null));
+                            }
+
+                            foreach (ExternalCleanupResolution external in cleanup.ExternalEffects)
+                            {
+                                emittedEvidence = MergeEvidence(emittedEvidence,
+                                    AddSite(external.Kind, external.Callee, member, rootType, operationId, node,
+                                        joined ? effectGroup : null, joined ? workAdmitted : null));
+                            }
+
+                            if (cleanup.MustResolve
+                                && cleanup.Targets.Count == 0
+                                && cleanup.ExternalEffects.Count == 0
+                                && (cleanup.HasAuthoredSource
+                                    || AdmissionOrigins(member, cleanupReceiver,
+                                        new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Count == 0))
+                            {
+                                diagnostics.Add(new("HOSTED_DISPOSAL_TARGET_UNRESOLVED",
+                                    operationId + "/dispose@" + Location(node),
+                                    callee + "; Explicit cleanup must resolve to exactly one compiler-effective target."));
+                            }
+
+                            continue;
+                        }
+
                         bool asynchronousCallback = callee is
                             "System.Threading.Tasks.Task.Run"
                                 or "System.Threading.Tasks.TaskFactory.StartNew"
@@ -29314,6 +29482,15 @@ internal static class HostedGrimoireProducerInventory
             && method.Name == "CompleteAsync"
             && method.Parameters is [IParameterSymbol { IsOptional: true, Type: { } cancellation }] && TypeKey(cancellation) == "System.Threading.CancellationToken"
             && method.ReturnType is INamedTypeSymbol { TypeArguments: [ITypeSymbol result] } task && task.OriginalDefinition.ToDisplayString() == "System.Threading.Tasks.Task<TResult>" && TypeKey(result) == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobDescriptor";
+
+        private static bool IsTrustedFrameworkCleanupSlot(IMethodSymbol method) =>
+            !method.IsStatic
+            && method.Arity == 0
+            && method.Parameters.Length == 0
+            && (IsExactFrameworkMethod(method, "System.IDisposable", "Dispose", "System.Private.CoreLib")
+                    && method.ReturnsVoid
+                || IsExactFrameworkMethod(method, "System.IAsyncDisposable", "DisposeAsync", "System.Private.CoreLib")
+                    && IsExactFrameworkType(method.ReturnType, "System.Threading.Tasks.ValueTask", typeof(ValueTask).Assembly.GetName()));
 
         private static bool IsExactCleanupContract(IMethodSymbol method, ITypeSymbol receiverType)
         {

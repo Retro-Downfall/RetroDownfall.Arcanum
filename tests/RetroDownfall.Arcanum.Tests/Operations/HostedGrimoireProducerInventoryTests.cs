@@ -12139,9 +12139,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Equal(6, result.BindingKeys.Count);
 
             Assert.All(result.BindingKeys, names => Assert.Equal(partial ? "source" : "source,unused", names));
-
-            Assert.Equal(7, result.DependencyNodes);
         }
+
+        Assert.Equal(7, results[0].DependencyNodes);
+
+        Assert.All(results.Skip(1), result => Assert.Equal(partial ? 0 : 7, result.DependencyNodes));
 
         Assert.Equal(4, results[0].PhysicalSymbolQueries);
 
@@ -13507,6 +13509,319 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.InRange(probe.NormalizationBuilds, 0, 1);
 
         Assert.InRange(probe.FingerprintBuilds, 0, 1);
+    }
+
+    [Fact]
+    public void RepeatedPartialResultCleanupProjectionKeepsPhysicalIdentityWorkBounded()
+    {
+        CSharpCompilation compilation = Compile(PartialResultCleanupProjectionSource(unknownInput: false));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        MethodDeclarationSyntax method = compilation.SyntaxTrees.Single().GetRoot()
+            .DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static candidate => candidate.Identifier.ValueText == "Wrap");
+
+        IMethodSymbol sourceMethod = Assert.IsAssignableFrom<IMethodSymbol>(
+            compilation.GetSemanticModel(method.SyntaxTree).GetDeclaredSymbol(method));
+
+        ReturnStatementSyntax returned = Assert.Single(method.Body!.Statements.OfType<ReturnStatementSyntax>());
+
+        ExpressionSyntax expression = Assert.IsType<InvocationExpressionSyntax>(returned.Expression)
+            .ArgumentList.Arguments.Single().Expression;
+
+        HostedProducerPartialProjectionProbe probe = HostedGrimoireProducerInventory.ProbeRepeatedPartialSourceProjection(
+            compilation,
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: repeated nonempty partial cleanup projection",
+            },
+            sourceMethod,
+            expression,
+            16);
+
+        output.WriteLine($"Partial projection: builds={probe.ProjectionBuilds}; tokenIdentityBuilds={probe.TokenIdentityBuilds}; exactTokenInputs={probe.ExactTokenInputs}; nullTokens={probe.NullTokens}; distinctTokens={probe.DistinctTokens}; original={probe.OriginalBindings}; retained={string.Join(";", probe.RetainedBindings)}");
+
+        Assert.Empty(probe.Discovery.Diagnostics);
+
+        Assert.Contains(probe.Discovery.Items, static site =>
+            site.EnclosingType == "PartialCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(probe.Discovery.Items, static site =>
+            site.EnclosingType == "PartialUnusedCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal("cleanup,unused", probe.OriginalBindings);
+
+        Assert.Equal(16, probe.RetainedBindings.Count);
+
+        Assert.All(probe.RetainedBindings, static keys => Assert.Equal("cleanup", keys));
+
+        Assert.True(probe.ContextsPreserved);
+
+        Assert.Equal(0, probe.NullTokens);
+
+        Assert.Equal(1, probe.DistinctTokens);
+
+        // Desired bounded-work contract, not a claimed observation: run RED before any repair.
+        Assert.InRange(probe.ProjectionBuilds, 0, 1);
+
+        Assert.InRange(probe.TokenIdentityBuilds, 0, 1);
+    }
+
+    [Theory]
+    [InlineData("ExplicitCleanupForwarder.Close(new ExplicitCleanup());", false, false)]
+    [InlineData("IExplicitCleanup value = new ExplicitCleanup(); ExplicitCleanupForwarder.Close(value);", false, false)]
+    [InlineData("IDisposable value = new ExplicitCleanup(); value.Dispose();", false, false)]
+    [InlineData("await ExplicitCleanupForwarder.CloseAsync(new ExplicitCleanup());", true, false)]
+    [InlineData("IExplicitCleanup value = new ExplicitCleanup(); await ExplicitCleanupForwarder.CloseAsync(value);", true, false)]
+    [InlineData("IAsyncDisposable value = new ExplicitCleanup(); await value.DisposeAsync().ConfigureAwait(false);", true, false)]
+    [InlineData("IExplicitCleanup value = new ExplicitCleanup(); value.DisposeAsync();", true, true)]
+    [InlineData("IDisposable value = new SplitExplicitCleanup(); value.Dispose();", false, false)]
+    public void ExplicitFrameworkCleanupPreservesExactReceiverEffects(string body, bool asynchronous, bool detached)
+    {
+        string source = R2Source(body, ExplicitFrameworkCleanupHelpers);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source,
+            OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null });
+
+        Assert.Contains(result.Items, site => site.Callee == (asynchronous ? "System.IO.File.Exists" : "System.IO.File.Delete"));
+
+        if (body.Contains("SplitExplicitCleanup", StringComparison.Ordinal))
+        {
+            Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.File.Exists");
+        }
+
+        Assert.Equal(detached, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        if (!detached)
+        {
+            Assert.Empty(result.Diagnostics);
+        }
+    }
+
+    [Theory]
+    [InlineData("IExplicitCleanup value = ExplicitCleanupForwarder.Unknown(); value.Dispose();")]
+    [InlineData("IExplicitCleanup value = ExplicitCleanupForwarder.Unknown(); await value.DisposeAsync();")]
+    [InlineData("IExplicitCleanup value = new ExplicitCleanup(); value = ExplicitCleanupForwarder.Unknown(); value.Dispose();")]
+    [InlineData("IExplicitCleanup value = new ExplicitCleanup(); ExplicitCleanupForwarder.Replace(ref value); value.Dispose();")]
+    public void ExplicitFrameworkCleanupRefusesUnknownOrMutatedReceiver(string body)
+    {
+        string source = R2Source(body, ExplicitFrameworkCleanupHelpers);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source,
+            OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null });
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void ExplicitFrameworkCleanupAllowsProvenMechanicalReceiver()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            R2Source("IDisposable value = new System.Threading.CancellationTokenSource(); value.Dispose();"),
+            OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null });
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Empty(result.Items);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExplicitFrameworkCleanupUsesInvocationEffectFrontier(bool disposedAdmission)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "IExplicitCleanup value = new ExplicitCleanup(); "
+                + (disposedAdmission ? "held.Dispose(); " : "") + "value.Dispose();",
+            ExplicitFrameworkCleanupHelpers));
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "ExplicitCleanup" && site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(disposedAdmission, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ADMISSION_HANDLE_ESCAPE");
+    }
+
+    [Theory]
+    [InlineData("Read", true)]
+    [InlineData("ReadWrite", false)]
+    public void ExplicitFrameworkCleanupPreservesExternalFileAccessClassification(string access, bool readOnly)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission
+            + "IDisposable value = new System.IO.FileStream(\"file\", new System.IO.FileStreamOptions { Mode = System.IO.FileMode.Open, Access = System.IO.FileAccess."
+            + access + ", Share = System.IO.FileShare.Read }); value.Dispose();"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, site => site.Kind == (readOnly ? HostedProducerSiteKind.FileSystemRead : HostedProducerSiteKind.FileSystemEffect) && site.Callee.EndsWith(".Dispose", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("GC.KeepAlive((Action)value.Dispose);")]
+    [InlineData("var lazy = System.Linq.Enumerable.Select(new[] { 1 }, ignored => { value.Dispose(); return ignored; });")]
+    public void ExplicitFrameworkCleanupDoesNotTreatOpaqueCallbacksAsEffectFree(string call)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            "IExplicitCleanup value = ExplicitCleanupForwarder.Unknown(); " + call,
+            ExplicitFrameworkCleanupHelpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void ExplicitFrameworkCleanupPreservesAsyncInterfaceSlotInsteadOfPublicPattern()
+    {
+        const string helper = "internal sealed class SplitAsyncCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"wrong\"); return default; } System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { System.IO.File.Delete(\"selected\"); return default; } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission
+            + "IAsyncDisposable value = new SplitAsyncCleanup(); await value.DisposeAsync().ConfigureAwait(false);", helper));
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    private const string ExplicitFrameworkCleanupHelpers = """
+        internal interface IExplicitCleanup : System.IDisposable, System.IAsyncDisposable { }
+        internal sealed class ExplicitCleanup : IExplicitCleanup
+        {
+            public void Dispose() => System.IO.File.Delete("explicit-cleanup");
+            public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists("explicit-async"); return default; }
+        }
+        internal sealed class OtherExplicitCleanup : IExplicitCleanup
+        {
+            public void Dispose() => System.IO.File.Exists("other-cleanup");
+            public System.Threading.Tasks.ValueTask DisposeAsync() => default;
+        }
+        internal sealed class SplitExplicitCleanup : System.IDisposable
+        {
+            public void Dispose() => System.IO.File.Exists("wrong-public-body");
+            void System.IDisposable.Dispose() => System.IO.File.Delete("correct-interface-body");
+        }
+        internal static class ExplicitCleanupForwarder
+        {
+            internal static void Close(IExplicitCleanup value) => value.Dispose();
+            internal static async System.Threading.Tasks.Task CloseAsync(IExplicitCleanup value) => await value.DisposeAsync().ConfigureAwait(false);
+            internal static extern IExplicitCleanup Unknown();
+            internal static extern void Replace(ref IExplicitCleanup value);
+        }
+        """;
+
+    [Fact]
+    public void PartialResultCleanupProjectionDoesNotCertifyUnknownRetainedInput()
+    {
+        string source = PartialResultCleanupProjectionSource(unknownInput: true);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            source,
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: unknown retained cleanup input",
+            });
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "PartialUnusedCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PartialCleanupProjectionKeepsReboundKnownAndUnknownInputsSeparate(bool unknownFirst)
+    {
+        string known = "PartialProjectionPipeline.Run(cleanup, unused);";
+
+        string unknown = "PartialProjectionPipeline.Run(PartialProjectionInputs.Unknown(), unused);";
+
+        string source = PartialResultCleanupProjectionSource(unknownInput: false)
+            .Replace(known, unknownFirst ? unknown + known : known + unknown, StringComparison.Ordinal);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source,
+            OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null });
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "PartialCleanup" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "PartialUnusedCleanup" && site.Callee == "System.IO.File.Delete");
+
+        // A subsequent independent graph must neither inherit a failure nor an exact cleanup proof.
+        HostedProducerDiscovery<HostedProducerSite> cold = DiscoverWithRoots(PartialResultCleanupProjectionSource(unknownInput: false),
+            OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null });
+
+        Assert.Empty(cold.Diagnostics);
+
+        Assert.Contains(cold.Items, static site => site.EnclosingType == "PartialCleanup" && site.Callee == "System.IO.File.Exists");
+    }
+
+    private static string PartialResultCleanupProjectionSource(bool unknownInput)
+    {
+        string body = "IPartialCleanup cleanup = "
+            + (unknownInput ? "PartialProjectionInputs.Unknown()" : "new PartialCleanup()")
+            + "; IPartialCleanup unused = new PartialUnusedCleanup(); PartialProjectionPipeline.Run(cleanup, unused);";
+
+        const string helper = """
+            internal interface IPartialCleanup : System.IDisposable { }
+            internal sealed class PartialCleanup : IPartialCleanup
+            {
+                public void Dispose() => System.IO.File.Exists("retained-partial-cleanup");
+            }
+            internal sealed class PartialUnusedCleanup : IPartialCleanup
+            {
+                public void Dispose() => System.IO.File.Delete("unused-partial-cleanup");
+            }
+            internal sealed class PartialProjectedResult<T>
+            {
+                private readonly T value;
+                private PartialProjectedResult(T value) { this.value = value; }
+                internal T Value => value;
+                internal static PartialProjectedResult<T> Success(T value) => new(value);
+            }
+            internal static class PartialProjectionInputs
+            {
+                internal static extern IPartialCleanup Unknown();
+            }
+            internal static class PartialProjectionPipeline
+            {
+                internal static void Run(IPartialCleanup cleanup, IPartialCleanup unused)
+                {
+                    PartialProjectedResult<IPartialCleanup> first = Wrap(cleanup, unused);
+                    PartialProjectedResult<IPartialCleanup> second = Wrap(first.Value, unused);
+                    PartialProjectedResult<IPartialCleanup> third = Wrap(second.Value, unused);
+                    using (third.Value) { }
+                }
+                private static PartialProjectedResult<IPartialCleanup> Wrap(IPartialCleanup cleanup, IPartialCleanup unused)
+                {
+                    using (unused) { }
+                    return PartialProjectedResult<IPartialCleanup>.Success(cleanup);
+                }
+            }
+            """;
+
+        return R2Source(body, helper);
     }
 
     [Fact]
