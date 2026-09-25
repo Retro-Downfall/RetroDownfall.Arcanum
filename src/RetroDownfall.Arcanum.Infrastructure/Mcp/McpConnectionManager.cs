@@ -245,7 +245,8 @@ public sealed partial class McpConnectionManager :
     private async Task<Result> StartCoreAsync(
         string name,
         string? workingDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireCleanupCompletion = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -319,7 +320,8 @@ public sealed partial class McpConnectionManager :
                                   .ConfigureAwait(false))
                     {
                         _ = await StopManagedServerCoreAsync(
-                                entry)
+                                entry,
+                                requireCleanupCompletion)
                             .ConfigureAwait(false);
 
                         Error notTrusted = IsCurrentRegistryEntry(entry)
@@ -382,6 +384,26 @@ public sealed partial class McpConnectionManager :
     /// <inheritdoc />
     public async Task<Result> StopAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
     {
+        if (!_lifecycleAdmission.TryEnter(out IAsyncDisposable? admitted))
+        {
+            return ManagerStoppedError();
+        }
+
+        await using IAsyncDisposable lifecycle = admitted!;
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _globalInitializationLifetime.Token);
+
+        return await StopCoreAsync(name, workingDirectory, linked.Token).ConfigureAwait(false);
+    }
+
+    private async Task<Result> StopCoreAsync(
+        string name,
+        string? workingDirectory,
+        CancellationToken cancellationToken,
+        bool requireCleanupCompletion = false)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
@@ -408,7 +430,7 @@ public sealed partial class McpConnectionManager :
             else
             {
                 bool disposalCompleted =
-                    await StopManagedServerCoreAsync(entry)
+                    await StopManagedServerCoreAsync(entry, requireCleanupCompletion)
                         .ConfigureAwait(false);
 
                 entry.State = McpServerState.Stopped;
@@ -774,6 +796,19 @@ public sealed partial class McpConnectionManager :
     /// <inheritdoc />
     public async Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default)
     {
+        if (!_lifecycleAdmission.TryEnter(out IAsyncDisposable? admitted))
+        {
+            throw ManagerStoppedException();
+        }
+
+        await using IAsyncDisposable lifecycle = admitted!;
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _globalInitializationLifetime.Token);
+
+        cancellationToken = linked.Token;
+
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
@@ -1047,8 +1082,30 @@ public sealed partial class McpConnectionManager :
         }
     }
 
-    private async Task AwaitRetiredPartitionDisposalsAsync()
+    private async Task AwaitRetiredPartitionDisposalsAsync(bool requireCleanupCompletion = false)
     {
+        if (requireCleanupCompletion)
+        {
+            while (true)
+            {
+                Task[] terminalPending = _retiredPartitionDisposals.Keys.ToArray();
+
+                if (terminalPending.Length == 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    await Task.WhenAll(terminalPending).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "Failed while joining retired MCP client generations during shutdown.");
+                }
+            }
+        }
+
         Task[] pending =
             _retiredPartitionDisposals.Keys.ToArray();
 
@@ -1083,9 +1140,6 @@ public sealed partial class McpConnectionManager :
 
     private async Task AwaitPendingWorkspaceRetirementsAsync()
     {
-        using CancellationTokenSource cleanupDeadline =
-            new(WorkspaceRetirementCleanupTimeout);
-
         while (true)
         {
             Task[] pending =
@@ -1098,18 +1152,7 @@ public sealed partial class McpConnectionManager :
 
             try
             {
-                await Task.WhenAll(pending)
-                    .WaitAsync(cleanupDeadline.Token)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (cleanupDeadline.IsCancellationRequested)
-            {
-                logger.LogWarning(
-                    "MCP shutdown left {PendingCount} bounded workspace retirement task(s) unfinished.",
-                    _pendingWorkspaceRetirements.Count);
-
-                return;
+                await Task.WhenAll(pending).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1480,10 +1523,11 @@ public sealed partial class McpConnectionManager :
         {
             try
             {
-                _ = await StopAsync(
+                _ = await StopCoreAsync(
                         entry.Name,
                         entry.ScopeWorkingDirectory,
-                        CancellationToken.None)
+                        CancellationToken.None,
+                        requireCleanupCompletion: true)
                     .ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -1496,6 +1540,10 @@ public sealed partial class McpConnectionManager :
                     entry.Name);
             }
         }
+
+        await AwaitPendingWorkspaceRetirementsAsync().ConfigureAwait(false);
+
+        await AwaitRetiredPartitionDisposalsAsync(requireCleanupCompletion: true).ConfigureAwait(false);
 
         if (observedFailure is not null)
         {
@@ -1627,7 +1675,7 @@ public sealed partial class McpConnectionManager :
                 }
             }
 
-            await AwaitRetiredPartitionDisposalsAsync().ConfigureAwait(false);
+            await AwaitRetiredPartitionDisposalsAsync(requireCleanupCompletion: true).ConfigureAwait(false);
 
             _partitionClients.Clear();
 

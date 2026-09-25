@@ -1133,7 +1133,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         Assert.Contains(
             failure.InnerExceptions,
             static inner => inner is InvalidOperationException
-                { Message: "synthetic cancellation callback failure" });
+            { Message: "synthetic cancellation callback failure" });
 
         Assert.Equal(1, client.DisposeCount);
 
@@ -1305,6 +1305,157 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         Assert.True(closed.IsSuccess, closed.Error.Message);
 
         await ReopenAdmissionAsync(closed.Value);
+    }
+
+    [Fact]
+    public async Task OrdinaryInitializerRetainsAdmissionThroughFailedStartSdkDelete()
+    {
+        ConcurrentQueue<string> phases = new();
+
+        using FailedStartDeleteHandler handler = new(phases);
+
+        McpConnectionManager manager = CreateUnconfiguredManager(
+            _settings,
+            httpHandler: handler);
+
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        RecordingGrimoireWorkAdmissionGate admission = new(inner);
+
+        manager.ConfigureGlobalAdmission(admission);
+
+        admission.BeforeEffectGroupDisposalAsync = () =>
+        {
+            phases.Enqueue("effect-dispose");
+
+            Assert.True(handler.DeleteCompleted.Task.IsCompletedSuccessfully,
+                "The ordinary effect group must survive the real SDK DELETE.");
+
+            return ValueTask.CompletedTask;
+        };
+
+        admission.BeforeWorkLeaseDisposalAsync = () =>
+        {
+            phases.Enqueue("work-dispose");
+
+            Assert.True(handler.DeleteCompleted.Task.IsCompletedSuccessfully,
+                "The ordinary work lease must survive the real SDK DELETE.");
+
+            return ValueTask.CompletedTask;
+        };
+
+        Task? initializer = null;
+
+        IGrimoireClosingOwner? closingOwner = null;
+
+        Task<Result>? drain = null;
+
+        List<Exception> failures = [];
+
+        async Task ObserveCleanupAsync(Func<Task> cleanup)
+        {
+            try
+            {
+                await cleanup().WaitAsync(TimeSpan.FromSeconds(30));
+            }
+            catch (Exception ex)
+            {
+                failures.Add(ex);
+            }
+        }
+
+        try
+        {
+            await manager.RegisterFromConfigAsync(
+                new McpConfig
+                {
+                    McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
+                    {
+                        ["failed-start-delete"] = new()
+                        {
+                            Type = "http",
+                            Url = FailedStartDeleteHandler.Endpoint,
+                            AlwaysOn = true,
+                        },
+                    },
+                },
+                scopeWorkingDirectory: null,
+                CancellationToken.None);
+
+            initializer = manager.InitializeAsync();
+
+            await handler.DeleteStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.False(initializer.IsCompleted);
+
+            Assert.DoesNotContain("effect-dispose", phases);
+
+            Assert.DoesNotContain("work-dispose", phases);
+
+            closingOwner = BeginClosing(inner);
+
+            drain = inner.DrainRequestAndWorkAsync(closingOwner, CancellationToken.None).AsTask();
+
+            Assert.False(drain.IsCompleted);
+
+            handler.ReleaseDelete.TrySetResult();
+
+            await initializer.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Result drained = await drain.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.True(drained.IsSuccess, drained.Error.Message);
+
+            Assert.Equal(
+                ["delete-start", "delete-complete", "effect-dispose", "work-dispose"],
+                phases.ToArray());
+
+            Assert.Equal(1, handler.DeleteCount);
+        }
+        catch (Exception ex)
+        {
+            failures.Add(ex);
+        }
+        finally
+        {
+            // Release the transport before any join or manager disposal, including assertion failures.
+            handler.ReleaseDelete.TrySetResult();
+
+            if (initializer is not null)
+            {
+                await ObserveCleanupAsync(() => initializer);
+            }
+
+            if (handler.DeleteStarted.Task.IsCompletedSuccessfully)
+            {
+                await ObserveCleanupAsync(() => handler.DeleteCompleted.Task);
+            }
+
+            if (closingOwner is not null)
+            {
+                await ObserveCleanupAsync(async () =>
+                {
+                    Result drained = await inner.DrainRequestAndWorkAsync(
+                        closingOwner, CancellationToken.None);
+
+                    Assert.True(drained.IsSuccess, drained.Error.Message);
+
+                    Result<IGrimoireExclusiveClosedLease> closed =
+                        await inner.CloseConnectionAdmissionAsync(closingOwner, CancellationToken.None);
+
+                    Assert.True(closed.IsSuccess, closed.Error.Message);
+
+                    await ReopenAdmissionAsync(closed.Value);
+                });
+            }
+
+            await ObserveCleanupAsync(() => manager.DisposeAsync().AsTask());
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("Failed-start cleanup-retention witness failed.", failures);
+        }
     }
 
     [Fact]
@@ -1629,6 +1780,446 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         Assert.Equal(1, orphanedClient.DisposeCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompletionModeJoinsExactlyOneNewOrRetainedDisposal(bool previouslyRetained)
+    {
+        HeldCleanupClient client = new();
+
+        Task? retained = null;
+
+        ManagedMcpServerEntry entry = AddRunningRegistryEntry(_manager, "retained-helper", client);
+
+        if (previouslyRetained)
+        {
+            retained = client.DisposeAsync().AsTask();
+
+            entry.Client = null;
+
+            entry.DetachedClientDisposal = retained;
+        }
+
+        System.Reflection.MethodInfo helper = typeof(McpConnectionManager).GetMethod(
+            "StopManagedServerCoreAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        Task<bool>? joined = null;
+
+        try
+        {
+            if (previouslyRetained)
+            {
+                Task<bool> bounded = (Task<bool>)helper.Invoke(_manager, [entry, false])!;
+
+                Assert.False(await bounded.WaitAsync(TimeSpan.FromSeconds(10)));
+            }
+
+            joined = (Task<bool>)helper.Invoke(_manager, [entry, true])!;
+
+            retained = entry.DetachedClientDisposal;
+
+            Assert.False(joined.IsCompleted);
+
+            Assert.Equal(1, client.DisposeCount);
+        }
+        finally
+        {
+            client.Release.TrySetResult();
+
+            if (joined is not null)
+            {
+                _ = await joined.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+
+            if (retained is not null)
+            {
+                await retained.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
+
+        Assert.True(await joined!);
+
+        Assert.Null(entry.DetachedClientDisposal);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task CompletionModeObservesTerminalDisposalFailure(bool canceled, bool retained)
+    {
+        Task disposal = canceled
+            ? Task.FromCanceled(new CancellationToken(canceled: true))
+            : Task.FromException(new IOException("terminal disposal failure"));
+
+        TrackingMcpClient client = new() { Disposal = disposal };
+
+        ManagedMcpServerEntry entry = AddRunningRegistryEntry(_manager, "terminal-failure", client);
+
+        if (retained)
+        {
+            entry.Client = null;
+
+            entry.DetachedClientDisposal = disposal;
+        }
+
+        System.Reflection.MethodInfo helper = typeof(McpConnectionManager).GetMethod(
+            "StopManagedServerCoreAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        Task<bool> joined = (Task<bool>)helper.Invoke(_manager, [entry, true])!;
+
+        Assert.False(await joined.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Task actual = Assert.IsAssignableFrom<Task>(entry.DetachedClientDisposal);
+
+        Assert.True(actual.IsCompleted);
+
+        Assert.Same(disposal, actual);
+
+        Assert.Equal(retained ? 0 : 1, client.DisposeCount);
+    }
+
+    [Fact]
+    public async Task SurfaceLookupRetainsManagerUntilItsOptionsReadExits()
+    {
+        _ = await _manager.GetAvailableToolsAsync(null);
+
+        using ManualResetEventSlim release = new();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _settings.BeforeNextRead = () =>
+        {
+            entered.TrySetResult();
+
+            Assert.True(release.Wait(TimeSpan.FromSeconds(30)));
+        };
+
+        Task<IReadOnlyList<AITool>> lookup = Task.Factory.StartNew(
+            () => _manager.GetAvailableToolsAsync(null),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+
+        Task? stop = null;
+
+        Task? disposal = null;
+
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            stop = _manager.StopAllAsync();
+
+            disposal = _manager.DisposeAsync().AsTask();
+
+            Assert.False(stop.IsCompleted);
+
+            Assert.False(disposal.IsCompleted);
+        }
+        finally
+        {
+            release.Set();
+
+            try
+            {
+                _ = await lookup.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown may cancel the admitted lookup, but must still join its exit.
+            }
+            catch (ObjectDisposedException) when (stop is not null)
+            {
+                // Preserves the original unadmitted RED's cleanup if disposal won the race.
+            }
+
+            if (stop is not null)
+            {
+                await stop.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+
+            if (disposal is not null)
+            {
+                await disposal.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StoppedManagerRefusesCachedSurfaceWithoutCreatingMoreTools()
+    {
+        Assert.NotEmpty(await _manager.GetAvailableToolsAsync(null));
+
+        await _manager.StopAllAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => _manager.GetAvailableToolsAsync(null));
+    }
+
+    [Fact]
+    public async Task PublicStopRetainsManagerThroughItsFinalEventPublication()
+    {
+        using ManualResetEventSlim release = new();
+
+        TrackingMcpClient client = new();
+
+        AddRunningRegistryEntry(_manager, "public-stop-owner", client);
+
+        _events.ParkEventsFor("public-stop-owner", release);
+
+        Task<Result> ordinary = Task.Factory.StartNew(
+            () => _manager.StopAsync("public-stop-owner", null),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+
+        Task? stop = null;
+
+        Task? disposal = null;
+
+        try
+        {
+            await _events.ParkedEventObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            stop = _manager.StopAllAsync();
+
+            disposal = _manager.DisposeAsync().AsTask();
+
+            Assert.False(stop.IsCompleted);
+
+            Assert.False(disposal.IsCompleted);
+
+            Assert.Equal(1, client.DisposeCount);
+        }
+        finally
+        {
+            release.Set();
+
+            Assert.True((await ordinary.WaitAsync(TimeSpan.FromSeconds(30))).IsSuccess);
+
+            if (stop is not null)
+            {
+                await stop.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+
+            if (disposal is not null)
+            {
+                await disposal.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StoppedManagerRefusesPublicStopWithoutPublishingAgain()
+    {
+        TrackingMcpClient client = new();
+
+        AddRunningRegistryEntry(_manager, "late-stop", client);
+
+        await _manager.StopAllAsync();
+
+        int events = _events.CountEventsFor("late-stop");
+
+        Result result = await _manager.StopAsync("late-stop", null);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Mcp.ServerNotRunning, result.Error.Code);
+
+        Assert.Equal(events, _events.CountEventsFor("late-stop"));
+
+        Assert.Equal(1, client.DisposeCount);
+    }
+
+    [Fact]
+    public async Task FinalShutdownRetainsCleanupBeyondOrdinaryRetirementDeadline()
+    {
+        await using TempWorkspace workspace = new();
+
+        HeldCleanupClient partitionClient = new();
+
+        HeldCleanupClient terminalClient = new();
+
+        HeldCleanupClient ordinaryClient = new();
+
+        McpConnectionManager ordinaryManager = CreateUnconfiguredManager(_settings);
+
+        McpConnectionManager terminalManager = CreateUnconfiguredManager(_settings);
+
+        AddRunningRegistryEntry(terminalManager, "terminal-cleanup", terminalClient);
+
+        AddRunningRegistryEntry(ordinaryManager, "ordinary-retirement", ordinaryClient);
+
+        List<Task> joins = [];
+
+        List<Exception> failures = [];
+
+        async Task ObserveAsync(Task task)
+        {
+            try
+            {
+                await task.WaitAsync(TimeSpan.FromSeconds(60));
+            }
+            catch (Exception ex)
+            {
+                failures.Add(ex);
+            }
+        }
+
+        try
+        {
+            await workspace.InitializeAsync();
+
+            _ = await _manager.GetAvailableToolsAsync(workspace.Root);
+
+            await ReplaceInternalPartitionClientAsync(_manager, workspace.Root, partitionClient);
+
+            _settings.CurrentValue = _settings.CurrentValue with
+            {
+                Features = _settings.CurrentValue.Features with { WorkspaceChecks = false },
+            };
+
+            _ = await _manager.GetAvailableToolsAsync(workspace.Root);
+
+            await partitionClient.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Task retiredPartitionStop = _manager.StopAllAsync();
+
+            Task retiredPartitionDisposal = _manager.DisposeAsync().AsTask();
+
+            joins.AddRange([retiredPartitionStop, retiredPartitionDisposal]);
+
+            Task stop = terminalManager.StopAllAsync();
+
+            joins.Add(stop);
+
+            await terminalClient.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Task firstDisposal = terminalManager.DisposeAsync().AsTask();
+
+            Task secondDisposal = terminalManager.DisposeAsync().AsTask();
+
+            joins.AddRange([firstDisposal, secondDisposal]);
+
+            Task<Result> ordinaryStop = ordinaryManager.StopAsync("ordinary-retirement", null);
+
+            joins.Add(ordinaryStop);
+
+            await ordinaryClient.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Result bounded = await ordinaryStop.WaitAsync(TimeSpan.FromSeconds(60));
+
+            Assert.Equal("Mcp.ClientDisposalIncomplete", bounded.Error.Code);
+
+            Assert.False(ordinaryClient.Completed.Task.IsCompleted);
+
+            Assert.False(terminalClient.Completed.Task.IsCompleted);
+
+            // This manager already has a timed-out ordinary retirement. Start its final
+            // owner now, so the same observation also exceeds that old drain's deadline.
+            Task priorRetirementStop = ordinaryManager.StopAllAsync();
+
+            Task priorRetirementDisposal = ordinaryManager.DisposeAsync().AsTask();
+
+            joins.AddRange([priorRetirementStop, priorRetirementDisposal]);
+
+            // The real public retirement has exhausted its production 30-second deadline.
+            // Observe 75 seconds more: final stop drains before and after its entry loop,
+            // so reverting both calls to bounded waits can delay early release by 60 seconds.
+            // Any owner finishing is a violation; WhenAll could hide one early completion.
+            await Assert.ThrowsAsync<TimeoutException>(() =>
+                Task.WhenAny(stop, priorRetirementStop, retiredPartitionStop)
+                    .WaitAsync(TimeSpan.FromSeconds(75)));
+
+            Assert.False(firstDisposal.IsCompleted);
+
+            Assert.False(secondDisposal.IsCompleted);
+
+            Assert.False(priorRetirementDisposal.IsCompleted);
+
+            Assert.False(retiredPartitionDisposal.IsCompleted);
+
+            using CancellationTokenSource caller = new();
+
+            Task canceledWaiter = terminalManager.StopAllAsync(caller.Token);
+
+            caller.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledWaiter);
+
+            Task sharedStop = terminalManager.StopAllAsync();
+
+            joins.Add(sharedStop);
+
+            Assert.False(sharedStop.IsCompleted);
+
+            Assert.False(priorRetirementStop.IsCompleted);
+
+            Assert.False(priorRetirementDisposal.IsCompleted);
+
+            SemaphoreSlim ownerLock = GetPrivateField<SemaphoreSlim>(terminalManager, "_globalInitLock");
+
+            Assert.True(ownerLock.Wait(0));
+
+            ownerLock.Release();
+
+            terminalClient.Release.TrySetResult();
+
+            ordinaryClient.Release.TrySetResult();
+
+            partitionClient.Release.TrySetResult();
+
+            await Task.WhenAll(joins).WaitAsync(TimeSpan.FromSeconds(60));
+
+            Assert.True(terminalClient.Completed.Task.IsCompletedSuccessfully);
+
+            Assert.True(ordinaryClient.Completed.Task.IsCompletedSuccessfully);
+
+            Assert.Equal(1, terminalClient.DisposeCount);
+
+            Assert.Equal(1, ordinaryClient.DisposeCount);
+
+            Assert.Equal(1, partitionClient.DisposeCount);
+
+            Assert.Throws<ObjectDisposedException>(() => ownerLock.Wait(0));
+        }
+        catch (Exception ex)
+        {
+            failures.Add(ex);
+        }
+        finally
+        {
+            terminalClient.Release.TrySetResult();
+
+            ordinaryClient.Release.TrySetResult();
+
+            partitionClient.Release.TrySetResult();
+
+            foreach (Task task in joins)
+            {
+                await ObserveAsync(task);
+            }
+
+            await ObserveAsync(terminalManager.DisposeAsync().AsTask());
+
+            await ObserveAsync(ordinaryManager.DisposeAsync().AsTask());
+
+            await ObserveAsync(_manager.DisposeAsync().AsTask());
+
+            if (terminalClient.Started.Task.IsCompleted)
+            {
+                await ObserveAsync(terminalClient.Completed.Task);
+            }
+
+            if (ordinaryClient.Started.Task.IsCompleted)
+            {
+                await ObserveAsync(ordinaryClient.Completed.Task);
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("Final shutdown released cleanup ownership prematurely.", failures);
+        }
+    }
+
     [Fact]
     public async Task Unattended_forbidden_write_file_runs_through_the_registered_MCP_bridge_and_records_an_ungated_audit()
     {
@@ -1898,7 +2489,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     private static McpConnectionManager CreateUnconfiguredManager(
         Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> settings,
-        IEventBus? eventBus = null)
+        IEventBus? eventBus = null,
+        HttpMessageHandler? httpHandler = null)
     {
         IServiceScopeFactory scopeFactory = new ServiceCollection()
             .BuildServiceProvider()
@@ -1917,7 +2509,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             pacer,
             eventBus ?? new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
-            new FakeHttpClientFactory(),
+            new FakeHttpClientFactory(httpHandler),
             settings);
     }
 
@@ -2024,6 +2616,31 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         return entry;
     }
 
+    // Installs a live client before actual settings invalidation retires this partition.
+    // No pending task or retirement dictionary is fabricated; manager code creates both.
+    private static async Task ReplaceInternalPartitionClientAsync(
+        McpConnectionManager manager, string partitionKey, IMcpClient client)
+    {
+        System.Reflection.MethodInfo? get = typeof(McpConnectionManager).GetMethod(
+            "GetOrCreatePartition", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.NotNull(get);
+
+        object partition = get.Invoke(manager, [partitionKey])!;
+
+        System.Reflection.PropertyInfo property = partition.GetType().GetProperty("InternalClient")!;
+
+        IMcpClient old = Assert.IsAssignableFrom<IMcpClient>(property.GetValue(partition));
+
+        _ = partition.GetType().GetMethod("RemoveClient")!.Invoke(partition, [old]);
+
+        await old.DisposeAsync();
+
+        property.SetValue(partition, client);
+
+        _ = partition.GetType().GetMethod("AddClientIfAbsent")!.Invoke(partition, [client]);
+    }
+
     private static void AddClientToPrivatePartition(
         McpConnectionManager manager,
         string partitionKey,
@@ -2087,7 +2704,20 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     private sealed class MutableOptionsMonitor(ArcanumSettings current)
         : Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings>
     {
-        public ArcanumSettings CurrentValue { get; set; } = current;
+        private ArcanumSettings _current = current;
+
+        public Action? BeforeNextRead;
+
+        public ArcanumSettings CurrentValue
+        {
+            get
+            {
+                Interlocked.Exchange(ref BeforeNextRead, null)?.Invoke();
+
+                return _current;
+            }
+            set => _current = value;
+        }
 
         public ArcanumSettings Get(string? name) => CurrentValue;
 
@@ -2206,9 +2836,140 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             _release.TrySetResult();
     }
 
+    private sealed class FailedStartDeleteHandler(
+        ConcurrentQueue<string> phases) : HttpMessageHandler
+    {
+        // A documentation-range literal accepted by the production address policy; this handler
+        // terminates every request in-process and has no delegating/network fallback.
+        internal const string Endpoint = "https://203.0.113.1/mcp";
+
+        internal TaskCompletionSource DeleteStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseDelete { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource DeleteCompleted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _deleteCount;
+
+        internal int DeleteCount => Volatile.Read(ref _deleteCount);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal(Endpoint, request.RequestUri!.AbsoluteUri);
+
+            if (request.Method == HttpMethod.Delete)
+            {
+                Assert.Equal("failed-start-session", request.Headers.GetValues("Mcp-Session-Id").Single());
+
+                Interlocked.Increment(ref _deleteCount);
+
+                phases.Enqueue("delete-start");
+
+                DeleteStarted.TrySetResult();
+
+                await ReleaseDelete.Task;
+
+                phases.Enqueue("delete-complete");
+
+                DeleteCompleted.TrySetResult();
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.NoContent);
+            }
+
+            if (request.Method == HttpMethod.Get)
+            {
+                // Unsolicited SSE is optional; reject immediately instead of parking another task.
+                return new HttpResponseMessage(System.Net.HttpStatusCode.MethodNotAllowed);
+            }
+
+            Assert.Equal(HttpMethod.Post, request.Method);
+
+            using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(
+                await request.Content!.ReadAsStringAsync(cancellationToken));
+
+            System.Text.Json.JsonElement message = document.RootElement;
+
+            string? method = message.GetProperty("method").GetString();
+
+            if (method == "notifications/initialized")
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.Accepted);
+            }
+
+            string id = message.GetProperty("id").GetRawText();
+
+            string json;
+
+            if (method == "initialize")
+            {
+                string protocol = message.GetProperty("params").GetProperty("protocolVersion").GetRawText();
+
+                json = "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                    + ",\"result\":{\"protocolVersion\":" + protocol
+                    + ",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"cleanup-witness\",\"version\":\"1\"}}}";
+            }
+            else
+            {
+                Assert.Equal("tools/list", method);
+
+                json = "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                    + ",\"error\":{\"code\":-32603,\"message\":\"controlled tools-list failure\"}}";
+            }
+
+            HttpResponseMessage response = new(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+            };
+
+            response.Headers.Add("Mcp-Session-Id", "failed-start-session");
+
+            return response;
+        }
+    }
+
+    private sealed class HeldCleanupClient : IMcpClient
+    {
+        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal int DisposeCount { get; private set; }
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<McpBridgeTool>>([]);
+
+        public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(
+            string toolName,
+            IReadOnlyDictionary<string, object?> arguments,
+            TimeSpan? requestTimeout = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public async ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+
+            Started.TrySetResult();
+
+            await Release.Task;
+
+            Completed.TrySetResult();
+        }
+    }
+
     private sealed class TrackingMcpClient : IMcpClient
     {
         public int DisposeCount { get; private set; }
+
+        public Task? Disposal { get; init; }
 
         public Task InitializeAsync(
             CancellationToken cancellationToken = default) =>
@@ -2229,7 +2990,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         public ValueTask DisposeAsync()
         {
             DisposeCount++;
-            return ValueTask.CompletedTask;
+
+            return Disposal is null ? ValueTask.CompletedTask : new ValueTask(Disposal);
         }
     }
 
@@ -2439,14 +3201,14 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             CancellationToken ct = default) =>
             Task.FromResult<SanctumChildProcessBoundary?>(null);
 
-public Task RecordResourceLimitBreachAsync(
-            string? workspaceRoot,
-            string toolName,
-            Core.Platform.ResourceLimitKind resource,
-            string limitValue,
-            string? actualValue,
-            CancellationToken ct = default) =>
-            Task.CompletedTask;
+        public Task RecordResourceLimitBreachAsync(
+                    string? workspaceRoot,
+                    string toolName,
+                    Core.Platform.ResourceLimitKind resource,
+                    string limitValue,
+                    string? actualValue,
+                    CancellationToken ct = default) =>
+                    Task.CompletedTask;
     }
 
     private sealed class FakeEventBus : IEventBus

@@ -10,6 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-issue-257-full-host-transition-qualification-design.md`
 
+## Delivery procedure amendment — 2026-09-24
+
+The issue owner subsequently delegated the route to completion, explicitly prioritizing quality and delivery over exhaustive repeated testing. The historical procedure below remains as the original plan, with these superseding execution decisions:
+
+- Batch the remaining source-checker repairs, preserve existing approved work, and review the final new delta once. Focused semantic regressions and a complete fixture/production-root acceptance pass precede delivery; do not repeat completed reviews or require a separate mutation cycle for every small checker edit.
+- Use all seven successful jobs of the unchanged-SHA CI workflow, with reviewed logs, as the complete platform qualification. Its build, runtime/coverage, source-analysis, Windows x64/arm64, trusted workspace, Native AOT, benchmark, packaging and lint gates replace the overlapping full local matrix. Retain local restored-source build, focused/fixture evidence, zero-diagnostic production manifest, native SQLCipher provenance and formatting/diff checks. Report local and CI evidence separately; historical green runs do not qualify changed source.
+- The original in-memory preservation baseline for the out-of-scope issue was lost with its shell. Take a fresh read-only checksum commitment before delivery and compare subsequent state to that commitment. Never persist or disclose raw private metadata, and do not claim retrospective comparison to the lost original.
+- Keep the delivery order: reviewed feature SHA through `grimoire-fixes` to `main`, issue #257/#239 closure, branch/worktree cleanup preserving unrelated primary files, then fresh delivered-main Native AOT three-turn local Ollama vision proof. No published-history rewrite or scheduled conversation follow-up.
+
+These changes streamline the verification procedure, not the product's runtime contract or the requirement for truthful evidence.
+
 ## Global Constraints
 
 - Work only in `/Users/mat/Source/apps/RetroDownfall.Arcanum/.worktrees/issue-257-full-host-qualification` on `codex/issue-257-full-host-qualification` until the delivery task explicitly moves immutable refs.

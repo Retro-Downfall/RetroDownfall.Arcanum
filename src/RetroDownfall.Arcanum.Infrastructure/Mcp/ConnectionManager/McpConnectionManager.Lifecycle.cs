@@ -308,7 +308,8 @@ public sealed partial class McpConnectionManager
     }
 
     private async Task<bool> StopManagedServerCoreAsync(
-        ManagedMcpServerEntry entry)
+        ManagedMcpServerEntry entry,
+        bool requireCleanupCompletion = false)
     {
         IMcpClient? client = entry.Client;
 
@@ -323,22 +324,34 @@ public sealed partial class McpConnectionManager
             if (client is not null)
             {
                 disposal = null;
-                disposal = client.DisposeAsync()
-                    .AsTask();
 
-                entry.DetachedClientDisposal = disposal;
-                TrackPendingWorkspaceRetirement(disposal);
+                if (requireCleanupCompletion)
+                {
+                    await DisposeClientToCompletionAsync(entry, client).ConfigureAwait(false);
+                }
+                else
+                {
+                    disposal = client.DisposeAsync().AsTask();
 
-                using CancellationTokenSource cleanupDeadline =
-                    new(WorkspaceRetirementCleanupTimeout);
+                    entry.DetachedClientDisposal = disposal;
 
-                await disposal
-                    .WaitAsync(cleanupDeadline.Token)
-                    .ConfigureAwait(false);
+                    TrackPendingWorkspaceRetirement(disposal);
+
+                    using CancellationTokenSource cleanupDeadline =
+                        new(WorkspaceRetirementCleanupTimeout);
+
+                    await disposal
+                        .WaitAsync(cleanupDeadline.Token)
+                        .ConfigureAwait(false);
+                }
             }
             else if (disposal is not null)
             {
-                if (!disposal.IsCompletedSuccessfully)
+                if (requireCleanupCompletion)
+                {
+                    await disposal.ConfigureAwait(false);
+                }
+                else if (!disposal.IsCompletedSuccessfully)
                 {
                     _ = disposal.Exception;
 
@@ -359,6 +372,7 @@ public sealed partial class McpConnectionManager
         {
             entry.DetachedClientDisposal =
                 disposal
+                ?? entry.DetachedClientDisposal
                 ?? Task.FromException(ex);
 
             logger.LogWarning(ex, "Error disposing MCP client for server {ServerName}.", entry.Name);
@@ -384,6 +398,22 @@ public sealed partial class McpConnectionManager
         entry.DetachedClientDisposal = null;
 
         return true;
+    }
+
+    private async Task DisposeClientToCompletionAsync(ManagedMcpServerEntry entry, IMcpClient client)
+    {
+        Task disposal = client.DisposeAsync().AsTask();
+
+        try
+        {
+            entry.DetachedClientDisposal = disposal;
+
+            TrackPendingWorkspaceRetirement(disposal);
+        }
+        finally
+        {
+            await disposal.ConfigureAwait(false);
+        }
     }
 
     private void RemoveClientFromPartition(ManagedMcpServerEntry entry, IMcpClient client)

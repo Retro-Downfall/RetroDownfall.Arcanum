@@ -6575,6 +6575,110 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     [Theory]
     [InlineData("exact", false)]
+    [InlineData("other-instance", true)]
+    [InlineData("unknown-writer", true)]
+    [InlineData("ref-alias", true)]
+    [InlineData("unknown-parameter", true)]
+    [InlineData("missing-action", true)]
+    [InlineData("ambiguous-action", true)]
+    [InlineData("wrong-provider", true)]
+    [InlineData("unknown-return", true)]
+    public void DeclaredStopRootRetainsOnlyExactSameOwnerLifetimeWriter(
+        string sourceKind,
+        bool unresolved)
+    {
+        string actionRegistration = sourceKind switch
+        {
+            "missing-action" => string.Empty,
+            "ambiguous-action" =>
+                "services.AddSingleton<IStartupAction>(new KnownStartupAction()); services.AddSingleton<IStartupAction>(new UnknownStartupAction()); ",
+            "unknown-return" =>
+                "services.AddSingleton<IStartupAction>(static sp => UnknownStartupAction.Value); ",
+            _ =>
+                "services.AddSingleton<IStartupAction>(new KnownStartupAction()); ",
+        };
+
+        string actionResolution = sourceKind == "wrong-provider"
+            ? "UnknownProvider.Value.GetService<IStartupAction>()"
+            : "sp.GetService<IStartupAction>()";
+
+        string start = sourceKind switch
+        {
+            "other-instance" =>
+                "internal async System.Threading.Tasks.Task StartAsync(RegisteredOwner other) { await System.Threading.Tasks.Task.Yield(); if (_action is not null) { System.IDisposable? lease = _action.Activate(); lock (_sync) { other._lease = lease; } } } ",
+            "unknown-parameter" =>
+                "internal async System.Threading.Tasks.Task StartAsync(System.IDisposable? lease) { await System.Threading.Tasks.Task.Yield(); lock (_sync) { _lease = lease; } } ",
+            _ =>
+                "internal async System.Threading.Tasks.Task StartAsync() { await System.Threading.Tasks.Task.Yield(); if (_action is not null) { System.IDisposable? lease = _action.Activate(); lock (_sync) { _lease = lease; } } } ",
+        };
+
+        string additionalWriter = sourceKind switch
+        {
+            "unknown-writer" =>
+                "internal void Replace() { _lease = UnknownLease.Value; } ",
+            "ref-alias" =>
+                "internal void Alias() { ref System.IDisposable? alias = ref _lease; alias = null; } ",
+            _ => string.Empty,
+        };
+
+        string constructorWriter = sourceKind == "other-instance"
+            ? "_lease = UnknownLease.Value;"
+            : string.Empty;
+
+        string source = RegistrationSource(
+                actionRegistration
+                    + "services.AddSingleton(static sp => new RegisteredOwner("
+                    + actionResolution
+                    + ")); services.AddHostedService<Worker>();")
+            + "public interface IStartupAction { System.IDisposable? Activate(); } "
+            + "internal sealed class KnownStartupAction : IStartupAction { private readonly bool enabled = true; public System.IDisposable? Activate() { System.IDisposable? lease = null; try { if (enabled) { lease = new KnownLease(); } return lease; } catch { lease?.Dispose(); throw; } } private sealed class KnownLease : System.IDisposable { public void Dispose() => System.IO.File.Delete(\"gdb-lifetime-lease\"); } } "
+            + "internal sealed class UnknownStartupAction : IStartupAction { internal static IStartupAction Value { get; set; } = null!; public System.IDisposable? Activate() => UnknownLease.Value; } "
+            + "internal static class UnknownLease { internal static System.IDisposable? Value { get; set; } } "
+            + "internal static class UnknownProvider { internal static System.IServiceProvider Value { get; set; } = null!; } "
+            + "public sealed class RegisteredOwner(IStartupAction? action) { private readonly IStartupAction? _action = action; private readonly object _sync = new(); private System.IDisposable? _lease; internal RegisteredOwner(IStartupAction? action, bool selected) : this(action) { "
+            + constructorWriter
+            + " } "
+            + start
+            + additionalWriter
+            + "internal void Stop(bool early) { Release(early); } private void Release(bool early) { System.IDisposable? lease; lock (_sync) { lease = _lease; _lease = null; } if (early) { lease?.Dispose(); return; } lease?.Dispose(); } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "RegisteredOwner.Stop",
+            "src/Fixture.cs",
+            "RegisteredOwner",
+            "Stop",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "RegisteredOwner.Stop: same-owner lifetime writer fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        Assert.Equal(
+            unresolved ? 2 : 0,
+            result.Diagnostics.Count(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, static site =>
+                site.EnclosingType == "KnownStartupAction.KnownLease"
+                && site.Callee == "System.IO.File.Delete");
+        }
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
     [InlineData("missing-cancel", true)]
     [InlineData("missing-observer", true)]
     [InlineData("wrong-token", true)]
@@ -8587,6 +8691,246 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData("exact", true)]
+    [InlineData("unknown-caller", false)]
+    [InlineData("untraversed-unknown-caller", false)]
+    [InlineData("method-group", false)]
+    [InlineData("wrong-instance", false)]
+    [InlineData("relevant-ref", false)]
+    [InlineData("dominating-assignment", true)]
+    [InlineData("mutation-after-assignment", false)]
+    public void RetainedDictionaryWriterParameterRequiresClosedCallerFamily(
+        string shape,
+        bool resolved)
+    {
+        string writerParameter = shape == "relevant-ref"
+            ? "ref Holder holder"
+            : "Holder holder";
+
+        string knownCall(string key) => shape switch
+        {
+            "relevant-ref" =>
+                "Holder holder = new(new KnownAsyncCleanup()); "
+                    + "Retain(" + key + ", ref holder, out Holder? displaced);",
+            "dominating-assignment" or "mutation-after-assignment" =>
+                "Holder? holder = null; _retained.TryGetValue(-1, out holder); "
+                    + "holder = new Holder(new KnownAsyncCleanup()); "
+                    + (shape == "mutation-after-assignment"
+                        ? "ClosedWriterInput.Mutate(ref holder); "
+                        : string.Empty)
+                    + "Retain(" + key + ", holder, out Holder? displaced);",
+            _ => "Retain(" + key
+                + ", new Holder(new KnownAsyncCleanup()), out Holder? displaced);",
+        };
+
+        string secondCall = shape == "wrong-instance"
+            ? "new RetainedOwner().Retain(2, new Holder(new KnownAsyncCleanup()), out Holder? displaced);"
+            : knownCall("2");
+
+        string additionalMember = shape switch
+        {
+            "unknown-caller" =>
+                "private void Third() { Retain(3, new Holder(ClosedWriterInput.Unknown()), out Holder? displaced); } ",
+            "untraversed-unknown-caller" =>
+                "private void Untraversed(Holder holder) { Retain(3, holder, out Holder? displaced); } ",
+            "method-group" =>
+                "private delegate bool RetainDelegate(int key, Holder holder, out Holder? displaced); "
+                    + "private void Capture() { RetainDelegate escaped = Retain; ClosedWriterInput.Escape(escaped); } ",
+            _ => string.Empty,
+        };
+
+        string invokedAdditional = shape == "unknown-caller"
+            ? "Third();"
+            : string.Empty;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(
+                R2Admission + "await new RetainedOwner().RunAsync();",
+                "internal interface IClosedCleanup : System.IAsyncDisposable { } "
+                    + "internal sealed class KnownAsyncCleanup : IClosedCleanup { "
+                    + "public System.Threading.Tasks.ValueTask DisposeAsync() { "
+                    + "System.IO.File.Delete(\"closed-writer-effect\"); return default; } } "
+                    + "internal sealed record Holder(System.IAsyncDisposable Cleanup); "
+                    + "internal sealed class RetainedOwner { "
+                    + "private readonly System.Collections.Concurrent.ConcurrentDictionary<int, Holder> _retained = new(); "
+                    + "private bool Retain(int key, " + writerParameter + ", out Holder? displaced) { "
+                    + "displaced = null; _ = _retained.ContainsKey(-1); "
+                    + "if (_retained.TryRemove(key, out Holder? existing)) displaced = existing; "
+                    + "_retained[key] = holder; return true; } "
+                    + "private void First() { " + knownCall("1") + " } "
+                    + "private void Second() { " + secondCall + " } "
+                    + additionalMember
+                    + "private System.Collections.Generic.List<System.IAsyncDisposable> Detach() { "
+                    + "System.Collections.Generic.List<System.IAsyncDisposable> removed = []; "
+                    + "foreach (System.Collections.Generic.KeyValuePair<int, Holder> entry in _retained) { "
+                    + "if (_retained.TryRemove(entry.Key, out Holder? holder)) removed.Add(holder.Cleanup); } "
+                    + "return removed; } "
+                    + "private static async System.Threading.Tasks.Task ReleaseAsync("
+                    + "System.Collections.Generic.IEnumerable<System.IAsyncDisposable> roots) { "
+                    + "foreach (System.IAsyncDisposable root in roots) await root.DisposeAsync(); } "
+                    + "internal async System.Threading.Tasks.Task RunAsync() { First(); Second(); "
+                    + invokedAdditional
+                    + "System.Collections.Generic.List<System.IAsyncDisposable> removed; "
+                    + "lock (this) { removed = Detach(); } await ReleaseAsync(removed); } } "
+                    + "internal static class ClosedWriterInput { "
+                    + "internal static extern System.IAsyncDisposable Unknown(); "
+                    + "internal static extern void Mutate(ref Holder? value); "
+                    + "internal static extern void Escape(object value); }"));
+
+        Assert.Equal(
+            resolved,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.IAsyncDisposable.DisposeAsync;",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownAsyncCleanup"
+                && site.Callee == "System.IO.File.Delete"
+                && site.EffectFrontierCapsuleId is not null));
+    }
+
+    [Theory]
+    [InlineData("exact", true)]
+    [InlineData("nested-use", true)]
+    [InlineData("interface-factory", true)]
+    [InlineData("interface-forwarded-valuetask", true)]
+    [InlineData("unknown-result", false)]
+    [InlineData("unknown-success", false)]
+    public void FailureGuardedResultValueProjectsOnlyExactSuccessConstructor(
+        string shape,
+        bool resolved)
+    {
+        string acquisition = shape == "unknown-result"
+            ? "CleanupInput.UnknownResult()"
+            : shape == "unknown-success"
+                ? "CleanupFactory.OpenUnknownAsync()"
+                : shape is "interface-factory" or "interface-forwarded-valuetask"
+                    ? "CleanupFactory.Instance.OpenAsync()"
+                : "CleanupFactory.OpenAsync()";
+
+        string guard = shape == "unguarded"
+            ? string.Empty
+            : "if (opened.IsFailure) return; ";
+
+        string nestedUse = shape == "nested-use"
+            ? "if (System.DateTime.UtcNow.Ticks < 0) { await opened.Value.DisposeAsync(); return; } "
+            : string.Empty;
+
+        string factoryDeclaration = shape == "interface-forwarded-valuetask"
+            ? "public interface ICleanupFactory { System.Threading.Tasks.ValueTask<CleanupResult<IResultCleanup>> OpenAsync(); } "
+                + "internal static class CleanupFactory { internal static ICleanupFactory Instance { get; } = new Factory(); "
+                + "private sealed class Factory : ICleanupFactory { public async System.Threading.Tasks.ValueTask<CleanupResult<IResultCleanup>> OpenAsync() => await OpenCoreAsync(); "
+                + "private static async System.Threading.Tasks.ValueTask<CleanupResult<IResultCleanup>> OpenCoreAsync() { "
+                + "await System.Threading.Tasks.Task.Yield(); if (System.DateTime.UtcNow.Ticks < 0) return new FailurePayload(); return new KnownResultCleanup(); } } } "
+            : shape == "interface-factory"
+            ? "public interface ICleanupFactory { System.Threading.Tasks.Task<CleanupResult<IResultCleanup>> OpenAsync(); } "
+                + "internal static class CleanupFactory { internal static ICleanupFactory Instance { get; } = new Factory(); "
+                + "private sealed class Factory : ICleanupFactory { public async System.Threading.Tasks.Task<CleanupResult<IResultCleanup>> OpenAsync() { "
+                + "await System.Threading.Tasks.Task.Yield(); if (System.DateTime.UtcNow.Ticks < 0) return new FailurePayload(); return new KnownResultCleanup(); } } } "
+            : "public static class CleanupFactory { "
+                + "public static async System.Threading.Tasks.Task<CleanupResult<IResultCleanup>> OpenAsync() { "
+                + "await System.Threading.Tasks.Task.Yield(); "
+                + "if (System.DateTime.UtcNow.Ticks < 0) return new FailurePayload(); "
+                + "return new KnownResultCleanup(); } "
+                + "public static async System.Threading.Tasks.Task<CleanupResult<IResultCleanup>> OpenUnknownAsync() { "
+                + "await System.Threading.Tasks.Task.Yield(); return CleanupInput.UnknownSuccess(); } } ";
+
+        CSharpCompilation core = Compile(
+                "namespace ResultFixture { "
+                    + "public interface IResultCleanup : System.IAsyncDisposable { } "
+                    + "public sealed class FailurePayload : IResultCleanup { "
+                    + "public System.Threading.Tasks.ValueTask DisposeAsync() { "
+                    + "System.IO.File.Delete(\"guarded-result-failure-effect\"); return default; } } "
+                    + "public class CleanupResult { "
+                    + "protected CleanupResult(bool isSuccess) { IsSuccess = isSuccess; } "
+                    + "public bool IsSuccess { get; } public bool IsFailure => !IsSuccess; } "
+                    + "public sealed class CleanupResult<T> : CleanupResult { "
+                    + "private readonly T? _value; "
+                    + "private CleanupResult(T value) : base(true) { _value = value; } "
+                    + "private CleanupResult(FailurePayload failure) : base(false) { _value = default; } "
+                    + "public T Value => IsSuccess ? _value! : throw new System.InvalidOperationException(); "
+                    + "public static CleanupResult<T> Success(T value) => new(value); "
+                    + "public static CleanupResult<T> Failure(FailurePayload failure) => new(failure); "
+                    + "public static implicit operator CleanupResult<T>(T value) => Success(value); "
+                    + "public static implicit operator CleanupResult<T>(FailurePayload failure) => Failure(failure); } }")
+            .WithAssemblyName("Cleanup.Result.Core");
+
+        CSharpCompilation infrastructure = Compile(
+                "using ResultFixture; namespace CleanupFixture { "
+                    + "public sealed class KnownResultCleanup : IResultCleanup { "
+                    + "public System.Threading.Tasks.ValueTask DisposeAsync() { "
+                    + "System.IO.File.Delete(\"guarded-result-success-effect\"); return default; } } "
+                    + factoryDeclaration
+                    + "public static class CleanupOwner { "
+                    + "public static async System.Threading.Tasks.Task RunAsync() { "
+                    + "CleanupResult<IResultCleanup> opened = await " + acquisition + "; "
+                    + guard
+                    + nestedUse
+                    + "IResultCleanup authority = opened.Value; RetainedRoot retained = new(authority); "
+                    + "await retained.Authority.DisposeAsync(); } } "
+                    + "public sealed record RetainedRoot(IResultCleanup Authority); "
+                    + "public static class CleanupInput { "
+                    + "public static extern System.Threading.Tasks.Task<CleanupResult<IResultCleanup>> UnknownResult(); "
+                    + "public static extern CleanupResult<IResultCleanup> UnknownSuccess(); } }")
+            .AddReferences(core.ToMetadataReference())
+            .WithAssemblyName("Cleanup.Result.Infrastructure");
+
+        CSharpCompilation consumer = Compile(
+                R2Source(
+                    R2Admission
+                        + "await CleanupFixture.CleanupOwner.RunAsync();"))
+            .AddReferences(
+                core.ToMetadataReference(),
+                infrastructure.ToMetadataReference())
+            .WithAssemblyName("Cleanup.Result.Consumer");
+
+        Assert.All(
+            new[] { core, infrastructure, consumer },
+            static compilation => Assert.Empty(
+                compilation.GetDiagnostics().Where(static diagnostic =>
+                    diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [core, infrastructure, consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.True(
+            resolved == !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.IAsyncDisposable.DisposeAsync;",
+                    StringComparison.Ordinal)),
+            string.Join(
+                System.Environment.NewLine,
+                result.Diagnostics.Select(static diagnostic =>
+                    $"{diagnostic.Code};{diagnostic.Identity};{diagnostic.Detail}")));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.EnclosingType.EndsWith(
+                    ".KnownResultCleanup",
+                    StringComparison.Ordinal)
+                && site.Callee == "System.IO.File.Delete"
+                && site.EffectFrontierCapsuleId is not null));
+
+        Assert.DoesNotContain(
+            result.Items,
+            static site =>
+                site.EnclosingType.EndsWith(
+                    ".FailurePayload",
+                    StringComparison.Ordinal)
+                && site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
     [InlineData("closed", true)]
     [InlineData("throw-before-assignment", true)]
     [InlineData("return-before-assignment", false)]
@@ -9027,6 +9371,125 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         string body = R2Admission + "RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore store=null!; var first=store.CreateWriterAsync(); try { var second=store.CreateWriterAsync(); try { await first.CompleteAsync(); " + (completeBoth ? "await second.CompleteAsync();" : "") + " } finally { second.Dispose(); } } finally { first.Dispose(); }";
 
         Assert.Equal(completeBoth ? 0 : 1, R2Discover(R2Source(body, R2Blobs)).Diagnostics.Count(static diagnostic => diagnostic.Code == "HOSTED_SITE_PUBLICATION_REGION_INCOMPLETE"));
+    }
+
+    [Theory]
+    [InlineData("existing-null", true)]
+    [InlineData("existing-overwritten-unknown", true)]
+    [InlineData("conditional-null", true)]
+    [InlineData("conditional-unknown", false)]
+    [InlineData("missing-acquisition", false)]
+    [InlineData("lookalike", false)]
+    [InlineData("existing-reassigned", false)]
+    [InlineData("existing-ref-escape", false)]
+    [InlineData("out-var", true)]
+    [InlineData("out-var-reassigned", false)]
+    [InlineData("out-var-ref-escape", false)]
+    public void ExplicitAdmissionCleanupRequiresExactCurrentLocalValue(
+        string shape,
+        bool exact)
+    {
+        string acquisition = shape switch
+        {
+            "existing-overwritten-unknown" => "IDisposable group = AdmissionCleanupInput.Unknown(); if (!lease.TryBeginExternalEffectGroup(out group)) return;",
+            "conditional-unknown" => "IDisposable group = AdmissionCleanupInput.Unknown(); if (token.CanBeCanceled && !lease.TryBeginExternalEffectGroup(out group)) return;",
+            "conditional-null" => "IDisposable group = null!; if (token.CanBeCanceled && !lease.TryBeginExternalEffectGroup(out group)) return;",
+            "missing-acquisition" => "IDisposable group = AdmissionCleanupInput.Unknown();",
+            "lookalike" => "IDisposable group = null!; if (!AdmissionCleanupInput.TryBeginExternalEffectGroup(out group)) return;",
+            "out-var" or "out-var-reassigned" or "out-var-ref-escape" => "if (!lease.TryBeginExternalEffectGroup(out var group)) return;",
+            _ => "IDisposable group = null!; if (!lease.TryBeginExternalEffectGroup(out group)) return;",
+        };
+
+        string mutation = shape switch
+        {
+            "existing-reassigned" or "out-var-reassigned" => "group = AdmissionCleanupInput.Unknown();",
+            "existing-ref-escape" or "out-var-ref-escape" => "AdmissionCleanupInput.Replace(ref group);",
+            _ => string.Empty,
+        };
+
+        string source = R2Source(
+            AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal)
+                + acquisition
+                + " try { " + mutation + " System.IO.File.Exists(\"admission-cleanup-control\"); }"
+                + " finally { if (group is not null) group.Dispose(); }",
+            "internal static class AdmissionCleanupInput { internal static extern IDisposable Unknown(); internal static extern void Replace(ref IDisposable value); internal static extern bool TryBeginExternalEffectGroup(out IDisposable group); }");
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(
+            exact,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Theory]
+    [InlineData("for-assignment", false)]
+    [InlineData("while-ref", false)]
+    [InlineData("do-local-function", false)]
+    [InlineData("foreach-lambda", false)]
+    [InlineData("backward-goto", false)]
+    [InlineData("stable-for", true)]
+    [InlineData("stable-goto", true)]
+    [InlineData("uninvoked-local-function", true)]
+    [InlineData("straight-line-later-write", true)]
+    public void ExplicitAdmissionCleanupRequiresStableValueAcrossBackEdges(
+        string shape,
+        bool exact)
+    {
+        const string cleanup = "if (group is not null) group.Dispose();";
+
+        string repeated = shape switch
+        {
+            "for-assignment" => "for (int iteration = 0; iteration < 2; iteration++) { " + cleanup + " group = new EffectfulCleanup(); }",
+            "while-ref" => "while (token.CanBeCanceled) { " + cleanup + " AdmissionBackEdgeInput.Replace(ref group); }",
+            "do-local-function" => "void Mutate() { group = new EffectfulCleanup(); } do { " + cleanup + " Mutate(); } while (token.CanBeCanceled);",
+            "foreach-lambda" => "Action mutate = () => group = new EffectfulCleanup(); foreach (int iteration in new[] { 1, 2 }) { " + cleanup + " mutate(); }",
+            "backward-goto" => "again: " + cleanup + " group = new EffectfulCleanup(); if (token.CanBeCanceled) goto again;",
+            "stable-goto" => "again: " + cleanup + " if (token.CanBeCanceled) goto again;",
+            "uninvoked-local-function" => "void Mutate() { group = new EffectfulCleanup(); } for (int iteration = 0; iteration < 2; iteration++) { " + cleanup + " }",
+            "straight-line-later-write" => cleanup + " group = new EffectfulCleanup();",
+            _ => "for (int iteration = 0; iteration < 2; iteration++) { " + cleanup + " }",
+        };
+
+        string source = R2Source(
+            AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal)
+                + "IDisposable group = null!; if (!lease.TryBeginExternalEffectGroup(out group)) return;"
+                + "System.IO.File.Exists(\"back-edge-traversal-witness\");" + repeated,
+            "internal sealed class EffectfulCleanup : IDisposable { public void Dispose() { System.IO.File.Delete(\"replacement-cleanup-effect\"); } } "
+                + "internal static class AdmissionBackEdgeInput { internal static void Replace(ref IDisposable value) { value = new EffectfulCleanup(); } }");
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        bool unresolved = result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        bool replacementEffect = result.Items.Any(static site => site.Callee == "System.IO.File.Delete");
+
+        if (exact)
+        {
+            Assert.False(unresolved);
+
+            Assert.False(replacementEffect);
+        }
+        else
+        {
+            Assert.True(unresolved || replacementEffect,
+                "A replacement carried back to cleanup must be traversed or refused, never exempted as the original admission handle.");
+        }
     }
 
     private const string AdmissionTypes = """
@@ -12151,6 +12614,33 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void RepeatedCallableMutationQueriesScanEachExactSymbolOnce()
+    {
+        CSharpCompilation compilation = Compile(
+            "namespace CallableMutationFixture; "
+            + "internal sealed class Target { "
+            + "private static readonly System.Action Stable = First; "
+            + "private static readonly System.Action Mutated = First; "
+            + "static Target() { Mutated = Second; } "
+            + "private static void First() { } "
+            + "private static void Second() { } }");
+
+        INamedTypeSymbol owner = compilation
+            .GetTypeByMetadataName("CallableMutationFixture.Target")!;
+
+        HostedProducerCallableMutationProbe result =
+            HostedGrimoireProducerInventory.ProbeCallableMutations(
+                compilation,
+                owner,
+                ["Stable", "Mutated"],
+                repetitions: 8);
+
+        Assert.Equal([false, true], result.Mutated);
+
+        Assert.Equal(2, result.CorpusScans);
+    }
+
+    [Fact]
     public void RepeatedAssignmentEnumerationPreservesQueryOrderingCyclesAndBindings()
     {
         string source = "namespace AssignmentFixture; internal static class Target { private static void Before(string value) { } private static void After(string value) { } private static void Cycle(string value) { } internal static void Run(string source, string required) { "
@@ -13701,16 +14191,19 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             public void Dispose() => System.IO.File.Delete("explicit-cleanup");
             public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists("explicit-async"); return default; }
         }
+
         internal sealed class OtherExplicitCleanup : IExplicitCleanup
         {
             public void Dispose() => System.IO.File.Exists("other-cleanup");
             public System.Threading.Tasks.ValueTask DisposeAsync() => default;
         }
+
         internal sealed class SplitExplicitCleanup : System.IDisposable
         {
             public void Dispose() => System.IO.File.Exists("wrong-public-body");
             void System.IDisposable.Dispose() => System.IO.File.Delete("correct-interface-body");
         }
+
         internal static class ExplicitCleanupForwarder
         {
             internal static void Close(IExplicitCleanup value) => value.Dispose();
@@ -13719,6 +14212,62 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             internal static extern void Replace(ref IExplicitCleanup value);
         }
         """;
+
+    [Theory]
+    [InlineData(false, false, false, false)]
+    [InlineData(true, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(false, false, true, false)]
+    [InlineData(true, false, true, false)]
+    [InlineData(false, true, true, false)]
+    [InlineData(true, true, true, false)]
+    [InlineData(false, false, false, true)]
+    [InlineData(true, false, false, true)]
+    [InlineData(false, true, false, true)]
+    [InlineData(true, true, false, true)]
+    public void ExplicitCleanupRetainsAuthoredReceiverContractWithoutChangingSelectedSlot(
+        bool asynchronous, bool implicitCleanup, bool multipleImplementations, bool upcast)
+    {
+        string contract = asynchronous ? "System.IAsyncDisposable" : "System.IDisposable";
+
+        string receiver = upcast ? "((" + contract + ")value)" : "value";
+
+        string cleanup = implicitCleanup
+            ? (asynchronous ? "await using (" : "using (") + receiver + ") { }"
+            : asynchronous ? "await " + receiver + ".DisposeAsync().ConfigureAwait(false);" : receiver + ".Dispose();";
+
+        string helper = "internal interface IClosedCleanup : System.IDisposable, System.IAsyncDisposable { } "
+            + "internal sealed class ClosedCleanup : IClosedCleanup { public void Dispose() => System.IO.File.Exists(\"wrong-public\"); void System.IDisposable.Dispose() => System.IO.File.Delete(\"selected-interface\"); public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"wrong-public\"); return default; } System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { System.IO.File.Delete(\"selected-interface\"); return default; } } "
+            + (multipleImplementations ? "internal sealed class OtherClosedCleanup : IClosedCleanup { public void Dispose() { } public System.Threading.Tasks.ValueTask DisposeAsync() => default; } " : "")
+            + "internal static class ClosedCleanupForwarder { internal static extern IClosedCleanup Unknown(); internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
+
+        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Unknown());", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(source,
+            OrdinaryRoot() with { Authority = HostedProducerAuthorityKind.PreReadinessStartup, WorkKind = null });
+
+        if (multipleImplementations || upcast)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+            Assert.DoesNotContain(result.Items, static site => site.EnclosingType == "ClosedCleanup");
+        }
+        else
+        {
+            Assert.Empty(result.Diagnostics);
+
+            HostedProducerSite site = Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+            Assert.Equal("ClosedCleanup", site.EnclosingType);
+
+            Assert.Contains(asynchronous ? "IAsyncDisposable" : "IDisposable", site.MemberIdentity, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.File.Exists");
+        }
+    }
 
     [Fact]
     public void PartialResultCleanupProjectionDoesNotCertifyUnknownRetainedInput()
@@ -13789,10 +14338,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             {
                 public void Dispose() => System.IO.File.Exists("retained-partial-cleanup");
             }
+
             internal sealed class PartialUnusedCleanup : IPartialCleanup
             {
                 public void Dispose() => System.IO.File.Delete("unused-partial-cleanup");
             }
+
             internal sealed class PartialProjectedResult<T>
             {
                 private readonly T value;
@@ -13800,10 +14351,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 internal T Value => value;
                 internal static PartialProjectedResult<T> Success(T value) => new(value);
             }
+
             internal static class PartialProjectionInputs
             {
                 internal static extern IPartialCleanup Unknown();
             }
+
             internal static class PartialProjectionPipeline
             {
                 internal static void Run(IPartialCleanup cleanup, IPartialCleanup unused)
@@ -13813,6 +14366,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     PartialProjectedResult<IPartialCleanup> third = Wrap(second.Value, unused);
                     using (third.Value) { }
                 }
+
                 private static PartialProjectedResult<IPartialCleanup> Wrap(IPartialCleanup cleanup, IPartialCleanup unused)
                 {
                     using (unused) { }
@@ -16215,6 +16769,273 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 .Order(StringComparer.Ordinal));
     }
 
+    [Theory]
+    [InlineData("default", false, false)]
+    [InlineData("authored-override", true, false)]
+    [InlineData("unknown", true, false)]
+    [InlineData("different-collection", true, false)]
+    [InlineData("factory-override", true, false)]
+    [InlineData("descriptor-replacement", true, false)]
+    [InlineData("escaped-mutator", true, false)]
+    [InlineData("local-type-override", true, false)]
+    [InlineData("descriptor-constructor-local", true, false)]
+    [InlineData("double-activation", true, false)]
+    public void OptionsMonitorSubscriptionCleanupRequiresExactUnreplacedDefaultRegistration(
+        string sourceKind,
+        bool unresolved,
+        bool authoredEffect)
+    {
+        string registration = sourceKind switch
+        {
+            "default" =>
+                "services.Configure<Settings>(static _ => { }); ",
+            "authored-override" =>
+                "services.Configure<Settings>(static _ => { }); "
+                + "services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<Settings>, AuthoredMonitor>(); ",
+            "different-collection" =>
+                "Microsoft.Extensions.DependencyInjection.IServiceCollection other = new Microsoft.Extensions.DependencyInjection.ServiceCollection(); "
+                + "other.Configure<Settings>(static _ => { }); ",
+            "factory-override" =>
+                "services.Configure<Settings>(static _ => { }); "
+                + "services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<Settings>>(static _ => UnknownMonitor.Value); ",
+            "descriptor-replacement" =>
+                "services.Configure<Settings>(static _ => { }); "
+                + "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.Replace(services, "
+                + "Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<Microsoft.Extensions.Options.IOptionsMonitor<Settings>>(static _ => UnknownMonitor.Value)); ",
+            "escaped-mutator" =>
+                "services.Configure<Settings>(static _ => { }); "
+                + "UnknownCollectionMutation.Capture(services); ",
+            "local-type-override" =>
+                "services.Configure<Settings>(static _ => { }); "
+                + "System.Type contract = typeof(Microsoft.Extensions.Options.IOptionsMonitor<Settings>); services.AddSingleton(contract, typeof(AuthoredMonitor)); ",
+            "descriptor-constructor-local" =>
+                "services.Configure<Settings>(static _ => { }); "
+                + "System.Type contract = typeof(Microsoft.Extensions.Options.IOptionsMonitor<Settings>); services.Add(new Microsoft.Extensions.DependencyInjection.ServiceDescriptor(contract, typeof(AuthoredMonitor), Microsoft.Extensions.DependencyInjection.ServiceLifetime.Singleton)); ",
+            _ => string.Empty,
+        };
+
+        string body = R2Admission
+            + "_subscription = _options.OnChange(static (_, _) => { }); "
+            + "System.IDisposable? subscription = _subscription; "
+            + "_subscription = null; "
+            + "subscription?.Dispose();";
+
+        string ownerRegistration = sourceKind == "double-activation"
+            ? "services.AddSingleton<Worker>(); services.AddHostedService<Worker>();"
+            : "services.AddSingleton<Worker>(); services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());";
+
+        string source = R2Source(
+                body,
+                "public sealed class Settings { } "
+                    + "internal sealed class AuthoredMonitor : Microsoft.Extensions.Options.IOptionsMonitor<Settings> { "
+                    + "public Settings CurrentValue => new(); "
+                    + "public Settings Get(string? name) => new(); "
+                    + "public System.IDisposable? OnChange(System.Action<Settings, string?> listener) => new EffectfulToken(); } "
+                    + "internal sealed class EffectfulToken : System.IDisposable { public void Dispose() { System.IO.File.Delete(\"options-subscription-effect\"); } } "
+                    + "internal static class UnknownMonitor { internal static Microsoft.Extensions.Options.IOptionsMonitor<Settings> Value { get; set; } = null!; } "
+                    + "internal static class UnknownCollectionMutation { private static Microsoft.Extensions.DependencyInjection.IServiceCollection? _captured; "
+                    + "internal static void Capture(Microsoft.Extensions.DependencyInjection.IServiceCollection services) { _captured = services; } }")
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                registration
+                    + ownerRegistration,
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(Microsoft.Extensions.Options.IOptionsMonitor<Settings> options) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "public async Task StartAsync",
+                "private readonly Microsoft.Extensions.Options.IOptionsMonitor<Settings> _options = options; "
+                    + "private System.IDisposable? _subscription; "
+                    + "public async Task StartAsync",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Settings>>());",
+                StringComparison.Ordinal)
+            + RecoveryServingRoot;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.IDisposable.Dispose;",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(
+            authoredEffect,
+            result.Items.Any(static site =>
+                site.EnclosingType == "EffectfulToken"
+                && site.Callee == "System.IO.File.Delete"));
+    }
+
+    [Theory]
+    [InlineData("absent", false, true, false)]
+    [InlineData("registered", false, false, true)]
+    [InlineData("unknown-factory", true, false, false)]
+    [InlineData("descriptor-type-local", true, false, false)]
+    [InlineData("escaped-collection", true, false, false)]
+    [InlineData("explicit-owner-argument", true, false, false)]
+    [InlineData("forwarding-unknown", true, false, false)]
+    [InlineData("forwarding-ref", true, false, false)]
+    [InlineData("forwarding-nontail", true, false, false)]
+    [InlineData("forwarding-recursive", true, false, false)]
+    [InlineData("forwarding-conversion", true, false, false)]
+    public void OptionalDiDefaultRequiresClosedAbsenceAndPreservesRegisteredSelection(
+        string sourceKind,
+        bool unresolved,
+        bool defaultEffect,
+        bool registeredEffect)
+    {
+        string capacityRegistration = sourceKind switch
+        {
+            "registered" =>
+                "services.AddSingleton<ICapacity, RegisteredCapacity>(); ",
+            "unknown-factory" =>
+                "services.AddSingleton<ICapacity>(static _ => UnknownCapacity.Value); ",
+            "descriptor-type-local" =>
+                "System.Type contract = typeof(ICapacity); "
+                    + "services.Add(new Microsoft.Extensions.DependencyInjection.ServiceDescriptor("
+                    + "contract, typeof(RegisteredCapacity), "
+                    + "Microsoft.Extensions.DependencyInjection.ServiceLifetime.Singleton)); ",
+            "escaped-collection" =>
+                "UnknownCollectionMutation.Capture(services); ",
+            _ => string.Empty,
+        };
+
+        string ownerRegistration = sourceKind == "explicit-owner-argument"
+            ? "services.AddSingleton(static _ => new Worker(UnknownCapacity.Value)); "
+                + "services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());"
+            : "services.AddSingleton<Worker>(); "
+                + "services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());";
+
+        string acquisition = sourceKind == "forwarding-conversion"
+            ? "if (!_capacity.TryAcquire(out System.IDisposable? capacityLease)) "
+                + "{ await System.Threading.Tasks.Task.CompletedTask; return; } "
+                + "_leases[System.Guid.Empty] = capacityLease!; "
+            : "if (_capacity.TryAcquire(out System.IDisposable? capacityLease)) "
+                + "{ _leases[System.Guid.Empty] = capacityLease!; } ";
+
+        string body = R2Admission
+            + acquisition
+            + "System.IDisposable? removed = null; "
+            + "_leases.TryRemove(System.Guid.Empty, out removed); "
+            + "removed?.Dispose(); await System.Threading.Tasks.Task.CompletedTask;";
+
+        string defaultCapacity = sourceKind switch
+        {
+            "forwarding-unknown" =>
+                "internal sealed class DefaultCapacity : ICapacity { "
+                    + "public bool TryAcquire(out System.IDisposable? lease) "
+                    + "=> UnknownLeaseStore.Values.TryGetValue(string.Empty, out lease); } ",
+            "forwarding-ref" =>
+                "internal sealed class DefaultCapacity : ICapacity { "
+                    + "private readonly RefCapacityGate _gate = new(); "
+                    + "public bool TryAcquire(out System.IDisposable? lease) "
+                    + "{ lease = null; return _gate.TryAcquire(ref lease); } } ",
+            "forwarding-nontail" =>
+                "internal sealed class DefaultCapacity : ICapacity { "
+                    + "private readonly CapacityGate _gate = new(); "
+                    + "public bool TryAcquire(out System.IDisposable? lease) "
+                    + "{ bool acquired = _gate.TryAcquire(out lease); "
+                    + "System.GC.KeepAlive(lease); return acquired; } } ",
+            "forwarding-recursive" =>
+                "internal sealed class DefaultCapacity : ICapacity { "
+                    + "public bool TryAcquire(out System.IDisposable? lease) "
+                    + "=> TryAcquire(out lease); } ",
+            "forwarding-conversion" =>
+                "internal sealed class DefaultCapacity : ICapacity { "
+                    + "private readonly CapacityGate _gate = new(); "
+                    + "public CapacityDecision TryAcquire(out System.IDisposable? lease) "
+                    + "=> _gate.TryAcquire(out lease); } ",
+            _ =>
+                "internal sealed class DefaultCapacity : ICapacity { "
+                    + "private readonly CapacityGate _gate = new(); "
+                    + "public bool TryAcquire(out System.IDisposable? lease) "
+                    + "=> _gate.TryAcquire(out lease); } ",
+        };
+
+        string registeredCapacity = sourceKind == "forwarding-conversion"
+            ? "internal sealed class RegisteredCapacity : ICapacity { "
+                + "public CapacityDecision TryAcquire(out System.IDisposable? lease) "
+                + "{ lease = new RegisteredLease(); return true; } "
+                + "private sealed class RegisteredLease : System.IDisposable { public void Dispose() "
+                + "{ System.IO.File.Delete(\"registered-capacity\"); } } } "
+            : "internal sealed class RegisteredCapacity : ICapacity { "
+                + "public bool TryAcquire(out System.IDisposable? lease) "
+                + "{ lease = new RegisteredLease(); return true; } "
+                + "private sealed class RegisteredLease : System.IDisposable { public void Dispose() "
+                + "{ System.IO.File.Delete(\"registered-capacity\"); } } } ";
+
+        string source = R2Source(
+                body,
+                (sourceKind == "forwarding-conversion"
+                    ? "internal interface ICapacity { CapacityDecision TryAcquire(out System.IDisposable? lease); } "
+                        + "internal readonly record struct CapacityDecision(bool Acquired) { "
+                        + "public static implicit operator CapacityDecision(bool value) => new(!value); "
+                        + "public static bool operator !(CapacityDecision value) => !value.Acquired; } "
+                    : "internal interface ICapacity { bool TryAcquire(out System.IDisposable? lease); } ")
+                    + defaultCapacity
+                    + "internal sealed class CapacityGate { public bool TryAcquire(out System.IDisposable? lease) "
+                    + "{ lease = new DefaultLease(); return true; } "
+                    + "private sealed class DefaultLease : System.IDisposable { public void Dispose() "
+                    + "{ System.IO.File.Delete(\"optional-default-capacity\"); } } } "
+                    + "internal sealed class RefCapacityGate { public bool TryAcquire(ref System.IDisposable? lease) "
+                    + "{ lease = new RefLease(); return true; } "
+                    + "private sealed class RefLease : System.IDisposable { public void Dispose() "
+                    + "{ System.IO.File.Delete(\"ref-capacity\"); } } } "
+                    + registeredCapacity
+                    + "internal static class UnknownCapacity { "
+                    + "internal static ICapacity Value { get; set; } = null!; } "
+                    + "internal static class UnknownLeaseStore { "
+                    + "internal static System.Collections.Generic.IDictionary<string, System.IDisposable?> Values { get; set; } = null!; } "
+                    + "internal static class UnknownCollectionMutation { "
+                    + "private static Microsoft.Extensions.DependencyInjection.IServiceCollection? _services; "
+                    + "internal static void Capture(Microsoft.Extensions.DependencyInjection.IServiceCollection services) "
+                    + "{ _services = services; } }")
+            .Replace(
+                "services.AddHostedService<Worker>();",
+                capacityRegistration + ownerRegistration,
+                StringComparison.Ordinal)
+            .Replace(
+                "public class Worker : IHostedService",
+                "internal sealed class Worker(ICapacity? capacity = null) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "public async Task StartAsync",
+                "private readonly ICapacity _capacity = capacity ?? new DefaultCapacity(); "
+                    + "private readonly System.Collections.Concurrent.ConcurrentDictionary<System.Guid, System.IDisposable> _leases = new(); "
+                    + "public async Task StartAsync",
+                StringComparison.Ordinal)
+            + RecoveryServingRoot;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith(
+                    "System.IDisposable.Dispose;",
+                    StringComparison.Ordinal)));
+
+        Assert.Equal(
+            defaultEffect,
+            result.Items.Any(static site =>
+                site.EnclosingType == "CapacityGate.DefaultLease"
+                && site.Callee == "System.IO.File.Delete"));
+
+        Assert.Equal(
+            registeredEffect,
+            result.Items.Any(static site =>
+                site.EnclosingType == "RegisteredCapacity.RegisteredLease"
+                && site.Callee == "System.IO.File.Delete"));
+    }
+
     [Fact]
     public void ProductionShapedSqliteCleanupRetainsExactProviderAcrossCarriers()
     {
@@ -18168,7 +18989,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("mutable-field", true)]
     [InlineData("multiply-assigned-field", true)]
     [InlineData("unguarded", false)]
-    [InlineData("multiple-session-source", true)]
+    [InlineData("multiple-session-source", false)]
+    [InlineData("multiple-session-unknown-source", true)]
     [InlineData("local-exact", false)]
     [InlineData("local-unknown", true)]
     [InlineData("local-derived", true)]
@@ -18208,9 +19030,14 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             ? "internal void Replace(Microsoft.Data.Sqlite.SqliteConnection connection) => _connection = connection;"
             : string.Empty;
 
-        string returnedSession = shape == "multiple-session-source"
-            ? "return token.CanBeCanceled ? ResetResult<ResetSession>.Success(CreateSession(lease)) : ResetResult<ResetSession>.Success(CreateSession(new ResetConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())));"
-            : "return ResetResult<ResetSession>.Success(CreateSession(lease));";
+        string returnedSession = shape switch
+        {
+            "multiple-session-source" =>
+                "return token.CanBeCanceled ? ResetResult<ResetSession>.Success(CreateSession(lease)) : ResetResult<ResetSession>.Success(CreateSession(new ResetConnectionLease(new Microsoft.Data.Sqlite.SqliteConnection())));",
+            "multiple-session-unknown-source" =>
+                "return token.CanBeCanceled ? ResetResult<ResetSession>.Success(CreateSession(lease)) : ResetResult<ResetSession>.Success(CreateSession(new ResetConnectionLease(UnknownResetConnection.Value)));",
+            _ => "return ResetResult<ResetSession>.Success(CreateSession(lease));",
+        };
 
         string guard = shape == "unguarded"
             ? string.Empty
@@ -18832,11 +19659,35 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     "System.Runtime.CompilerServices.ConfiguredAsyncDisposable.DisposeAsync;",
                     StringComparison.Ordinal)));
 
-        Assert.Equal(
-            !unresolved,
-            result.Items.Any(static site =>
-                site.EnclosingType == "KnownReadLease"
-                && site.Callee == "System.IO.File.Delete"));
+        if (shape == "mutable-carrier")
+        {
+            Assert.Contains(result.Items, static site => site.EnclosingType == "KnownReadLease"
+                && site.Callee == "System.IO.File.Delete");
+
+            string withoutIndependentCatch = helpers.Replace(
+                "catch { await lease.DisposeAsync().ConfigureAwait(false); throw; }",
+                "catch { throw; }",
+                StringComparison.Ordinal);
+
+            Assert.NotEqual(helpers, withoutIndependentCatch);
+
+            HostedProducerDiscovery<HostedProducerSite> carrierOnly = R2Discover(
+                R2Source(R2Admission + body, withoutIndependentCatch));
+
+            Assert.Contains(carrierOnly.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("System.Runtime.CompilerServices.ConfiguredAsyncDisposable.DisposeAsync;", StringComparison.Ordinal));
+
+            Assert.DoesNotContain(carrierOnly.Items, static site => site.EnclosingType == "KnownReadLease"
+                && site.Callee == "System.IO.File.Delete");
+        }
+        else
+        {
+            Assert.Equal(
+                !unresolved,
+                result.Items.Any(static site =>
+                    site.EnclosingType == "KnownReadLease"
+                    && site.Callee == "System.IO.File.Delete"));
+        }
     }
 
     [Theory]
@@ -19323,7 +20174,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 secondProperty,
                 consumer));
     }
-
 
     [Theory]
     [InlineData("exact", false)]
@@ -21574,6 +22424,35 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Fact]
+    public void NamedTupleTraversalDoesNotReclassifyFrameworkCleanupAssembly()
+    {
+        string source = RegistrationSource("services.AddHostedService<Worker>();")
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StartAsync(CancellationToken token) { TupleConsumer.Consume((effectiveKey: \"key\", value: \"value\")); using System.Threading.PeriodicTimer timer = new(System.TimeSpan.FromSeconds(1)); await Task.Yield(); }",
+                StringComparison.Ordinal)
+            + " internal static class TupleConsumer { internal static void Consume<T>(T value) { _ = value; } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.Threading.PeriodicTimer.Dispose;",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ProductionShapedAuthoredOutFileStreamsRetainCleanupProvenance()
     {
         const string helpers =
@@ -22897,6 +23776,44 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
+    [InlineData("exact", true)]
+    [InlineData("unknown", false)]
+    public void ExplicitSealedRecordCastProjectsOnlyMatchingConstruction(
+        string shape,
+        bool resolved)
+    {
+        string body = shape == "exact"
+            ? "foreach (CleanupSeed seed in CleanupFactory.OpenSeeds()) { await ((CleanupObservation.Opened)seed.Observation).Lease.DisposeAsync(); }"
+            : "foreach (CleanupSeed seed in UnknownObservation.Seeds) { await ((CleanupObservation.Opened)seed.Observation).Lease.DisposeAsync(); }";
+
+        string observationTypes = shape == "exact"
+            ? "internal abstract record CleanupObservation { private CleanupObservation() { } internal sealed record Opened(IPropertyCleanup Lease) : CleanupObservation; internal sealed record Missing : CleanupObservation; } "
+            : "public abstract record CleanupObservation { private CleanupObservation() { } public sealed record Opened(IPropertyCleanup Lease) : CleanupObservation; public sealed record Missing : CleanupObservation; } ";
+
+        string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"sealed-record-cast\"); return default; } } "
+            + observationTypes
+            + "internal sealed record CleanupSeed(CleanupObservation Observation); "
+            + "internal static class CleanupFactory { internal static System.Collections.Generic.IReadOnlyList<CleanupSeed> OpenSeeds() => [new(new CleanupObservation.Opened(new KnownPropertyCleanup()))]; } "
+            + "internal static class UnknownObservation { internal static System.Collections.Generic.IReadOnlyList<CleanupSeed> Seeds { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + body, helper));
+
+        Assert.Equal(
+            resolved,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownPropertyCleanup"
+                && site.Callee == "System.IO.File.Delete"));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void ConditionalNestedValueBindingCleanupRemainsAmbiguousAcrossArmOrder(
@@ -23049,10 +23966,14 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && site.Kind == HostedProducerSiteKind.FileSystemEffect
             && site.Callee == "System.IO.FileStream.DisposeAsync");
 
-        Assert.DoesNotContain(result.Items, static site =>
+        Assert.Contains(result.Items, static site =>
             site.EnclosingType == "ContextualOwnedStream"
             && site.Kind == HostedProducerSiteKind.FileSystemRead
             && site.Callee == "System.IO.FileStream.DisposeAsync");
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.FileStream.DisposeAsync");
     }
 
     [Theory]
@@ -23237,6 +24158,274 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 site.EnclosingType == "KnownPropertyCleanup"
                 && site.Callee == "System.IO.File.Exists");
         }
+    }
+
+    [Theory]
+    [InlineData("expression-baseline", false)]
+    [InlineData("block-positive", false)]
+    [InlineData("different-return", true)]
+    [InlineData("reassigned", true)]
+    [InlineData("alternate-return", true)]
+    [InlineData("escape", true)]
+    [InlineData("custom-registry", true)]
+    [InlineData("wrong-receiver", true)]
+    [InlineData("constructor-state-mutation", true)]
+    public void DeclaredRootAuthenticatesOnlyExactBlockFactoryConstruction(
+        string sourceKind,
+        bool unresolved)
+    {
+        string registryRegistration = sourceKind == "custom-registry"
+            ? "Lookalike.AddSingleton<IRegistry, Registry>(services); "
+            : "services.AddSingleton<IRegistry, Registry>(); ";
+
+        string managerRegistration = sourceKind switch
+        {
+            "expression-baseline" =>
+                "services.AddSingleton(static sp => new Manager(sp.GetRequiredService<IRegistry>()));",
+            "different-return" =>
+                "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); manager.Configure(sp.GetRequiredService<IAdmission>()); Manager different = new(UnknownRegistry.Value); return different; });",
+            "reassigned" =>
+                "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); manager = UnknownManager.Value; return manager; });",
+            "alternate-return" =>
+                "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); if (DateTime.UtcNow.Ticks > 0) return manager; return new Manager(UnknownRegistry.Value); });",
+            "escape" =>
+                "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); UnknownManager.Store(manager); return manager; });",
+            "wrong-receiver" =>
+                "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); UnknownManager.Value.Configure(sp.GetRequiredService<IAdmission>()); return manager; });",
+            _ =>
+                "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); manager.Configure(sp.GetRequiredService<IAdmission>()); return manager; });",
+        };
+
+        string manager = sourceKind == "constructor-state-mutation"
+            ? "internal sealed class Manager(IRegistry registry) { internal void Configure(IAdmission admission) { System.ArgumentNullException.ThrowIfNull(admission); registry = UnknownRegistry.Value; } internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync(); private async System.Threading.Tasks.Task RunCoreAsync() { IReservation reservation = await registry.CreateAsync().ConfigureAwait(false); try { await System.Threading.Tasks.Task.Yield(); } finally { await reservation.DisposeAsync().ConfigureAwait(false); } } } "
+            : "internal sealed class Manager { private readonly IRegistry _registry; internal Manager(IRegistry registry) { _registry = registry; } internal void Configure(IAdmission admission) { System.ArgumentNullException.ThrowIfNull(admission); } internal System.Threading.Tasks.Task RunAsync() => RunCoreAsync(); private async System.Threading.Tasks.Task RunCoreAsync() { IReservation reservation = await _registry.CreateAsync().ConfigureAwait(false); try { await System.Threading.Tasks.Task.Yield(); } finally { await reservation.DisposeAsync().ConfigureAwait(false); } } } ";
+
+        string source = RegistrationSource(
+                registryRegistration
+                    + "services.AddSingleton<IAdmission, Admission>(); "
+                    + managerRegistration
+                    + " services.AddHostedService<Worker>();")
+            + "public interface IRegistry { System.Threading.Tasks.Task<IReservation> CreateAsync(); } "
+            + "public interface IReservation : System.IAsyncDisposable { } "
+            + "public interface IAdmission { } "
+            + "internal sealed class Admission : IAdmission { } "
+            + "internal sealed class Registry : IRegistry { public async System.Threading.Tasks.Task<IReservation> CreateAsync() { await System.Threading.Tasks.Task.Yield(); return new Reservation(); } private sealed class Reservation : IReservation { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"block-factory-cleanup\"); return default; } } } "
+            + manager
+            + "internal static class UnknownRegistry { internal static IRegistry Value { get; set; } = null!; } "
+            + "internal static class UnknownManager { internal static Manager Value { get; set; } = null!; internal static void Store(Manager manager) { } } "
+            + "internal static class Lookalike { internal static void AddSingleton<TContract, TImplementation>(Microsoft.Extensions.DependencyInjection.IServiceCollection services) { } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "Manager.RunAsync",
+            "src/Fixture.cs",
+            "Manager",
+            "RunAsync",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "Manager.RunAsync: exact block factory fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        bool found = result.Items.Any(static site =>
+            site.EnclosingType == "Registry.Reservation"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(!unresolved, found);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Theory]
+    [InlineData("exact", true, false)]
+    [InlineData("unknown-child", false, true)]
+    [InlineData("other-instance", false, true)]
+    [InlineData("alternate-constructor", false, true)]
+    [InlineData("invalid-helper", false, true)]
+    [InlineData("unpublished", false, false)]
+    public void RegisteredParentRetainsNestedBridgeContextThroughSdkHandler(
+        string sourceKind,
+        bool effect,
+        bool unresolved)
+    {
+        string bridgeConstruction = sourceKind switch
+        {
+            "unknown-child" => "new Bridge(UnknownRegistry.Value)",
+            "alternate-constructor" => "new Bridge()",
+            _ => "new Bridge(registry)",
+        };
+
+        string invocation = sourceKind == "other-instance"
+            ? "new Bridge(UnknownRegistry.Value).CreateHandlers()"
+            : "_bridge.CreateHandlers()";
+
+        string handlers = sourceKind == "unpublished"
+            ? "System.Func<ModelContextProtocol.Protocol.ElicitRequestParams?, System.Threading.CancellationToken, System.Threading.Tasks.ValueTask<ModelContextProtocol.Protocol.ElicitResult>> dormant = (request, token) => HandleAsync(token); return new ModelContextProtocol.Client.McpClientHandlers();"
+            : "return new ModelContextProtocol.Client.McpClientHandlers { ElicitationHandler = (request, token) => HandleAsync(token) };";
+
+        string helperActivation = sourceKind == "invalid-helper"
+            ? "services.AddSingleton<TService>();"
+            : "services.TryAddSingleton<TService>();";
+
+        string source =
+            "using Microsoft.Extensions.DependencyInjection.Extensions; using RetroDownfall.Arcanum.Infrastructure.DependencyInjection; "
+            + RegistrationSource(
+                "services.AddSingleton<IRegistry, Registry>(); "
+                    + "services.AddSingleton(static sp => { Manager manager = new(sp.GetRequiredService<IRegistry>()); return manager; }); "
+                    + "services.AddSingleton<ICoordinator>(static sp => sp.GetRequiredService<Manager>()); "
+                    + "services.AddInstallationResetRecoveryAwareHostedService<Worker>();")
+            .Replace(
+                "public class Worker : IHostedService",
+                "public sealed class Worker(ICoordinator coordinator) : IHostedService",
+                StringComparison.Ordinal)
+            .Replace(
+                "static Worker Factory(IServiceProvider provider) => new Worker();",
+                "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<ICoordinator>());",
+                StringComparison.Ordinal)
+            .Replace(
+                "public Task StartAsync(CancellationToken token) => Task.CompletedTask;",
+                "public Task StartAsync(CancellationToken token) { coordinator.Run(); return Task.CompletedTask; }",
+                StringComparison.Ordinal)
+            + "public interface ICoordinator { void Run(); } "
+            + "public interface IRegistry { System.Threading.Tasks.Task<IReservation> CreateAsync(); } "
+            + "public interface IReservation : System.IAsyncDisposable { } "
+            + "internal sealed class Registry : IRegistry { public async System.Threading.Tasks.Task<IReservation> CreateAsync() { await System.Threading.Tasks.Task.Yield(); return new Reservation(); } private sealed class Reservation : IReservation { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"nested-bridge-cleanup\"); return default; } } } "
+            + "public sealed class Manager : ICoordinator, System.IAsyncDisposable { private readonly Bridge _bridge; private readonly System.IAsyncDisposable _lifetime = new Lifetime(); public Manager(IRegistry registry) { _bridge = " + bridgeConstruction + "; } public void Run() { _ = BuildHandlers(); } private ModelContextProtocol.Client.McpClientHandlers BuildHandlers() => " + invocation + "; public System.Threading.Tasks.ValueTask DisposeAsync() => _lifetime.DisposeAsync(); private sealed class Lifetime : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() => default; } } "
+            + "internal sealed class Bridge(IRegistry registry) { internal Bridge() : this(UnknownRegistry.Value) { } "
+            + "internal ModelContextProtocol.Client.McpClientHandlers CreateHandlers() { " + handlers + " } "
+            + "private async System.Threading.Tasks.ValueTask<ModelContextProtocol.Protocol.ElicitResult> HandleAsync(System.Threading.CancellationToken token) { IReservation reservation = await registry.CreateAsync().ConfigureAwait(false); try { await System.Threading.Tasks.Task.Yield(); return new ModelContextProtocol.Protocol.ElicitResult { Action = \"decline\" }; } finally { await reservation.DisposeAsync().ConfigureAwait(false); } } } "
+            + "internal static class UnknownRegistry { internal static IRegistry Value { get; set; } = null!; } "
+            + "namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection { public static class ServiceCollectionExtensions { public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddInstallationResetRecoveryAwareHostedService<TService>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) where TService : class, Microsoft.Extensions.Hosting.IHostedService { " + helperActivation + " services.AddHostedService(static sp => new RetroDownfall.Arcanum.Infrastructure.Hosting.InstallationResetRecoveryAwareHostedService<TService>(sp.GetRequiredService<TService>())); return services; } } } "
+            + "namespace RetroDownfall.Arcanum.Infrastructure.Hosting { internal sealed class InstallationResetRecoveryAwareHostedService<TService>(TService service) : Microsoft.Extensions.Hosting.IHostedService where TService : class, Microsoft.Extensions.Hosting.IHostedService { public System.Threading.Tasks.Task StartAsync(System.Threading.CancellationToken token) => service.StartAsync(token); public System.Threading.Tasks.Task StopAsync(System.Threading.CancellationToken token) => service.StopAsync(token); } }";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            source,
+            "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        bool foundEffect = result.Items.Any(static site =>
+                site.EnclosingType == "Registry.Reservation"
+                    && site.Callee == "System.IO.File.Delete");
+
+        if (effect)
+        {
+            Assert.True(foundEffect);
+        }
+        else if (sourceKind == "unpublished")
+        {
+            Assert.False(foundEffect);
+        }
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    [Theory]
+    [InlineData("required-baseline", false)]
+    [InlineData("optional-factory", false)]
+    [InlineData("optional-instance", false)]
+    [InlineData("missing", true)]
+    [InlineData("ambiguous", true)]
+    [InlineData("lookalike", true)]
+    [InlineData("wrong-provider", true)]
+    [InlineData("unknown-return", true)]
+    public void DeclaredRootAuthenticatesOnlyExactOptionalServiceConstruction(
+        string sourceKind,
+        bool unresolved)
+    {
+        string actionRegistration = sourceKind switch
+        {
+            "missing" => string.Empty,
+            "ambiguous" =>
+                "services.AddSingleton<IStartupAction>(new KnownStartupAction()); services.AddSingleton<IStartupAction>(new UnknownStartupAction()); ",
+            "lookalike" =>
+                "Lookalike.AddSingleton<IStartupAction>(services, new KnownStartupAction()); ",
+            "unknown-return" =>
+                "services.AddSingleton<IStartupAction>(static sp => UnknownStartupAction.Value); ",
+            "optional-factory" =>
+                "services.AddSingleton<IStartupAction>(static sp => new KnownStartupAction()); ",
+            _ =>
+                "services.AddSingleton<IStartupAction>(new KnownStartupAction()); ",
+        };
+
+        string actionResolution = sourceKind switch
+        {
+            "required-baseline" =>
+                "sp.GetRequiredService<IStartupAction>()",
+            "wrong-provider" =>
+                "UnknownProvider.Value.GetService<IStartupAction>()",
+            _ => "sp.GetService<IStartupAction>()",
+        };
+
+        string source = RegistrationSource(
+                actionRegistration
+                    + "services.AddSingleton(static sp => new RegisteredRoot("
+                    + actionResolution
+                    + ")); services.AddHostedService<Worker>();")
+            + "internal interface IStartupAction { System.IDisposable? Activate(); } "
+            + "internal sealed class KnownStartupAction : IStartupAction { public System.IDisposable Activate() => new KnownLease(); private sealed class KnownLease : System.IDisposable { public void Dispose() => System.IO.File.Delete(\"optional-startup-cleanup\"); } } "
+            + "internal sealed class UnknownStartupAction : IStartupAction { internal static IStartupAction Value { get; set; } = null!; public System.IDisposable? Activate() => UnknownLease.Value; } "
+            + "internal static class UnknownLease { internal static System.IDisposable? Value { get; set; } } "
+            + "internal static class UnknownProvider { internal static System.IServiceProvider Value { get; set; } = null!; } "
+            + "internal static class Lookalike { internal static void AddSingleton<T>(Microsoft.Extensions.DependencyInjection.IServiceCollection services, T instance) { } } "
+            + "internal sealed class RegisteredRoot { private readonly IStartupAction? _action; internal RegisteredRoot(IStartupAction? action) { _action = action; } internal void Run(bool early) { System.IDisposable? lease = null; if (_action is not null) lease = _action.Activate(); if (early) { lease?.Dispose(); return; } lease?.Dispose(); } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry root = new(
+            "RegisteredRoot.Run",
+            "src/Fixture.cs",
+            "RegisteredRoot",
+            "Run",
+            HostedProducerAuthorityKind.FiniteRequest,
+            "RegisteredRoot.Run: exact optional startup service fixture",
+            []);
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(
+                    [compilation]),
+                [],
+                [root]);
+
+        bool found = result.Items.Any(static site =>
+            site.EnclosingType == "KnownStartupAction.KnownLease"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(!unresolved, found);
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
     }
 
     [Theory]
@@ -24507,6 +25696,98 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             .ToArray();
 
         Assert.Equal(HostedGrimoireProducerInventory.SchemaBackfillStrategies.Order(StringComparer.Ordinal), configured);
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("unknown", true)]
+    [InlineData("alternative", true)]
+    [InlineData("switch", false)]
+    [InlineData("reassigned", true)]
+    [InlineData("ref-escape", true)]
+    [InlineData("factory-single", false)]
+    [InlineData("factory-multiple", false)]
+    [InlineData("factory-unknown", true)]
+    [InlineData("factory-multiple-using", false)]
+    [InlineData("factory-unknown-using", true)]
+    public void NativeFactoryResultCleanupRetainsSelectedConstruction(
+        string shape,
+        bool unresolved)
+    {
+        string value = shape == "unknown"
+            ? "UnknownNative.Value"
+            : "new NativeLeaf()";
+
+        string factory = shape == "alternative"
+            ? "if (choose) return NativeOwner.CreateOwned(new NativeLeaf()); return NativeOwner.CreateOwned(UnknownNative.Value);"
+            : "return NativeOwner.CreateOwned(" + value + ");";
+
+        string opened = shape.StartsWith("factory-", StringComparison.Ordinal)
+            ? "new NativeSource().Open()"
+            : "NativeResult.Opened(Create(choose))";
+
+        string selected = shape.EndsWith("-using", StringComparison.Ordinal)
+            ? "using var owned = NativeLease.Wrap(capability);"
+            : shape == "reassigned"
+            ? "capability = NativeOwner.CreateOwned(UnknownNative.Value); AdoptOrDispose(capability);"
+            : shape == "ref-escape"
+                ? "Escape(ref capability); AdoptOrDispose(capability);"
+                : "AdoptOrDispose(capability);";
+
+        string selection = shape == "switch"
+            ? "switch (choose) { case true when opened.Capability is { } capability: AdoptOrDispose(capability); break; }"
+            : "if (opened.Capability is { } capability) { " + selected + " }";
+
+        string inner = shape.StartsWith(
+            "factory-multiple",
+            StringComparison.Ordinal)
+                ? "System.Environment.TickCount == 0 ? new FirstNativeSource() : new SecondNativeSource()"
+                : shape.StartsWith("factory-unknown", StringComparison.Ordinal)
+                    ? "System.Environment.TickCount == 0 ? new FirstNativeSource() : UnknownNative.Source"
+                    : "new FirstNativeSource()";
+
+        string helpers = "internal static class NativePipeline { internal static void Run(bool choose) { NativeResult opened = " + opened + "; " + selection + " } private static NativeOwner Create(bool choose) { " + factory + " } private static void AdoptOrDispose(NativeOwner capability) { capability.Dispose(); } private static void Escape(ref NativeOwner capability) { capability = NativeOwner.CreateOwned(UnknownNative.Value); } private static NativeOwner Unused() => NativeOwner.CreateOwned(new OtherNativeLeaf()); } "
+            + "internal interface INativeSource { NativeResult Open(); } internal sealed class NativeSource : INativeSource { private readonly INativeSource _inner; internal NativeSource() { _inner = " + inner + "; } internal NativeSource(INativeSource inner) { _inner = inner; } public NativeResult Open() => _inner.Open(); } internal sealed class FirstNativeSource : INativeSource { public NativeResult Open() => NativeResult.Opened(NativeOwner.CreateOwned(new NativeLeaf())); } internal sealed class SecondNativeSource : INativeSource { public NativeResult Open() => NativeResult.Opened(NativeOwner.CreateOwned(new SecondNativeLeaf())); } "
+            + "internal sealed class NativeLease : System.IDisposable { private NativeOwner? _capability; private NativeLease(NativeOwner capability) { _capability = capability; } internal static NativeLease Wrap(NativeOwner capability) => new NativeLease(capability); public void Dispose() { NativeOwner? capability = _capability; _capability = null; capability?.Dispose(); } } "
+            + "internal sealed class NativeResult { private NativeResult(NativeOwner? capability) { Capability = capability; } internal NativeOwner? Capability { get; } internal static NativeResult Opened(NativeOwner capability) => new(capability ?? throw new System.ArgumentNullException(nameof(capability))); } "
+            + "internal sealed class NativeOwner : System.IDisposable { private System.IDisposable? _native; private NativeOwner(System.IDisposable native) { _native = native; } internal static NativeOwner CreateOwned(System.IDisposable native) { return new NativeOwner(native); } public void Dispose() { System.IDisposable? native = _native; _native = null; native?.Dispose(); } } "
+            + "internal sealed class NativeLeaf : System.IDisposable { public void Dispose() => System.IO.File.Exists(\"native-selected\"); } internal sealed class SecondNativeLeaf : System.IDisposable { public void Dispose() => System.IO.Directory.Exists(\"native-selected-second\"); } internal sealed class OtherNativeLeaf : System.IDisposable { public void Dispose() => System.IO.File.Delete(\"native-unselected\"); } internal static class UnknownNative { internal static System.IDisposable Value { get; set; } = null!; internal static INativeSource Source { get; set; } = null!; }";
+
+        string source = R2Source(
+            "NativePipeline.Run(token.CanBeCanceled);",
+            helpers);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverWithRoots(
+            source,
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+            });
+
+        Assert.Equal(unresolved, result.Diagnostics.Any(diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (!unresolved)
+        {
+            Assert.Contains(result.Items, site =>
+                site.EnclosingType == "NativeLeaf"
+                && site.Callee == "System.IO.File.Exists");
+        }
+
+        Assert.DoesNotContain(result.Items, site =>
+            site.EnclosingType == "OtherNativeLeaf"
+            && site.Callee == "System.IO.File.Delete");
+
+        if (shape.StartsWith("factory-multiple", StringComparison.Ordinal))
+        {
+            Assert.Contains(result.Items, site =>
+                site.EnclosingType == "SecondNativeLeaf"
+                && site.Callee == "System.IO.Directory.Exists");
+        }
     }
 
     [Fact]
@@ -27609,6 +28890,1104 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Contains(
                 result.Diagnostics,
                 static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+        }
+    }
+
+    [Theory]
+    [InlineData("array", true, true)]
+    [InlineData("collection", true, true)]
+    [InlineData("list-initializer", true, true)]
+    [InlineData("discarded", true, false)]
+    [InlineData("unknown", false, false)]
+    [InlineData("mixed", false, false)]
+    [InlineData("custom", false, false)]
+    [InlineData("reassigned", false, false)]
+    [InlineData("escaped", false, false)]
+    [InlineData("mutated", false, false)]
+    [InlineData("detached-list", true, true)]
+    [InlineData("detached-dictionary", true, true)]
+    [InlineData("list-escape", false, false)]
+    [InlineData("list-alias", false, false)]
+    [InlineData("list-unknown-add", false, false)]
+    [InlineData("list-custom-initializer", false, false)]
+    [InlineData("list-index-mutation", false, false)]
+    [InlineData("list-unproven-factory", false, false)]
+    [InlineData("list-wrong-receiver", false, false)]
+    [InlineData("dictionary-wrong-receiver", false, false)]
+    [InlineData("list-captured-mutation", false, false)]
+    [InlineData("dictionary-captured-mutation", false, false)]
+    public void ForeachCleanupRequiresClosedElementSources(string shape, bool resolved, bool joined)
+    {
+        string input = shape switch
+        {
+            "collection" => "[new ForeachLeaf()]",
+            "list-initializer" => "new System.Collections.Generic.List<IAsyncDisposable> { new ForeachLeaf() }",
+            "unknown" => "ForeachInput.Unknown()",
+            "mixed" => "new IAsyncDisposable[] { new ForeachLeaf(), new OtherForeachLeaf() }",
+            "custom" => "new CustomRoots()",
+            "detached-list" or "detached-dictionary" or "list-escape" or "list-alias" or "list-unknown-add" or "list-custom-initializer"
+                or "list-index-mutation" or "list-unproven-factory" or "list-wrong-receiver" or "dictionary-wrong-receiver"
+                or "list-captured-mutation" or "dictionary-captured-mutation" => "ForeachCleanup.Detach()",
+            _ => "new IAsyncDisposable[] { new ForeachLeaf() }",
+        };
+
+        string mutation = shape switch
+        {
+            "reassigned" => "roots = ForeachInput.Unknown();",
+            "escaped" => "ForeachInput.Escape(roots);",
+            "mutated" => "((IAsyncDisposable[])roots)[0] = ForeachInput.UnknownRoot();",
+            _ => string.Empty,
+        };
+
+        string detachedBody = "System.Collections.Generic.List<IAsyncDisposable> removed = "
+            + (shape == "list-custom-initializer" ? "new CustomRoots();" : "[];")
+            + (shape switch
+            {
+                "detached-dictionary" => "Registry.TryAdd(1, new ForeachLeaf()); foreach (var entry in Registry) { if (Registry.TryRemove(entry.Key, out ForeachLeaf? leaf)) removed.Add(leaf); }",
+                "dictionary-wrong-receiver" => "OtherRegistry.TryAdd(1, new ForeachLeaf()); foreach (var entry in Registry) { if (Registry.TryRemove(entry.Key, out ForeachLeaf? leaf)) removed.Add(leaf); }",
+                "dictionary-captured-mutation" => "Action poison = () => Registry.TryAdd(1, ForeachInput.UnknownLeaf()); poison(); Registry.TryAdd(2, new ForeachLeaf()); foreach (var entry in Registry) { if (Registry.TryRemove(entry.Key, out ForeachLeaf? leaf)) removed.Add(leaf); }",
+                "list-captured-mutation" => "Action poison = () => removed.Add(ForeachInput.UnknownRoot()); poison(); removed.Add(new ForeachLeaf());",
+                "list-wrong-receiver" => "System.Collections.Generic.List<IAsyncDisposable> other = []; other.Add(new ForeachLeaf());",
+                _ => "removed.Add(" + (shape is "list-unknown-add" or "list-unproven-factory" ? "ForeachInput.UnknownRoot()" : "new ForeachLeaf()") + ");",
+            })
+            + (shape == "list-escape" ? "ForeachInput.Escape(removed);" : string.Empty)
+            + (shape == "list-alias" ? "var alias = removed; alias.Add(ForeachInput.UnknownRoot());" : string.Empty)
+            + (shape == "list-index-mutation" ? "removed[0] = ForeachInput.UnknownRoot();" : string.Empty)
+            + "return removed;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "await ForeachCleanup.Release(" + input + ");",
+            "internal sealed class ForeachLeaf : IAsyncDisposable { public ValueTask DisposeAsync() { System.IO.File.Delete(\"foreach-effect\"); return default; } } "
+                + "internal sealed class OtherForeachLeaf : IAsyncDisposable { public ValueTask DisposeAsync() { System.IO.File.Delete(\"other-effect\"); return default; } } "
+                + "internal sealed class CustomRoots : System.Collections.Generic.List<IAsyncDisposable>, System.Collections.Generic.IEnumerable<IAsyncDisposable> { "
+                + "System.Collections.Generic.IEnumerator<IAsyncDisposable> System.Collections.Generic.IEnumerable<IAsyncDisposable>.GetEnumerator() => ForeachInput.Unknown().GetEnumerator(); } "
+                + "internal static class ForeachCleanup { private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ForeachLeaf> Registry = new(); "
+                + "private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ForeachLeaf> OtherRegistry = new(); "
+                + "internal static System.Collections.Generic.List<IAsyncDisposable> Detach() { " + detachedBody + " } "
+                + "internal static async Task Release(System.Collections.Generic.IEnumerable<IAsyncDisposable> roots) { "
+                + mutation + "foreach (IAsyncDisposable root in roots) { "
+                + (shape == "discarded" ? "_ = root.DisposeAsync();" : "await root.DisposeAsync();") + " } } } "
+                + "internal static class ForeachInput { internal static extern System.Collections.Generic.IEnumerable<IAsyncDisposable> Unknown(); "
+                + "internal static extern IAsyncDisposable UnknownRoot(); internal static extern ForeachLeaf UnknownLeaf(); internal static extern void Escape(System.Collections.Generic.IEnumerable<IAsyncDisposable> roots); }"));
+
+        Assert.Equal(!resolved, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (resolved)
+        {
+            HostedProducerSite[] effects = result.Items.Where(static site => site.Callee == "System.IO.File.Delete").ToArray();
+
+            Assert.NotEmpty(effects);
+
+            Assert.Equal(joined, effects.All(static effect => effect.EffectFrontierCapsuleId is not null));
+
+            Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+        }
+    }
+
+    [Theory]
+    [InlineData("closed", true)]
+    [InlineData("unknown-writer", false)]
+    [InlineData("different-context", false)]
+    [InlineData("internal-domain", true)]
+    [InlineData("internal-unknown-writer", false)]
+    [InlineData("internal-carrier-escape", false)]
+    [InlineData("public-carrier", false)]
+    [InlineData("custom-accessor", false)]
+    [InlineData("carrier-escape", false)]
+    [InlineData("property-initializer", false)]
+    [InlineData("deconstruction-write", false)]
+    [InlineData("construction-escape", false)]
+    public void MutableCleanupPropertyRequiresCompleteClosedWriterDomain(
+        string shape,
+        bool resolved)
+    {
+        string carrierAccessibility = shape is "internal-domain" or "internal-unknown-writer" or "internal-carrier-escape"
+            ? "internal"
+            : shape == "public-carrier"
+                ? "public"
+            : "private";
+
+        string ownerAccessibility = shape == "public-carrier"
+            ? "public"
+            : "internal";
+
+        string property = shape == "custom-accessor"
+            ? "private ICleanup? _cleanup; internal ICleanup? Cleanup { get => _cleanup; set { MutableInput.Observe(value); _cleanup = value; } }"
+            : "internal ICleanup? Cleanup { get; set; }"
+                + (shape == "property-initializer"
+                    ? " = MutableInput.Unknown();"
+                    : string.Empty);
+
+        string additionalWriter = shape switch
+        {
+            "unknown-writer" => "private void Replace(State state) { state.Cleanup = MutableInput.Unknown(); }",
+            "different-context" => "private void Replace(State state, ICleanup cleanup) { state.Cleanup = cleanup; }",
+            "carrier-escape" => "private void Escape(State state) { MutableInput.Escape(state); }",
+            "deconstruction-write" => "private void Replace(State state) { (state.Cleanup, _) = (MutableInput.Unknown(), 0); }",
+            "construction-escape" => "private void EscapeConstruction() { MutableInput.Escape(new State()); }",
+            _ => string.Empty,
+        };
+
+        string carrierStorage = shape == "conditional-weak-table"
+            ? "private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, State> States = new(); "
+                + "private sealed class Registration(State state) { internal State Lifecycle { get; } = state; } "
+                + "private static State Resolve(object key, Registration registration) { if (!States.TryGetValue(key, out State? state) || !object.ReferenceEquals(state, registration.Lifecycle)) throw new InvalidOperationException(); return state; } "
+            : "private static readonly State Current = new(); ";
+
+        string runBody = shape == "conditional-weak-table"
+            ? "object key = new(); State seeded = States.GetOrCreateValue(key); seeded.Cleanup = new KnownCleanup(); Registration registration = new(seeded); State state = Resolve(key, registration); "
+            : "State state = Current; ";
+
+        string outsideDomainUse = shape switch
+        {
+            "internal-unknown-writer" => "internal static class OtherWriter { internal static void Replace(MutableOwner.State state) { state.Cleanup = MutableInput.Unknown(); } }",
+            "internal-carrier-escape" => "internal static class OtherWriter { internal static void Escape(MutableOwner.State state) { MutableInput.Escape(state); } }",
+            _ => string.Empty,
+        };
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "new MutableOwner().Run();",
+            "public interface ICleanup : IDisposable { } "
+                + "internal sealed class KnownCleanup : ICleanup { public void Dispose() { System.IO.File.Delete(\"mutable-property-effect\"); } } "
+                + ownerAccessibility + " sealed class MutableOwner { " + carrierAccessibility + " sealed class State { " + property + " } "
+                + carrierStorage + "private void Seed(State state) { state.Cleanup = new KnownCleanup(); } "
+                + "internal void Run() { " + runBody + "ICleanup? cleanup = state.Cleanup; state.Cleanup = null; cleanup?.Dispose(); } "
+                + additionalWriter + " } " + outsideDomainUse
+                + "internal static class MutableInput { internal static extern ICleanup Unknown(); internal static extern void Observe(ICleanup? value); internal static extern void Escape(object value); }"));
+
+        Assert.Equal(
+            resolved,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.Callee == "System.IO.File.Delete"
+                    && site.EffectFrontierCapsuleId is not null));
+    }
+
+    [Theory]
+    [InlineData("existing-local", true)]
+    [InlineData("unknown-insertion", false)]
+    [InlineData("wrong-receiver", false)]
+    [InlineData("overwritten", false)]
+    public void ConcurrentDictionaryRemovalIntoExistingLocalRequiresClosedSources(
+        string shape,
+        bool resolved)
+    {
+        string insertion = shape switch
+        {
+            "unknown-insertion" => "Registry[1] = CleanupInput.Unknown();",
+            "wrong-receiver" => "if (Gate.TryEnter(out ICleanup cleanup)) OtherRegistry[1] = cleanup;",
+            _ => "if (Gate.TryEnter(out ICleanup cleanup)) Registry[1] = cleanup;",
+        };
+
+        string overwrite = shape == "overwritten"
+            ? "removed = CleanupInput.Unknown();"
+            : string.Empty;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "DictionaryCleanup.Run();",
+            "public interface ICleanup : IDisposable { } "
+                + "internal sealed class DictionaryCleanupLeaf : ICleanup { public void Dispose() { System.IO.File.Delete(\"dictionary-existing-local-effect\"); } } "
+                + "internal static class Gate { internal static bool TryEnter(out ICleanup cleanup) { cleanup = new DictionaryCleanupLeaf(); return true; } } "
+                + "internal static class DictionaryCleanup { private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ICleanup> Registry = new(); "
+                + "private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ICleanup> OtherRegistry = new(); "
+                + "private static void Acquire() { " + insertion + " } "
+                + "internal static void Run() { Acquire(); ICleanup? removed = null; Registry.TryRemove(1, out removed); " + overwrite + "removed?.Dispose(); } } "
+                + "internal static class CleanupInput { internal static extern ICleanup Unknown(); }"));
+
+        Assert.Equal(
+            resolved,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.Callee == "System.IO.File.Delete"
+                    && site.EffectFrontierCapsuleId is not null));
+    }
+
+    [Theory]
+    [InlineData("null-release", true)]
+    [InlineData("exchange-release", true)]
+    [InlineData("exchange-release-explicit-this", true)]
+    [InlineData("readonly", true)]
+    [InlineData("unknown-input", false)]
+    [InlineData("unknown-replacement", false)]
+    [InlineData("ref-escape", false)]
+    [InlineData("out-escape", false)]
+    [InlineData("ref-alias", false)]
+    [InlineData("exchange-unknown", false)]
+    [InlineData("different-field-instance", false)]
+    [InlineData("exchange-other-instance", false)]
+    [InlineData("exchange-mixed-other-instance", false)]
+    [InlineData("exposed-field", false)]
+    [InlineData("different-instance", false)]
+    [InlineData("alternate-constructor", false)]
+    public void ConstructorCleanupSnapshotRetainsOnlyRelinquishedExactField(string shape, bool exact)
+    {
+        string action = shape is "different-instance" or "different-field-instance" or "exchange-other-instance" or "exchange-mixed-other-instance"
+            ? "new SnapshotOwner(new SnapshotLeaf()).ReleaseOther(new SnapshotOwner(SnapshotInput.Unknown()));"
+            : shape == "alternate-constructor"
+                ? "new SnapshotOwner(0).Dispose();"
+                : "new SnapshotOwner(" + (shape is "unknown-input" or "exchange-unknown" ? "SnapshotInput.Unknown()" : "new SnapshotLeaf()") + ").Dispose();";
+
+        string snapshot = shape is "exchange-release" or "exchange-release-explicit-this" or "exchange-unknown"
+            ? "IDisposable? snapshot = Interlocked.Exchange(ref " + (shape == "exchange-release-explicit-this" ? "this." : string.Empty) + "_owned, null);"
+            : "IDisposable? snapshot = _owned;" + (shape == "readonly" ? string.Empty : "_owned = null;");
+
+        string replacement = shape switch
+        {
+            "unknown-replacement" => "_owned = SnapshotInput.Unknown();",
+            "ref-escape" => "SnapshotInput.Replace(ref _owned);",
+            "out-escape" => "SnapshotInput.Output(out _owned);",
+            "ref-alias" => "ref IDisposable? alias = ref _owned; alias = SnapshotInput.Unknown();",
+            _ => string.Empty,
+        };
+
+        string extraConstructor = shape == "alternate-constructor"
+            ? "internal SnapshotOwner(int unused) { _owned = SnapshotInput.Unknown(); }"
+            : string.Empty;
+
+        string otherBody = shape == "different-field-instance"
+            ? "IDisposable? snapshot = other._owned; other._owned = null; snapshot?.Dispose();"
+            : shape == "exchange-other-instance"
+                ? "IDisposable? snapshot = Interlocked.Exchange(ref other._owned, null); snapshot?.Dispose();"
+                : shape == "exchange-mixed-other-instance"
+                    ? "_ = this._owned; IDisposable? snapshot = Interlocked.Exchange(ref other._owned, null); snapshot?.Dispose();"
+                : "other.Dispose();";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + action,
+            "internal sealed class SnapshotLeaf : IDisposable { public void Dispose() { System.IO.File.Delete(\"snapshot-effect\"); } } "
+                + "internal sealed class SnapshotOwner : IDisposable { " + (shape == "exposed-field" ? "internal " : "private ") + (shape == "readonly" ? "readonly " : string.Empty)
+                + "IDisposable? _owned; internal SnapshotOwner(IDisposable owned) { _owned = owned; } " + extraConstructor
+                + "public void Dispose() { " + replacement + snapshot + "snapshot?.Dispose(); } "
+                + "internal void ReleaseOther(SnapshotOwner other) { " + otherBody + " } } "
+                + "internal static class SnapshotInput { internal static extern IDisposable Unknown(); internal static extern void Replace(ref IDisposable? value); internal static extern void Output(out IDisposable? value); }"));
+
+        if (exact)
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete"
+                && site.EffectFrontierCapsuleId is not null);
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+        }
+        else
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+            Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+    }
+
+    [Theory]
+    [InlineData("closed", true)]
+    [InlineData("object-sink", false)]
+    [InlineData("object-member", false)]
+    [InlineData("public-object-return", false)]
+    [InlineData("ref-escape", false)]
+    [InlineData("callback-return", false)]
+    [InlineData("registry-escape", false)]
+    [InlineData("unknown-writer", false)]
+    [InlineData("callback-unknown-writer", false)]
+    [InlineData("exact-result-wrapper", true)]
+    [InlineData("unknown-result-wrapper", false)]
+    public void InternalCarrierOnPublicPartialOwnerRequiresExactAssemblyConfinement(
+        string shape,
+        bool resolved)
+    {
+        string escape = shape switch
+        {
+            "object-sink" => "UnknownCarrierInput.Accept(entry);",
+            "object-member" => "UnknownCarrierInput.Stored = entry;",
+            "ref-escape" => "UnknownCarrierInput.Replace(ref entry);",
+            "callback-return" => "System.Func<object> escape = () => entry; UnknownCarrierInput.Accept(escape);",
+            "registry-escape" => "UnknownCarrierInput.Accept(_registry);",
+            "unknown-writer" => "entry.Cleanup = UnknownCarrierInput.Cleanup();",
+            "callback-unknown-writer" => "System.Action poison = () => entry.Cleanup = UnknownCarrierInput.Cleanup(); poison();",
+            _ => string.Empty,
+        };
+
+        string publicEscape = shape == "public-object-return"
+            ? "public object Escape() => System.Linq.Enumerable.First(_registry.Values);"
+            : string.Empty;
+
+        string wrapper = shape switch
+        {
+            "exact-result-wrapper" =>
+                "private RetroDownfall.Arcanum.Core.Primitives.Result<InternalEntry> Wrap(InternalEntry entry) { return entry; } ",
+            "unknown-result-wrapper" =>
+                "private UnknownCarrierBox<InternalEntry> Wrap(InternalEntry entry) { return entry; } ",
+            _ => string.Empty,
+        };
+
+        string unknownWrapper = shape == "unknown-result-wrapper"
+            ? "internal sealed class UnknownCarrierBox<T> { public static implicit operator UnknownCarrierBox<T>(T value) => new(); } "
+            : string.Empty;
+
+        string authoredResult = shape == "exact-result-wrapper"
+            ? "namespace RetroDownfall.Arcanum.Core.Primitives { internal sealed class Result<T> { private Result(T value) { Value = value; } internal T Value { get; } public static implicit operator Result<T>(T value) => new(value); } } "
+            : string.Empty;
+
+        string source = R2Source(
+            R2Admission + "new PublicCarrierOwner().Run();",
+            "public interface ICarrierCleanup : System.IDisposable { } "
+                + "internal sealed class CarrierCleanup : ICarrierCleanup { public void Dispose() { System.IO.File.Delete(\"mcp-carrier-confinement\"); } } "
+                + "internal sealed class InternalEntry(int id) { public int Id { get; } = id; public ICarrierCleanup? Cleanup { get; set; } } "
+                + "public sealed partial class PublicCarrierOwner { private readonly System.Collections.Concurrent.ConcurrentDictionary<int, InternalEntry> _registry = new(); "
+                + "internal InternalEntry? GetManagedEntryForTests(int key) => _registry.TryGetValue(key, out InternalEntry? entry) ? entry : null; "
+                + "internal void Run() { InternalEntry entry = new(1); _registry[1] = entry; InternalEntry[] selected = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Where(_registry.Values, static candidate => candidate.Id == 1)); "
+                + "System.Collections.Generic.List<InternalEntry> staged = new(selected); System.Collections.Generic.HashSet<InternalEntry> visited = []; "
+                + "foreach (InternalEntry candidate in staged) { _ = visited.Add(candidate); Publish(candidate); } "
+                + escape
+                + "InternalEntry current = GetManagedEntryForTests(1)!; if (visited.Contains(current)) { ICarrierCleanup? cleanup = current.Cleanup; current.Cleanup = null; cleanup?.Dispose(); } } "
+                + wrapper
+                + publicEscape
+                + "} public sealed partial class PublicCarrierOwner { private static void Publish(InternalEntry entry) { entry.Cleanup = new CarrierCleanup(); } } "
+                + unknownWrapper
+                + authoredResult
+                + "internal static class UnknownCarrierInput { internal static object? Stored { get; set; } internal static extern ICarrierCleanup Cleanup(); internal static extern void Accept(object value); internal static extern void Replace(ref InternalEntry entry); }");
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(resolved, !result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+        Assert.Equal(resolved, result.Items.Any(static site => site.EnclosingType == "CarrierCleanup" && site.Callee == "System.IO.File.Delete" && site.EffectFrontierCapsuleId is not null));
+    }
+
+    [Theory]
+    [InlineData("closed", true)]
+    [InlineData("unknown-caller", false)]
+    [InlineData("method-group", false)]
+    [InlineData("other-instance", false)]
+    [InlineData("external-caller", false)]
+    [InlineData("public-writer", false)]
+    public void MutableCleanupPropertyWriterRequiresCompleteClosedCallerFamily(
+        string shape,
+        bool resolved)
+    {
+        string writerAccessibility = shape == "public-writer"
+            ? "public"
+            : "internal";
+
+        string stateAccessibility = shape == "public-writer"
+            ? "public"
+            : "internal";
+
+        string caller = shape switch
+        {
+            "unknown-caller" =>
+                "private async Task Poison(State entry) { await FinishStartAsync(entry, UnknownInput.Cleanup()); } ",
+            "method-group" =>
+                "private void Capture() { System.Func<State, ICleanup, Task> callback = FinishStartAsync; UnknownInput.Capture(callback); } ",
+            "other-instance" =>
+                "private async Task StartOther(Owner other, State entry) { ICleanup client = new KnownCleanup(); await other.FinishStartAsync(entry, client); } ",
+            _ => string.Empty,
+        };
+
+        string externalCaller = shape == "external-caller"
+            ? "internal static class ExternalCaller { internal static async Task Start(Owner owner, Owner.State entry) { ICleanup client = new KnownCleanup(); await owner.FinishStartAsync(entry, client); } } "
+            : string.Empty;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "await new Owner().StopAsync();",
+            "public interface ICleanup : IAsyncDisposable { } "
+                + "internal sealed class KnownCleanup : ICleanup { public ValueTask DisposeAsync() { System.IO.File.Delete(\"mcp-closed-caller\"); return default; } } "
+                + "internal sealed class UnknownCleanup : ICleanup { public ValueTask DisposeAsync() => default; } "
+                + "public sealed partial class Owner { " + stateAccessibility + " sealed class State { internal ICleanup? Client { get; set; } } "
+                + "private readonly System.Collections.Concurrent.ConcurrentDictionary<int, State> _registry = new(); "
+                + writerAccessibility + " async Task FinishStartAsync(State entry, ICleanup client) { ICleanup? pending = client; await Task.Yield(); entry.Client = pending; pending = null; } "
+                + "private async Task StartStdioAsync(State entry) { ICleanup client = new KnownCleanup(); await FinishStartAsync(entry, client); } "
+                + "private async Task StartHttpAsync(State entry) { ICleanup client = new KnownCleanup(); await FinishStartAsync(entry, client); } "
+                + caller
+                + "internal async Task StopAsync() { State entry = new(); _registry[1] = entry; ICleanup? client = entry.Client; entry.Client = null; if (client is not null) await client.DisposeAsync(); } } "
+                + externalCaller
+                + "internal static class UnknownInput { internal static extern ICleanup Cleanup(); internal static extern void Capture(object callback); }"));
+
+        Assert.Equal(
+            resolved,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.EnclosingType == "KnownCleanup"
+                && site.Callee == "System.IO.File.Delete"
+                && site.EffectFrontierCapsuleId is not null));
+    }
+
+    [Theory]
+    [InlineData("closed", true)]
+    [InlineData("interface-return", true)]
+    [InlineData("same-type-unknown-writer", false)]
+    public void NestedRelinquishedCleanupFieldRetainsExactConstructorContext(
+        string shape,
+        bool resolved)
+    {
+        string additionalWriter = shape == "same-type-unknown-writer"
+            ? "private void Replace() { _inner = NestedDrainInput.Unknown(); }"
+            : string.Empty;
+
+        string action = shape == "interface-return"
+            ? "IDisposable registration = new NestedDrain().RegisterWrapper(); registration.Dispose();"
+            : "new NestedDrain().Run();";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + action,
+            "internal sealed class NestedDrain { "
+                + "private static IDisposable Register() { return new NestedEnrolment(); } "
+                + "internal void Run() { IDisposable inner = Register(); new ObservedEnrolment(inner).Dispose(); } "
+                + "internal IDisposable RegisterWrapper() { IDisposable inner = Register(); return new ObservedEnrolment(inner); } "
+                + "private sealed class ObservedEnrolment(IDisposable inner) : IDisposable { "
+                + "private IDisposable? _inner = inner; "
+                + "public void Dispose() { IDisposable? current = Interlocked.Exchange(ref _inner, null); if (current is null) return; current.Dispose(); } "
+                + additionalWriter + " } "
+                + "private sealed class NestedEnrolment : IDisposable { public void Dispose() { System.IO.File.Delete(\"nested-relinquished-effect\"); } } } "
+                + "internal static class NestedDrainInput { internal static extern IDisposable Unknown(); }"));
+
+        Assert.Equal(
+            resolved,
+            !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        Assert.Equal(
+            resolved,
+            result.Items.Any(static site =>
+                site.Callee == "System.IO.File.Delete"
+                    && site.EffectFrontierCapsuleId is not null));
+    }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("named", true)]
+    [InlineData("unknown", false)]
+    [InlineData("local", false)]
+    [InlineData("const-local", false)]
+    [InlineData("local-ref", false)]
+    [InlineData("call", false)]
+    [InlineData("property", false)]
+    [InlineData("conversion", false)]
+    [InlineData("cast-conversion", false)]
+    [InlineData("ref-forward", false)]
+    [InlineData("in-forward", false)]
+    [InlineData("recursive-call", false)]
+    [InlineData("parameter-write", false)]
+    [InlineData("parameter-ref", false)]
+    [InlineData("parameter-out", false)]
+    [InlineData("ref-alias", false)]
+    [InlineData("local-function", false)]
+    [InlineData("lambda", false)]
+    public void KnownBooleanForwardingRetainsOnlyStableLiteralParameterChains(string shape, bool joined)
+    {
+        string input = shape switch
+        {
+            "false" => "false",
+            "unknown" => "BooleanInput.Unknown()",
+            "call" => "BooleanInput.True()",
+            "property" => "BooleanInput.Value",
+            "conversion" => "new BooleanInput.Flag()",
+            "cast-conversion" => "(bool)(BooleanInput.Flag)true",
+            "recursive-call" => "BooleanInput.Cycle(true)",
+            "local" or "local-ref" or "const-local" => "flag",
+            _ => "true",
+        };
+
+        string prelude = shape is "local" or "local-ref" ? "bool flag = true;" : string.Empty;
+
+        if (shape == "const-local")
+        {
+            prelude = "const bool flag = true;";
+        }
+
+        if (shape == "local-ref")
+        {
+            prelude += "BooleanInput.Replace(ref flag);";
+        }
+
+        string mutation = shape switch
+        {
+            "parameter-write" => "value = false;",
+            "parameter-ref" => "BooleanInput.Replace(ref value);",
+            "parameter-out" => "BooleanInput.Output(out value);",
+            "ref-alias" => "ref bool alias = ref value; alias = false;",
+            "local-function" => "void Replace() { value = false; } Replace();",
+            "lambda" => "Action replace = () => value = false; replace();",
+            _ => string.Empty,
+        };
+
+        string arguments = shape == "named" ? "value: true, unused: false" : "false, " + input;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(BooleanCleanupSource(
+            prelude + "await BooleanCleanup.First(" + arguments + ");", mutation,
+            shape == "ref-forward" ? "ref " : shape == "in-forward" ? "in " : string.Empty));
+
+        HostedProducerSite[] effects = result.Items.Where(static site => site.Callee == "System.IO.File.Delete").ToArray();
+
+        Assert.NotEmpty(effects);
+
+        Assert.Equal(joined, effects.All(static effect => effect.EffectFrontierCapsuleId is not null));
+
+        Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void BooleanForwardingKeepsOppositeContextsSeparate(bool reverse, bool separateRoots)
+    {
+        string first = reverse ? "false" : "true";
+
+        string second = reverse ? "true" : "false";
+
+        string source = BooleanCleanupSource("await BooleanCleanup.First(false, " + first + ");"
+            + (separateRoots ? string.Empty : "await BooleanCleanup.First(false, " + second + ");"));
+
+        HostedProducerOperationEntry[] roots = [OrdinaryRoot()];
+
+        if (separateRoots)
+        {
+            source = source.Replace("public Task StopAsync(CancellationToken token) => Task.CompletedTask;",
+                "public async Task StopAsync(CancellationToken token) { " + R2Admission
+                    + "await BooleanCleanup.First(false, " + second + "); }", StringComparison.Ordinal);
+
+            roots = [OrdinaryRoot(), OrdinaryRoot("Worker.StopAsync") with { Member = "StopAsync" }];
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source, roots);
+
+        Assert.Contains(result.Items, static effect => effect.Callee == "System.IO.File.Delete" && effect.EffectFrontierCapsuleId is not null);
+
+        Assert.Contains(result.Items, static effect => effect.Callee == "System.IO.File.Delete" && effect.EffectFrontierCapsuleId is null);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+
+        if (separateRoots)
+        {
+            HostedProducerSite[] firstEffects = result.Items.Where(static effect =>
+                effect.Callee == "System.IO.File.Delete" && effect.AuthorityOperationId == "Worker.StartAsync").ToArray();
+
+            HostedProducerSite[] secondEffects = result.Items.Where(static effect =>
+                effect.Callee == "System.IO.File.Delete" && effect.AuthorityOperationId == "Worker.StopAsync").ToArray();
+
+            Assert.NotEmpty(firstEffects);
+
+            Assert.NotEmpty(secondEffects);
+
+            Assert.Equal(!reverse, firstEffects.All(static effect => effect.EffectFrontierCapsuleId is not null));
+
+            Assert.Equal(reverse, secondEffects.All(static effect => effect.EffectFrontierCapsuleId is not null));
+        }
+    }
+
+    [Theory]
+    [InlineData("for", false, false)]
+    [InlineData("for", true, false)]
+    [InlineData("while", false, false)]
+    [InlineData("while", true, false)]
+    [InlineData("do", false, false)]
+    [InlineData("do", true, false)]
+    [InlineData("foreach", false, false)]
+    [InlineData("foreach", true, false)]
+    [InlineData("ref", false, false)]
+    [InlineData("ref", true, false)]
+    [InlineData("out", false, false)]
+    [InlineData("out", true, false)]
+    [InlineData("alias", false, false)]
+    [InlineData("alias", true, false)]
+    [InlineData("callable", false, false)]
+    [InlineData("callable", true, false)]
+    [InlineData("lambda", false, false)]
+    [InlineData("lambda", true, false)]
+    [InlineData("backward-goto", false, false)]
+    [InlineData("backward-goto", true, false)]
+    [InlineData("stable-loop", false, true)]
+    [InlineData("stable-loop", true, true)]
+    [InlineData("straight-line", false, true)]
+    [InlineData("straight-line", true, true)]
+    [InlineData("forward-goto", false, true)]
+    [InlineData("forward-goto", true, true)]
+    public void KnownBooleanSourcesRefuseRevisitedMutation(string shape, bool directConsumer, bool joined)
+    {
+        string source = BooleanCleanupSource("await BooleanCleanup.First(false, true);");
+
+        string use = directConsumer
+            ? "IAsyncDisposable cleanup = new BooleanCleanup(); if (value) { await cleanup.DisposeAsync(); } "
+                + "else { Task pending = cleanup.DisposeAsync().AsTask(); using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30)); await pending.WaitAsync(deadline.Token); }"
+            : "await Last(value);";
+
+        string mutation = shape switch
+        {
+            "ref" => "BooleanInput.Replace(ref value);",
+            "out" => "BooleanInput.Output(out value);",
+            "alias" => "ref bool alias = ref value; alias = false;",
+            "callable" => "void Replace() { value = false; } Replace();",
+            "lambda" => "Action replace = () => value = false; replace();",
+            "stable-loop" => "bool unrelated = false; _ = unrelated;",
+            _ => "value = false;",
+        };
+
+        string body = shape switch
+        {
+            "while" => "int i = 0; while (i++ < 2) { " + use + mutation + " }",
+            "do" => "int i = 0; do { " + use + mutation + " } while (++i < 2);",
+            "foreach" => "foreach (int i in new[] { 0, 1 }) { " + use + mutation + " }",
+            "backward-goto" => "int i = 0; Again: { " + use + mutation + " } if (++i < 2) goto Again;",
+            "straight-line" => use + mutation,
+            "forward-goto" => use + mutation + "goto Done; Done: return;",
+            _ => "for (int i = 0; i < 2; i++) { " + use + mutation + " }",
+        };
+
+        source = directConsumer
+            ? source.Replace(use, body, StringComparison.Ordinal)
+            : source.Replace("await Last(value);", body, StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        HostedProducerSite[] effects = result.Items.Where(static site => site.Callee == "System.IO.File.Delete").ToArray();
+
+        Assert.NotEmpty(effects);
+
+        Assert.Equal(joined, effects.All(static effect => effect.EffectFrontierCapsuleId is not null));
+
+        Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    private static string BooleanCleanupSource(string body, string mutation = "", string forwardingModifier = "") => R2Source(
+        R2Admission + body,
+        "internal sealed class BooleanCleanup : IAsyncDisposable { public ValueTask DisposeAsync() { System.IO.File.Delete(\"boolean-cleanup\"); return default; } "
+            + "internal static async Task First(bool unused, bool value) { await Middle(value); } "
+            + "private static async Task Middle(bool value) { " + mutation + " await Last(" + forwardingModifier + "value); } "
+            + "private static Task Last(" + forwardingModifier + "bool value) => Choose(value); "
+            + "private static async Task Choose(bool value) { IAsyncDisposable cleanup = new BooleanCleanup(); if (value) { await cleanup.DisposeAsync(); } "
+            + "else { Task pending = cleanup.DisposeAsync().AsTask(); using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30)); await pending.WaitAsync(deadline.Token); } } } "
+            + "internal static class BooleanInput { internal static extern bool Unknown(); internal static bool True() => true; internal static bool Value => true; "
+            + "internal static bool Cycle(bool value) => Cycle(value); internal static extern void Replace(ref bool value); internal static extern void Output(out bool value); "
+            + "internal sealed class Flag { public static explicit operator Flag(bool value) => new(); public static implicit operator bool(Flag value) => false; } }");
+
+    [Theory]
+    [InlineData("exact", true)]
+    [InlineData("configured", true)]
+    [InlineData("throwing-publication", true)]
+    [InlineData("wrong-task", false)]
+    [InlineData("conditional", false)]
+    [InlineData("reassigned", false)]
+    [InlineData("ref", false)]
+    [InlineData("out", false)]
+    [InlineData("ref-local", false)]
+    [InlineData("captured-mutation", false)]
+    [InlineData("throwing-gap", false)]
+    [InlineData("multiple-declaration", false)]
+    [InlineData("throw-before-join", false)]
+    [InlineData("throwing-configure", false)]
+    public void PublishedDisposalTaskRequiresExactUnconditionalFinallyJoin(string shape, bool joined)
+    {
+        string declaration = "Task disposal = cleanup.DisposeAsync().AsTask()"
+            + (shape == "multiple-declaration" ? ", other = FinallyPolicyInput.Other()" : string.Empty) + ";";
+
+        string gap = shape == "throwing-gap" ? "FinallyPolicyInput.MayThrow();" : string.Empty;
+
+        string publication = shape switch
+        {
+            "reassigned" => "disposal = Task.CompletedTask;",
+            "ref" => "FinallyPolicyInput.Replace(ref disposal);",
+            "out" => "FinallyPolicyInput.Output(out disposal);",
+            "ref-local" => "ref Task alias = ref disposal; alias = Task.CompletedTask;",
+            "captured-mutation" => "Action replace = () => disposal = Task.CompletedTask; replace();",
+            _ => "FinallyPolicyInput.Pending = disposal; FinallyPolicyInput.Track(disposal);",
+        };
+
+        string completion = shape switch
+        {
+            "wrong-task" => "await Task.CompletedTask;",
+            "conditional" => "if (FinallyPolicyInput.Unknown()) await disposal;",
+            "configured" => "await disposal.ConfigureAwait(false);",
+            "throw-before-join" => "FinallyPolicyInput.MayThrow(); await disposal;",
+            "throwing-configure" => "await disposal.ConfigureAwait(FinallyPolicyInput.Unknown());",
+            _ => "await disposal;",
+        };
+
+        string track = shape == "throwing-publication" ? "throw new System.IO.IOException();" : string.Empty;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "IAsyncDisposable cleanup = new FinallyPolicyCleanup(); " + declaration + gap
+                + "try { " + publication + " } finally { " + completion + " }",
+            "internal sealed class FinallyPolicyCleanup : IAsyncDisposable { public ValueTask DisposeAsync() { System.IO.File.Delete(\"finally-policy-cleanup\"); return default; } } "
+                + "internal static class FinallyPolicyInput { internal static Task? Pending; internal static void Track(Task task) { " + track
+                + " } internal static extern void Replace(ref Task task); internal static extern void Output(out Task task); internal static extern void MayThrow(); internal static extern Task Other(); internal static extern bool Unknown(); }"));
+
+        HostedProducerSite effect = Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(joined, effect.EffectFrontierCapsuleId is not null);
+
+        Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Theory]
+    [InlineData("true", "await disposal;", false, true)]
+    [InlineData("false", "await disposal;", false, false)]
+    [InlineData("PolicyInput.Unknown()", "await disposal;", false, false)]
+    [InlineData("true", "await Task.CompletedTask;", false, false)]
+    [InlineData("true", "_ = disposal;", false, false)]
+    [InlineData("true", "await disposal;", true, true)]
+    [InlineData("direct", "await disposal;", true, true)]
+    public void LiteralCleanupCompletionPolicyRequiresTheActualDisposalJoin(
+        string policy, string completion, bool tracked, bool joined)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + (policy == "direct"
+                ? "await PolicyCleanup.CompleteAsync(new PolicyCleanup());"
+                : "await PolicyCleanup.FinishAsync(new PolicyCleanup(), " + policy + ");"),
+            "internal sealed class PolicyCleanup : IAsyncDisposable { "
+                + "public ValueTask DisposeAsync() { System.IO.File.Delete(\"policy-cleanup\"); return default; } "
+                + "internal static async Task FinishAsync(IAsyncDisposable cleanup, bool requireCompletion) { "
+                + "if (requireCompletion) { await CompleteAsync(cleanup); } "
+                + "else { Task bounded = cleanup.DisposeAsync().AsTask(); using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30)); await bounded.WaitAsync(deadline.Token); } } "
+                + "internal static async Task CompleteAsync(IAsyncDisposable cleanup) { Task disposal = cleanup.DisposeAsync().AsTask(); "
+                + (tracked ? "try { PolicyInput.Pending = disposal; PolicyInput.Track(disposal); } finally { " + completion + " }" : completion)
+                + " } } internal static class PolicyInput { internal static Task? Pending; internal static void Track(Task task) { } internal static extern bool Unknown(); }"));
+
+        HostedProducerSite[] effects = result.Items.Where(static site => site.Callee == "System.IO.File.Delete").ToArray();
+
+        Assert.NotEmpty(effects);
+
+        Assert.Equal(joined, effects.All(static effect => effect.EffectFrontierCapsuleId is not null));
+
+        Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Theory]
+    [InlineData("exact", true)]
+    [InlineData("block", true)]
+    [InlineData("wrong-task", false)]
+    [InlineData("inverted", false)]
+    [InlineData("missing-result", false)]
+    [InlineData("intervening-throw", false)]
+    [InlineData("discarded", false)]
+    public void ConditionalValueTaskFinallyCleanupRequiresExactExhaustiveJoin(
+        string shape,
+        bool joined)
+    {
+        string completion = shape switch
+        {
+            "block" => "if (!disposal.IsCompletedSuccessfully) { disposal.AsTask().GetAwaiter().GetResult(); }",
+            "wrong-task" => "if (!disposal.IsCompletedSuccessfully) Task.CompletedTask.GetAwaiter().GetResult();",
+            "inverted" => "if (disposal.IsCompletedSuccessfully) disposal.AsTask().GetAwaiter().GetResult();",
+            "missing-result" => "if (!disposal.IsCompletedSuccessfully) disposal.AsTask();",
+            "intervening-throw" => "FinallyInput.MayThrow(); if (!disposal.IsCompletedSuccessfully) disposal.AsTask().GetAwaiter().GetResult();",
+            "discarded" => string.Empty,
+            _ => "if (!disposal.IsCompletedSuccessfully) disposal.AsTask().GetAwaiter().GetResult();",
+        };
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "IAsyncDisposable cleanup = new FinallyCleanup(); try { } finally { ValueTask disposal = cleanup.DisposeAsync(); "
+                + completion + " }",
+            "internal sealed class FinallyCleanup : IAsyncDisposable { public ValueTask DisposeAsync() { System.IO.File.Delete(\"conditional-finally-cleanup\"); return default; } } internal static class FinallyInput { internal static extern void MayThrow(); }"));
+
+        HostedProducerSite effect = Assert.Single(result.Items, static site =>
+            site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(joined, effect.EffectFrontierCapsuleId is not null);
+
+        Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.IAsyncDisposable.DisposeAsync;", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("exact", true)]
+    [InlineData("wrong-return", false)]
+    [InlineData("discarded", false)]
+    [InlineData("unknown-cache", false)]
+    [InlineData("reassigned-cache", false)]
+    [InlineData("escaped-cache", false)]
+    [InlineData("escaped-task", false)]
+    [InlineData("abandoned-helper", false)]
+    [InlineData("escaped-receiver", false)]
+    public void CachedDisposalTaskReturnRequiresExactOwnedTaskIdentity(string shape, bool joined)
+    {
+        string cacheInitializer = shape == "unknown-cache" ? " = CachedCleanupInput.Unknown()" : string.Empty;
+
+        string prelude = shape switch
+        {
+            "escaped-cache" => "CachedCleanupInput.Replace(ref cache);",
+            "abandoned-helper" => "FinishAsync();",
+            _ => string.Empty,
+        };
+
+        string after = shape == "escaped-task" ? "CachedCleanupInput.Observe(disposal);" : string.Empty;
+
+        string returned = shape == "wrong-return" ? "Task.CompletedTask" : "disposal";
+
+        string other = shape == "reassigned-cache" ? "internal void Reset() { cache = CachedCleanupInput.Unknown(); }" : string.Empty;
+
+        string helper = "internal sealed class CachedCleanup : IAsyncDisposable { private readonly object gate = new(); private Task? cache"
+            + cacheInitializer + "; public ValueTask DisposeAsync() { Task disposal; lock (gate) { "
+            + prelude + " disposal = cache ??= FinishAsync(); " + after + " } return new ValueTask(" + returned
+            + "); } private Task FinishAsync() { System.IO.File.Delete(\"cached-cleanup\"); return Task.CompletedTask; } " + other + " }"
+            + "internal static class CachedCleanupInput { internal static extern Task Unknown(); internal static extern void Replace(ref Task? task); internal static extern void Observe(Task task); internal static extern void ReplaceReceiver(ref IAsyncDisposable value); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "IAsyncDisposable cleanup = new CachedCleanup(); "
+                + (shape == "escaped-receiver" ? "CachedCleanupInput.ReplaceReceiver(ref cleanup);" : string.Empty)
+                + (shape == "discarded" ? "cleanup.DisposeAsync();" : "await cleanup.DisposeAsync();")
+                + "System.IO.File.Exists(\"cache-control\");",
+            helper));
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        HostedProducerSite[] effects = result.Items.Where(static site =>
+            site.Callee == "System.IO.File.Delete").ToArray();
+
+        if (shape == "escaped-receiver")
+        {
+            Assert.Empty(effects);
+
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+            return;
+        }
+
+        Assert.NotEmpty(effects);
+
+        Assert.Equal(joined, effects.All(static site => site.EffectFrontierCapsuleId is not null));
+
+        Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Theory]
+    [InlineData("field", true, true)]
+    [InlineData("local", true, true)]
+    [InlineData("unjoined", true, false)]
+    [InlineData("unknown", false, true)]
+    [InlineData("reassigned", false, true)]
+    [InlineData("ref-escaped", false, true)]
+    [InlineData("counterfeit", false, true)]
+    [InlineData("authored-override", false, true)]
+    [InlineData("wrong-overload", false, true)]
+    public void SdkSessionCleanupRequiresAuthenticatedFactoryReceiverAndCompletion(
+        string shape,
+        bool sdkEffect,
+        bool joined)
+    {
+        const string factory = "ModelContextProtocol.Client.McpClient.CreateAsync(null!, null, null, default)";
+
+        string acquisition = shape == "unknown" ? "SdkCleanupInput.Unknown()" : "await " + factory;
+
+        string mutation = shape switch
+        {
+            "reassigned" => "client = SdkCleanupInput.Unknown();",
+            "ref-escaped" => "SdkCleanupInput.Replace(ref client);",
+            _ => string.Empty,
+        };
+
+        string helper = "internal sealed class SdkCleanupOwner : IAsyncDisposable { private ModelContextProtocol.Client.McpClient? client; internal async Task InitializeAsync() { client = "
+            + acquisition + "; } public async ValueTask DisposeAsync() { " + mutation
+            + " if (client is not null) { " + (joined ? "await " : string.Empty) + "client.DisposeAsync(); } } }"
+            + "internal static class SdkCleanupInput { internal static extern ModelContextProtocol.Client.McpClient Unknown(); internal static extern void Replace(ref ModelContextProtocol.Client.McpClient? value); internal static extern AuthoredSdkSession Custom(); }"
+            + "internal abstract class AuthoredSdkSession : ModelContextProtocol.McpSession { public sealed override ValueTask DisposeAsync() { System.IO.File.Delete(\"custom-session\"); return default; } public ValueTask DisposeAsync(int value) { System.IO.File.Delete(\"custom-overload\"); return default; } }";
+
+        string body = shape switch
+        {
+            "local" => "var client = await " + factory + "; await client.DisposeAsync();",
+            "authored-override" => "AuthoredSdkSession client = SdkCleanupInput.Custom(); await client.DisposeAsync();",
+            "wrong-overload" => "AuthoredSdkSession client = SdkCleanupInput.Custom(); await client.DisposeAsync(1);",
+            _ => "var owner = new SdkCleanupOwner(); await owner.InitializeAsync(); await owner.DisposeAsync();",
+        };
+
+        if (shape == "counterfeit")
+        {
+            helper += "namespace ModelContextProtocol { public abstract class McpSession : IAsyncDisposable { public abstract ValueTask DisposeAsync(); } } namespace ModelContextProtocol.Client { public sealed class McpClient : ModelContextProtocol.McpSession { public static Task<McpClient> CreateAsync(IClientTransport transport, McpClientOptions? options, Microsoft.Extensions.Logging.ILoggerFactory? logger, CancellationToken token) => Task.FromResult(new McpClient()); public override ValueTask DisposeAsync() { System.IO.File.Delete(\"counterfeit-session\"); return default; } } }";
+        }
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            R2Source(R2Admission + body + "System.IO.File.Exists(\"sdk-cleanup-control\");", helper),
+            "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        HostedProducerSite[] effects = result.Items.Where(static site =>
+            site.Callee == "ModelContextProtocol.McpSession.DisposeAsync").ToArray();
+
+        Assert.Equal(sdkEffect ? 1 : 0, effects.Length);
+
+        if (sdkEffect)
+        {
+            Assert.Equal(HostedProducerSiteKind.ProviderCall, effects[0].Kind);
+
+            Assert.Equal(joined, effects[0].EffectFrontierCapsuleId is not null);
+
+            Assert.Equal(!joined, result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("ModelContextProtocol.McpSession.DisposeAsync;", StringComparison.Ordinal)));
+        }
+        else if (shape is "counterfeit" or "authored-override" or "wrong-overload")
+        {
+            Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+        else
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code is "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail.StartsWith("ModelContextProtocol.McpSession.DisposeAsync", StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData("bootstrap", true, true)]
+    [InlineData("unadmitted", true, false)]
+    [InlineData("other-owner", false, true)]
+    [InlineData("counterfeit-console", false, true)]
+    public void BootstrapConsoleRestorationRetainsExactEffectsAndAuthority(
+        string shape,
+        bool classified,
+        bool admitted)
+    {
+        string helper = """
+            namespace RetroDownfall.Arcanum.Cli.Commands
+            {
+                internal static class ServeCommand
+                {
+                    internal static IDisposable RedirectConsoleToBootstrapLog() => new ConsoleRedirectionLease();
+                    private sealed class ConsoleRedirectionLease : IDisposable
+                    {
+                        private readonly System.IO.StreamWriter writer = new(System.IO.Stream.Null);
+                        public void Dispose()
+                        {
+                            System.Console.SetOut(System.Console.Out);
+                            System.Console.SetError(System.Console.Error);
+                            writer.Dispose();
+                        }
+                    }
+                }
+            }
+            """;
+
+        if (shape == "other-owner")
+        {
+            helper = helper.Replace("ServeCommand", "OtherCommand", StringComparison.Ordinal);
+        }
+
+        if (shape == "counterfeit-console")
+        {
+            helper += "namespace System { internal static class Console { internal static System.IO.TextWriter Out => System.IO.TextWriter.Null; internal static System.IO.TextWriter Error => System.IO.TextWriter.Null; internal static void SetOut(System.IO.TextWriter value) => System.IO.File.Delete(\"fake-out\"); internal static void SetError(System.IO.TextWriter value) => System.IO.File.Delete(\"fake-error\"); } }";
+        }
+
+        string owner = shape == "other-owner" ? "OtherCommand" : "ServeCommand";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            (admitted ? R2Admission : string.Empty)
+                + "using var restoration = RetroDownfall.Arcanum.Cli.Commands."
+                + owner + ".RedirectConsoleToBootstrapLog();",
+            helper));
+
+        Assert.Equal(classified ? 2 : 0, result.Items.Count(static site =>
+            site.Callee is "System.Console.SetOut" or "System.Console.SetError"));
+
+        Assert.Contains(result.Items, static site =>
+            site.Callee == "System.IO.StreamWriter.Dispose"
+            && site.Kind == HostedProducerSiteKind.FileSystemEffect);
+
+        if (classified)
+        {
+            Assert.All(result.Items.Where(static site =>
+                site.Callee is "System.Console.SetOut" or "System.Console.SetError"), site =>
+            {
+                Assert.Equal(HostedProducerSiteKind.FileSystemEffect, site.Kind);
+
+                Assert.Equal(admitted, site.EffectFrontierCapsuleId is not null);
+            });
+        }
+        else if (shape == "counterfeit-console")
+        {
+            Assert.Equal(2, result.Items.Count(static site => site.Callee == "System.IO.File.Delete"));
+        }
+        else
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.Console.SetOut");
+        }
+    }
+
+    [Theory]
+    [InlineData("exact", true)]
+    [InlineData("unknown", false)]
+    [InlineData("subclass", false)]
+    [InlineData("other-owner", false)]
+    [InlineData("counterfeit", false)]
+    [InlineData("exposed-field", false)]
+    [InlineData("ref-replaced", false)]
+    public void InheritedWatcherCleanupRequiresExactFrameworkReceiverAndOwner(
+        string shape,
+        bool mechanical)
+    {
+        string construction = shape switch
+        {
+            "unknown" => "WatcherInput.Unknown()",
+            "subclass" => "new DerivedWatcher()",
+            _ => "new System.IO.FileSystemWatcher(\".\")",
+        };
+
+        string disposal = shape == "other-owner"
+            ? "WatcherCleaner.Clean(this);"
+            : "watcher.Dispose();";
+
+        string visibility = shape is "other-owner" or "exposed-field" ? "internal" : "private";
+
+        string replacement = shape == "ref-replaced" ? "WatcherInput.Replace(ref watcher);" : string.Empty;
+
+        string helper = "internal sealed class WatcherOwner : IDisposable { " + visibility
+            + " readonly System.IO.FileSystemWatcher watcher; internal WatcherOwner() { watcher = "
+            + construction + "; " + replacement + " } public void Dispose() { " + disposal + " } }"
+            + "internal static class WatcherInput { internal static extern System.IO.FileSystemWatcher Unknown(); internal static extern void Replace(ref System.IO.FileSystemWatcher value); }";
+
+        if (shape == "other-owner")
+        {
+            helper += "internal static class WatcherCleaner { internal static void Clean(WatcherOwner owner) => owner.watcher.Dispose(); }";
+        }
+
+        if (shape == "subclass")
+        {
+            helper += "internal sealed class DerivedWatcher : System.IO.FileSystemWatcher { protected override void Dispose(bool disposing) { System.IO.File.Delete(\"derived-cleanup\"); base.Dispose(disposing); } }";
+        }
+
+        if (shape == "counterfeit")
+        {
+            helper += "namespace System.IO { internal sealed class FileSystemWatcher : IDisposable { internal FileSystemWatcher(string path) { } public void Dispose() => File.Delete(\"counterfeit-cleanup\"); } }";
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "using var watcher = new WatcherOwner(); System.IO.File.Exists(\"watcher-control\");",
+            helper));
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        if (shape == "counterfeit")
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+        else
+        {
+            Assert.Equal(mechanical, !result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.ComponentModel.Component.Dispose"));
         }
     }
 

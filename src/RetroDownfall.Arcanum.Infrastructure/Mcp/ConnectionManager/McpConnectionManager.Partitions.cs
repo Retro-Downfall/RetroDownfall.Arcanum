@@ -208,7 +208,8 @@ public sealed partial class McpConnectionManager
                 Result startResult = await StartCoreAsync(
                         entry.Name,
                         workingDirectory: null,
-                        cancellationToken)
+                        cancellationToken,
+                        requireCleanupCompletion: true)
                     .ConfigureAwait(false);
 
                 if (startResult.IsFailure && entry.State is not McpServerState.Running)
