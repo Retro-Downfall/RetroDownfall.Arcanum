@@ -111,8 +111,14 @@ else
     exit 1
   fi
 
+  # Runtime coverage intentionally remains in its existing Debug configuration. Build a fresh,
+  # uninstrumented Release test assembly for the mandatory Roslyn source-analysis pass; every
+  # runner child uses --no-build and must be bound to this exact configuration.
+  dotnet build "$TEST_PROJECT" --configuration Release
+
   "$ANALYSIS_PYTHON" "$ROOT/scripts/hosted_producer_analysis_runner.py" \
     --dotnet dotnet \
     --project "$TEST_PROJECT" \
+    --configuration Release \
     --results-directory "$OUT_DIR/analysis"
 fi

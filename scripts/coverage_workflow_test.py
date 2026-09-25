@@ -35,6 +35,8 @@ class CoverageWorkflowTests(unittest.TestCase):
             "args = sys.argv[1:]\n"
             "with open(os.environ['CALL_LOG'], 'a') as log:\n"
             "    log.write(json.dumps(args) + '\\n')\n"
+            "if args[0] == 'build':\n"
+            "    sys.exit(int(os.environ.get('BUILD_EXIT', '0')))\n"
             "if args[0] == 'test':\n"
             "    covered = any(a.startswith('--collect:') for a in args)\n"
             "    if covered and os.environ.get('PROBE_RUNTIME_STDIN'):\n"
@@ -102,6 +104,7 @@ class CoverageWorkflowTests(unittest.TestCase):
         result, calls = self.run_gate("--threshold")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(5, len(calls))
+        all_calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         covered = calls[0]
         discovery = [call for call in calls if "--list-tests" in call]
         analysis = [
@@ -109,8 +112,43 @@ class CoverageWorkflowTests(unittest.TestCase):
             for call in calls[1:]
             if "--list-tests" not in call
         ]
+        release_builds = [
+            call
+            for call in all_calls
+            if call[:2] == [
+                "build",
+                str(
+                    self.root
+                    / "tests"
+                    / "RetroDownfall.Arcanum.Tests"
+                    / "RetroDownfall.Arcanum.Tests.csproj"
+                ),
+            ]
+        ]
+        self.assertEqual(
+            [
+                [
+                    "build",
+                    str(
+                        self.root
+                        / "tests"
+                        / "RetroDownfall.Arcanum.Tests"
+                        / "RetroDownfall.Arcanum.Tests.csproj"
+                    ),
+                    "--configuration",
+                    "Release",
+                ]
+            ],
+            release_builds,
+        )
+        self.assertLess(
+            all_calls.index(release_builds[0]),
+            min(all_calls.index(call) for call in discovery),
+        )
         self.assertIn("Category!=Perf&Category!=HostedProducerAnalysis", covered)
         self.assertIn("--collect:XPlat Code Coverage", covered)
+        self.assertNotIn("--configuration", covered)
+        self.assertNotIn("-c", covered)
         self.assertEqual(2, len(discovery))
         self.assertIn("Category=HostedProducerProductionAnalysis", discovery[0])
         self.assertIn(
@@ -127,6 +165,21 @@ class CoverageWorkflowTests(unittest.TestCase):
                 for call in analysis
             )
         )
+        self.assertTrue(
+            all(
+                call[call.index("--configuration") + 1] == "Release"
+                for call in [*discovery, *analysis]
+            )
+        )
+
+    def test_release_analysis_build_failure_fails_closed_before_discovery(self):
+        result, calls = self.run_gate("--threshold", BUILD_EXIT="19")
+
+        self.assertEqual(19, result.returncode)
+
+        self.assertEqual(1, len(calls))
+
+        self.assertFalse(any("--list-tests" in call for call in calls))
 
     def test_analysis_failure_fails_delivery(self):
         result, calls = self.run_gate("--threshold", ANALYSIS_EXIT="17")
