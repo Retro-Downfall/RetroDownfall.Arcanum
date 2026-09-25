@@ -23813,6 +23813,121 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 && site.Callee == "System.IO.File.Delete"));
     }
 
+    [Fact]
+    public void RepeatedClosedCastCleanupBuildsSourceFactsOncePerExactType()
+    {
+        string body = string.Join(" ", Enumerable.Range(0, 8).Select(index =>
+            $"foreach (CleanupSeed seed{index} in CleanupFactory.OpenSeeds()) {{ await ((CleanupObservation.Opened)seed{index}.Observation).Lease.DisposeAsync(); }}"));
+
+        const string helper =
+            "public interface IPropertyCleanup : System.IAsyncDisposable { } "
+            + "internal sealed class KnownPropertyCleanup : IPropertyCleanup { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"source-facts-cast\"); return default; } } "
+            + "internal abstract record CleanupObservation { private CleanupObservation() { } internal sealed record Opened(IPropertyCleanup Lease) : CleanupObservation; } "
+            + "internal sealed record CleanupSeed(CleanupObservation Observation); "
+            + "internal static class CleanupFactory { internal static System.Collections.Generic.IReadOnlyList<CleanupSeed> OpenSeeds() => [new(new CleanupObservation.Opened(new KnownPropertyCleanup()))]; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "KnownPropertyCleanup" && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerCleanupSourceMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics).CleanupSources,
+            static candidate => candidate.Kind == "closed-cast" && candidate.Symbol == "CleanupObservation.Opened");
+
+        output.WriteLine($"Closed cast source scans: requests={metric.Requests}, builds={metric.Builds}");
+
+        Assert.True(metric.Requests >= 8, $"requests={metric.Requests}, builds={metric.Builds}");
+
+        Assert.Equal(1, metric.Builds);
+    }
+
+    [Fact]
+    public void RepeatedAssignedFieldCleanupBuildsSourceFactsOncePerExactField()
+    {
+        string body = string.Join(" ", Enumerable.Repeat(
+            "await new FieldCleanup(new KnownFieldCleanup()).RunAsync();", 8));
+
+        const string helper =
+            "internal sealed class KnownFieldCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"source-facts-field\"); return default; } } "
+            + "internal sealed class FieldCleanup { private System.IAsyncDisposable cleanup; internal FieldCleanup(System.IAsyncDisposable value) { cleanup = value; } internal async System.Threading.Tasks.Task RunAsync() { await cleanup.DisposeAsync(); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(R2Admission + body, helper));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "KnownFieldCleanup" && site.Callee == "System.IO.File.Delete");
+
+        HostedProducerCleanupSourceMetric metric = Assert.Single(
+            Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics).CleanupSources,
+            static candidate => candidate.Kind == "assigned-field" && candidate.Symbol == "FieldCleanup.cleanup");
+
+        output.WriteLine($"Assigned field source scans: requests={metric.Requests}, builds={metric.Builds}");
+
+        Assert.True(metric.Requests >= 8, $"requests={metric.Requests}, builds={metric.Builds}");
+
+        Assert.Equal(1, metric.Builds);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CleanupSourceFactsKeepCompilationSymbolsAndCallerResultsSeparate(bool reverse)
+    {
+        static CSharpCompilation Source(string worker, string selectedField)
+        {
+            string calls = "await new FieldCleanup(" + (selectedField == "known" ? "new KnownCleanup()" : "UnknownCleanup.Value") + ").RunAsync(); await new FieldCleanup(UnknownCleanup.Value).RunAsync(); "
+                + "foreach (CleanupSeed seed in CleanupFactory.OpenSeeds()) { await ((CleanupObservation.Opened)seed.Observation).Lease.DisposeAsync(); }";
+
+            string helper =
+                "internal sealed class KnownCleanup : System.IAsyncDisposable { public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete(\"isolated-source-facts\"); return default; } } "
+                + "internal static class UnknownCleanup { internal static System.IAsyncDisposable Value { get; set; } = null!; } "
+                + "internal sealed class FieldCleanup { private System.IAsyncDisposable known; private System.IAsyncDisposable other; internal FieldCleanup(System.IAsyncDisposable value) { known = value; other = UnknownCleanup.Value; } internal async System.Threading.Tasks.Task RunAsync() { await known.DisposeAsync(); await other.DisposeAsync(); } } "
+                + "internal abstract record CleanupObservation { private CleanupObservation() { } internal sealed record Opened(System.IAsyncDisposable Lease) : CleanupObservation; } "
+                + "internal sealed record CleanupSeed(CleanupObservation Observation); "
+                + "internal static class CleanupFactory { internal static System.Collections.Generic.IReadOnlyList<CleanupSeed> OpenSeeds() => [new(new CleanupObservation.Opened(" + (selectedField == "known" ? "new KnownCleanup()" : "UnknownCleanup.Value") + "))]; }";
+
+            return Compile(R2Source(R2Admission + calls, helper).Replace("Worker", worker, StringComparison.Ordinal));
+        }
+
+        CSharpCompilation known = Source("WorkerA", "known");
+
+        CSharpCompilation unknown = Source("WorkerB", "other");
+
+        Assert.Equal(known.Assembly.Identity, unknown.Assembly.Identity);
+
+        Assert.Equal(known.SyntaxTrees.Single().FilePath, unknown.SyntaxTrees.Single().FilePath);
+
+        Assert.All(new[] { known, unknown }, compilation => Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerOperationEntry Root(string worker) => new(worker + ".StartAsync", "src/Fixture.cs", worker, "StartAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.WorkspaceIndexing, null, []);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            reverse ? [unknown, known] : [known, unknown],
+            new(["WorkerA", "WorkerB"], []),
+            [new("WorkerA", [Root("WorkerA")]), new("WorkerB", [Root("WorkerB")])],
+            []);
+
+        Assert.Contains(result.Items, static site => site.RootType == "WorkerA" && site.EnclosingType == "KnownCleanup" && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site => site.RootType == "WorkerB" && site.EnclosingType == "KnownCleanup");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED" && diagnostic.Identity.StartsWith("WorkerA.StartAsync", StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED" && diagnostic.Identity.StartsWith("WorkerB.StartAsync", StringComparison.Ordinal));
+
+        IReadOnlyList<HostedProducerCleanupSourceMetric> metrics = Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics).CleanupSources;
+
+        Assert.Equal(2, metrics.Where(static metric => metric.Kind == "closed-cast" && metric.Symbol == "CleanupObservation.Opened").Select(static metric => metric.Compilation).Distinct().Count());
+
+        Assert.Equal(2, metrics.Where(static metric => metric.Kind == "assigned-field" && metric.Symbol == "FieldCleanup.known").Select(static metric => metric.Compilation).Distinct().Count());
+
+        Assert.Equal(2, metrics.Where(static metric => metric.Kind == "assigned-field" && metric.Symbol == "FieldCleanup.other").Select(static metric => metric.Compilation).Distinct().Count());
+
+        Assert.All(metrics, static metric => Assert.Equal(1, metric.Builds));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

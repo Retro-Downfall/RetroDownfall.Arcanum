@@ -326,7 +326,7 @@ def shard_environment(
 
     if production:
         environment[ROOT_PROGRESS_VARIABLE] = str(
-            results_directory / "hosted-producer-roots.log"
+            (results_directory / "hosted-producer-roots.log").resolve()
         )
     else:
         environment.pop(ROOT_PROGRESS_VARIABLE, None)

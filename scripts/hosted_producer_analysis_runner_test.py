@@ -765,7 +765,7 @@ The following Tests are available:
             fixture = RUNNER.shard_environment(Path(temp), False)
 
         self.assertEqual(
-            str(Path(temp) / "hosted-producer-roots.log"),
+            str((Path(temp) / "hosted-producer-roots.log").resolve()),
             production["ARCANUM_HOSTED_ANALYSIS_PROGRESS"],
         )
 
@@ -774,6 +774,71 @@ The following Tests are available:
         self.assertEqual("preserved", production["ARBITRARY_SETTING"])
 
         self.assertEqual("preserved", fixture["ARBITRARY_SETTING"])
+
+    def test_relative_root_progress_path_survives_child_working_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runner_directory = Path(temp) / "runner"
+
+            child_directory = Path(temp) / "child"
+
+            runner_directory.mkdir()
+
+            child_directory.mkdir()
+
+            previous_directory = Path.cwd()
+
+            try:
+                os.chdir(runner_directory)
+
+                results_directory = Path("analysis-results")
+
+                expected_path = (
+                    runner_directory
+                    / results_directory
+                    / "hosted-producer-roots.log"
+                )
+
+                expected_path.parent.mkdir()
+
+                expected_path.write_text("", encoding="utf-8")
+
+                environment = RUNNER.shard_environment(
+                    results_directory,
+                    True,
+                )
+
+                child = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import os; from pathlib import Path; "
+                            "path = Path(os.environ["
+                            "'ARCANUM_HOSTED_ANALYSIS_PROGRESS']); "
+                            "path.parent.mkdir(parents=True, exist_ok=True); "
+                            "path.write_text('child progress\\n', "
+                            "encoding='utf-8')"
+                        ),
+                    ],
+                    cwd=child_directory,
+                    env=environment,
+                    check=False,
+                )
+
+                self.assertEqual(0, child.returncode)
+
+                self.assertTrue(
+                    Path(
+                        environment["ARCANUM_HOSTED_ANALYSIS_PROGRESS"]
+                    ).is_absolute()
+                )
+
+                self.assertEqual(
+                    "child progress\n",
+                    expected_path.read_text(encoding="utf-8"),
+                )
+            finally:
+                os.chdir(previous_directory)
 
     def test_root_progress_reader_defers_partial_records(self):
         with tempfile.TemporaryDirectory() as temp:

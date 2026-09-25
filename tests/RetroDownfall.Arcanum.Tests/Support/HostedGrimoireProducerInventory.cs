@@ -264,7 +264,17 @@ internal sealed record HostedProducerAnalysisMetrics(
     IReadOnlyList<HostedProducerPublicationRegionMetric> PublicationRegions,
     IReadOnlyList<HostedProducerCleanupCacheMetric> CleanupCaches,
     int RepeatedRegistrationSemanticQueries,
-    int RegistrationCandidateInspections);
+    int RegistrationCandidateInspections)
+{
+    internal IReadOnlyList<HostedProducerCleanupSourceMetric> CleanupSources { get; init; } = [];
+}
+
+internal sealed record HostedProducerCleanupSourceMetric(
+    string Kind,
+    int Compilation,
+    string Symbol,
+    int Requests,
+    int Builds);
 
 internal sealed record HostedProducerDiscovery<T>(
     IReadOnlyList<T> Items,
@@ -2071,6 +2081,40 @@ internal static class HostedGrimoireProducerInventory
 
         private readonly record struct BoundTypeIdentity(AssemblyIdentity Assembly, int? Compilation, string Type);
 
+        private readonly record struct CleanupSourceIdentity(int Compilation, ISymbol Symbol)
+        {
+            public bool Equals(CleanupSourceIdentity other) =>
+                Compilation == other.Compilation
+                && SymbolEqualityComparer.Default.Equals(Symbol, other.Symbol);
+
+            public override int GetHashCode() => HashCode.Combine(
+                Compilation,
+                SymbolEqualityComparer.Default.GetHashCode(Symbol));
+        }
+
+        private sealed class CleanupSourceCounter
+        {
+            internal int Requests { get; set; }
+
+            internal int Builds { get; set; }
+        }
+
+        private sealed record ClosedCastSourceFacts(
+            bool Unsupported,
+            IReadOnlyList<(SemanticModel Model, BaseObjectCreationExpressionSyntax Creation)> Constructions);
+
+        // These facts contain source syntax and semantic models only. Caller bindings,
+        // selected constructors and cleanup conclusions are evaluated at each use.
+
+        private sealed record AssignedFieldSourceDomain(
+            SemanticModel Model,
+            IReadOnlyList<ExpressionSyntax> Initializers,
+            IReadOnlyList<AssignmentExpressionSyntax> Assignments);
+
+        private sealed record AssignedFieldSourceFacts(
+            bool Complete,
+            IReadOnlyList<AssignedFieldSourceDomain> Domains);
+
         private sealed record CleanupTypeCandidate(
             ITypeSymbol Type,
             BoundTypeIdentity Identity);
@@ -2658,6 +2702,15 @@ internal static class HostedGrimoireProducerInventory
 
         private readonly Dictionary<string, CleanupCacheAnalysisCounter>
             cleanupCacheAnalysis = new(StringComparer.Ordinal);
+
+        private readonly Dictionary<(string Kind, CleanupSourceIdentity Identity), CleanupSourceCounter>
+            cleanupSourceAnalysis = [];
+
+        private readonly Dictionary<CleanupSourceIdentity, ClosedCastSourceFacts>
+            closedCastSources = [];
+
+        private readonly Dictionary<CleanupSourceIdentity, AssignedFieldSourceFacts>
+            assignedFieldSources = [];
 
         private readonly Dictionary<CleanupEnvironmentCacheIdentity, CleanupProvenance>
             completeCleanupProvenance = [];
@@ -5615,7 +5668,20 @@ internal static class HostedGrimoireProducerInventory
                         pair.Value.ValueFlowStableHits))
                     .ToArray(),
                 repeatedRegistrationSemanticQueries,
-                registrationCandidateInspections);
+                registrationCandidateInspections)
+            {
+                CleanupSources = cleanupSourceAnalysis
+                    .OrderBy(static pair => pair.Key.Kind, StringComparer.Ordinal)
+                    .ThenBy(static pair => pair.Key.Identity.Compilation)
+                    .ThenBy(static pair => pair.Key.Identity.Symbol.ToDisplayString(), StringComparer.Ordinal)
+                    .Select(static pair => new HostedProducerCleanupSourceMetric(
+                        pair.Key.Kind,
+                        pair.Key.Identity.Compilation,
+                        pair.Key.Identity.Symbol.ToDisplayString(),
+                        pair.Value.Requests,
+                        pair.Value.Builds))
+                    .ToArray(),
+            };
 
             return new(
                 sites.Values.OrderBy(SiteIdentity, StringComparer.Ordinal).ToArray(),
@@ -34076,6 +34142,20 @@ internal static class HostedGrimoireProducerInventory
             };
         }
 
+        private CleanupSourceCounter CleanupSourceAnalysis(string kind, Compilation compilation, ISymbol symbol)
+        {
+            var identity = (kind, new CleanupSourceIdentity(CompilationIdentity(compilation), symbol));
+
+            if (!cleanupSourceAnalysis.TryGetValue(identity, out CleanupSourceCounter? counter))
+            {
+                counter = new();
+
+                cleanupSourceAnalysis.Add(identity, counter);
+            }
+
+            return counter;
+        }
+
         private CleanupValueFlow? ExactClosedSealedCastPropertyValueFlow(
             AuthoredMember member,
             ExpressionSyntax receiverExpression,
@@ -34129,6 +34209,80 @@ internal static class HostedGrimoireProducerInventory
 
             Compilation compilation = propertyModel.Compilation;
 
+            ClosedCastSourceFacts facts = ClosedCastSources(compilation, castType);
+
+            if (facts.Unsupported)
+            {
+                return new([], false, true);
+            }
+
+            List<CleanupValueFlow> values = [];
+
+            bool complete = true;
+
+            foreach ((SemanticModel model, BaseObjectCreationExpressionSyntax creation) in facts.Constructions)
+            {
+                if (model.GetEnclosingSymbol(creation.SpanStart) is not
+                        IMethodSymbol enclosing
+                    || Resolve(enclosing, compilation) is not { } owner
+                    || PropertyValueFromExactConstruction(
+                        new(
+                            ValueExpressionContext(
+                                owner,
+                                creation,
+                                model),
+                            creation),
+                        property,
+                        context) is not { } value)
+                {
+                    complete = false;
+
+                    continue;
+                }
+
+                complete &= value.Complete;
+
+                values.Add(value);
+            }
+
+            if (values.Count == 0)
+            {
+                return new([], false, true);
+            }
+
+            CleanupValueFlow merged = MergeCleanupValueFlow(values);
+
+            return merged with
+            {
+                Complete = complete && merged.Complete,
+                HasAuthoredSource = true,
+            };
+        }
+
+        private ClosedCastSourceFacts ClosedCastSources(Compilation compilation, INamedTypeSymbol castType)
+        {
+            CleanupSourceCounter analysis = CleanupSourceAnalysis("closed-cast", compilation, castType);
+
+            analysis.Requests++;
+
+            CleanupSourceIdentity identity = new(CompilationIdentity(compilation), castType);
+
+            if (closedCastSources.TryGetValue(identity, out ClosedCastSourceFacts? cached))
+            {
+                return cached;
+            }
+
+            analysis.Builds++;
+
+            ClosedCastSourceFacts facts = BuildClosedCastSources(compilation, castType);
+
+            closedCastSources.Add(identity, facts);
+
+            return facts;
+        }
+
+        private ClosedCastSourceFacts BuildClosedCastSources(Compilation compilation, INamedTypeSymbol castType)
+        {
             if (semanticModels.Values.Any(model =>
                     !ReferenceEquals(model.Compilation, compilation)
                     && model.SyntaxTree.GetRoot()
@@ -34147,12 +34301,10 @@ internal static class HostedGrimoireProducerInventory
                                 castType,
                                 compilation))))
             {
-                return new([], false, true);
+                return new(true, []);
             }
 
-            List<CleanupValueFlow> values = [];
-
-            bool complete = true;
+            List<(SemanticModel Model, BaseObjectCreationExpressionSyntax Creation)> constructions = [];
 
             foreach (SyntaxTree tree in compilation.SyntaxTrees)
             {
@@ -34178,7 +34330,7 @@ internal static class HostedGrimoireProducerInventory
                             castType,
                             compilation)))
                 {
-                    return new([], false, true);
+                    return new(true, []);
                 }
 
                 foreach (BaseObjectCreationExpressionSyntax creation in tree
@@ -34198,42 +34350,11 @@ internal static class HostedGrimoireProducerInventory
                             castType,
                             compilation)))
                 {
-                    if (model.GetEnclosingSymbol(creation.SpanStart) is not
-                            IMethodSymbol enclosing
-                        || Resolve(enclosing, compilation) is not { } owner
-                        || PropertyValueFromExactConstruction(
-                            new(
-                                ValueExpressionContext(
-                                    owner,
-                                    creation,
-                                    model),
-                                creation),
-                            property,
-                            context) is not { } value)
-                    {
-                        complete = false;
-
-                        continue;
-                    }
-
-                    complete &= value.Complete;
-
-                    values.Add(value);
+                    constructions.Add((model, creation));
                 }
             }
 
-            if (values.Count == 0)
-            {
-                return new([], false, true);
-            }
-
-            CleanupValueFlow merged = MergeCleanupValueFlow(values);
-
-            return merged with
-            {
-                Complete = complete && merged.Complete,
-                HasAuthoredSource = true,
-            };
+            return new(false, constructions.ToArray());
         }
 
         private CleanupValueFlow? ExactPrivateDomainMutablePropertyValueFlow(
@@ -35179,41 +35300,22 @@ internal static class HostedGrimoireProducerInventory
                 return new([], false, true);
             }
 
-            foreach (SyntaxReference reference in
-                containingType.DeclaringSyntaxReferences)
+            AssignedFieldSourceFacts facts = AssignedFieldSources(member.Model.Compilation, field);
+
+            complete &= facts.Complete;
+
+            foreach (AssignedFieldSourceDomain domain in facts.Domains)
             {
-                if (reference.GetSyntax() is not TypeDeclarationSyntax type
-                    || !semanticModels.TryGetValue(
-                        type.SyntaxTree,
-                        out SemanticModel? model))
-                {
-                    complete = false;
+                SemanticModel model = domain.Model;
 
-                    continue;
+                foreach (ExpressionSyntax initializer in domain.Initializers)
+                {
+                    values.Add(new(
+                        ValueExpressionContext(member, initializer, model),
+                        initializer));
                 }
 
-                foreach (VariableDeclaratorSyntax declaration in type
-                    .DescendantNodesAndSelf()
-                    .OfType<VariableDeclaratorSyntax>()
-                    .Where(declaration => SymbolEqualityComparer.Default.Equals(
-                        model.GetDeclaredSymbol(declaration),
-                        field)))
-                {
-                    if (declaration.Initializer is { Value: { } initializer }
-                        && !IsSemanticallyEmptyCleanupValue(model, initializer))
-                    {
-                        values.Add(new(
-                            ValueExpressionContext(member, initializer, model),
-                            initializer));
-                    }
-                }
-
-                foreach (AssignmentExpressionSyntax assignment in type
-                    .DescendantNodesAndSelf()
-                    .OfType<AssignmentExpressionSyntax>()
-                    .Where(assignment => SymbolEqualityComparer.Default.Equals(
-                        model.GetSymbolInfo(assignment.Left).Symbol,
-                        field)))
+                foreach (AssignmentExpressionSyntax assignment in domain.Assignments)
                 {
                     if (!assignment.IsKind(
                             SyntaxKind.SimpleAssignmentExpression)
@@ -35270,11 +35372,6 @@ internal static class HostedGrimoireProducerInventory
                         assignment.Right));
 
                 }
-
-                if (HasUnreviewedFieldReference(type, model, field))
-                {
-                    complete = false;
-                }
             }
 
             CleanupValueFlow merged = MergeCleanupValueFlow(
@@ -35289,6 +35386,67 @@ internal static class HostedGrimoireProducerInventory
                     && (values.Count == 0 || merged.Complete),
                 HasAuthoredSource = true,
             };
+        }
+
+        private AssignedFieldSourceFacts AssignedFieldSources(Compilation compilation, IFieldSymbol field)
+        {
+            CleanupSourceCounter analysis = CleanupSourceAnalysis("assigned-field", compilation, field);
+
+            analysis.Requests++;
+
+            CleanupSourceIdentity identity = new(CompilationIdentity(compilation), field);
+
+            if (assignedFieldSources.TryGetValue(identity, out AssignedFieldSourceFacts? cached))
+            {
+                return cached;
+            }
+
+            analysis.Builds++;
+
+            bool complete = true;
+
+            List<AssignedFieldSourceDomain> domains = [];
+
+            foreach (SyntaxReference reference in field.ContainingType.DeclaringSyntaxReferences)
+            {
+                if (reference.GetSyntax() is not TypeDeclarationSyntax type
+                    || !semanticModels.TryGetValue(type.SyntaxTree, out SemanticModel? model))
+                {
+                    complete = false;
+
+                    continue;
+                }
+
+                ExpressionSyntax[] initializers = type.DescendantNodesAndSelf()
+                    .OfType<VariableDeclaratorSyntax>()
+                    .Where(declaration => SymbolEqualityComparer.Default.Equals(
+                        model.GetDeclaredSymbol(declaration),
+                        field))
+                    .Select(static declaration => declaration.Initializer?.Value)
+                    .OfType<ExpressionSyntax>()
+                    .Where(initializer => !IsSemanticallyEmptyCleanupValue(model, initializer))
+                    .ToArray();
+
+                AssignmentExpressionSyntax[] assignments = type.DescendantNodesAndSelf()
+                    .OfType<AssignmentExpressionSyntax>()
+                    .Where(assignment => SymbolEqualityComparer.Default.Equals(
+                        model.GetSymbolInfo(assignment.Left).Symbol,
+                        field))
+                    .ToArray();
+
+                if (HasUnreviewedFieldReference(type, model, field))
+                {
+                    complete = false;
+                }
+
+                domains.Add(new(model, initializers, assignments));
+            }
+
+            AssignedFieldSourceFacts facts = new(complete, domains.ToArray());
+
+            assignedFieldSources.Add(identity, facts);
+
+            return facts;
         }
 
         private bool HasExactSameOwnerLifetimeFieldWriterSemantics(
