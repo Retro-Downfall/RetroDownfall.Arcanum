@@ -444,31 +444,135 @@ public sealed class ApiKeyDigestCacheTests
 
         StrongBox<int> sawStaleOld = new(0);
 
+        StrongBox<int> sawUnexpectedAuthenticationDigest = new(0);
+
+        StrongBox<int> sawUnexpectedPresenceDigest = new(0);
+
+        StrongBox<int> sawNewAuthenticationDigest = new(0);
+
+        StrongBox<int> sawPresenceDigest = new(0);
+
+        long[] completedReads = new long[4];
+
         using CancellationTokenSource cts = new();
 
-        Task[] readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
-        {
-            while (!cts.Token.IsCancellationRequested)
-            {
-                if (cache.TryGetDigest(out byte[]? d) && d is not null && d.SequenceEqual(oldDigest))
+        using CountdownEvent readersReady = new(4);
+
+        using ManualResetEventSlim startReaders = new(initialState: false);
+
+        Task[] readers = Enumerable.Range(0, 4).Select(readerIndex =>
+            Task.Factory.StartNew(
+                () =>
                 {
-                    Volatile.Write(ref sawStaleOld.Value, 1);
+                    readersReady.Signal();
+
+                    startReaders.Wait();
+
+                    while (!cts.Token.IsCancellationRequested)
+                    {
+                        if (readerIndex < 2)
+                        {
+                            if (cache.TryGetDigest(out byte[]? digest))
+                            {
+                                if (digest is not null && digest.SequenceEqual(oldDigest))
+                                {
+                                    Volatile.Write(ref sawStaleOld.Value, 1);
+                                }
+
+                                if (digest is null || !digest.SequenceEqual(newDigest))
+                                {
+                                    Volatile.Write(ref sawUnexpectedAuthenticationDigest.Value, 1);
+                                }
+                                else
+                                {
+                                    Volatile.Write(ref sawNewAuthenticationDigest.Value, 1);
+                                }
+                            }
+                        }
+                        else if (cache.TryGetPresenceDigest(out byte[]? digest))
+                        {
+                            if (digest is null ||
+                                (!digest.SequenceEqual(oldDigest) && !digest.SequenceEqual(newDigest)))
+                            {
+                                Volatile.Write(ref sawUnexpectedPresenceDigest.Value, 1);
+                            }
+                            else
+                            {
+                                Volatile.Write(ref sawPresenceDigest.Value, 1);
+                            }
+                        }
+
+                        Interlocked.Increment(ref completedReads[readerIndex]);
+                    }
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)).ToArray();
+
+        long[] phaseReads = new long[4];
+
+        try
+        {
+            Assert.True(readersReady.Wait(TimeSpan.FromSeconds(10)));
+
+            startReaders.Set();
+
+            Assert.True(SpinWait.SpinUntil(
+                () => Enumerable.Range(0, completedReads.Length).All(
+                    index => Volatile.Read(ref completedReads[index]) > 0),
+                TimeSpan.FromSeconds(10)));
+
+            for (int readerIndex = 0; readerIndex < completedReads.Length; readerIndex++)
+            {
+                phaseReads[readerIndex] = Volatile.Read(ref completedReads[readerIndex]);
+            }
+
+            for (int i = 0; i < 200_000; i++)
+            {
+                cache.StoreDigest(oldDigest, ttlSeconds: 0);
+
+                cache.StoreDigest(newDigest, ttlSeconds: 60);
+
+                if (i == 99_999)
+                {
+                    Assert.True(SpinWait.SpinUntil(
+                        () => Enumerable.Range(0, completedReads.Length).All(
+                            readerIndex => Volatile.Read(ref completedReads[readerIndex]) >
+                                phaseReads[readerIndex]),
+                        TimeSpan.FromSeconds(10)));
+
+                    for (int readerIndex = 0; readerIndex < completedReads.Length; readerIndex++)
+                    {
+                        phaseReads[readerIndex] = Volatile.Read(ref completedReads[readerIndex]);
+                    }
                 }
             }
-        })).ToArray();
 
-        for (int i = 0; i < 200_000; i++)
+            Assert.True(SpinWait.SpinUntil(
+                () => Enumerable.Range(0, completedReads.Length).All(
+                    readerIndex => Volatile.Read(ref completedReads[readerIndex]) >
+                        phaseReads[readerIndex]),
+                TimeSpan.FromSeconds(10)));
+
+            Assert.True(SpinWait.SpinUntil(
+                () => Volatile.Read(ref sawNewAuthenticationDigest.Value) != 0 &&
+                    Volatile.Read(ref sawPresenceDigest.Value) != 0,
+                TimeSpan.FromSeconds(10)));
+        }
+        finally
         {
-            cache.StoreDigest(oldDigest, ttlSeconds: 0);
+            cts.Cancel();
 
-            cache.StoreDigest(newDigest, ttlSeconds: 60);
+            startReaders.Set();
+
+            await Task.WhenAll(readers).WaitAsync(TimeSpan.FromSeconds(10));
         }
 
-        cts.Cancel();
-
-        await Task.WhenAll(readers);
-
         Assert.Equal(0, Volatile.Read(ref sawStaleOld.Value));
+
+        Assert.Equal(0, Volatile.Read(ref sawUnexpectedAuthenticationDigest.Value));
+
+        Assert.Equal(0, Volatile.Read(ref sawUnexpectedPresenceDigest.Value));
     }
 
     private static byte[] GetCacheOwnedDigestBuffer(ApiKeyDigestCache cache)
