@@ -337,6 +337,12 @@ The following Tests are available:
             return_value=process,
         ) as popen, mock.patch.object(
             RUNNER,
+            "attach_process_tree",
+        ), mock.patch.object(
+            RUNNER,
+            "release_process_tree",
+        ), mock.patch.object(
+            RUNNER,
             "terminate_processes",
         ) as terminate, mock.patch.object(
             RUNNER.subprocess,
@@ -368,6 +374,12 @@ The following Tests are available:
             RUNNER.subprocess,
             "Popen",
             return_value=process,
+        ), mock.patch.object(
+            RUNNER,
+            "attach_process_tree",
+        ), mock.patch.object(
+            RUNNER,
+            "release_process_tree",
         ), mock.patch.object(
             RUNNER,
             "terminate_processes",
@@ -931,6 +943,12 @@ The following Tests are available:
                 RUNNER.subprocess,
                 "Popen",
                 return_value=process,
+            ), mock.patch.object(
+                RUNNER,
+                "attach_process_tree",
+            ), mock.patch.object(
+                RUNNER,
+                "release_process_tree",
             ):
                 with self.assertRaisesRegex(RuntimeError, "produced no TRX"):
                     RUNNER.run_shards(
