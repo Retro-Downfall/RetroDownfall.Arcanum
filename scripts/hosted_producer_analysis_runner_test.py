@@ -28,7 +28,175 @@ RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
 
 
+class ScheduledProcesses:
+    """Replace external dotnet processes, retaining real shard/TRX handling."""
+
+    def __init__(self, *, failure=None, missing=None, finish_time=None):
+        self.events = []
+        self.environments = []
+        self.active_slots = 0
+        self.peak_slots = 0
+        self.failure = failure
+        self.missing = missing
+        self.finish_time = finish_time
+        self.clock = 100.0
+        self.wait_timeouts = []
+
+    def __call__(self, command, **kwargs):
+        settings = Path(command[command.index("--settings") + 1])
+        selected = RUNNER.ElementTree.parse(settings).findtext(
+            "./RunConfiguration/TestCaseFilter"
+        )
+        names = [item.split("=", 1)[1] for item in selected.split("|")]
+        label = names[0]
+        environment = kwargs["env"]
+        slots = int(environment.get("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS", "1"))
+        self.events.append(("start", label))
+        self.environments.append(environment)
+        self.active_slots += slots
+        self.peak_slots = max(self.peak_slots, self.active_slots)
+        trx_name = command[command.index("--logger") + 1].split("=", 1)[1]
+        results = Path(command[command.index("--results-directory") + 1])
+        process = mock.Mock(pid=100 + len(self.environments), stdout=io.StringIO(""))
+
+        def wait(timeout):
+            self.wait_timeouts.append(timeout)
+            self.events.append(("finish", label))
+            self.active_slots -= slots
+            if self.finish_time is not None:
+                self.clock = self.finish_time
+            if label != self.missing:
+                root = RUNNER.ElementTree.Element("TestRun")
+                entries = RUNNER.ElementTree.SubElement(root, "Results")
+                for name in names:
+                    RUNNER.ElementTree.SubElement(
+                        entries, "UnitTestResult", testName=name,
+                        outcome="Failed" if label == self.failure else "Passed",
+                    )
+                RUNNER.ElementTree.ElementTree(root).write(results / trx_name)
+            return 17 if label == self.failure else 0
+
+        process.wait.side_effect = wait
+        return process
+
+
 class HostedProducerAnalysisRunnerTests(unittest.TestCase):
+    def test_plan_reserves_two_of_four_slots_for_production(self):
+        shards = RUNNER.plan_shards(
+            [RUNNER.DiscoveredMethod("Tests.Production", 1)],
+            [RUNNER.DiscoveredMethod(f"Tests.Fixture{index}", 1) for index in range(4)],
+            4,
+        )
+        self.assertEqual([1, 2, 2], [shard.case_count for shard in shards])
+
+    def test_production_environment_overrides_inherited_worker_setting(self):
+        with mock.patch.dict(os.environ, {"ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS": "invalid"}):
+            environment = RUNNER.shard_environment(Path("results"), True)
+        self.assertEqual("1", environment.get("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"))
+
+    def test_jobs_one_two_four_bound_production_and_fixture_capacity(self):
+        production = [RUNNER.DiscoveredMethod("Tests.Production", 1)]
+        fixtures = [
+            RUNNER.DiscoveredMethod("Tests.FixtureA", 1),
+            RUNNER.DiscoveredMethod("Tests.FixtureB", 1),
+        ]
+        cases = [
+            (1, [3], 1, [("start", "Tests.Production"), ("finish", "Tests.Production")]),
+            (2, [1, 2], 2, [
+                ("start", "Tests.Production"), ("finish", "Tests.Production"),
+                ("start", "Tests.FixtureA"), ("finish", "Tests.FixtureA"),
+            ]),
+            (4, [1, 1, 1], 4, [
+                ("start", "Tests.Production"), ("start", "Tests.FixtureA"),
+                ("start", "Tests.FixtureB"), ("finish", "Tests.Production"),
+                ("finish", "Tests.FixtureA"), ("finish", "Tests.FixtureB"),
+            ]),
+        ]
+        for jobs, counts, peak, events in cases:
+            with self.subTest(jobs=jobs):
+                shards = RUNNER.plan_shards(production, fixtures, jobs)
+                self.assertEqual(counts, [shard.case_count for shard in shards])
+                children = ScheduledProcesses()
+                with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+                    RUNNER.subprocess, "Popen", side_effect=children
+                ), mock.patch.object(RUNNER, "attach_process_tree"), mock.patch.object(
+                    RUNNER, "release_process_tree"
+                ), mock.patch.dict(os.environ, {"ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS": "invalid"}):
+                    result = RUNNER.run_shards(
+                        "dotnet", Path("tests.csproj"), Path(temp), shards,
+                        production_shard_index=0, worker_count=jobs,
+                    )
+                self.assertEqual(0, RUNNER.require_complete_success(result))
+                self.assertEqual(3, result.completed_count)
+                self.assertEqual(events, children.events)
+                self.assertEqual(peak, children.peak_slots)
+                self.assertEqual(
+                    "1" if jobs == 1 else "2",
+                    children.environments[0]["ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"],
+                )
+                for environment in children.environments[1:]:
+                    self.assertNotIn("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS", environment)
+                    self.assertNotIn("ARCANUM_HOSTED_ANALYSIS_PROGRESS", environment)
+
+    def test_queued_fixture_results_remain_required(self):
+        shards = RUNNER.plan_shards(
+            [RUNNER.DiscoveredMethod("Tests.Production", 1)],
+            [RUNNER.DiscoveredMethod("Tests.Fixture", 1)], 2,
+        )
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                children = ScheduledProcesses(
+                    missing="Tests.Fixture" if missing else None,
+                    failure=None if missing else "Tests.Fixture",
+                )
+                with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+                    RUNNER.subprocess, "Popen", side_effect=children
+                ), mock.patch.object(RUNNER, "attach_process_tree"), mock.patch.object(
+                    RUNNER, "release_process_tree"
+                ):
+                    def run():
+                        return RUNNER.run_shards(
+                            "dotnet", Path("tests.csproj"), Path(temp), shards,
+                            production_shard_index=0, worker_count=2,
+                        )
+                    if missing:
+                        with self.assertRaisesRegex(RuntimeError, "shard 2 produced no TRX"):
+                            run()
+                    else:
+                        result = run()
+                        self.assertEqual((0, 17), result.exit_codes)
+                        self.assertEqual(17, RUNNER.require_complete_success(result))
+
+    def test_queued_work_uses_the_original_absolute_deadline(self):
+        shards = RUNNER.plan_shards(
+            [RUNNER.DiscoveredMethod("Tests.Production", 1)],
+            [RUNNER.DiscoveredMethod("Tests.Fixture", 1)], 2,
+        )
+        for finish_time, expected_starts in ((109.0, 2), (111.0, 1)):
+            with self.subTest(finish_time=finish_time):
+                children = ScheduledProcesses(finish_time=finish_time)
+                with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+                    RUNNER.subprocess, "Popen", side_effect=children
+                ), mock.patch.object(RUNNER, "attach_process_tree"), mock.patch.object(
+                    RUNNER, "release_process_tree"
+                ), mock.patch.object(RUNNER, "terminate_processes") as terminate, mock.patch.object(
+                    RUNNER.time, "monotonic", side_effect=lambda: children.clock
+                ):
+                    def run():
+                        return RUNNER.run_shards(
+                            "dotnet", Path("tests.csproj"), Path(temp), shards,
+                            production_shard_index=0, worker_count=2,
+                            timeout_seconds=20, deadline=110.0,
+                        )
+                    if finish_time > 110:
+                        with self.assertRaisesRegex(RuntimeError, "deadline"):
+                            run()
+                        self.assertEqual(1, len(terminate.call_args.args[0]))
+                    else:
+                        self.assertEqual(0, RUNNER.require_complete_success(run()))
+                        self.assertEqual([10.0, 1.0], children.wait_timeouts)
+                self.assertEqual(expected_starts, len(children.environments))
+
     def test_discovery_groups_theory_cases_by_fully_qualified_method(self):
         output = """Test run
 The following Tests are available:
@@ -202,7 +370,9 @@ The following Tests are available:
                 RUNNER,
                 "run_shards",
                 return_value=result,
-            ) as run:
+            ) as run, mock.patch.object(
+                RUNNER.time, "monotonic", side_effect=[100.0, 101.0, 108.0, 112.0]
+            ):
                 exit_code = RUNNER.main(
                     [
                         "--project",
@@ -213,6 +383,8 @@ The following Tests are available:
                         "2",
                         "--configuration",
                         "Release",
+                        "--timeout-seconds",
+                        "20",
                     ]
                 )
 
@@ -243,6 +415,14 @@ The following Tests are available:
         self.assertEqual(["Tests.Production"], [item.name for item in planned[0].methods])
 
         self.assertEqual("Release", run.call_args.kwargs["configuration"])
+
+        self.assertEqual(2, run.call_args.kwargs.get("worker_count"))
+
+        self.assertEqual(120.0, run.call_args.kwargs["deadline"])
+
+        self.assertEqual(8.0, run.call_args.kwargs["timeout_seconds"])
+
+        self.assertEqual([19.0, 12.0], [call.args[4] for call in discover.call_args_list])
 
     def test_main_accepts_a_thirty_minute_deadline(self):
         production = [RUNNER.DiscoveredMethod("Tests.Production", 1)]

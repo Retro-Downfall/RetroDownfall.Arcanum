@@ -32,6 +32,329 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     private static string R2Admission => AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal) + " if (!lease.TryBeginExternalEffectGroup(out var group)) return; using var held = group; ";
 
+    [Theory]
+    [InlineData(null, 1)]
+    [InlineData("1", 1)]
+    [InlineData("2", 2)]
+    [InlineData("", 0)]
+    [InlineData("3", 0)]
+    [InlineData(" 2", 0)]
+    public void RootWorkerConfigurationFailsClosed(string? configured, int expected)
+    {
+        if (expected == 0)
+        {
+            Assert.Throws<ArgumentException>(() => HostedProducerRootWorkers.ParseCount(configured));
+        }
+        else
+        {
+            Assert.Equal(expected, HostedProducerRootWorkers.ParseCount(configured));
+        }
+    }
+
+    [Fact]
+    public void RootWorkerQueueOverlapsExactlyTwoIsolatedWorkersAndCompletesEveryOccurrence()
+    {
+        using Barrier entered = new(2);
+
+        int active = 0;
+
+        int peak = 0;
+
+        int[] owners = HostedProducerRootWorkers.Run(4, [[0, 1], [2, 3]], 2, (worker, family) =>
+        {
+            int concurrent = Interlocked.Increment(ref active);
+
+            if (concurrent == 2)
+            {
+                Interlocked.Exchange(ref peak, 2);
+            }
+
+            Assert.True(entered.SignalAndWait(TimeSpan.FromSeconds(10)), "Both workers must enter before either can finish.");
+
+            Interlocked.Decrement(ref active);
+
+            return family;
+        });
+
+        Assert.Equal(2, peak);
+
+        Assert.Equal(owners[0], owners[1]);
+
+        Assert.Equal(owners[2], owners[3]);
+
+        Assert.NotEqual(owners[0], owners[2]);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("duplicate")]
+    [InlineData("exception")]
+    public void RootWorkerQueueRefusesPartialOrFailedFamilyResults(string failure)
+    {
+        Assert.Throws<InvalidOperationException>(() => HostedProducerRootWorkers.Run(2, [[0], [1]], 2, (_, family) =>
+            failure switch
+            {
+                "missing" => [],
+                "duplicate" => [family[0], family[0]],
+                _ => throw new InvalidOperationException("worker failure"),
+            }));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ParallelRootsPreserveCompilationIdentityExternalCoverageAndManifest(bool reverse)
+    {
+        CSharpCompilation Source(string worker, string effect) => Compile(
+            R2Source(R2Admission + "Helper.Run();", "internal static class Helper { internal static void Run() { System.IO.File." + effect + "(\"parallel\"); } } internal static class ExternalCaller { internal static void Run(Worker worker) => worker.Tick(); }")
+                .Replace("public Task StopAsync", "public void Tick() { System.IO.File.Delete(\"external\"); } public Task StopAsync", StringComparison.Ordinal)
+                .Replace("Worker", worker, StringComparison.Ordinal));
+
+        CSharpCompilation first = Source("WorkerA", "Exists");
+
+        CSharpCompilation second = Source("WorkerB", "Delete");
+
+        CSharpCompilation[] compilations = reverse ? [second, first] : [first, second];
+
+        Assert.All(compilations, compilation => Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerOperationEntry Root(string worker) => OrdinaryRoot() with { OperationId = worker + ".StartAsync", EnclosingType = worker };
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites(compilations, new(["WorkerA", "WorkerB"], []), [new("WorkerA", [Root("WorkerA")]), new("WorkerB", [Root("WorkerB")])], [], rootWorkers: workers, reverseRootFamilies: reverse);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(2);
+
+        Assert.Equal(2, parallel.AnalysisMetrics!.RootWorkers);
+
+        Assert.Contains(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_EXTERNAL_OPERATION_UNCATALOGUED");
+
+        AssertDiscoveryParity(serial, parallel);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ParallelRootsKeepLifecycleAndDeclaredContextsInOneStateBudget(bool reverse)
+    {
+        CSharpCompilation compilation = Compile(R2Source("One();", "").Replace("public Task StopAsync", "private static void One() { Two(); } private static void Two() { System.IO.File.Exists(\"budget\"); } public Task StopAsync", StringComparison.Ordinal));
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], maximumAnalyzedStatesPerRoot: 4, rootWorkers: workers, reverseRootFamilies: reverse);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        Assert.Contains(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        AssertDiscoveryParity(serial, Discover(2));
+    }
+
+    private static void AssertDiscoveryParity(HostedProducerDiscovery<HostedProducerSite> serial, HostedProducerDiscovery<HostedProducerSite> parallel)
+    {
+        Assert.Equal(serial.Items.OrderBy(HostedGrimoireProducerInventory.StableSiteIdentity, StringComparer.Ordinal), parallel.Items.OrderBy(HostedGrimoireProducerInventory.StableSiteIdentity, StringComparer.Ordinal));
+
+        Assert.Equal(HostedGrimoireProducerInventory.RenderDiagnosticReport(serial.Diagnostics), HostedGrimoireProducerInventory.RenderDiagnosticReport(parallel.Diagnostics));
+
+        Assert.Equal(HostedGrimoireProducerInventory.RenderCapsuleManifest(serial.Items), HostedGrimoireProducerInventory.RenderCapsuleManifest(parallel.Items));
+
+        Assert.Equal(serial.AnalysisMetrics!.RootTraversals.Select(static root => (root.RootType, root.RootOperation, root.TraversalCalls, root.AnalyzedStates)), parallel.AnalysisMetrics!.RootTraversals.Select(static root => (root.RootType, root.RootOperation, root.TraversalCalls, root.AnalyzedStates)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ParallelRootsRetainCompleteSelectedRegionMetadata(bool overlap)
+    {
+        string source = FixtureSource("if (DateTime.Now.Ticks > 0) { System.IO.File.Exists(\"startup\"); } else { " + AcquireWork + " if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; System.IO.File.Delete(\"runtime\"); }", AdmissionTypes);
+
+        HostedProducerOperationEntry startup = new(CallRoot(source, "System.IO.File.Exists"), "src/Fixture.cs", "Worker", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null, "bounded startup branch", []);
+
+        HostedProducerOperationEntry runtime = OrdinaryRoot(overlap ? "Worker.StartAsync" : CallRoot(source, "System.IO.File.Delete"));
+
+        CSharpCompilation compilation = Compile(source);
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [startup, runtime])], [], rootWorkers: workers, reverseRootFamilies: true);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        Assert.Equal(overlap, serial.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_ROOT_OVERLAP"));
+
+        Assert.DoesNotContain(serial.Items, site => site.Callee == "System.IO.File.Delete" && site.OperationId.StartsWith(startup.OperationId, StringComparison.Ordinal));
+
+        AssertDiscoveryParity(serial, Discover(2));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ParallelRootsApplyGlobalLifecycleSuppressionAndExternalSiteDelta(bool reverse)
+    {
+        string source = R2Source("Bridge.Run(this);", "internal static class Bridge { internal static void Run(Worker worker) => worker.Reached(); } internal static class Outside { internal static void One(Worker worker) => worker.Unreached(); internal static void Two(Worker worker) => worker.Unreached(); }")
+            .Replace("public Task StopAsync", "public void Reached() { System.IO.File.Exists(\"reached\"); } public void Unreached() { System.IO.File.Delete(\"unreached\"); } public Task StopAsync", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(source);
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], rootWorkers: workers, reverseRootFamilies: reverse);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        Assert.Equal("Worker.Unreached", Assert.Single(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_EXTERNAL_OPERATION_UNCATALOGUED").Detail);
+
+        AssertDiscoveryParity(serial, Discover(2));
+    }
+
+    [Theory]
+    [InlineData("valid", false)]
+    [InlineData("valid", true)]
+    [InlineData("missing-owner", false)]
+    [InlineData("missing-owner", true)]
+    [InlineData("invalid-matrix", false)]
+    [InlineData("invalid-matrix", true)]
+    public void ParallelRootsValidateCombinedOwnerAssociationsAndMatrixAnchor(string mode, bool reverse)
+    {
+        const string ownerType = "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot";
+
+        string source = RecoveryMatrixFixture() + " namespace RetroDownfall.Arcanum.Infrastructure.Operations { internal static class SecondOwnerRoot { internal static async Task Run() => await "
+            + (mode == "missing-owner" ? "Task.CompletedTask" : "OwnerRecoveryRoot.Run()") + "; } }";
+
+        if (mode == "invalid-matrix")
+        {
+            source = source.Replace("MinCheckpointVersion", "UnrecognizedMinimum", StringComparison.Ordinal);
+        }
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        NonHostedProducerChainEntry Owner(string type) => new(type + ".Run", "src/Fixture.cs", type, "Run", HostedProducerAuthorityKind.OwnerBoundRecovery, "exact owner fixture", []);
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [Owner(ownerType), Owner(ownerType.Replace("OwnerRecoveryRoot", "SecondOwnerRoot", StringComparison.Ordinal))], rootWorkers: workers, reverseRootFamilies: reverse);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        if (mode == "valid")
+        {
+            Assert.DoesNotContain(serial.Diagnostics, static diagnostic => diagnostic.Code.Contains("OWNER", StringComparison.Ordinal) || diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
+        }
+        else
+        {
+            Assert.Contains(serial.Diagnostics, diagnostic => mode == "invalid-matrix" ? diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN" : diagnostic.Code.Contains("OWNER", StringComparison.Ordinal));
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(2);
+
+        Assert.Equal(mode == "invalid-matrix" ? 1 : 2, parallel.AnalysisMetrics!.RootWorkers);
+
+        AssertDiscoveryParity(serial, parallel);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RootWorkerQueueRejectsAnIncompleteOrDuplicatePlan(bool duplicate)
+    {
+        Assert.Throws<InvalidOperationException>(() => HostedProducerRootWorkers.Run(2, duplicate ? [[0], [0]] : [[0]], 2, (_, family) => family));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RootWorkerBookkeepingPreservesRepeatedBoundedDataProbeRollback(bool invalidRecoveryMatrix)
+    {
+        string source = invalidRecoveryMatrix
+            ? RecoveryMatrixFixture().Replace("MinCheckpointVersion", "UnrecognizedMinimum", StringComparison.Ordinal)
+                + " static class LazyRollbackFixture { private static readonly Lazy<Task> Cached = new(() => RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot.Run(), System.Threading.LazyThreadSafetyMode.ExecutionAndPublication); public static Task Read() => Cached.Value; }"
+            : RegistrationSource("")
+                + " static class LazyRollbackFixture { private static readonly Lazy<bool> Cached = new(() => System.IO.File.Exists(\"probe\"), System.Threading.LazyThreadSafetyMode.ExecutionAndPublication); public static bool Read() => Cached.Value; }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        var result = HostedGrimoireProducerInventory.ProbeRepeatedBoundedDataRollback(compilation, 2);
+
+        Assert.Equal(invalidRecoveryMatrix ? ["Unknown", "Unknown"] : ["Producer", "Producer"], result.Proofs);
+
+        Assert.Equal(0, result.Sites);
+
+        Assert.Equal(0, result.OccurrenceStamps);
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Fact]
+    public void RootWorkerMatrixRollbackIsReachableThroughStructuralLazyProof()
+    {
+        string source = MatrixRollbackSource();
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        var probe = HostedGrimoireProducerInventory.ProbeRepeatedBoundedDataRollback(compilation, 1, useStructuralEntry: true);
+
+        Assert.True(probe.MatrixResolved);
+
+        Assert.Equal(["Unknown"], probe.Proofs);
+
+        Assert.Empty(probe.Diagnostics);
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(discovery.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Lazy`1.Value");
+
+        Assert.DoesNotContain(discovery.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
+    }
+
+    private static string MatrixRollbackSource() => FixtureSource("_ = LazyRollbackFixture.Read();", "namespace RetroDownfall.Arcanum.Core.Operations { public sealed record LongRunningOperation(string Kind, int CheckpointVersion); } static class LazyRollbackFixture { private static readonly Lazy<bool> Cached = new(() => Build(true), System.Threading.LazyThreadSafetyMode.ExecutionAndPublication); public static bool Read() => Cached.Value; private static bool Build(bool guard) { var operation = new RetroDownfall.Arcanum.Core.Operations.LongRunningOperation(\"owner\", 0); if (guard && operation.Kind == \"owner\") return true; return false; } } static class MatrixOrdinaryRoot { public static void Run() { Use(new RetroDownfall.Arcanum.Core.Operations.LongRunningOperation(\"owner\", 0)); } private static void Use(RetroDownfall.Arcanum.Core.Operations.LongRunningOperation operation) { } }");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ParallelRootsPreserveNormalEntryMatrixProbeOrdering(bool probeFirst)
+    {
+        CSharpCompilation compilation = Compile(MatrixRollbackSource());
+
+        NonHostedProducerChainEntry Root(string type, string member) => new(type + "." + member, "src/Fixture.cs", type, member, HostedProducerAuthorityKind.PreReadinessStartup, "bounded matrix ordering fixture", []);
+
+        NonHostedProducerChainEntry[] roots = [Root("MatrixOrdinaryRoot", "Run"), Root("LazyRollbackFixture", "Read")];
+
+        if (probeFirst)
+        {
+            Array.Reverse(roots);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new([], []), [], roots, rootWorkers: workers, reverseRootFamilies: true);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(2);
+
+        Assert.Equal(1, parallel.AnalysisMetrics!.RootWorkers);
+
+        AssertDiscoveryParity(serial, parallel);
+    }
+
+    [Fact]
+    public void ParallelRootsPreflightDoesNotResolveAnUnusedValidMatrix()
+    {
+        CSharpCompilation compilation = Compile(RecoveryMatrixFixture());
+
+        NonHostedProducerChainEntry root = new("Worker.StopAsync", "src/Fixture.cs", "Worker", "StopAsync", HostedProducerAuthorityKind.PreReadinessStartup, "no recovery use", []);
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new([], []), [], [root], rootWorkers: workers);
+
+        HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
+
+        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(2);
+
+        Assert.Empty(serial.Diagnostics);
+
+        Assert.Equal(2, parallel.AnalysisMetrics!.RootWorkers);
+
+        AssertDiscoveryParity(serial, parallel);
+    }
+
     private static HostedProducerDiscovery<HostedProducerSite> R2Discover(string source, params HostedProducerOperationEntry[] roots)
     {
         CSharpCompilation compilation = Compile(source);

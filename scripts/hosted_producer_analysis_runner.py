@@ -27,6 +27,8 @@ FIXTURE_FILTER = (
 
 ROOT_PROGRESS_VARIABLE = "ARCANUM_HOSTED_ANALYSIS_PROGRESS"
 
+ROOT_WORKERS_VARIABLE = "ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"
+
 MAX_WORKERS = 16
 
 MAX_ANALYSIS_SECONDS = 30 * 60
@@ -149,7 +151,7 @@ def plan_shards(
     fixtures: Sequence[DiscoveredMethod],
     worker_count: int,
 ) -> list[AnalysisShard]:
-    """Keep the shared production graph serial while balancing independent fixtures."""
+    """Reserve production traversal capacity while balancing fixture processes."""
 
     if worker_count < 1:
         raise ValueError("worker count must be positive")
@@ -196,7 +198,7 @@ def plan_shards(
         )
 
     if fixtures:
-        fixture_workers = worker_count - len(shards)
+        fixture_workers = max(1, worker_count - (2 if production else 0))
 
         for fixture_shard in balance_methods(fixtures, fixture_workers):
             shards.append(
@@ -321,15 +323,20 @@ def read_trx_summary(
 def shard_environment(
     results_directory: Path,
     production: bool,
+    root_workers: int = 1,
 ) -> dict[str, str]:
     environment = os.environ.copy()
 
     if production:
+        environment[ROOT_WORKERS_VARIABLE] = str(root_workers)
+
         environment[ROOT_PROGRESS_VARIABLE] = str(
             (results_directory / "hosted-producer-roots.log").resolve()
         )
     else:
         environment.pop(ROOT_PROGRESS_VARIABLE, None)
+
+        environment.pop(ROOT_WORKERS_VARIABLE, None)
 
     return environment
 
@@ -904,6 +911,8 @@ def run_shards(
     production_shard_index: Optional[int] = None,
     timeout_seconds: float = MAX_ANALYSIS_SECONDS,
     configuration: Optional[str] = None,
+    worker_count: int = 1,
+    deadline: Optional[float] = None,
 ) -> AnalysisRunResult:
     results_directory.mkdir(parents=True, exist_ok=True)
 
@@ -927,12 +936,52 @@ def run_shards(
 
     root_progress_reader: Optional[threading.Thread] = None
 
-    deadline = time.monotonic() + timeout_seconds
+    if deadline is None:
+        deadline = time.monotonic() + timeout_seconds
+
+    production_workers = min(2, worker_count)
+
+    active: list[Tuple[subprocess.Popen[str], int]] = []
+
+    occupied_slots = 0
+
+    exit_code_list: list[int] = []
+
+    def remaining_time() -> float:
+        remaining = deadline - time.monotonic()
+
+        if remaining <= 0:
+            raise RuntimeError(
+                "hosted-producer analysis exceeded its "
+                f"{timeout_seconds:.0f}-second deadline"
+            )
+
+        return remaining
+
+    def finish_next() -> int:
+        process, slots = active.pop(0)
+
+        try:
+            exit_code_list.append(process.wait(timeout=remaining_time()))
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                "hosted-producer analysis exceeded its "
+                f"{timeout_seconds:.0f}-second deadline"
+            ) from error
+
+        return slots
 
     with combined_path.open("w", encoding="utf-8") as combined_log:
         try:
             for shard in shards:
                 production = shard.index == production_shard_index
+
+                slots = production_workers if production else 1
+
+                while occupied_slots + slots > worker_count:
+                    occupied_slots -= finish_next()
+
+                remaining_time()
 
                 if production and root_progress_reader is None:
                     root_progress_path = (
@@ -999,12 +1048,18 @@ def run_shards(
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
-                    env=shard_environment(results_directory, production),
+                    env=shard_environment(
+                        results_directory, production, production_workers
+                    ),
                     start_new_session=os.name == "posix",
                     creationflags=process_creation_flags(),
                 )
 
                 processes.append(process)
+
+                active.append((process, slots))
+
+                occupied_slots += slots
 
                 attach_process_tree(process)
 
@@ -1028,24 +1083,8 @@ def run_shards(
 
                 reader.start()
 
-            exit_code_list: list[int] = []
-
-            for process in processes:
-                remaining = deadline - time.monotonic()
-
-                if remaining <= 0:
-                    raise RuntimeError(
-                        "hosted-producer analysis exceeded its "
-                        f"{timeout_seconds:.0f}-second deadline"
-                    )
-
-                try:
-                    exit_code_list.append(process.wait(timeout=remaining))
-                except subprocess.TimeoutExpired as error:
-                    raise RuntimeError(
-                        "hosted-producer analysis exceeded its "
-                        f"{timeout_seconds:.0f}-second deadline"
-                    ) from error
+            while active:
+                occupied_slots -= finish_next()
 
             exit_codes = tuple(exit_code_list)
 
@@ -1245,9 +1284,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         print(
             "Hosted-producer analysis: "
-            f"{expected_count} tests across {len(shards)} bounded workers; "
+            f"{expected_count} tests across {len(shards)} shards "
+            f"within {configured_jobs} worker slots; "
             f"{sum(method.case_count for method in production)} production tests "
-            "share one serial graph lane.",
+            f"share one process with {min(2, configured_jobs)} traversal workers.",
             flush=True,
         )
 
@@ -1256,9 +1296,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.project,
             arguments.results_directory,
             shards,
-            production_shard_index=0,
+            production_shard_index=0 if production else None,
             timeout_seconds=max(0.001, deadline - time.monotonic()),
             configuration=arguments.configuration,
+            worker_count=configured_jobs,
+            deadline=deadline,
         )
 
         exit_code = require_complete_success(result)

@@ -267,6 +267,8 @@ internal sealed record HostedProducerAnalysisMetrics(
     int RegistrationCandidateInspections)
 {
     internal IReadOnlyList<HostedProducerCleanupSourceMetric> CleanupSources { get; init; } = [];
+
+    internal int RootWorkers { get; init; } = 1;
 }
 
 internal sealed record HostedProducerCleanupSourceMetric(
@@ -541,19 +543,21 @@ internal static class HostedGrimoireProducerInventory
     {
         HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
 
-        return DiscoverProducerSites(ProductionCompilations, registrations);
+        return DiscoverProducerSites(ProductionCompilations, registrations, Catalog, NonHostedCatalog,
+            rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
     }
 
     private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites()
     {
-        // Keep parallel test classes from holding two whole-program Roslyn graphs at once.
+        // Keep the main and additional production worker groups from overlapping.
         _ = ProductionSiteDiscovery;
 
         return DiscoverProducerSites(
             ProductionCompilations,
             new([], []),
             [],
-            AdditionalProductionRoots);
+            AdditionalProductionRoots,
+            rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
     }
 
     private static IReadOnlyList<NonHostedProducerChainEntry> BuildAdditionalProductionRoots()
@@ -1832,7 +1836,19 @@ internal static class HostedGrimoireProducerInventory
 
     internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations) => DiscoverProducerSites(compilations, registrations, Catalog, NonHostedCatalog);
 
-    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false) => new ProducerGraph(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity).Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe);
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false)
+    {
+        if (rootWorkers is not (1 or 2))
+        {
+            throw new ArgumentOutOfRangeException(nameof(rootWorkers));
+        }
+
+        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity);
+
+        return rootWorkers == 1
+            ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
+            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, reverseRootFamilies);
+    }
 
     internal static HostedProducerExpressionDependencyProbe ProbeExpressionDependency(
         CSharpCompilation compilation,
@@ -1929,6 +1945,13 @@ internal static class HostedGrimoireProducerInventory
         IReadOnlyList<HostedProducerRecoverySpan> nodes) =>
         ProducerGraph.ProbeRecoveryReachabilitySpans(intervals, nodes);
 
+    internal static (string[] Proofs, int Sites, int OccurrenceStamps, IReadOnlyList<HostedProducerInventoryDiagnostic> Diagnostics, bool MatrixResolved) ProbeRepeatedBoundedDataRollback(
+        CSharpCompilation compilation,
+        int repetitions,
+        bool useStructuralEntry = false) =>
+        new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeRepeatedBoundedDataRollback(repetitions, useStructuralEntry);
+
     private enum RecoveryDisposition : byte
     {
         OrdinaryDbOnly = 1,
@@ -1953,7 +1976,8 @@ internal static class HostedGrimoireProducerInventory
     private sealed record RecoveryMatrix(
         IReadOnlyList<RecoveryDescriptor> Descriptors,
         IReadOnlyList<RecoveryTuple> Tuples,
-        bool IsValid);
+        bool IsValid,
+        IReadOnlyList<string> Failures);
 
     [Flags]
     private enum RecoveryCompositionKind : byte
@@ -2758,6 +2782,8 @@ internal static class HostedGrimoireProducerInventory
         private readonly Dictionary<Compilation, Dictionary<IAssemblySymbol, int>> authoredCompilationIdentities = new(ReferenceEqualityComparer.Instance);
 
         private RecoveryMatrix? recoveryMatrix;
+
+        private RecoveryMatrix? recoveryMatrixFacts;
 
         private bool recoveryMatrixResolved;
 
@@ -5444,6 +5470,226 @@ internal static class HostedGrimoireProducerInventory
             IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog,
             HostedProducerRecoverySelectionProbe? recoverySelectionProbe)
         {
+            PlannedRoot[] roots = PrepareRoots(registrations, catalog, nonHostedCatalog);
+
+            foreach (PlannedRoot root in roots)
+            {
+                TraversePlannedRoot(root);
+            }
+
+            progressOccurrence = roots.Length + 1;
+
+            CompletePrimaryRoots(recoverySelectionProbe);
+
+            DiscoverExternalRoots(registrations, () => sites.Count,
+                (member, rootType, operation) =>
+                {
+                    progressOccurrence++;
+
+                    _ = TraverseRoot(member, rootType, operation, false);
+                });
+
+            return CompleteDiscovery();
+        }
+
+        private sealed record PlannedRoot(
+            int Occurrence,
+            string Family,
+            string RootType,
+            string Operation,
+            AuthoredMember Member,
+            bool Lifecycle,
+            SyntaxNode? Selection);
+
+        private SyntaxNode? preparedOwnerRecoveryAnchor;
+
+        private int progressWorker = 1;
+
+        private int progressOccurrence;
+
+        private readonly Dictionary<string, int> siteOccurrences = new(StringComparer.Ordinal);
+
+        internal static HostedProducerDiscovery<HostedProducerSite> DiscoverParallel(
+            Func<ProducerGraph> createGraph,
+            HostedProducerDiscovery<string> registrations,
+            IReadOnlyList<HostedProducerServiceEntry> catalog,
+            IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog,
+            HostedProducerRecoverySelectionProbe? recoverySelectionProbe,
+            bool reverseRootFamilies)
+        {
+            ProducerGraph coordinator = createGraph();
+
+            if (coordinator.HasRecoveryMatrixInputs(catalog, nonHostedCatalog))
+            {
+                // Compute immutable facts only. First-use diagnostics and probe rollback stay lazy.
+                coordinator.recoveryMatrixFacts = coordinator.BuildRecoveryMatrix();
+
+                if (!coordinator.recoveryMatrixFacts.IsValid)
+                {
+                    return coordinator.Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe);
+                }
+            }
+
+            ProducerGraph[] workers = [coordinator, createGraph()];
+
+            workers[1].recoveryMatrixFacts = coordinator.recoveryMatrixFacts;
+
+            PlannedRoot[][] plans = workers.Select(graph => graph.PrepareRoots(registrations, catalog, nonHostedCatalog)).ToArray();
+
+            for (int worker = 0; worker < workers.Length; worker++)
+            {
+                workers[worker].progressWorker = worker + 1;
+
+                var identities = plans[worker].Select(root => (root.Occurrence, root.Family, root.RootType, root.Operation,
+                    Member: workers[worker].MemberIdentity(root.Member), root.Lifecycle, Selection: root.Selection?.Span));
+
+                var expected = plans[0].Select(root => (root.Occurrence, root.Family, root.RootType, root.Operation,
+                    Member: coordinator.MemberIdentity(root.Member), root.Lifecycle, Selection: root.Selection?.Span));
+
+                if (!identities.SequenceEqual(expected))
+                {
+                    throw new InvalidOperationException("Isolated workers did not prepare the same complete root plan.");
+                }
+            }
+
+            int[][] families = plans[0].GroupBy(static root => root.Family, StringComparer.Ordinal)
+                .Select(static family => family.Select(static root => root.Occurrence).ToArray()).ToArray();
+
+            if (reverseRootFamilies)
+            {
+                Array.Reverse(families);
+            }
+
+            int[] owners = HostedProducerRootWorkers.Run(plans[0].Length, families, workers.Length, (worker, family) =>
+            {
+                List<int> completed = [];
+
+                foreach (int occurrence in family)
+                {
+                    workers[worker].TraversePlannedRoot(plans[worker][occurrence]);
+
+                    completed.Add(occurrence);
+                }
+
+                return completed.ToArray();
+            });
+
+            Dictionary<string, int> familyOwners = plans[0].GroupBy(static root => root.Family, StringComparer.Ordinal)
+                .ToDictionary(static family => family.Key, family => owners[family.First().Occurrence], StringComparer.Ordinal);
+
+            ProducerGraph Owner(string rootType, string operation)
+            {
+                string family = rootType + "|" + coordinator.RootOperation(operation);
+
+                if (!familyOwners.TryGetValue(family, out int worker))
+                {
+                    worker = familyOwners.Count % workers.Length;
+
+                    familyOwners.Add(family, worker);
+                }
+
+                return workers[worker];
+            }
+
+            int nextOccurrence = plans[0].Length;
+
+            if (recoverySelectionProbe is not null)
+            {
+                coordinator.TraverseRecoverySelectionProbe(recoverySelectionProbe, (rootType, operation) =>
+                {
+                    ProducerGraph owner = Owner(rootType, operation);
+
+                    owner.progressOccurrence = ++nextOccurrence;
+
+                    return owner;
+                });
+            }
+
+            foreach (ProducerGraph worker in workers)
+            {
+                coordinator.lifecycleMembers.UnionWith(worker.lifecycleMembers);
+
+                coordinator.ownerRecoveryAssociations.UnionWith(worker.ownerRecoveryAssociations);
+            }
+
+            ProducerGraph? matrixOwner = workers.FirstOrDefault(static worker => worker.recoveryMatrixResolved);
+
+            if (matrixOwner is not null)
+            {
+                coordinator.recoveryMatrix = matrixOwner.recoveryMatrix;
+
+                coordinator.recoveryMatrixResolved = true;
+
+            }
+
+            coordinator.progressOccurrence = ++nextOccurrence;
+
+            coordinator.CompletePrimaryRoots(null);
+
+            HashSet<string> globalSites = workers.SelectMany(static worker => worker.sites.Keys).ToHashSet(StringComparer.Ordinal);
+
+            coordinator.DiscoverExternalRoots(registrations, () => globalSites.Count, (member, rootType, operation) =>
+            {
+                ProducerGraph owner = Owner(rootType, operation);
+
+                owner.progressOccurrence = ++nextOccurrence;
+
+                AuthoredMember bound = owner.Resolve(member.Symbol, member.Model.Compilation)
+                    ?? throw new InvalidOperationException("An external root was missing from its isolated graph.");
+
+                _ = owner.TraverseRoot(bound, rootType, operation, false);
+
+                globalSites.UnionWith(owner.sites.Keys);
+            });
+
+            HostedProducerDiscovery<HostedProducerSite>[] results = workers.Select(static worker => worker.CompleteDiscovery()).ToArray();
+
+            HostedProducerSite[] mergedSites = workers.SelectMany(worker => worker.sites.Select(pair =>
+                    (Key: pair.Key, Site: pair.Value, Occurrence: worker.siteOccurrences[pair.Key])))
+                .GroupBy(static item => item.Key, StringComparer.Ordinal)
+                .Select(static group => group.OrderBy(static item => item.Occurrence).First().Site)
+                .OrderBy(SiteIdentity, StringComparer.Ordinal).ToArray();
+
+            HostedProducerInventoryDiagnostic[] mergedDiagnostics = results.SelectMany(static result => result.Diagnostics)
+                .Distinct().OrderBy(static diagnostic => diagnostic.Code, StringComparer.Ordinal)
+                .ThenBy(static diagnostic => diagnostic.Identity, StringComparer.Ordinal)
+                .ThenBy(static diagnostic => diagnostic.Detail, StringComparer.Ordinal).ToArray();
+
+            return new(mergedSites, mergedDiagnostics, HostedProducerRootWorkers.MergeMetrics(results.Select(static result => result.AnalysisMetrics!).ToArray()) with { RootWorkers = workers.Length });
+        }
+
+        private bool HasRecoveryMatrixInputs(
+            IReadOnlyList<HostedProducerServiceEntry> catalog,
+            IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog)
+        {
+            if (catalog.SelectMany(static service => service.Operations).Any(static root => root.Authority == HostedProducerAuthorityKind.OwnerBoundRecovery)
+                || nonHostedCatalog.Any(static root => root.Authority == HostedProducerAuthorityKind.OwnerBoundRecovery))
+            {
+                return true;
+            }
+
+            if (objectCreations.Any(candidate => candidate.Model.GetTypeInfo(candidate.Creation).Type is { } type
+                && TypeKey(type) == "RetroDownfall.Arcanum.Core.Operations.LongRunningOperation"))
+            {
+                return true;
+            }
+
+            // Source-bound triggers mirror the two dispatch call sites. Merely referencing a
+            // production assembly does not make an ordinary synthetic fixture a recovery input.
+            return invocations.Any(candidate => candidate.Model.GetSymbolInfo(candidate.Call).Symbol is IMethodSymbol method
+                && (method.Name == "RecoverAsync"
+                        && IsExactAuthoredProtocolType(method.ContainingType,
+                            "RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler", candidate.Model.Compilation)
+                    || method.Name == "RecoverAuthenticatedAsync"
+                        && IsExactAuthoredProtocolType(method.ContainingType,
+                            "RetroDownfall.Arcanum.Infrastructure.Data.IAuthenticatedCovenantErasureRecoveryHandler", candidate.Model.Compilation)));
+        }
+
+        private PlannedRoot[] PrepareRoots(
+            HostedProducerDiscovery<string> registrations,
+            IReadOnlyList<HostedProducerServiceEntry> catalog,
+            IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog)
+        {
             HashSet<string> hosted = registrations.Items.ToHashSet(StringComparer.Ordinal);
 
             HostedProducerOperationEntry[] declared = [.. catalog.SelectMany(static service => service.Operations), .. nonHostedCatalog.Select(static chain => new HostedProducerOperationEntry(chain.ChainId, chain.SourcePath, chain.EnclosingType, chain.Member, chain.Authority, null, chain.Proof, chain.Sites))];
@@ -5485,33 +5731,58 @@ internal static class HostedGrimoireProducerInventory
                 }
             }
 
+            List<PlannedRoot> planned = [];
+
             foreach (AuthoredMember root in AuthoredMembers.Where(member => hosted.Contains(member.Symbol.ContainingType.Name) && IsLifecycle(member.Symbol)))
             {
-                _ = TraverseRoot(root, root.Symbol.ContainingType.Name, TypeKey(root.Symbol.ContainingType) + "." + root.Symbol.Name, true);
+                string operation = TypeKey(root.Symbol.ContainingType) + "." + root.Symbol.Name;
+
+                string rootType = root.Symbol.ContainingType.Name;
+
+                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation), rootType, operation, root, true, null));
             }
 
             foreach ((HostedProducerOperationEntry operation, AuthoredMember root, SyntaxNode selection) in resolvedRoots)
             {
                 string rootType = catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.ServiceType ?? nonHostedCatalog.FirstOrDefault(chain => chain.ChainId == operation.OperationId)?.EnclosingType ?? operation.EnclosingType;
 
-                _ = TraverseRoot(root, rootType, operation.OperationId, false, selection);
+                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation.OperationId), rootType, operation.OperationId, root, false, selection));
             }
 
+            preparedOwnerRecoveryAnchor = resolvedRoots.FirstOrDefault(static root => root.Operation.Authority == HostedProducerAuthorityKind.OwnerBoundRecovery).Selection;
+
+            return planned.ToArray();
+        }
+
+        private void TraversePlannedRoot(PlannedRoot root)
+        {
+            progressOccurrence = root.Occurrence + 1;
+
+            _ = TraverseRoot(root.Member, root.RootType, root.Operation, root.Lifecycle, root.Selection);
+        }
+
+        private void CompletePrimaryRoots(HostedProducerRecoverySelectionProbe? recoverySelectionProbe)
+        {
             if (recoverySelectionProbe is not null)
             {
                 TraverseRecoverySelectionProbe(recoverySelectionProbe);
             }
 
             if (!recoveryMatrixResolved
-                && resolvedRoots.FirstOrDefault(static root =>
-                    root.Operation.Authority
-                        == HostedProducerAuthorityKind.OwnerBoundRecovery)
-                    .Selection is { } ownerRecoveryAnchor)
+                && preparedOwnerRecoveryAnchor is { } ownerRecoveryAnchor)
             {
                 _ = ResolveRecoveryMatrix(ownerRecoveryAnchor);
             }
 
             ValidateOwnerRecoveryAssociations();
+        }
+
+        private void DiscoverExternalRoots(
+            HostedProducerDiscovery<string> registrations,
+            Func<int> siteCount,
+            Action<AuthoredMember, string, string> traverse)
+        {
+            HashSet<string> hosted = registrations.Items.ToHashSet(StringComparer.Ordinal);
 
             foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
             {
@@ -5539,20 +5810,23 @@ internal static class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                bool catalogued = declared.Any(entry => entry.EnclosingType == TypeKey(authored.Symbol.ContainingType) && entry.Member == authored.Symbol.Name && entry.SourcePath == authored.Syntax.SyntaxTree.FilePath);
+                bool catalogued = declaredOperations.Any(entry => entry.EnclosingType == TypeKey(authored.Symbol.ContainingType) && entry.Member == authored.Symbol.Name && entry.SourcePath == authored.Syntax.SyntaxTree.FilePath);
 
-                int before = sites.Count;
+                int before = siteCount();
 
                 string operation = TypeKey(authored.Symbol.ContainingType) + "." + authored.Symbol.Name;
 
-                _ = TraverseRoot(authored, authored.Symbol.ContainingType.Name, operation, false);
+                traverse(authored, authored.Symbol.ContainingType.Name, operation);
 
-                if (!catalogued && sites.Count > before)
+                if (!catalogued && siteCount() > before)
                 {
                     diagnostics.Add(new("HOSTED_EXTERNAL_OPERATION_UNCATALOGUED", Location(call), operation));
                 }
             }
+        }
 
+        private HostedProducerDiscovery<HostedProducerSite> CompleteDiscovery()
+        {
             HostedProducerAnalysisMetrics analysisMetrics = new(
                 maximumRecoveryConditionEvaluations
                     .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
@@ -5685,12 +5959,16 @@ internal static class HostedGrimoireProducerInventory
 
             return new(
                 sites.Values.OrderBy(SiteIdentity, StringComparer.Ordinal).ToArray(),
-                diagnostics.Distinct().ToArray(),
+                diagnostics.Distinct()
+                    .OrderBy(static diagnostic => diagnostic.Code, StringComparer.Ordinal)
+                    .ThenBy(static diagnostic => diagnostic.Identity, StringComparer.Ordinal)
+                    .ThenBy(static diagnostic => diagnostic.Detail, StringComparer.Ordinal).ToArray(),
                 analysisMetrics);
         }
 
         private void TraverseRecoverySelectionProbe(
-            HostedProducerRecoverySelectionProbe probe)
+            HostedProducerRecoverySelectionProbe probe,
+            Func<string, string, ProducerGraph>? selectOwner = null)
         {
             (AuthoredMember Member, InvocationExpressionSyntax Call)[] bindingCalls =
                 AuthoredMembers
@@ -5716,6 +5994,15 @@ internal static class HostedGrimoireProducerInventory
 
             foreach (string operationId in probe.SelectionOperationIds)
             {
+                if (selectOwner is not null)
+                {
+                    ProducerGraph owner = selectOwner(TypeKey(target.Symbol.ContainingType), operationId);
+
+                    owner.TraverseRecoverySelectionProbe(probe with { SelectionOperationIds = [operationId] });
+
+                    continue;
+                }
+
                 AuthoredMember bound = BindAdmissionArguments(caller, call, target);
 
                 if (SelectRoot(bound, operationId) is not { } selection)
@@ -6507,7 +6794,7 @@ internal static class HostedGrimoireProducerInventory
                     ? access.Expression
                     : null;
 
-        private static void WriteRootProgress(
+        private void WriteRootProgress(
             string phase,
             int sequence,
             string rootType,
@@ -6532,6 +6819,8 @@ internal static class HostedGrimoireProducerInventory
                 '\t',
                 "HOSTED_ROOT_PROGRESS",
                 "phase=" + phase,
+                "worker=" + progressWorker.ToString(CultureInfo.InvariantCulture),
+                "occurrence=" + progressOccurrence.ToString(CultureInfo.InvariantCulture),
                 "sequence=" + sequence.ToString(CultureInfo.InvariantCulture),
                 "elapsed_ms=" + elapsed.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture),
                 "states=" + states.ToString(CultureInfo.InvariantCulture),
@@ -6541,7 +6830,7 @@ internal static class HostedGrimoireProducerInventory
             AppendProgressLine(path, line);
         }
 
-        private static void WriteRootStateProgress(
+        private void WriteRootStateProgress(
             string rootType,
             string rootOperation,
             int states,
@@ -6575,6 +6864,8 @@ internal static class HostedGrimoireProducerInventory
             string line = string.Join(
                 '\t',
                 "HOSTED_STATE_PROGRESS",
+                "worker=" + progressWorker.ToString(CultureInfo.InvariantCulture),
+                "occurrence=" + progressOccurrence.ToString(CultureInfo.InvariantCulture),
                 "states=" + states.ToString(CultureInfo.InvariantCulture),
                 "member_states=" + memberStates.ToString(CultureInfo.InvariantCulture),
                 "member=" + Safe(member.Method),
@@ -7337,6 +7628,18 @@ internal static class HostedGrimoireProducerInventory
 
             recoveryMatrixResolved = true;
 
+            recoveryMatrix = recoveryMatrixFacts ??= BuildRecoveryMatrix();
+
+            foreach (string failure in recoveryMatrix.Failures)
+            {
+                diagnostics.Add(new("HOSTED_RECOVERY_MATRIX_UNPROVEN", Location(anchor), failure));
+            }
+
+            return recoveryMatrix;
+        }
+
+        private RecoveryMatrix BuildRecoveryMatrix()
+        {
             List<string> failures = [];
 
             RecoveryDescriptor[] descriptors = objectCreations
@@ -7515,23 +7818,11 @@ internal static class HostedGrimoireProducerInventory
                         RecoveryDisposition.Unsupported)))
                 .ToArray();
 
-            if (failures.Count != 0)
-            {
-                foreach (string failure in failures.Distinct(StringComparer.Ordinal))
-                {
-                    diagnostics.Add(new(
-                        "HOSTED_RECOVERY_MATRIX_UNPROVEN",
-                        Location(anchor),
-                        failure));
-                }
-            }
-
-            recoveryMatrix = new(
+            return new(
                 descriptors,
                 tuples,
-                failures.Count == 0);
-
-            return recoveryMatrix;
+                failures.Count == 0,
+                failures.Distinct(StringComparer.Ordinal).ToArray());
         }
 
         private static RecoveryDisposition? RecoveryDispositionOf(
@@ -21202,6 +21493,8 @@ internal static class HostedGrimoireProducerInventory
                     .ToArray())
                 {
                     sites.Remove(site);
+
+                    siteOccurrences.Remove(site);
                 }
 
                 foreach (string capsule in admissionCapsules.Keys
@@ -21221,6 +21514,22 @@ internal static class HostedGrimoireProducerInventory
                     || emittedDiagnostic
                 ? BoundedDataProof.Unknown
                 : BoundedDataProof.PureBoundedData;
+        }
+
+        internal (string[] Proofs, int Sites, int OccurrenceStamps, IReadOnlyList<HostedProducerInventoryDiagnostic> Diagnostics, bool MatrixResolved) ProbeRepeatedBoundedDataRollback(int repetitions, bool useStructuralEntry)
+        {
+            AuthoredMember reader = AuthoredMembers.Single(static member => member.Symbol.ContainingType.Name == "LazyRollbackFixture" && member.Symbol.Name == "Read");
+
+            MemberAccessExpressionSyntax value = reader.Syntax.DescendantNodesAndSelf().OfType<MemberAccessExpressionSyntax>().Single();
+
+            LazyFactoryResolution resolution = ResolveLazyFactory(reader, value.Expression)
+                ?? throw new InvalidOperationException("The rollback fixture must resolve one exact lazy factory.");
+
+            boundedLazyDataEvidence[resolution.Storage] = [];
+
+            string[] proofs = Enumerable.Range(0, repetitions).Select(_ => (useStructuralEntry ? ProveBoundedLazyData(resolution) : ProbeBoundedDataTraversal(resolution)).ToString()).ToArray();
+
+            return (proofs, sites.Count, siteOccurrences.Count, CompleteDiscovery().Diagnostics, recoveryMatrixResolved);
         }
 
         private BoundedDataProof InspectBoundedDataStructure(
@@ -44367,7 +44676,15 @@ internal static class HostedGrimoireProducerInventory
                 effectFrontierCapsuleId,
                 admittedWorkKind);
 
-            sites.TryAdd(StableSiteIdentity(site), site);
+            string stableIdentity = StableSiteIdentity(site);
+
+            if (!siteOccurrences.TryGetValue(stableIdentity, out int firstOccurrence)
+                || progressOccurrence < firstOccurrence)
+            {
+                sites[stableIdentity] = site;
+
+                siteOccurrences[stableIdentity] = progressOccurrence;
+            }
 
             return TraversalEvidence.Evidence;
         }
