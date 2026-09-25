@@ -198,7 +198,7 @@ def plan_shards(
         )
 
     if fixtures:
-        fixture_workers = max(1, worker_count - (2 if production else 0))
+        fixture_workers = max(1, worker_count - (min(3, worker_count) if production else 0))
 
         for fixture_shard in balance_methods(fixtures, fixture_workers):
             shards.append(
@@ -939,7 +939,7 @@ def run_shards(
     if deadline is None:
         deadline = time.monotonic() + timeout_seconds
 
-    production_workers = min(2, worker_count)
+    production_workers = min(3, worker_count)
 
     active: list[Tuple[subprocess.Popen[str], int]] = []
 
@@ -1287,7 +1287,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"{expected_count} tests across {len(shards)} shards "
             f"within {configured_jobs} worker slots; "
             f"{sum(method.case_count for method in production)} production tests "
-            f"share one process with {min(2, configured_jobs)} traversal workers.",
+            f"share one process with {min(3, configured_jobs)} traversal workers.",
             flush=True,
         )
 

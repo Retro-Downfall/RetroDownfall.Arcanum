@@ -2,11 +2,26 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static class HostedProducerRootWorkers
 {
+    internal static int[][] OrderFamilies(IEnumerable<(string Family, int Occurrence)> roots) => roots
+        .GroupBy(static root => root.Family, StringComparer.Ordinal)
+        .OrderBy(static family => FamilyPriority(family.Key))
+        .Select(static family => family.Select(static root => root.Occurrence).ToArray()).ToArray();
+
+    // Advisory measured costs only: unmatched families keep their original relative order.
+    private static int FamilyPriority(string family) => family switch
+    {
+        "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery|RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync" => 0,
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService|RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync" => 1,
+        "GrimoireDatabaseHostedService|RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync" => 2,
+        _ => 3,
+    };
+
     internal static int ParseCount(string? value) => value switch
     {
         null or "1" => 1,
         "2" => 2,
-        _ => throw new ArgumentException("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS must be exactly 1 or 2."),
+        "3" => 3,
+        _ => throw new ArgumentException("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS must be exactly 1, 2 or 3."),
     };
 
     internal static HostedProducerAnalysisMetrics MergeMetrics(IReadOnlyList<HostedProducerAnalysisMetrics> metrics)
@@ -148,7 +163,7 @@ internal static class HostedProducerRootWorkers
         int workerCount,
         Func<int, int[], int[]> executeFamily)
     {
-        if (workerCount is not (1 or 2))
+        if (workerCount is not (1 or 2 or 3))
         {
             throw new ArgumentOutOfRangeException(nameof(workerCount));
         }

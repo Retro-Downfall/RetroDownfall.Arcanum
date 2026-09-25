@@ -36,8 +36,12 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData(null, 1)]
     [InlineData("1", 1)]
     [InlineData("2", 2)]
+    [InlineData("3", 3)]
     [InlineData("", 0)]
-    [InlineData("3", 0)]
+    [InlineData("4", 0)]
+    [InlineData("0", 0)]
+    [InlineData("03", 0)]
+    [InlineData("3 ", 0)]
     [InlineData(" 2", 0)]
     public void RootWorkerConfigurationFailsClosed(string? configured, int expected)
     {
@@ -85,6 +89,67 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.NotEqual(owners[0], owners[2]);
     }
 
+    [Fact]
+    public void RootWorkerQueueOverlapsExactlyThreeIsolatedWorkersAndRetainsWholeFamilies()
+    {
+        using Barrier entered = new(3);
+
+        int active = 0;
+
+        int peak = 0;
+
+        int[] owners = HostedProducerRootWorkers.Run(6, [[0, 3], [1, 4], [2, 5]], 3, (_, family) =>
+        {
+            if (Interlocked.Increment(ref active) == 3)
+            {
+                Interlocked.Exchange(ref peak, 3);
+            }
+
+            Assert.True(entered.SignalAndWait(TimeSpan.FromSeconds(10)), "All three workers must enter before any can finish.");
+
+            Interlocked.Decrement(ref active);
+
+            return family;
+        });
+
+        Assert.Equal(3, peak);
+
+        Assert.Equal(3, owners.Distinct().Count());
+
+        Assert.Equal(owners[0], owners[3]);
+
+        Assert.Equal(owners[1], owners[4]);
+
+        Assert.Equal(owners[2], owners[5]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RootWorkerHeavyFirstOrderingIsExactAdvisoryAndRetainsEveryOccurrence(bool reverse)
+    {
+        const string startup = "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery|RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync";
+
+        const string reset = "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService|RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync";
+
+        const string database = "GrimoireDatabaseHostedService|RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync";
+
+        (string Family, int Occurrence)[] roots = [("Unknown|First", 0), (database, 1), (reset, 2), ("Unknown|Second", 3), (startup, 4), (database, 5), (startup.ToLowerInvariant(), 6), ("Other|" + startup.Split('|')[1], 7), (reset + "Suffix", 8)];
+
+        if (reverse)
+        {
+            Array.Reverse(roots);
+        }
+
+        int[][] families = HostedProducerRootWorkers.OrderFamilies(roots);
+
+        Assert.Equal(reverse ? [4, 2, 5, 1, 8, 7, 6, 3, 0] : [4, 2, 1, 5, 0, 3, 6, 7, 8], families.SelectMany(static family => family));
+
+        Assert.Equal(reverse ? [5, 1] : [1, 5], families[2]);
+
+        Assert.Equal(Enumerable.Range(0, 9), families.SelectMany(static family => family).Order());
+    }
+
     [Theory]
     [InlineData("missing")]
     [InlineData("duplicate")]
@@ -101,9 +166,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ParallelRootsPreserveCompilationIdentityExternalCoverageAndManifest(bool reverse)
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(false, 3)]
+    [InlineData(true, 3)]
+    public void ParallelRootsPreserveCompilationIdentityExternalCoverageAndManifest(bool reverse, int workers)
     {
         CSharpCompilation Source(string worker, string effect) => Compile(
             R2Source(R2Admission + "Helper.Run();", "internal static class Helper { internal static void Run() { System.IO.File." + effect + "(\"parallel\"); } } internal static class ExternalCaller { internal static void Run(Worker worker) => worker.Tick(); }")
@@ -124,9 +191,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
 
-        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(2);
+        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(workers);
 
-        Assert.Equal(2, parallel.AnalysisMetrics!.RootWorkers);
+        Assert.Equal(workers, parallel.AnalysisMetrics!.RootWorkers);
 
         Assert.Contains(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_EXTERNAL_OPERATION_UNCATALOGUED");
 
@@ -134,9 +201,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ParallelRootsKeepLifecycleAndDeclaredContextsInOneStateBudget(bool reverse)
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(false, 3)]
+    [InlineData(true, 3)]
+    public void ParallelRootsKeepLifecycleAndDeclaredContextsInOneStateBudget(bool reverse, int workers)
     {
         CSharpCompilation compilation = Compile(R2Source("One();", "").Replace("public Task StopAsync", "private static void One() { Two(); } private static void Two() { System.IO.File.Exists(\"budget\"); } public Task StopAsync", StringComparison.Ordinal));
 
@@ -146,7 +215,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Contains(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
 
-        AssertDiscoveryParity(serial, Discover(2));
+        AssertDiscoveryParity(serial, Discover(workers));
     }
 
     private static void AssertDiscoveryParity(HostedProducerDiscovery<HostedProducerSite> serial, HostedProducerDiscovery<HostedProducerSite> parallel)
@@ -161,9 +230,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ParallelRootsRetainCompleteSelectedRegionMetadata(bool overlap)
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(false, 3)]
+    [InlineData(true, 3)]
+    public void ParallelRootsRetainCompleteSelectedRegionMetadata(bool overlap, int workers)
     {
         string source = FixtureSource("if (DateTime.Now.Ticks > 0) { System.IO.File.Exists(\"startup\"); } else { " + AcquireWork + " if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; System.IO.File.Delete(\"runtime\"); }", AdmissionTypes);
 
@@ -181,13 +252,15 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.DoesNotContain(serial.Items, site => site.Callee == "System.IO.File.Delete" && site.OperationId.StartsWith(startup.OperationId, StringComparison.Ordinal));
 
-        AssertDiscoveryParity(serial, Discover(2));
+        AssertDiscoveryParity(serial, Discover(workers));
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ParallelRootsApplyGlobalLifecycleSuppressionAndExternalSiteDelta(bool reverse)
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(false, 3)]
+    [InlineData(true, 3)]
+    public void ParallelRootsApplyGlobalLifecycleSuppressionAndExternalSiteDelta(bool reverse, int workers)
     {
         string source = R2Source("Bridge.Run(this);", "internal static class Bridge { internal static void Run(Worker worker) => worker.Reached(); } internal static class Outside { internal static void One(Worker worker) => worker.Unreached(); internal static void Two(Worker worker) => worker.Unreached(); }")
             .Replace("public Task StopAsync", "public void Reached() { System.IO.File.Exists(\"reached\"); } public void Unreached() { System.IO.File.Delete(\"unreached\"); } public Task StopAsync", StringComparison.Ordinal);
@@ -200,7 +273,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
         Assert.Equal("Worker.Unreached", Assert.Single(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_EXTERNAL_OPERATION_UNCATALOGUED").Detail);
 
-        AssertDiscoveryParity(serial, Discover(2));
+        AssertDiscoveryParity(serial, Discover(workers));
     }
 
     [Theory]
@@ -210,7 +283,13 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("missing-owner", true)]
     [InlineData("invalid-matrix", false)]
     [InlineData("invalid-matrix", true)]
-    public void ParallelRootsValidateCombinedOwnerAssociationsAndMatrixAnchor(string mode, bool reverse)
+    [InlineData("valid", false, 3)]
+    [InlineData("valid", true, 3)]
+    [InlineData("missing-owner", false, 3)]
+    [InlineData("missing-owner", true, 3)]
+    [InlineData("invalid-matrix", false, 3)]
+    [InlineData("invalid-matrix", true, 3)]
+    public void ParallelRootsValidateCombinedOwnerAssociationsAndMatrixAnchor(string mode, bool reverse, int workers = 2)
     {
         const string ownerType = "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot";
 
@@ -241,9 +320,9 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Contains(serial.Diagnostics, diagnostic => mode == "invalid-matrix" ? diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN" : diagnostic.Code.Contains("OWNER", StringComparison.Ordinal));
         }
 
-        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(2);
+        HostedProducerDiscovery<HostedProducerSite> parallel = Discover(workers);
 
-        Assert.Equal(mode == "invalid-matrix" ? 1 : 2, parallel.AnalysisMetrics!.RootWorkers);
+        Assert.Equal(mode == "invalid-matrix" ? 1 : workers, parallel.AnalysisMetrics!.RootWorkers);
 
         AssertDiscoveryParity(serial, parallel);
     }

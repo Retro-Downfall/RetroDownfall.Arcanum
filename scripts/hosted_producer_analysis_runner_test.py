@@ -81,38 +81,41 @@ class ScheduledProcesses:
 
 
 class HostedProducerAnalysisRunnerTests(unittest.TestCase):
-    def test_plan_reserves_two_of_four_slots_for_production(self):
+    def test_plan_reserves_three_of_four_slots_for_production(self):
         shards = RUNNER.plan_shards(
             [RUNNER.DiscoveredMethod("Tests.Production", 1)],
             [RUNNER.DiscoveredMethod(f"Tests.Fixture{index}", 1) for index in range(4)],
             4,
         )
-        self.assertEqual([1, 2, 2], [shard.case_count for shard in shards])
+        self.assertEqual([1, 4], [shard.case_count for shard in shards])
 
     def test_production_environment_overrides_inherited_worker_setting(self):
         with mock.patch.dict(os.environ, {"ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS": "invalid"}):
             environment = RUNNER.shard_environment(Path("results"), True)
         self.assertEqual("1", environment.get("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"))
 
-    def test_jobs_one_two_four_bound_production_and_fixture_capacity(self):
+    def test_jobs_one_two_three_four_bound_production_and_fixture_capacity(self):
         production = [RUNNER.DiscoveredMethod("Tests.Production", 1)]
         fixtures = [
             RUNNER.DiscoveredMethod("Tests.FixtureA", 1),
             RUNNER.DiscoveredMethod("Tests.FixtureB", 1),
         ]
         cases = [
-            (1, [3], 1, [("start", "Tests.Production"), ("finish", "Tests.Production")]),
-            (2, [1, 2], 2, [
+            (1, [3], 1, "1", [("start", "Tests.Production"), ("finish", "Tests.Production")]),
+            (2, [1, 2], 2, "2", [
                 ("start", "Tests.Production"), ("finish", "Tests.Production"),
                 ("start", "Tests.FixtureA"), ("finish", "Tests.FixtureA"),
             ]),
-            (4, [1, 1, 1], 4, [
+            (3, [1, 2], 3, "3", [
+                ("start", "Tests.Production"), ("finish", "Tests.Production"),
+                ("start", "Tests.FixtureA"), ("finish", "Tests.FixtureA"),
+            ]),
+            (4, [1, 2], 4, "3", [
                 ("start", "Tests.Production"), ("start", "Tests.FixtureA"),
-                ("start", "Tests.FixtureB"), ("finish", "Tests.Production"),
-                ("finish", "Tests.FixtureA"), ("finish", "Tests.FixtureB"),
+                ("finish", "Tests.Production"), ("finish", "Tests.FixtureA"),
             ]),
         ]
-        for jobs, counts, peak, events in cases:
+        for jobs, counts, peak, root_workers, events in cases:
             with self.subTest(jobs=jobs):
                 shards = RUNNER.plan_shards(production, fixtures, jobs)
                 self.assertEqual(counts, [shard.case_count for shard in shards])
@@ -131,7 +134,7 @@ class HostedProducerAnalysisRunnerTests(unittest.TestCase):
                 self.assertEqual(events, children.events)
                 self.assertEqual(peak, children.peak_slots)
                 self.assertEqual(
-                    "1" if jobs == 1 else "2",
+                    root_workers,
                     children.environments[0]["ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"],
                 )
                 for environment in children.environments[1:]:
@@ -139,12 +142,12 @@ class HostedProducerAnalysisRunnerTests(unittest.TestCase):
                     self.assertNotIn("ARCANUM_HOSTED_ANALYSIS_PROGRESS", environment)
 
     def test_queued_fixture_results_remain_required(self):
-        shards = RUNNER.plan_shards(
-            [RUNNER.DiscoveredMethod("Tests.Production", 1)],
-            [RUNNER.DiscoveredMethod("Tests.Fixture", 1)], 2,
-        )
-        for missing in (True, False):
-            with self.subTest(missing=missing):
+        for jobs, missing in ((2, True), (2, False), (3, True), (3, False)):
+            with self.subTest(jobs=jobs, missing=missing):
+                shards = RUNNER.plan_shards(
+                    [RUNNER.DiscoveredMethod("Tests.Production", 1)],
+                    [RUNNER.DiscoveredMethod("Tests.Fixture", 1)], jobs,
+                )
                 children = ScheduledProcesses(
                     missing="Tests.Fixture" if missing else None,
                     failure=None if missing else "Tests.Fixture",
@@ -157,7 +160,7 @@ class HostedProducerAnalysisRunnerTests(unittest.TestCase):
                     def run():
                         return RUNNER.run_shards(
                             "dotnet", Path("tests.csproj"), Path(temp), shards,
-                            production_shard_index=0, worker_count=2,
+                            production_shard_index=0, worker_count=jobs,
                         )
                     if missing:
                         with self.assertRaisesRegex(RuntimeError, "shard 2 produced no TRX"):
@@ -168,12 +171,13 @@ class HostedProducerAnalysisRunnerTests(unittest.TestCase):
                         self.assertEqual(17, RUNNER.require_complete_success(result))
 
     def test_queued_work_uses_the_original_absolute_deadline(self):
-        shards = RUNNER.plan_shards(
-            [RUNNER.DiscoveredMethod("Tests.Production", 1)],
-            [RUNNER.DiscoveredMethod("Tests.Fixture", 1)], 2,
-        )
-        for finish_time, expected_starts in ((109.0, 2), (111.0, 1)):
-            with self.subTest(finish_time=finish_time):
+        cases = ((2, 109.0, 2), (2, 111.0, 1), (3, 109.0, 2), (3, 111.0, 1))
+        for jobs, finish_time, expected_starts in cases:
+            with self.subTest(jobs=jobs, finish_time=finish_time):
+                shards = RUNNER.plan_shards(
+                    [RUNNER.DiscoveredMethod("Tests.Production", 1)],
+                    [RUNNER.DiscoveredMethod("Tests.Fixture", 1)], jobs,
+                )
                 children = ScheduledProcesses(finish_time=finish_time)
                 with tempfile.TemporaryDirectory() as temp, mock.patch.object(
                     RUNNER.subprocess, "Popen", side_effect=children
@@ -185,7 +189,7 @@ class HostedProducerAnalysisRunnerTests(unittest.TestCase):
                     def run():
                         return RUNNER.run_shards(
                             "dotnet", Path("tests.csproj"), Path(temp), shards,
-                            production_shard_index=0, worker_count=2,
+                            production_shard_index=0, worker_count=jobs,
                             timeout_seconds=20, deadline=110.0,
                         )
                     if finish_time > 110:

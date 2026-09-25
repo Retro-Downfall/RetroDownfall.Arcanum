@@ -68,8 +68,8 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: true
       COVERAGE_LINE_TARGET: "80"
       COVERAGE_BRANCH_TARGET: "70"
-      # Keep the shared macOS runner inside its memory envelope while still separating
-      # the serial production graph from one independent fixture worker.
+      # Bound macOS analysis to two total slots: two production traversal workers,
+      # then queued fixtures, within the same overall deadline.
       ARCANUM_ANALYSIS_JOBS: "2"
       # The real-backend credential round trip. It was opt-in and enabled only on the Windows lane,
       # which is gated off until a verified win-x64 SQLCipher asset lands — so no lane exercised a

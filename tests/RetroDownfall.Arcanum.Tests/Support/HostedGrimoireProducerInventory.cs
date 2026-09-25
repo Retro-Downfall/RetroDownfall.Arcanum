@@ -1838,7 +1838,7 @@ internal static class HostedGrimoireProducerInventory
 
     internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false)
     {
-        if (rootWorkers is not (1 or 2))
+        if (rootWorkers is not (1 or 2 or 3))
         {
             throw new ArgumentOutOfRangeException(nameof(rootWorkers));
         }
@@ -1847,7 +1847,7 @@ internal static class HostedGrimoireProducerInventory
 
         return rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
-            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, reverseRootFamilies);
+            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, rootWorkers, reverseRootFamilies);
     }
 
     internal static HostedProducerExpressionDependencyProbe ProbeExpressionDependency(
@@ -5515,6 +5515,7 @@ internal static class HostedGrimoireProducerInventory
             IReadOnlyList<HostedProducerServiceEntry> catalog,
             IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog,
             HostedProducerRecoverySelectionProbe? recoverySelectionProbe,
+            int rootWorkers,
             bool reverseRootFamilies)
         {
             ProducerGraph coordinator = createGraph();
@@ -5530,9 +5531,13 @@ internal static class HostedGrimoireProducerInventory
                 }
             }
 
-            ProducerGraph[] workers = [coordinator, createGraph()];
+            ProducerGraph[] workers = Enumerable.Range(0, rootWorkers)
+                .Select(worker => worker == 0 ? coordinator : createGraph()).ToArray();
 
-            workers[1].recoveryMatrixFacts = coordinator.recoveryMatrixFacts;
+            foreach (ProducerGraph worker in workers)
+            {
+                worker.recoveryMatrixFacts = coordinator.recoveryMatrixFacts;
+            }
 
             PlannedRoot[][] plans = workers.Select(graph => graph.PrepareRoots(registrations, catalog, nonHostedCatalog)).ToArray();
 
@@ -5552,8 +5557,7 @@ internal static class HostedGrimoireProducerInventory
                 }
             }
 
-            int[][] families = plans[0].GroupBy(static root => root.Family, StringComparer.Ordinal)
-                .Select(static family => family.Select(static root => root.Occurrence).ToArray()).ToArray();
+            int[][] families = HostedProducerRootWorkers.OrderFamilies(plans[0].Select(static root => (root.Family, root.Occurrence)));
 
             if (reverseRootFamilies)
             {
