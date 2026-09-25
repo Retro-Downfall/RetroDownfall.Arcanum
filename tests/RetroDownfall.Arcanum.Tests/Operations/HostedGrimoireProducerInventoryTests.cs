@@ -28,6 +28,216 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 [Trait("Category", "HostedProducerAnalysis")]
 public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper output)
 {
+    [Fact]
+    public void MemberMethodIdentityReusesOnlyExactGenericAndReducedSymbolReferences()
+    {
+        CSharpCompilation compilation = Compile("static class Extensions { public static T Echo<T>(this T value) => value; }");
+
+        SyntaxTree tree = compilation.SyntaxTrees.Single();
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax syntax = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+        IMethodSymbol generic = (IMethodSymbol)model.GetDeclaredSymbol(syntax)!;
+
+        IMethodSymbol constructed = generic.Construct(compilation.GetSpecialType(SpecialType.System_Int32));
+
+        IMethodSymbol equalButDistinct = generic.Construct(compilation.GetSpecialType(SpecialType.System_Int32));
+
+        IMethodSymbol reduced = generic.ReduceExtensionMethod(compilation.GetSpecialType(SpecialType.System_Int32))!;
+
+        Assert.NotNull(reduced.ReducedFrom);
+
+        Assert.NotSame(constructed, equalButDistinct);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(constructed, equalButDistinct));
+
+        var results = HostedGrimoireProducerInventory.ProbeMemberMethodIdentities(compilation,
+        [
+            (model, generic, syntax),
+            (model, generic, syntax),
+            (model, constructed, syntax),
+            (model, equalButDistinct, syntax),
+            (model, reduced, syntax),
+            (model, reduced, syntax),
+        ]);
+
+        Assert.All(results, static result => Assert.Equal("M:Extensions.Echo``1(``0)", result.Method));
+
+        Assert.Equal([1, 0, 1, 1, 1, 0], results.Select(static result => result.Builds));
+
+        var fresh = HostedGrimoireProducerInventory.ProbeMemberMethodIdentities(compilation, [(model, reduced, syntax), (model, reduced, syntax)]);
+
+        Assert.Equal([1, 0], fresh.Select(static result => result.Builds));
+    }
+
+    [Fact]
+    public void MemberMethodIdentityPreservesGenericDefinitionAndLiveCompilationTreeAndSpanFields()
+    {
+        const string source = "class Owner { void Run() { T Local<T>(T value) => value; _ = Local(1); _ = Local(\"text\"); } }";
+
+        CSharpCompilation first = Compile(source);
+
+        CSharpCompilation second = Compile(source);
+
+        SyntaxTree firstTree = first.SyntaxTrees.Single();
+
+        SyntaxTree secondTree = second.SyntaxTrees.Single();
+
+        SemanticModel firstModel = first.GetSemanticModel(firstTree);
+
+        SemanticModel secondModel = second.GetSemanticModel(secondTree);
+
+        InvocationExpressionSyntax[] calls = firstTree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().ToArray();
+
+        IMethodSymbol integer = (IMethodSymbol)firstModel.GetSymbolInfo(calls[0]).Symbol!;
+
+        IMethodSymbol text = (IMethodSymbol)firstModel.GetSymbolInfo(calls[1]).Symbol!;
+
+        Assert.Equal("M:Owner.Local``1(``0)", integer.OriginalDefinition.GetDocumentationCommentId());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(integer.OriginalDefinition, text.OriginalDefinition));
+
+        MethodDeclarationSyntax firstSyntax = firstTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+        MethodDeclarationSyntax secondSyntax = secondTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+        var results = HostedGrimoireProducerInventory.ProbeMemberMethodIdentities(first,
+        [
+            (firstModel, integer, firstSyntax),
+            (firstModel, integer, firstSyntax),
+            (firstModel, text, firstSyntax),
+            (secondModel, integer, secondSyntax),
+            (secondModel, integer, secondSyntax.Body!),
+        ]);
+
+        Assert.Equal("M:Owner.Local``1(``0)", results[0].Method);
+
+        Assert.Equal(results[0].Method, results[2].Method);
+
+        Assert.Equal(results[0].Method, results[3].Method);
+
+        Assert.Equal([0, 0, 0, 1, 1], results.Select(static result => result.Compilation));
+
+        Assert.Equal([0, 0, 0, 1, 1], results.Select(static result => result.Tree));
+
+        Assert.Equal(secondSyntax.Body!.SpanStart, results[4].Start);
+
+        Assert.Equal(secondSyntax.Body.Span.Length, results[4].Length);
+
+        Assert.NotEqual((results[3].Start, results[3].Length), (results[4].Start, results[4].Length));
+
+        Assert.Equal([1, 0, 1, 0, 0], results.Select(static result => result.Builds));
+    }
+
+    [Fact]
+    public void BindingSymbolIdentityReusesOnlyExactCompilationAndSymbolReferencesWithinOneGraph()
+    {
+        const string source = "class IdentitySource { void First(int value) { } void Second(int value) { } void Generic<T>() { } }";
+
+        CSharpCompilation first = Compile(source);
+
+        CSharpCompilation second = Compile(source);
+
+        SemanticModel firstModel = first.GetSemanticModel(first.SyntaxTrees.Single());
+
+        SemanticModel secondModel = second.GetSemanticModel(second.SyntaxTrees.Single());
+
+        IMethodSymbol Method(CSharpCompilation compilation, string name) => compilation.GetTypeByMetadataName("IdentitySource")!.GetMembers(name).OfType<IMethodSymbol>().Single();
+
+        IMethodSymbol firstMethod = Method(first, "First");
+
+        IMethodSymbol secondMethod = Method(second, "First");
+
+        IMethodSymbol generic = Method(first, "Generic");
+
+        IMethodSymbol constructed = generic.Construct(first.GetSpecialType(SpecialType.System_Int32));
+
+        IMethodSymbol equalButDistinct = generic.Construct(first.GetSpecialType(SpecialType.System_Int32));
+
+        Assert.NotSame(constructed, equalButDistinct);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(constructed, equalButDistinct));
+
+        (SemanticModel, IMethodSymbol, ISymbol)[] queries =
+        [
+            (firstModel, firstMethod, firstMethod.Parameters[0]),
+            (firstModel, firstMethod, firstMethod.Parameters[0]),
+            (firstModel, firstMethod, Method(first, "Second").Parameters[0]),
+            (secondModel, secondMethod, firstMethod.Parameters[0]),
+            (secondModel, secondMethod, firstMethod.Parameters[0]),
+            (secondModel, secondMethod, secondMethod.Parameters[0]),
+            (firstModel, firstMethod, constructed),
+            (firstModel, firstMethod, equalButDistinct),
+            (firstModel, firstMethod, equalButDistinct),
+        ];
+
+        var results = HostedGrimoireProducerInventory.ProbeBindingSymbolIdentities(first, queries);
+
+        Assert.Equal(results[0].Identity, results[1].Identity);
+
+        Assert.NotEqual(results[0].Identity, results[2].Identity);
+
+        Assert.NotEqual(results[0].Identity, results[3].Identity);
+
+        Assert.Equal(results[3].Identity, results[4].Identity);
+
+        Assert.NotEqual(results[3].Identity, results[5].Identity);
+
+        Assert.Equal(results[6].Identity, results[7].Identity);
+
+        Assert.Equal([1, 0, 1, 1, 0, 1, 1, 1, 0], results.Select(static result => result.Builds));
+
+        var fresh = HostedGrimoireProducerInventory.ProbeBindingSymbolIdentities(first, [queries[0], queries[1]]);
+
+        Assert.Equal(results[0].Identity, fresh[0].Identity);
+
+        Assert.Equal([1, 0], fresh.Select(static result => result.Builds));
+    }
+
+    [Fact]
+    public void BindingSymbolIdentityPreservesExternalAndLateDeclarationRegistrationOnFirstMiss()
+    {
+        CSharpCompilation first = Compile("class First { void Run() { } }");
+
+        CSharpCompilation late = Compile("partial class Late { void Run() { } }")
+            .AddSyntaxTrees(CSharpSyntaxTree.ParseText("partial class Late { }", path: "src/Extra.cs"));
+
+        SemanticModel firstModel = first.GetSemanticModel(first.SyntaxTrees.Single());
+
+        SemanticModel lateModel = late.GetSemanticModel(late.SyntaxTrees.First());
+
+        IMethodSymbol firstMethod = first.GetTypeByMetadataName("First")!.GetMembers("Run").OfType<IMethodSymbol>().Single();
+
+        INamedTypeSymbol lateType = late.GetTypeByMetadataName("Late")!;
+
+        IMethodSymbol lateMethod = lateType.GetMembers("Run").OfType<IMethodSymbol>().Single();
+
+        INamedTypeSymbol external = first.GetSpecialType(SpecialType.System_String);
+
+        var results = HostedGrimoireProducerInventory.ProbeBindingSymbolIdentities(first,
+        [
+            (lateModel, lateMethod, external),
+            (lateModel, lateMethod, external),
+            (firstModel, firstMethod, external),
+            (lateModel, lateMethod, lateType),
+            (lateModel, lateMethod, lateType),
+        ]);
+
+        Assert.Equal(results[0].Identity, results[2].Identity);
+
+        Assert.Equal([1, 1, 1, 2, 2], results.Select(static result => result.Compilations));
+
+        Assert.Equal([1, 1, 1, 3, 3], results.Select(static result => result.Trees));
+
+        Assert.Contains(":1:1:", results[3].Identity, StringComparison.Ordinal);
+
+        Assert.Equal(results[3].Identity, results[4].Identity);
+
+        Assert.Equal([1, 0, 1, 1, 0], results.Select(static result => result.Builds));
+    }
+
     private static string R2Source(string body, string extra = "") => RegistrationSource("services.AddHostedService<Worker>();").Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal) + AdmissionTypes + extra;
 
     private static string R2Admission => AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal) + " if (!lease.TryBeginExternalEffectGroup(out var group)) return; using var held = group; ";

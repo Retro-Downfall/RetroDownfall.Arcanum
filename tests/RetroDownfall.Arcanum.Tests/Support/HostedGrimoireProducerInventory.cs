@@ -1868,6 +1868,18 @@ internal static class HostedGrimoireProducerInventory
         new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
             .ProbeDependencySymbolLookups(method, queries);
 
+    internal static IReadOnlyList<(string Identity, int Builds, int Compilations, int Trees)> ProbeBindingSymbolIdentities(
+        CSharpCompilation compilation,
+        IReadOnlyList<(SemanticModel Model, IMethodSymbol Method, ISymbol Symbol)> queries) =>
+        new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeBindingSymbolIdentities(queries);
+
+    internal static IReadOnlyList<(string Method, int Compilation, int Tree, int Start, int Length, int Builds)> ProbeMemberMethodIdentities(
+        CSharpCompilation compilation,
+        IReadOnlyList<(SemanticModel Model, IMethodSymbol Method, SyntaxNode Syntax)> queries) =>
+        new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeMemberMethodIdentities(queries);
+
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,
         IMethodSymbol method,
@@ -2775,6 +2787,14 @@ internal static class HostedGrimoireProducerInventory
 
         private readonly Dictionary<Compilation, int> compilationIdentities = new(ReferenceEqualityComparer.Instance);
 
+        private int bindingSymbolIdentityBuilds;
+
+        private int memberMethodKeyBuilds;
+
+        private readonly Dictionary<IMethodSymbol, string> memberMethodKeys = new(ReferenceEqualityComparer.Instance);
+
+        private readonly Dictionary<Compilation, Dictionary<ISymbol, string>> bindingSymbolIdentities = new(ReferenceEqualityComparer.Instance);
+
         private readonly Dictionary<SyntaxTree, int> treeIdentities = new(ReferenceEqualityComparer.Instance);
 
         private readonly Dictionary<SyntaxTree, SemanticModel> semanticModels = new(ReferenceEqualityComparer.Instance);
@@ -2931,7 +2951,38 @@ internal static class HostedGrimoireProducerInventory
             return identity;
         }
 
-        private GraphMemberIdentity MemberIdentity(AuthoredMember member) => new(member.Symbol.ContainingAssembly.Identity, CompilationIdentity(member.Model.Compilation), TreeIdentity(member.Syntax.SyntaxTree), MethodKey(member.Symbol), member.Syntax.SpanStart, member.Syntax.Span.Length);
+        private GraphMemberIdentity MemberIdentity(AuthoredMember member) => new(member.Symbol.ContainingAssembly.Identity, CompilationIdentity(member.Model.Compilation), TreeIdentity(member.Syntax.SyntaxTree), MemberMethodKey(member.Symbol), member.Syntax.SpanStart, member.Syntax.Span.Length);
+
+        private string MemberMethodKey(IMethodSymbol method)
+        {
+            if (!memberMethodKeys.TryGetValue(method, out string? key))
+            {
+                memberMethodKeyBuilds++;
+
+                key = MethodKey(method);
+
+                memberMethodKeys[method] = key;
+            }
+
+            return key;
+        }
+
+        internal IReadOnlyList<(string Method, int Compilation, int Tree, int Start, int Length, int Builds)> ProbeMemberMethodIdentities(
+            IReadOnlyList<(SemanticModel Model, IMethodSymbol Method, SyntaxNode Syntax)> queries)
+        {
+            List<(string Method, int Compilation, int Tree, int Start, int Length, int Builds)> results = [];
+
+            foreach (var query in queries)
+            {
+                int before = memberMethodKeyBuilds;
+
+                GraphMemberIdentity identity = MemberIdentity(new(query.Method, query.Syntax, query.Model));
+
+                results.Add((identity.Method, identity.Compilation, identity.Tree, identity.SpanStart, identity.SpanLength, memberMethodKeyBuilds - before));
+            }
+
+            return results;
+        }
 
         private TraversalStateIdentity TraversalState(AuthoredMember member, string rootType, string operationId, bool lifecycle, string? inheritedWork, string? inheritedEffect, string? recoveryEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, int? knownEnvironmentToken = null, bool environmentTokenObtained = false)
         {
@@ -5113,6 +5164,27 @@ internal static class HostedGrimoireProducerInventory
             ISymbol symbol,
             AuthoredMember member)
         {
+            if (!bindingSymbolIdentities.TryGetValue(member.Model.Compilation, out Dictionary<ISymbol, string>? identities))
+            {
+                bindingSymbolIdentities.Add(member.Model.Compilation, identities = new(ReferenceEqualityComparer.Instance));
+            }
+
+            if (!identities.TryGetValue(symbol, out string? identity))
+            {
+                bindingSymbolIdentityBuilds++;
+
+                identity = BuildBindingSymbolIdentity(symbol, member);
+
+                identities[symbol] = identity;
+            }
+
+            return identity;
+        }
+
+        private string BuildBindingSymbolIdentity(
+            ISymbol symbol,
+            AuthoredMember member)
+        {
             string owner = symbol.ContainingSymbol switch
             {
                 IMethodSymbol method => MethodKey(method),
@@ -5162,6 +5234,25 @@ internal static class HostedGrimoireProducerInventory
             AppendIdentitySegment(
                 value,
                 count.ToString(CultureInfo.InvariantCulture));
+        }
+
+        internal IReadOnlyList<(string Identity, int Builds, int Compilations, int Trees)> ProbeBindingSymbolIdentities(
+            IReadOnlyList<(SemanticModel Model, IMethodSymbol Method, ISymbol Symbol)> queries)
+        {
+            List<(string Identity, int Builds, int Compilations, int Trees)> results = [];
+
+            foreach (var query in queries)
+            {
+                AuthoredMember member = new(query.Method, query.Method.DeclaringSyntaxReferences.Single().GetSyntax(), query.Model);
+
+                int before = bindingSymbolIdentityBuilds;
+
+                string identity = BindingSymbolIdentity(query.Symbol, member);
+
+                results.Add((identity, bindingSymbolIdentityBuilds - before, compilationIdentities.Count, treeIdentities.Count));
+            }
+
+            return results;
         }
 
         private static void AppendIdentitySegment(
