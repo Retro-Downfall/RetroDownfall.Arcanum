@@ -253,6 +253,7 @@ public sealed class CovenantArchitectureBoundaryTests
     [Fact]
     [Trait("Category", "HostedProducerAnalysis")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
+    [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void Every_effectful_recovery_handler_has_the_required_source_effects()
     {
         RecoveryEffectContract[] contracts = RecoveryEffectContracts();

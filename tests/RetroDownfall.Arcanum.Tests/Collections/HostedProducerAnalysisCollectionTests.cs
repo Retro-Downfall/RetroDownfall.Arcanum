@@ -82,6 +82,49 @@ public sealed class HostedProducerAnalysisCollectionTests
 
     }
 
+    [Fact]
+    public void Additional_production_graph_lane_has_exactly_the_four_known_consumers()
+    {
+
+        static bool HasAdditionalTrait(MethodInfo method) =>
+            method.GetCustomAttributesData().Any(static attribute =>
+                attribute.AttributeType == typeof(TraitAttribute)
+                && attribute.ConstructorArguments.Count == 2
+                && attribute.ConstructorArguments[0].Value as string == "Category"
+                && attribute.ConstructorArguments[1].Value as string
+                    == "HostedProducerAdditionalAnalysis");
+
+        Type[] consumers =
+        [
+            typeof(HostedGrimoireProducerInventoryTests),
+            typeof(CovenantArchitectureBoundaryTests),
+            typeof(ArcanumAuthenticatedHttpSenderTests),
+        ];
+
+        string[] actual = consumers
+            .SelectMany(static consumer => consumer.GetMethods(
+                BindingFlags.Instance
+                    | BindingFlags.Public
+                    | BindingFlags.DeclaredOnly))
+            .Where(HasAdditionalTrait)
+            .Select(static method => method.DeclaringType!.FullName
+                + "."
+                + method.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        string[] expected =
+        [
+            "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Every_effectful_recovery_handler_has_the_required_source_effects",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionImmutableArraySequenceEqualityUsesDefaultValueEquality",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSchemaLazyFactoriesAreProvenAsBoundedData",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSequenceOperationUsesTheSameReviewedComparerProof",
+        ];
+
+        Assert.Equal(expected, actual);
+
+    }
+
     [Theory]
     [InlineData(typeof(HostedGrimoireProducerInventoryTests))]
     [InlineData(typeof(CovenantArchitectureBoundaryTests))]

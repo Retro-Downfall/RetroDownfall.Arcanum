@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from collections import Counter, OrderedDict
 import ctypes
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -24,6 +26,10 @@ FIXTURE_FILTER = (
     "Category=HostedProducerAnalysis"
     "&Category!=HostedProducerProductionAnalysis"
 )
+
+ADDITIONAL_FILTER = "Category=HostedProducerAdditionalAnalysis"
+
+RECEIPT_FILE = "hosted-producer-analysis-receipt.json"
 
 ROOT_PROGRESS_VARIABLE = "ARCANUM_HOSTED_ANALYSIS_PROGRESS"
 
@@ -144,6 +150,96 @@ def balance_methods(
         AnalysisShard(index=index, methods=tuple(shard), case_count=totals[index])
         for index, shard in enumerate(assigned)
     ]
+
+
+def _method_map(
+    methods: Sequence[DiscoveredMethod],
+    label: str,
+) -> dict[str, DiscoveredMethod]:
+    mapped: dict[str, DiscoveredMethod] = {}
+
+    for method in methods:
+        if method.case_count < 1:
+            raise ValueError(
+                f"{label} method {method.name} has a non-positive case count"
+            )
+
+        if method.name in mapped:
+            raise ValueError(f"duplicate {label} method: {method.name}")
+
+        mapped[method.name] = method
+
+    return mapped
+
+
+def select_partition(
+    production: Sequence[DiscoveredMethod],
+    additional: Sequence[DiscoveredMethod],
+    fixtures: Sequence[DiscoveredMethod],
+    partition: str,
+) -> Tuple[list[DiscoveredMethod], list[DiscoveredMethod]]:
+    """Select one complete partition after validating the shared universe."""
+
+    if partition not in {"full", "primary", "additional"}:
+        raise ValueError(f"unknown hosted-producer analysis partition: {partition}")
+
+    production_by_name = _method_map(production, "production")
+
+    additional_by_name = _method_map(additional, "additional")
+
+    fixture_by_name = _method_map(fixtures, "fixture")
+
+    overlap = set(production_by_name).intersection(fixture_by_name)
+
+    if overlap:
+        raise ValueError(
+            "methods selected by both production and fixture universes: "
+            + ", ".join(sorted(overlap))
+        )
+
+    outside = set(additional_by_name).difference(production_by_name)
+
+    if outside:
+        raise ValueError(
+            "additional methods outside the production universe: "
+            + ", ".join(sorted(outside))
+        )
+
+    for name, method in additional_by_name.items():
+        if production_by_name[name].case_count != method.case_count:
+            raise ValueError(
+                "additional method case count does not match production: "
+                f"{name} ({method.case_count} != "
+                f"{production_by_name[name].case_count})"
+            )
+
+    if not additional_by_name or len(additional_by_name) >= len(production_by_name):
+        raise ValueError(
+            "additional partition is empty or its production methods are not "
+            "a nonempty proper subset of the production universe"
+        )
+
+    primary = [
+        method
+        for method in production
+        if method.name not in additional_by_name
+    ]
+
+    secondary = [*additional, *fixtures]
+
+    if not primary:
+        raise ValueError("primary partition is empty")
+
+    if not secondary:
+        raise ValueError("additional partition is empty")
+
+    if partition == "primary":
+        return primary, []
+
+    if partition == "additional":
+        return list(additional), list(fixtures)
+
+    return list(production), list(fixtures)
 
 
 def plan_shards(
@@ -318,6 +414,479 @@ def read_trx_summary(
         passed_count=len(results) - len(nonpassing),
         nonpassing=nonpassing,
     )
+
+
+def _entry(method: DiscoveredMethod, kind: Optional[str] = None) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "name": method.name,
+        "caseCount": method.case_count,
+    }
+
+    if kind is not None:
+        entry["kind"] = kind
+
+    return entry
+
+
+def write_partition_receipt(
+    results_directory: Path,
+    source_sha: str,
+    partition: str,
+    production: Sequence[DiscoveredMethod],
+    additional: Sequence[DiscoveredMethod],
+    fixtures: Sequence[DiscoveredMethod],
+    selected_production: Sequence[DiscoveredMethod],
+    selected_fixtures: Sequence[DiscoveredMethod],
+    shards: Sequence[AnalysisShard],
+) -> Path:
+    results_directory.mkdir(parents=True, exist_ok=True)
+
+    selected = [
+        *(_entry(method, "production") for method in selected_production),
+        *(_entry(method, "fixture") for method in selected_fixtures),
+    ]
+
+    receipt = {
+        "schemaVersion": 1,
+        "sourceSha": source_sha,
+        "partition": partition,
+        "fullUniverse": [
+            *(_entry(method, "production") for method in production),
+            *(_entry(method, "fixture") for method in fixtures),
+        ],
+        "additionalProduction": [_entry(method) for method in additional],
+        "selected": selected,
+        "shards": [
+            {
+                "trxFile": (
+                    "hosted-producer-analysis-"
+                    f"shard-{shard.index + 1:02d}.trx"
+                ),
+                "methods": [_entry(method) for method in shard.methods],
+            }
+            for shard in shards
+        ],
+    }
+
+    path = results_directory / RECEIPT_FILE
+
+    path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    return path
+
+
+def _load_receipt(path: Path, expected_partition: str, source_sha: str) -> dict:
+    receipt_path = path / RECEIPT_FILE
+
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            f"missing {expected_partition} analysis receipt: {receipt_path}"
+        ) from error
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError(
+            f"malformed {expected_partition} analysis receipt: {receipt_path}"
+        ) from error
+
+    if not isinstance(receipt, dict) or receipt.get("schemaVersion") != 1:
+        raise RuntimeError(
+            f"unsupported {expected_partition} analysis receipt schema"
+        )
+
+    if receipt.get("sourceSha") != source_sha:
+        raise RuntimeError(
+            f"{expected_partition} analysis receipt source SHA does not match "
+            "the aggregate source SHA"
+        )
+
+    if receipt.get("partition") != expected_partition:
+        raise RuntimeError(
+            f"expected {expected_partition} analysis receipt, got "
+            f"{receipt.get('partition')!r}"
+        )
+
+    return receipt
+
+
+def _parse_receipt_entries(
+    value: object,
+    label: str,
+    *,
+    require_kind: bool,
+) -> list[Tuple[str, int, Optional[str]]]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"{label} must be a list")
+
+    parsed: list[Tuple[str, int, Optional[str]]] = []
+
+    names: set[str] = set()
+
+    for item in value:
+        if not isinstance(item, dict):
+            raise RuntimeError(f"{label} contains a malformed method entry")
+
+        name = item.get("name")
+
+        case_count = item.get("caseCount")
+
+        kind = item.get("kind")
+
+        if not isinstance(name, str) or not name:
+            raise RuntimeError(f"{label} contains an invalid method name")
+
+        if not isinstance(case_count, int) or isinstance(case_count, bool) or case_count < 1:
+            raise RuntimeError(f"{label} contains an invalid case count for {name}")
+
+        if require_kind and kind not in {"production", "fixture"}:
+            raise RuntimeError(f"{label} contains an invalid method kind for {name}")
+
+        if not require_kind and kind is not None:
+            raise RuntimeError(f"{label} contains an unexpected method kind for {name}")
+
+        if name in names:
+            raise RuntimeError(f"{label} contains duplicate method {name}")
+
+        names.add(name)
+
+        parsed.append((name, case_count, kind if isinstance(kind, str) else None))
+
+    return parsed
+
+
+def _validate_receipt(
+    directory: Path,
+    receipt: dict,
+) -> Tuple[Counter[Tuple[str, int, str]], int, int]:
+    partition = str(receipt["partition"])
+
+    universe = _parse_receipt_entries(
+        receipt.get("fullUniverse"),
+        f"{partition} full universe",
+        require_kind=True,
+    )
+
+    additional = _parse_receipt_entries(
+        receipt.get("additionalProduction"),
+        f"{partition} additional production",
+        require_kind=False,
+    )
+
+    selected = _parse_receipt_entries(
+        receipt.get("selected"),
+        f"{partition} selected methods",
+        require_kind=True,
+    )
+
+    production = {
+        name: case_count
+        for name, case_count, kind in universe
+        if kind == "production"
+    }
+
+    fixtures = {
+        name: case_count
+        for name, case_count, kind in universe
+        if kind == "fixture"
+    }
+
+    if set(production).intersection(fixtures):
+        raise RuntimeError(f"{partition} full universe contains duplicate identities")
+
+    additional_map = {name: count for name, count, _ in additional}
+
+    outside = set(additional_map).difference(production)
+
+    if outside:
+        raise RuntimeError(
+            f"{partition} additional production is outside the full universe"
+        )
+
+    if any(production[name] != count for name, count in additional_map.items()):
+        raise RuntimeError(
+            f"{partition} additional production case counts do not match"
+        )
+
+    if not additional_map or len(additional_map) >= len(production):
+        raise RuntimeError(
+            f"{partition} additional production is not a nonempty proper subset"
+        )
+
+    if partition == "primary":
+        expected = Counter(
+            (name, count, "production")
+            for name, count in production.items()
+            if name not in additional_map
+        )
+    else:
+        expected = Counter(
+            [
+                *((name, count, "production") for name, count in additional_map.items()),
+                *((name, count, "fixture") for name, count in fixtures.items()),
+            ]
+        )
+
+    selected_counter = Counter(
+        (name, count, str(kind))
+        for name, count, kind in selected
+    )
+
+    if selected_counter != expected:
+        raise RuntimeError(
+            f"{partition} selected methods do not match the required partition"
+        )
+
+    shards = receipt.get("shards")
+
+    if not isinstance(shards, list) or not shards:
+        raise RuntimeError(f"{partition} receipt declares no analysis shards")
+
+    selected_by_name = {
+        name: (count, str(kind))
+        for name, count, kind in selected
+    }
+
+    shard_methods: list[Tuple[str, int, str]] = []
+
+    declared_trx: set[str] = set()
+
+    passed = 0
+
+    completed = 0
+
+    for shard in shards:
+        if not isinstance(shard, dict):
+            raise RuntimeError(f"{partition} receipt contains a malformed shard")
+
+        trx_file = shard.get("trxFile")
+
+        if (
+            not isinstance(trx_file, str)
+            or not trx_file.endswith(".trx")
+            or Path(trx_file).name != trx_file
+            or trx_file in declared_trx
+        ):
+            raise RuntimeError(f"{partition} receipt contains an invalid TRX declaration")
+
+        declared_trx.add(trx_file)
+
+        methods = _parse_receipt_entries(
+            shard.get("methods"),
+            f"{partition} shard {trx_file}",
+            require_kind=False,
+        )
+
+        if not methods:
+            raise RuntimeError(f"{partition} shard {trx_file} selects no methods")
+
+        expected_methods: list[DiscoveredMethod] = []
+
+        for name, count, _ in methods:
+            if name not in selected_by_name or selected_by_name[name][0] != count:
+                raise RuntimeError(
+                    f"{partition} shard {trx_file} contains an unselected method"
+                )
+
+            shard_methods.append((name, count, selected_by_name[name][1]))
+
+            expected_methods.append(DiscoveredMethod(name, count))
+
+        trx_path = directory / trx_file
+
+        if not trx_path.is_file():
+            raise RuntimeError(
+                f"{partition} analysis evidence is missing TRX {trx_file}"
+            )
+
+        summary = read_trx_summary(trx_path, expected_methods)
+
+        if summary.nonpassing:
+            raise RuntimeError(
+                f"{partition} analysis evidence contains tests that did not pass"
+            )
+
+        completed += summary.completed_count
+
+        passed += summary.passed_count
+
+    if Counter(shard_methods) != selected_counter:
+        raise RuntimeError(
+            f"{partition} shard declarations are duplicate, incomplete, or extra"
+        )
+
+    actual_trx = {
+        path.relative_to(directory).as_posix()
+        for path in directory.rglob("*.trx")
+    }
+
+    if actual_trx != declared_trx:
+        raise RuntimeError(
+            f"{partition} evidence contains missing or undeclared TRX files"
+        )
+
+    return selected_counter, completed, passed
+
+
+def aggregate_partition_evidence(
+    primary_directory: Path,
+    additional_directory: Path,
+    source_sha: str,
+    summary_path: Path,
+) -> dict:
+    if not source_sha:
+        raise RuntimeError("aggregate source SHA is required")
+
+    primary_receipt = _load_receipt(primary_directory, "primary", source_sha)
+
+    additional_receipt = _load_receipt(
+        additional_directory,
+        "additional",
+        source_sha,
+    )
+
+    primary_universe = Counter(
+        _parse_receipt_entries(
+            primary_receipt.get("fullUniverse"),
+            "primary full universe",
+            require_kind=True,
+        )
+    )
+
+    additional_universe = Counter(
+        _parse_receipt_entries(
+            additional_receipt.get("fullUniverse"),
+            "additional full universe",
+            require_kind=True,
+        )
+    )
+
+    if primary_universe != additional_universe:
+        raise RuntimeError("partition full discovery manifests do not agree")
+
+    if Counter(
+        _parse_receipt_entries(
+            primary_receipt.get("additionalProduction"),
+            "primary additional production",
+            require_kind=False,
+        )
+    ) != Counter(
+        _parse_receipt_entries(
+            additional_receipt.get("additionalProduction"),
+            "additional additional production",
+            require_kind=False,
+        )
+    ):
+        raise RuntimeError("partition additional discovery manifests do not agree")
+
+    primary_selected, primary_completed, primary_passed = _validate_receipt(
+        primary_directory,
+        primary_receipt,
+    )
+
+    additional_selected, additional_completed, additional_passed = _validate_receipt(
+        additional_directory,
+        additional_receipt,
+    )
+
+    overlap = primary_selected & additional_selected
+
+    if overlap:
+        raise RuntimeError("partition selected method/case multisets overlap")
+
+    selected_union = primary_selected + additional_selected
+
+    if selected_union != primary_universe:
+        raise RuntimeError("partition selected method/case union is incomplete or extra")
+
+    total_cases = sum(
+        case_count * multiplicity
+        for (_, case_count, _), multiplicity in primary_universe.items()
+    )
+
+    completed = primary_completed + additional_completed
+
+    passed = primary_passed + additional_passed
+
+    if completed != total_cases or passed != total_cases:
+        raise RuntimeError(
+            "aggregate TRX evidence does not contain one passing result for every case"
+        )
+
+    def manifest_hashes(
+        manifest: Counter[Tuple[str, int, str]],
+    ) -> Tuple[str, str]:
+        methods: list[str] = []
+
+        cases: list[str] = []
+
+        for (name, case_count, kind), multiplicity in sorted(manifest.items()):
+            for occurrence in range(multiplicity):
+                methods.append(f"{kind}\t{name}\t{occurrence}\n")
+
+                cases.extend(
+                    f"{kind}\t{name}\t{occurrence}\t{case_index}\n"
+                    for case_index in range(case_count)
+                )
+
+        return (
+            hashlib.sha256("".join(methods).encode("utf-8")).hexdigest(),
+            hashlib.sha256("".join(cases).encode("utf-8")).hexdigest(),
+        )
+
+    full_method_hash, full_case_hash = manifest_hashes(primary_universe)
+
+    primary_method_hash, primary_case_hash = manifest_hashes(primary_selected)
+
+    additional_method_hash, additional_case_hash = manifest_hashes(
+        additional_selected
+    )
+
+    summary = {
+        "schemaVersion": 2,
+        "aggregateJob": "Hosted producer source analysis",
+        "partitionAccounting": {
+            "status": "PASS",
+            "sourceSha": source_sha,
+            "disjoint": True,
+            "unionComplete": True,
+            "fullUniverse": {
+                "discoveredCases": total_cases,
+                "passedCases": passed,
+                "failedCases": 0,
+                "skippedCases": 0,
+                "methodsSha256": full_method_hash,
+                "casesSha256": full_case_hash,
+            },
+            "partitions": [
+                {
+                    "name": "primary",
+                    "job": "Hosted producer primary analysis",
+                    "selectedCases": primary_completed,
+                    "methodsSha256": primary_method_hash,
+                    "casesSha256": primary_case_hash,
+                },
+                {
+                    "name": "additional",
+                    "job": "Hosted producer additional analysis and fixtures",
+                    "selectedCases": additional_completed,
+                    "methodsSha256": additional_method_hash,
+                    "casesSha256": additional_case_hash,
+                },
+            ],
+        },
+    }
+
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    return summary
 
 
 def shard_environment(
@@ -1172,9 +1741,9 @@ def _parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--dotnet", default="dotnet")
 
-    parser.add_argument("--project", type=Path, required=True)
+    parser.add_argument("--project", type=Path)
 
-    parser.add_argument("--results-directory", type=Path, required=True)
+    parser.add_argument("--results-directory", type=Path)
 
     parser.add_argument("--jobs", type=int)
 
@@ -1182,11 +1751,83 @@ def _parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--configuration")
 
+    parser.add_argument(
+        "--partition",
+        choices=("full", "primary", "additional"),
+        default="full",
+    )
+
+    parser.add_argument("--source-sha")
+
+    parser.add_argument("--aggregate-primary-results", type=Path)
+
+    parser.add_argument("--aggregate-additional-results", type=Path)
+
+    parser.add_argument("--aggregate-summary", type=Path)
+
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = _parser().parse_args(argv)
+
+    aggregate_arguments = (
+        arguments.aggregate_primary_results,
+        arguments.aggregate_additional_results,
+        arguments.aggregate_summary,
+    )
+
+    if any(argument is not None for argument in aggregate_arguments):
+        if not all(argument is not None for argument in aggregate_arguments):
+            print(
+                "all aggregate result and summary paths are required",
+                file=sys.stderr,
+            )
+
+            return 2
+
+        if not arguments.source_sha:
+            print("aggregate source SHA is required", file=sys.stderr)
+
+            return 2
+
+        try:
+            summary = aggregate_partition_evidence(
+                arguments.aggregate_primary_results,
+                arguments.aggregate_additional_results,
+                arguments.source_sha,
+                arguments.aggregate_summary,
+            )
+
+            print(
+                "Hosted-producer source analysis authority passed: "
+                f"{summary['partitionAccounting']['fullUniverse']['passedCases']}/"
+                f"{summary['partitionAccounting']['fullUniverse']['discoveredCases']}. "
+                f"Summary: {arguments.aggregate_summary}",
+                flush=True,
+            )
+
+            return 0
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"hosted-producer analysis: {error}", file=sys.stderr)
+
+            return 1
+
+    if arguments.project is None or arguments.results_directory is None:
+        print(
+            "--project and --results-directory are required for analysis execution",
+            file=sys.stderr,
+        )
+
+        return 2
+
+    if arguments.partition != "full" and not arguments.source_sha:
+        print(
+            "--source-sha is required for partitioned analysis",
+            file=sys.stderr,
+        )
+
+        return 2
 
     configured_jobs = arguments.jobs
 
@@ -1267,6 +1908,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             discovery_timeout(),
         )
 
+        additional = _discover(
+            arguments.dotnet,
+            arguments.project,
+            ADDITIONAL_FILTER,
+            arguments.configuration,
+            discovery_timeout(),
+        )
+
         fixtures = _discover(
             arguments.dotnet,
             arguments.project,
@@ -1275,18 +1924,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             discovery_timeout(),
         )
 
-        shards = plan_shards(production, fixtures, configured_jobs)
+        selected_production, selected_fixtures = select_partition(
+            production,
+            additional,
+            fixtures,
+            arguments.partition,
+        )
+
+        shards = plan_shards(
+            selected_production,
+            selected_fixtures,
+            configured_jobs,
+        )
 
         expected_count = sum(
             method.case_count
-            for method in [*production, *fixtures]
+            for method in [*selected_production, *selected_fixtures]
         )
+
+        if arguments.partition != "full":
+            write_partition_receipt(
+                arguments.results_directory,
+                arguments.source_sha,
+                arguments.partition,
+                production,
+                additional,
+                fixtures,
+                selected_production,
+                selected_fixtures,
+                shards,
+            )
 
         print(
             "Hosted-producer analysis: "
+            f"{arguments.partition} partition; "
             f"{expected_count} tests across {len(shards)} shards "
             f"within {configured_jobs} worker slots; "
-            f"{sum(method.case_count for method in production)} production tests "
+            f"{sum(method.case_count for method in selected_production)} production tests "
             f"share one process with {min(3, configured_jobs)} traversal workers.",
             flush=True,
         )
@@ -1296,7 +1970,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.project,
             arguments.results_directory,
             shards,
-            production_shard_index=0 if production else None,
+            production_shard_index=0 if selected_production else None,
             timeout_seconds=max(0.001, deadline - time.monotonic()),
             configuration=arguments.configuration,
             worker_count=configured_jobs,

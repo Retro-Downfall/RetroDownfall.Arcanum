@@ -15,82 +15,124 @@ public sealed class ContinuousIntegrationWorkflowTests
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
 
     [Fact]
-    public void Macos_source_analysis_limits_concurrent_processes_to_the_runner_memory_budget()
+    public void Macos_source_analysis_partitions_each_keep_the_existing_worker_and_deadline_bounds()
+    {
+        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
+            .Where(static job => job.Id is
+                "hosted-producer-primary-analysis"
+                    or "hosted-producer-additional-analysis")
+            .OrderBy(static job => job.Id, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(2, lanes.Length);
+
+        foreach (WorkflowJob lane in lanes)
+        {
+            Assert.Equal("macos-26", lane.RunsOn);
+
+            Assert.False(lane.IsConditional);
+
+            Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("--jobs 2", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("--timeout-seconds 1740", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("timeout-minutes: 30", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("--source-sha \"$GITHUB_SHA\"", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("continue-on-error:", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--collect", lane.Body, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("name: Hosted producer primary analysis", lanes[1].Body, StringComparison.Ordinal);
+
+        Assert.Contains("--partition primary", lanes[1].Body, StringComparison.Ordinal);
+
+        Assert.Contains("name: Hosted producer additional analysis and fixtures", lanes[0].Body, StringComparison.Ordinal);
+
+        Assert.Contains("--partition additional", lanes[0].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Source_analysis_authority_requires_both_workers_and_reconciles_their_artifacts()
     {
         WorkflowJob lane = Assert.Single(
             ContinuousIntegrationJobs(FindRepositoryRoot()),
             static job => job.Id == "hosted-producer-analysis");
 
-        Assert.Contains("--jobs 2", lane.Body, StringComparison.Ordinal);
+        Assert.Equal("hosted-producer-analysis", lane.Id);
+
+        Assert.Equal("ubuntu-latest", lane.RunsOn);
+
+        Assert.True(lane.IsConditional);
+
+        Assert.Contains("name: Hosted producer source analysis", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("hosted-producer-primary-analysis", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("hosted-producer-additional-analysis", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("if: always()", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("needs.hosted-producer-primary-analysis.result", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("needs.hosted-producer-additional-analysis.result", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("--aggregate-primary-results .tmp/coverage/analysis-primary", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("--aggregate-additional-results .tmp/coverage/analysis-additional", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("--source-sha \"$GITHUB_SHA\"", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("--aggregate-summary .tmp/coverage/analysis-authority/hosted-producer-analysis-summary.json", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("name: hosted-producer-analysis-authority", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("if: always()", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("uses: actions/upload-artifact@", lane.Body, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Source_analysis_is_one_unconditional_complete_gate_with_retained_progress()
+    public void Source_analysis_workers_retain_progress_and_receipt_artifacts_even_on_failure()
     {
-        WorkflowJob lane = Assert.Single(
-            ContinuousIntegrationJobs(FindRepositoryRoot()),
-            static job => job.Body.Contains("python3 scripts/hosted_producer_analysis_runner.py", StringComparison.Ordinal));
+        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
+            .Where(static job => job.Id is
+                "hosted-producer-primary-analysis"
+                    or "hosted-producer-additional-analysis")
+            .ToArray();
 
-        Assert.Equal("hosted-producer-analysis", lane.Id);
+        Assert.Equal(2, lanes.Length);
 
-        Assert.Equal("macos-26", lane.RunsOn);
+        foreach (WorkflowJob lane in lanes)
+        {
+            string[] steps = lane.Body
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split("      - name:", StringSplitOptions.None);
 
-        Assert.False(lane.IsConditional);
+            string analysis = Assert.Single(
+                steps,
+                static step => step.Contains(
+                    "python3 scripts/hosted_producer_analysis_runner.py",
+                    StringComparison.Ordinal));
 
-        Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+            string artifact = Assert.Single(
+                steps,
+                static step => step.Contains(
+                    "uses: actions/upload-artifact@",
+                    StringComparison.Ordinal));
 
-        string[] steps = lane.Body
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Split("      - name:", StringSplitOptions.None);
+            Assert.Contains("if: always()", artifact, StringComparison.Ordinal);
 
-        string runnerTests = Assert.Single(
-            steps,
-            static step => step.Contains(
-                "python3 -m unittest scripts/hosted_producer_analysis_runner_test.py",
-                StringComparison.Ordinal));
+            Assert.Contains("path: .tmp/coverage/analysis/", artifact, StringComparison.Ordinal);
 
-        string analysis = Assert.Single(
-            steps,
-            static step => step.Contains(
-                "python3 scripts/hosted_producer_analysis_runner.py",
-                StringComparison.Ordinal));
-
-        Assert.Contains("timeout-minutes: 30", analysis, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("continue-on-error:", analysis, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("\n        if:", analysis, StringComparison.Ordinal);
-
-        Assert.Contains("--configuration Release", analysis, StringComparison.Ordinal);
-
-        Assert.Contains("--jobs 2", analysis, StringComparison.Ordinal);
-
-        Assert.Contains("--timeout-seconds 1740", analysis, StringComparison.Ordinal);
-
-        Assert.Contains(
-            "--project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj",
-            analysis,
-            StringComparison.Ordinal);
-
-        Assert.Contains("--results-directory .tmp/coverage/analysis", analysis, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("--filter", analysis, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("--collect", analysis, StringComparison.Ordinal);
-
-        Assert.True(Array.IndexOf(steps, runnerTests) < Array.IndexOf(steps, analysis));
-
-        string artifact = Assert.Single(
-            steps,
-            static step => step.Contains("name: hosted-producer-analysis-macos", StringComparison.Ordinal));
-
-        Assert.Contains("uses: actions/upload-artifact@", artifact, StringComparison.Ordinal);
-
-        Assert.Contains("if: always()", artifact, StringComparison.Ordinal);
-
-        Assert.Contains("path: .tmp/coverage/analysis/", artifact, StringComparison.Ordinal);
-
-        Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, analysis));
+            Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, analysis));
+        }
     }
 
     [Fact]

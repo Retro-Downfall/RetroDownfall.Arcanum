@@ -53,6 +53,9 @@ class CoverageWorkflowTests(unittest.TestCase):
             "            selected = args[args.index('--filter') + 1]\n"
             "            if selected == 'Category=HostedProducerProductionAnalysis':\n"
             "                print('    Example.Tests.Production')\n"
+            "                print('    Example.Tests.Additional')\n"
+            "            elif selected == 'Category=HostedProducerAdditionalAnalysis':\n"
+            "                print('    Example.Tests.Additional')\n"
             "            else:\n"
             "                print('    Example.Tests.Fixture(value: 1)')\n"
             "                print('    Example.Tests.Fixture(value: 2)')\n"
@@ -72,6 +75,9 @@ class CoverageWorkflowTests(unittest.TestCase):
             "        if 'Example.Tests.Production' in selected:\n"
             "            print(f'  {label} Example.Tests.Production [1 ms]')\n"
             "            results.append('Example.Tests.Production')\n"
+            "        if 'Example.Tests.Additional' in selected:\n"
+            "            print(f'  {label} Example.Tests.Additional [1 ms]')\n"
+            "            results.append('Example.Tests.Additional')\n"
             "        if 'Example.Tests.Fixture' in selected:\n"
             "            print(f'  {label} Example.Tests.Fixture(value: 1) [1 ms]')\n"
             "            print(f'  {label} Example.Tests.Fixture(value: 2) [1 ms]')\n"
@@ -104,7 +110,7 @@ class CoverageWorkflowTests(unittest.TestCase):
     def test_delivery_runs_disjoint_coverage_and_required_analysis(self):
         result, calls = self.run_gate("--threshold")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(5, len(calls))
+        self.assertEqual(6, len(calls))
         all_calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         covered = calls[0]
         discovery = [call for call in calls if "--list-tests" in call]
@@ -150,11 +156,12 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("--collect:XPlat Code Coverage", covered)
         self.assertNotIn("--configuration", covered)
         self.assertNotIn("-c", covered)
-        self.assertEqual(2, len(discovery))
+        self.assertEqual(3, len(discovery))
         self.assertIn("Category=HostedProducerProductionAnalysis", discovery[0])
+        self.assertIn("Category=HostedProducerAdditionalAnalysis", discovery[1])
         self.assertIn(
             "Category=HostedProducerAnalysis&Category!=HostedProducerProductionAnalysis",
-            discovery[1],
+            discovery[2],
         )
         self.assertEqual(2, len(analysis))
         self.assertTrue(all("--logger" in call for call in analysis))
@@ -185,7 +192,7 @@ class CoverageWorkflowTests(unittest.TestCase):
     def test_analysis_failure_fails_delivery(self):
         result, calls = self.run_gate("--threshold", ANALYSIS_EXIT="17")
         self.assertEqual(17, result.returncode)
-        self.assertEqual(5, len(calls))
+        self.assertEqual(6, len(calls))
 
     @unittest.skipUnless(os.name == "posix", "requires a POSIX PTY")
     def test_runtime_stdin_is_redirected_and_eof_when_parent_has_pty(self):
@@ -217,7 +224,7 @@ class CoverageWorkflowTests(unittest.TestCase):
 
         self.assertNotEqual(0, result.returncode)
 
-        self.assertEqual(5, len(calls))
+        self.assertEqual(6, len(calls))
 
         self.assertIn("only 0 passed", result.stderr)
 
@@ -264,28 +271,135 @@ class CoverageWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual([], calls)
 
-    def test_canonical_workflow_command_executes_complete_uninstrumented_analysis(self):
+    def test_canonical_workflow_commands_partition_and_reconcile_complete_analysis(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        job = workflow.split("  hosted-producer-analysis:\n", 1)[-1].split("\n  macos-workspace-check:", 1)[0]
-        command = re.search(r"        run: \|\n((?:          .*\n)+)", job)
-        self.assertIsNotNone(command, "The canonical source-analysis job must execute its runner")
+
+        def job(job_id, next_job_id):
+            return workflow.split(f"  {job_id}:\n", 1)[-1].split(
+                f"\n  {next_job_id}:",
+                1,
+            )[0]
+
+        primary = job(
+            "hosted-producer-primary-analysis",
+            "hosted-producer-additional-analysis",
+        )
+
+        additional = job(
+            "hosted-producer-additional-analysis",
+            "hosted-producer-analysis",
+        )
+
+        authority = job("hosted-producer-analysis", "macos-workspace-check")
+
+        environment = dict(self.environment, GITHUB_SHA="e" * 40)
+
+        for partition, body in (("primary", primary), ("additional", additional)):
+            commands = re.findall(r"        run: \|\n((?:          .*\n)+)", body)
+
+            command = next(
+                command
+                for command in commands
+                if "hosted_producer_analysis_runner.py" in command
+            )
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-e",
+                    "-c",
+                    "\n".join(line[10:] for line in command.splitlines()),
+                ],
+                cwd=self.root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+            shutil.move(
+                self.root / ".tmp/coverage/analysis",
+                self.root / f".tmp/coverage/analysis-{partition}",
+            )
+
+        commands = re.findall(r"        run: \|\n((?:          .*\n)+)", authority)
+
+        aggregate = next(
+            command
+            for command in commands
+            if "--aggregate-primary-results" in command
+        )
+
         result = subprocess.run(
-            ["bash", "-e", "-c", "\n".join(line[10:] for line in command[1].splitlines())],
+            [
+                "bash",
+                "-e",
+                "-c",
+                "\n".join(line[10:] for line in aggregate.splitlines()),
+            ],
             cwd=self.root,
-            env=self.environment,
+            env=environment,
             capture_output=True,
             text=True,
             timeout=20,
         )
+
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+
         discovery = [call for call in calls if "--list-tests" in call]
-        self.assertEqual(2, len(discovery))
-        self.assertIn("Category=HostedProducerProductionAnalysis", discovery[0])
-        self.assertIn("Category=HostedProducerAnalysis&Category!=HostedProducerProductionAnalysis", discovery[1])
+
+        self.assertEqual(6, len(discovery))
+
+        self.assertEqual(
+            2,
+            sum("Category=HostedProducerProductionAnalysis" in call for call in discovery),
+        )
+
+        self.assertEqual(
+            2,
+            sum("Category=HostedProducerAdditionalAnalysis" in call for call in discovery),
+        )
+
+        self.assertEqual(
+            2,
+            sum(
+                "Category=HostedProducerAnalysis&Category!=HostedProducerProductionAnalysis"
+                in call
+                for call in discovery
+            ),
+        )
+
         self.assertTrue(all("Release" in call and "--no-build" in call for call in calls))
+
         self.assertTrue(all(not any(arg.startswith("--collect") for arg in call) for call in calls))
-        self.assertEqual(2, len(list((self.root / ".tmp/coverage/analysis").rglob("*.trx"))))
+
+        self.assertEqual(
+            1,
+            len(list((self.root / ".tmp/coverage/analysis-primary").rglob("*.trx"))),
+        )
+
+        self.assertEqual(
+            2,
+            len(list((self.root / ".tmp/coverage/analysis-additional").rglob("*.trx"))),
+        )
+
+        summary = json.loads(
+            (
+                self.root
+                / ".tmp/coverage/analysis-authority/hosted-producer-analysis-summary.json"
+            ).read_text()
+        )
+
+        self.assertEqual("PASS", summary["partitionAccounting"]["status"])
+
+        self.assertEqual(
+            4,
+            summary["partitionAccounting"]["fullUniverse"]["discoveredCases"],
+        )
 
     def test_missing_report_fails_closed(self):
         result, calls = self.run_gate(NO_REPORT="1")

@@ -547,9 +547,6 @@ internal static class HostedGrimoireProducerInventory
 
     private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites()
     {
-        // Keep the main and additional production worker groups from overlapping.
-        _ = ProductionSiteDiscovery;
-
         using HostedProducerPhaseProgress preparation = HostedProducerPhaseProgress.Start("additional-preparation", 0);
 
         IReadOnlyList<NonHostedProducerChainEntry> roots = AdditionalProductionRoots;

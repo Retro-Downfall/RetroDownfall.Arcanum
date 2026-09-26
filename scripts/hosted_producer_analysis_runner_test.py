@@ -3,6 +3,7 @@
 import ctypes
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -352,30 +353,397 @@ The following Tests are available:
         with self.assertRaisesRegex(ValueError, "both production and fixture"):
             RUNNER.plan_shards([duplicate], [duplicate], 2)
 
-    def test_main_discovers_production_and_fixture_lanes_separately(self):
-        production = [RUNNER.DiscoveredMethod("Tests.Production", 2)]
+    def test_partitions_are_disjoint_complete_and_route_new_tests_by_default(self):
+        production = [
+            RUNNER.DiscoveredMethod("Tests.Primary", 1),
+            RUNNER.DiscoveredMethod("Tests.Additional", 2),
+            RUNNER.DiscoveredMethod("Tests.NewPrimary", 3),
+        ]
+
+        additional = [RUNNER.DiscoveredMethod("Tests.Additional", 2)]
+
+        fixtures = [
+            RUNNER.DiscoveredMethod("Tests.Fixture", 4),
+            RUNNER.DiscoveredMethod("Tests.NewFixture", 5),
+        ]
+
+        primary_production, primary_fixtures = RUNNER.select_partition(
+            production,
+            additional,
+            fixtures,
+            "primary",
+        )
+
+        additional_production, additional_fixtures = RUNNER.select_partition(
+            production,
+            additional,
+            fixtures,
+            "additional",
+        )
+
+        full_production, full_fixtures = RUNNER.select_partition(
+            production,
+            additional,
+            fixtures,
+            "full",
+        )
+
+        self.assertEqual(
+            ["Tests.Primary", "Tests.NewPrimary"],
+            [method.name for method in primary_production],
+        )
+
+        self.assertEqual([], primary_fixtures)
+
+        self.assertEqual(
+            ["Tests.Additional"],
+            [method.name for method in additional_production],
+        )
+
+        self.assertEqual(fixtures, additional_fixtures)
+
+        self.assertEqual(production, full_production)
+
+        self.assertEqual(fixtures, full_fixtures)
+
+        primary = {*primary_production, *primary_fixtures}
+
+        secondary = {*additional_production, *additional_fixtures}
+
+        self.assertFalse(primary.intersection(secondary))
+
+        self.assertEqual(set([*production, *fixtures]), primary.union(secondary))
+
+    def test_partition_selection_rejects_invalid_additional_membership_and_empty_partitions(self):
+        production = [
+            RUNNER.DiscoveredMethod("Tests.Primary", 1),
+            RUNNER.DiscoveredMethod("Tests.Additional", 2),
+        ]
+
+        fixtures = [RUNNER.DiscoveredMethod("Tests.Fixture", 1)]
+
+        invalid = [RUNNER.DiscoveredMethod("Tests.NotProduction", 1)]
+
+        with self.assertRaisesRegex(ValueError, "outside the production universe"):
+            RUNNER.select_partition(production, invalid, fixtures, "primary")
+
+        with self.assertRaisesRegex(ValueError, "case count"):
+            RUNNER.select_partition(
+                production,
+                [RUNNER.DiscoveredMethod("Tests.Additional", 1)],
+                fixtures,
+                "additional",
+            )
+
+        with self.assertRaisesRegex(ValueError, "proper subset"):
+            RUNNER.select_partition(production, production, fixtures, "additional")
+
+        with self.assertRaisesRegex(ValueError, "additional partition is empty"):
+            RUNNER.select_partition(
+                production,
+                [],
+                [],
+                "additional",
+            )
+
+    def test_aggregate_reconciles_receipts_and_reuses_exact_trx_accounting(self):
+        source_sha = "a" * 40
+
+        universe = [
+            {"kind": "production", "name": "Tests.Primary", "caseCount": 1},
+            {"kind": "production", "name": "Tests.Additional", "caseCount": 2},
+            {"kind": "fixture", "name": "Tests.Fixture", "caseCount": 1},
+        ]
+
+        additional = [{"name": "Tests.Additional", "caseCount": 2}]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            primary = root / "primary"
+
+            secondary = root / "additional"
+
+            primary.mkdir()
+
+            secondary.mkdir()
+
+            self._write_partition_evidence(
+                primary,
+                source_sha,
+                "primary",
+                universe,
+                additional,
+                [universe[0]],
+            )
+
+            self._write_partition_evidence(
+                secondary,
+                source_sha,
+                "additional",
+                universe,
+                additional,
+                universe[1:],
+            )
+
+            summary_path = root / "hosted-producer-analysis-summary.json"
+
+            summary = RUNNER.aggregate_partition_evidence(
+                primary,
+                secondary,
+                source_sha,
+                summary_path,
+            )
+
+            self.assertEqual(2, summary["schemaVersion"])
+
+            accounting = summary["partitionAccounting"]
+
+            self.assertEqual("PASS", accounting["status"])
+
+            self.assertEqual(4, accounting["fullUniverse"]["discoveredCases"])
+
+            self.assertEqual(4, accounting["fullUniverse"]["passedCases"])
+
+            self.assertEqual(0, accounting["fullUniverse"]["failedCases"])
+
+            self.assertEqual(0, accounting["fullUniverse"]["skippedCases"])
+
+            self.assertTrue(accounting["disjoint"])
+
+            self.assertTrue(accounting["unionComplete"])
+
+            self.assertEqual(
+                ["primary", "additional"],
+                [partition["name"] for partition in accounting["partitions"]],
+            )
+
+            for value in (
+                accounting["fullUniverse"]["methodsSha256"],
+                accounting["fullUniverse"]["casesSha256"],
+                accounting["partitions"][0]["methodsSha256"],
+                accounting["partitions"][0]["casesSha256"],
+                accounting["partitions"][1]["methodsSha256"],
+                accounting["partitions"][1]["casesSha256"],
+            ):
+                self.assertRegex(value, r"^[0-9a-f]{64}$")
+
+            self.assertEqual(summary, json.loads(summary_path.read_text()))
+
+    def test_aggregate_rejects_stale_duplicate_extra_and_nonpassing_evidence(self):
+        source_sha = "b" * 40
+
+        universe = [
+            {"kind": "production", "name": "Tests.Primary", "caseCount": 1},
+            {"kind": "production", "name": "Tests.Additional", "caseCount": 1},
+            {"kind": "fixture", "name": "Tests.Fixture", "caseCount": 1},
+        ]
+
+        additional = [{"name": "Tests.Additional", "caseCount": 1}]
+
+        mutations = {
+            "stale": lambda receipt, directory: receipt.update(sourceSha="c" * 40),
+            "duplicate": lambda receipt, directory: receipt["selected"].append(
+                dict(receipt["selected"][0])
+            ),
+            "extra": lambda receipt, directory: (directory / "extra.trx").write_text(
+                "<TestRun><Results><UnitTestResult testName=\"Tests.Extra\" outcome=\"Passed\" /></Results></TestRun>"
+            ),
+            "skipped": lambda receipt, directory: self._write_partition_trx(
+                directory,
+                receipt["shards"][0]["trxFile"],
+                receipt["selected"],
+                outcome="NotExecuted",
+            ),
+        }
+
+        expected = {
+            "stale": "source SHA",
+            "duplicate": "duplicate",
+            "extra": "undeclared TRX",
+            "skipped": "did not pass",
+        }
+
+        for name, mutate in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+
+                primary = root / "primary"
+
+                secondary = root / "additional"
+
+                primary.mkdir()
+
+                secondary.mkdir()
+
+                primary_receipt = self._write_partition_evidence(
+                    primary,
+                    source_sha,
+                    "primary",
+                    universe,
+                    additional,
+                    [universe[0]],
+                )
+
+                self._write_partition_evidence(
+                    secondary,
+                    source_sha,
+                    "additional",
+                    universe,
+                    additional,
+                    universe[1:],
+                )
+
+                mutate(primary_receipt, primary)
+
+                (primary / RUNNER.RECEIPT_FILE).write_text(
+                    json.dumps(primary_receipt),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(RuntimeError, expected[name]):
+                    RUNNER.aggregate_partition_evidence(
+                        primary,
+                        secondary,
+                        source_sha,
+                        root / "summary.json",
+                    )
+
+    def test_aggregate_rejects_malformed_receipts_and_missing_trx(self):
+        source_sha = "d" * 40
+
+        universe = [
+            {"kind": "production", "name": "Tests.Primary", "caseCount": 1},
+            {"kind": "production", "name": "Tests.Additional", "caseCount": 1},
+        ]
+
+        additional = [{"name": "Tests.Additional", "caseCount": 1}]
+
+        for mutation, expected in (("malformed", "malformed"), ("missing", "missing TRX")):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+
+                primary = root / "primary"
+
+                secondary = root / "additional"
+
+                primary.mkdir()
+
+                secondary.mkdir()
+
+                receipt = self._write_partition_evidence(
+                    primary,
+                    source_sha,
+                    "primary",
+                    universe,
+                    additional,
+                    [universe[0]],
+                )
+
+                self._write_partition_evidence(
+                    secondary,
+                    source_sha,
+                    "additional",
+                    universe,
+                    additional,
+                    [universe[1]],
+                )
+
+                if mutation == "malformed":
+                    (primary / RUNNER.RECEIPT_FILE).write_text("{", encoding="utf-8")
+                else:
+                    (primary / receipt["shards"][0]["trxFile"]).unlink()
+
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    RUNNER.aggregate_partition_evidence(
+                        primary,
+                        secondary,
+                        source_sha,
+                        root / "summary.json",
+                    )
+
+    @staticmethod
+    def _write_partition_trx(directory, name, selected, outcome="Passed"):
+        results = "".join(
+            f'<UnitTestResult testName="{method["name"]}" outcome="{outcome}" />'
+            for method in selected
+            for _ in range(method["caseCount"])
+        )
+
+        (directory / name).write_text(
+            f"<TestRun><Results>{results}</Results></TestRun>",
+            encoding="utf-8",
+        )
+
+    def _write_partition_evidence(
+        self,
+        directory,
+        source_sha,
+        partition,
+        universe,
+        additional,
+        selected,
+    ):
+        trx_file = f"hosted-producer-analysis-{partition}.trx"
+
+        receipt = {
+            "schemaVersion": 1,
+            "sourceSha": source_sha,
+            "partition": partition,
+            "fullUniverse": universe,
+            "additionalProduction": additional,
+            "selected": selected,
+            "shards": [
+                {
+                    "trxFile": trx_file,
+                    "methods": [
+                        {"name": method["name"], "caseCount": method["caseCount"]}
+                        for method in selected
+                    ],
+                }
+            ],
+        }
+
+        (directory / RUNNER.RECEIPT_FILE).write_text(
+            json.dumps(receipt),
+            encoding="utf-8",
+        )
+
+        self._write_partition_trx(directory, trx_file, selected)
+
+        return receipt
+
+    def test_main_discovers_complete_universe_and_defaults_to_full_execution(self):
+        production = [
+            RUNNER.DiscoveredMethod("Tests.Production", 2),
+            RUNNER.DiscoveredMethod("Tests.Additional", 1),
+        ]
+
+        additional = [RUNNER.DiscoveredMethod("Tests.Additional", 1)]
 
         fixtures = [RUNNER.DiscoveredMethod("Tests.Fixture", 3)]
 
         with tempfile.TemporaryDirectory() as temp:
             result = RUNNER.AnalysisRunResult(
                 exit_codes=(0, 0),
-                completed_count=5,
-                passed_count=5,
-                expected_count=5,
+                completed_count=6,
+                passed_count=6,
+                expected_count=6,
                 log_path=Path(temp) / "analysis.log",
             )
 
             with mock.patch.object(
                 RUNNER,
                 "_discover",
-                side_effect=[production, fixtures],
+                side_effect=[production, additional, fixtures],
             ) as discover, mock.patch.object(
                 RUNNER,
                 "run_shards",
                 return_value=result,
             ) as run, mock.patch.object(
-                RUNNER.time, "monotonic", side_effect=[100.0, 101.0, 108.0, 112.0]
+                RUNNER.time,
+                "monotonic",
+                side_effect=[100.0, 101.0, 108.0, 112.0, 115.0],
             ):
                 exit_code = RUNNER.main(
                     [
@@ -406,6 +774,13 @@ The following Tests are available:
                 mock.call(
                     "dotnet",
                     mock.ANY,
+                    RUNNER.ADDITIONAL_FILTER,
+                    "Release",
+                    mock.ANY,
+                ),
+                mock.call(
+                    "dotnet",
+                    mock.ANY,
                     RUNNER.FIXTURE_FILTER,
                     "Release",
                     mock.ANY,
@@ -416,7 +791,10 @@ The following Tests are available:
 
         planned = run.call_args.args[3]
 
-        self.assertEqual(["Tests.Production"], [item.name for item in planned[0].methods])
+        self.assertEqual(
+            ["Tests.Production", "Tests.Additional"],
+            [item.name for item in planned[0].methods],
+        )
 
         self.assertEqual("Release", run.call_args.kwargs["configuration"])
 
@@ -424,26 +802,34 @@ The following Tests are available:
 
         self.assertEqual(120.0, run.call_args.kwargs["deadline"])
 
-        self.assertEqual(8.0, run.call_args.kwargs["timeout_seconds"])
+        self.assertEqual(5.0, run.call_args.kwargs["timeout_seconds"])
 
-        self.assertEqual([19.0, 12.0], [call.args[4] for call in discover.call_args_list])
+        self.assertEqual(
+            [19.0, 12.0, 8.0],
+            [call.args[4] for call in discover.call_args_list],
+        )
 
     def test_main_accepts_a_thirty_minute_deadline(self):
-        production = [RUNNER.DiscoveredMethod("Tests.Production", 1)]
+        production = [
+            RUNNER.DiscoveredMethod("Tests.Production", 1),
+            RUNNER.DiscoveredMethod("Tests.Additional", 1),
+        ]
+
+        additional = [RUNNER.DiscoveredMethod("Tests.Additional", 1)]
 
         with tempfile.TemporaryDirectory() as temp:
             result = RUNNER.AnalysisRunResult(
                 exit_codes=(0,),
-                completed_count=1,
-                passed_count=1,
-                expected_count=1,
+                completed_count=2,
+                passed_count=2,
+                expected_count=2,
                 log_path=Path(temp) / "analysis.log",
             )
 
             with mock.patch.object(
                 RUNNER,
                 "_discover",
-                side_effect=[production, []],
+                side_effect=[production, additional, []],
             ) as discover, mock.patch.object(
                 RUNNER,
                 "run_shards",
@@ -462,7 +848,7 @@ The following Tests are available:
 
         self.assertEqual(0, exit_code)
 
-        self.assertEqual(2, discover.call_count)
+        self.assertEqual(3, discover.call_count)
 
         run.assert_called_once()
 

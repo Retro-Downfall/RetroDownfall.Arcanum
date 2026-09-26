@@ -28281,6 +28281,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
+    [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void ProductionSchemaLazyFactoriesAreProvenAsBoundedData()
     {
         const string catalogType =
@@ -28456,6 +28457,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
+    [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void ProductionSequenceOperationUsesTheSameReviewedComparerProof()
     {
         _ = Assert.Single(
@@ -28485,6 +28487,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
 
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
+    [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void ProductionImmutableArraySequenceEqualityUsesDefaultValueEquality()
     {
         const string type =
