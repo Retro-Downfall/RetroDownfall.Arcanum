@@ -19,53 +19,40 @@ public sealed class ContinuousIntegrationWorkflowTests
     {
         WorkflowJob lane = Assert.Single(
             ContinuousIntegrationJobs(FindRepositoryRoot()),
-            static job => job.Id == "build-test");
+            static job => job.Id == "hosted-producer-analysis");
 
-        Assert.Contains("ARCANUM_ANALYSIS_JOBS: \"2\"", lane.Body, StringComparison.Ordinal);
+        Assert.Contains("--jobs 2", lane.Body, StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData("windows-suite", "x64")]
-    [InlineData("windows-arm64-suite", "arm64")]
-    public void Windows_source_analysis_is_a_bounded_native_gate_with_retained_progress(
-        string jobId,
-        string architecture)
+    [Fact]
+    public void Source_analysis_is_one_unconditional_complete_gate_with_retained_progress()
     {
         WorkflowJob lane = Assert.Single(
             ContinuousIntegrationJobs(FindRepositoryRoot()),
-            job => job.Id == jobId);
+            static job => job.Body.Contains("python3 scripts/hosted_producer_analysis_runner.py", StringComparison.Ordinal));
+
+        Assert.Equal("hosted-producer-analysis", lane.Id);
+
+        Assert.Equal("macos-26", lane.RunsOn);
+
+        Assert.False(lane.IsConditional);
+
+        Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
 
         string[] steps = lane.Body
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split("      - name:", StringSplitOptions.None);
 
-        string python = Assert.Single(
-            steps,
-            static step => step.Contains("uses: actions/setup-python@", StringComparison.Ordinal));
-
-        Assert.Contains("python-version: \"3.13\"", python, StringComparison.Ordinal);
-
-        Assert.Contains($"architecture: \"{architecture}\"", python, StringComparison.Ordinal);
-
-        string runtime = Assert.Single(
-            steps,
-            static step => step.StartsWith(" Test Arcanum\n", StringComparison.Ordinal));
-
-        Assert.Contains(
-            "--filter \"Category!=Perf&Category!=HostedProducerAnalysis\"",
-            runtime,
-            StringComparison.Ordinal);
-
         string runnerTests = Assert.Single(
             steps,
             static step => step.Contains(
-                "python -m unittest scripts/hosted_producer_analysis_runner_test.py",
+                "python3 -m unittest scripts/hosted_producer_analysis_runner_test.py",
                 StringComparison.Ordinal));
 
         string analysis = Assert.Single(
             steps,
             static step => step.Contains(
-                "python scripts/hosted_producer_analysis_runner.py",
+                "python3 scripts/hosted_producer_analysis_runner.py",
                 StringComparison.Ordinal));
 
         Assert.Contains("timeout-minutes: 30", analysis, StringComparison.Ordinal);
@@ -76,7 +63,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("--configuration Release", analysis, StringComparison.Ordinal);
 
-        Assert.Contains("--jobs 4", analysis, StringComparison.Ordinal);
+        Assert.Contains("--jobs 2", analysis, StringComparison.Ordinal);
 
         Assert.Contains("--timeout-seconds 1740", analysis, StringComparison.Ordinal);
 
@@ -87,17 +74,15 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("--results-directory .tmp/coverage/analysis", analysis, StringComparison.Ordinal);
 
-        Assert.Contains("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", analysis, StringComparison.Ordinal);
+        Assert.DoesNotContain("--filter", analysis, StringComparison.Ordinal);
 
-        Assert.Contains("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", runnerTests, StringComparison.Ordinal);
-
-        Assert.True(Array.IndexOf(steps, python) < Array.IndexOf(steps, runnerTests));
+        Assert.DoesNotContain("--collect", analysis, StringComparison.Ordinal);
 
         Assert.True(Array.IndexOf(steps, runnerTests) < Array.IndexOf(steps, analysis));
 
         string artifact = Assert.Single(
             steps,
-            step => step.Contains($"name: hosted-producer-analysis-win-{architecture}", StringComparison.Ordinal));
+            static step => step.Contains("name: hosted-producer-analysis-macos", StringComparison.Ordinal));
 
         Assert.Contains("uses: actions/upload-artifact@", artifact, StringComparison.Ordinal);
 
@@ -106,6 +91,100 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.Contains("path: .tmp/coverage/analysis/", artifact, StringComparison.Ordinal);
 
         Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, analysis));
+    }
+
+    [Fact]
+    public void Runtime_lanes_delegate_source_analysis_without_weakening_coverage()
+    {
+        WorkflowJob[] jobs = ContinuousIntegrationJobs(FindRepositoryRoot()).ToArray();
+
+        WorkflowJob coverage = Assert.Single(jobs, static job => job.Id == "build-test");
+
+        Assert.Contains("./scripts/coverage.sh --threshold --ci-runtime-only", coverage.Body, StringComparison.Ordinal);
+
+        foreach (WorkflowJob lane in jobs.Where(static job => job.Id is "build-test" or "windows-suite" or "windows-arm64-suite"))
+        {
+            Assert.DoesNotContain("python scripts/hosted_producer_analysis_runner.py", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--feature", lane.Body, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("windows-suite")]
+    [InlineData("windows-arm64-suite")]
+    public void Windows_runtime_selection_retains_native_security_and_operating_system_contracts(string jobId)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        string command = Assert.Single(lane.Body.Split('\n'), static line => line.Contains("Category!=HostedProducerAnalysis&(", StringComparison.Ordinal));
+
+        string[] classes =
+        [
+            "Platform.WindowsCiSurfaceTests",
+            "NativeSqlCipher.NativeSqlCipherDeliveryTests",
+            "NativeSqlCipher.SqlCipherCompatibilityTests",
+            "Security.OsCredentialStoreRoundTripTests",
+            "Platform.ProcessResourceLimiterWindowsBehaviorTests",
+            "Platform.WindowsJobObjectSessionTests",
+            "Process.WindowsAppContainerPolicyTests",
+            "Process.WindowsAppContainerRestoreJournalTests",
+            "Process.ChildProcessBoundaryBehaviorTests",
+            "Process.ChildProcessFilesystemJailTests",
+            "Familiars.FamiliarExecutableResolverTests",
+        ];
+
+        string[] methods =
+        [
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened",
+            "Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner",
+            "Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase",
+            "Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows",
+            "Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer",
+            "Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink",
+            "Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows",
+            "Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity",
+            "Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links",
+            "Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links",
+            "Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing",
+        ];
+
+        string expected = string.Join('|', classes.Select(static name => "FullyQualifiedName~RetroDownfall.Arcanum.Tests." + name)
+            .Concat(methods.Select(static name => "FullyQualifiedName=RetroDownfall.Arcanum.Tests." + name)));
+
+        Assert.Contains("--filter \"Category!=Perf&Category!=HostedProducerAnalysis&(" + expected + ")\"", command, StringComparison.Ordinal);
+
+        Assert.Contains("ARCANUM_REQUIRE_WINDOWS_SUITE: true", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("ARCANUM_TEST_OS_CREDENTIAL_STORE: true", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions", lane.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Windows_arm64_checks_real_compiler_inputs_without_repeating_source_traversal()
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), static job => job.Id == "windows-arm64-suite");
+
+        string[] methods =
+        [
+            "ProductionCompilationsResolveGeneratedJsonSymbols",
+            "ProductionCompilerGraphUsesCanonicalProjectReferences",
+            "ProductionIncludesEveryFirstPartyDependencyAndApiCliRoots",
+        ];
+
+        string expected = string.Join('|', methods.Select(static method => "FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests." + method));
+
+        Assert.Contains("--filter \"Category!=Perf&(" + expected + ")\"", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+
+        Assert.Contains("Assert the SDK is native to win-arm64", lane.Body, StringComparison.Ordinal);
     }
 
     [Fact]

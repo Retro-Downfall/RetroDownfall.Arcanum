@@ -14313,11 +14313,11 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             string[] lines = File.ReadAllLines(progressPath);
 
             string[] starts = lines
-                .Where(static line => line.Contains("\tphase=start\t", StringComparison.Ordinal))
+                .Where(static line => line.StartsWith("HOSTED_ROOT_PROGRESS\tphase=start\t", StringComparison.Ordinal))
                 .ToArray();
 
             string[] completions = lines
-                .Where(static line => line.Contains("\tphase=complete\t", StringComparison.Ordinal))
+                .Where(static line => line.StartsWith("HOSTED_ROOT_PROGRESS\tphase=complete\t", StringComparison.Ordinal))
                 .ToArray();
 
             string[] states = lines
@@ -14327,6 +14327,18 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 .ToArray();
 
             Assert.NotEmpty(starts);
+
+            string[] phases = lines
+                .Where(static line => line.StartsWith("HOSTED_PHASE_PROGRESS\t", StringComparison.Ordinal))
+                .ToArray();
+
+            Assert.Contains(phases, static line => line.Contains("\tstage=external-invocations\tphase=start\t", StringComparison.Ordinal));
+
+            Assert.Contains(phases, static line => line.Contains("\tstage=external-invocations\tphase=complete\t", StringComparison.Ordinal));
+
+            Assert.Contains(phases, static line => line.Contains("\tstage=complete-discovery\tphase=complete\t", StringComparison.Ordinal));
+
+            Assert.All(phases, static line => Assert.Contains("\tworker=1\t", line, StringComparison.Ordinal));
 
             Assert.Equal(starts.Length, completions.Length);
 
@@ -14368,6 +14380,62 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             global::System.Environment.SetEnvironmentVariable(
                 "ARCANUM_HOSTED_ANALYSIS_PROGRESS",
                 previous);
+
+            File.Delete(progressPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PhaseProgressDistinguishesSuccessfulCompletionFromInterruptedWork(bool succeeds)
+    {
+        string progressPath = Path.Combine(Path.GetTempPath(), "arcanum-phase-" + Guid.NewGuid().ToString("N") + ".log");
+
+        string? previous = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_PROGRESS");
+
+        try
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_PROGRESS", progressPath);
+
+            void Work()
+            {
+                using HostedProducerPhaseProgress progress = HostedProducerPhaseProgress.Start("fixture", 2, 2048);
+
+                progress.Report(1024);
+
+                if (!succeeds)
+                {
+                    throw new InvalidOperationException("fixture interruption");
+                }
+
+                progress.Complete();
+            }
+
+            if (succeeds)
+            {
+                Work();
+            }
+            else
+            {
+                Assert.Equal("fixture interruption", Assert.Throws<InvalidOperationException>(Work).Message);
+            }
+
+            string[] lines = File.ReadAllLines(progressPath);
+
+            Assert.Equal(3, lines.Length);
+
+            Assert.StartsWith("HOSTED_PHASE_PROGRESS\tstage=fixture\tphase=start\tworker=2\tcount=0\ttotal=2048\telapsed_ms=", lines[0], StringComparison.Ordinal);
+
+            Assert.StartsWith("HOSTED_PHASE_PROGRESS\tstage=fixture\tphase=progress\tworker=2\tcount=1024\ttotal=2048\telapsed_ms=", lines[1], StringComparison.Ordinal);
+
+            Assert.StartsWith(succeeds
+                ? "HOSTED_PHASE_PROGRESS\tstage=fixture\tphase=complete\tworker=2\tcount=2048\ttotal=2048\telapsed_ms="
+                : "HOSTED_PHASE_PROGRESS\tstage=fixture\tphase=error\tworker=2\tcount=1024\ttotal=2048\telapsed_ms=", lines[2], StringComparison.Ordinal);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_PROGRESS", previous);
 
             File.Delete(progressPath);
         }

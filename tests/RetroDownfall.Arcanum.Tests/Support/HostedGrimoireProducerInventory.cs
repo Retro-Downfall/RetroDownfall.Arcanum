@@ -296,8 +296,6 @@ internal sealed record HostedProducerCapsuleManifestUpdate(
 
 internal static class HostedGrimoireProducerInventory
 {
-    private static readonly object RootProgressGate = new();
-
     private const int DefaultEvaluationEnvironmentMaximumMembers = 4096;
 
     private const int DefaultEvaluationEnvironmentMaximumDepth = 64;
@@ -552,12 +550,24 @@ internal static class HostedGrimoireProducerInventory
         // Keep the main and additional production worker groups from overlapping.
         _ = ProductionSiteDiscovery;
 
-        return DiscoverProducerSites(
+        using HostedProducerPhaseProgress preparation = HostedProducerPhaseProgress.Start("additional-preparation", 0);
+
+        IReadOnlyList<NonHostedProducerChainEntry> roots = AdditionalProductionRoots;
+
+        preparation.Complete();
+
+        using HostedProducerPhaseProgress traversal = HostedProducerPhaseProgress.Start("additional-traversal", 0);
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverProducerSites(
             ProductionCompilations,
             new([], []),
             [],
-            AdditionalProductionRoots,
+            roots,
             rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
+
+        traversal.Complete();
+
+        return result;
     }
 
     private static IReadOnlyList<NonHostedProducerChainEntry> BuildAdditionalProductionRoots()
@@ -5739,6 +5749,8 @@ internal static class HostedGrimoireProducerInventory
 
             HostedProducerDiscovery<HostedProducerSite>[] results = workers.Select(static worker => worker.CompleteDiscovery()).ToArray();
 
+            using HostedProducerPhaseProgress merge = HostedProducerPhaseProgress.Start("merge", 0, workers.Length);
+
             HostedProducerSite[] mergedSites = workers.SelectMany(worker => worker.sites.Select(pair =>
                     (Key: pair.Key, Site: pair.Value, Occurrence: worker.siteOccurrences[pair.Key])))
                 .GroupBy(static item => item.Key, StringComparer.Ordinal)
@@ -5750,7 +5762,11 @@ internal static class HostedGrimoireProducerInventory
                 .ThenBy(static diagnostic => diagnostic.Identity, StringComparer.Ordinal)
                 .ThenBy(static diagnostic => diagnostic.Detail, StringComparer.Ordinal).ToArray();
 
-            return new(mergedSites, mergedDiagnostics, HostedProducerRootWorkers.MergeMetrics(results.Select(static result => result.AnalysisMetrics!).ToArray()) with { RootWorkers = workers.Length });
+            HostedProducerDiscovery<HostedProducerSite> result = new(mergedSites, mergedDiagnostics, HostedProducerRootWorkers.MergeMetrics(results.Select(static result => result.AnalysisMetrics!).ToArray()) with { RootWorkers = workers.Length });
+
+            merge.Complete();
+
+            return result;
         }
 
         private bool HasRecoveryMatrixInputs(
@@ -5877,10 +5893,21 @@ internal static class HostedGrimoireProducerInventory
             Func<int> siteCount,
             Action<AuthoredMember, string, string> traverse)
         {
+            using HostedProducerPhaseProgress progress = HostedProducerPhaseProgress.Start("external-invocations", progressWorker, invocations.Count);
+
+            int scanned = 0;
+
             HashSet<string> hosted = registrations.Items.ToHashSet(StringComparer.Ordinal);
 
             foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
             {
+                if (scanned > 0 && scanned % 1024 == 0)
+                {
+                    progress.Report(scanned);
+                }
+
+                scanned++;
+
                 if (model.GetSymbolInfo(call).Symbol is not IMethodSymbol target)
                 {
                     continue;
@@ -5918,10 +5945,14 @@ internal static class HostedGrimoireProducerInventory
                     diagnostics.Add(new("HOSTED_EXTERNAL_OPERATION_UNCATALOGUED", Location(call), operation));
                 }
             }
+
+            progress.Complete();
         }
 
         private HostedProducerDiscovery<HostedProducerSite> CompleteDiscovery()
         {
+            using HostedProducerPhaseProgress progress = HostedProducerPhaseProgress.Start("complete-discovery", progressWorker);
+
             HostedProducerAnalysisMetrics analysisMetrics = new(
                 maximumRecoveryConditionEvaluations
                     .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
@@ -6052,13 +6083,17 @@ internal static class HostedGrimoireProducerInventory
                     .ToArray(),
             };
 
-            return new(
+            HostedProducerDiscovery<HostedProducerSite> result = new(
                 sites.Values.OrderBy(SiteIdentity, StringComparer.Ordinal).ToArray(),
                 diagnostics.Distinct()
                     .OrderBy(static diagnostic => diagnostic.Code, StringComparer.Ordinal)
                     .ThenBy(static diagnostic => diagnostic.Identity, StringComparer.Ordinal)
                     .ThenBy(static diagnostic => diagnostic.Detail, StringComparer.Ordinal).ToArray(),
                 analysisMetrics);
+
+            progress.Complete();
+
+            return result;
         }
 
         private void TraverseRecoverySelectionProbe(
@@ -6973,17 +7008,7 @@ internal static class HostedGrimoireProducerInventory
 
         private static void AppendProgressLine(string path, string line)
         {
-            lock (RootProgressGate)
-            {
-                string? directory = Path.GetDirectoryName(path);
-
-                if (!string.IsNullOrEmpty(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
-                File.AppendAllText(path, line + global::System.Environment.NewLine);
-            }
+            HostedProducerPhaseProgress.AppendProgressLine(path, line);
         }
 
         private void ValidateOwnerRecoveryAssociations()

@@ -68,9 +68,6 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: true
       COVERAGE_LINE_TARGET: "80"
       COVERAGE_BRANCH_TARGET: "70"
-      # Bound macOS analysis to two total slots: two production traversal workers,
-      # then queued fixtures, within the same overall deadline.
-      ARCANUM_ANALYSIS_JOBS: "2"
       # The real-backend credential round trip. It was opt-in and enabled only on the Windows lane,
       # which is gated off until a verified win-x64 SQLCipher asset lands — so no lane exercised a
       # real OS secret store at all, and IOsCredentialStore shipped covered only by its in-memory
@@ -89,7 +86,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -135,7 +132,7 @@ jobs:
       - name: Arcanum tests + coverage thresholds
         run: |
           python3 -m unittest scripts/coverage_threshold_test.py scripts/coverage_workflow_test.py scripts/hosted_producer_analysis_runner_test.py
-          ./scripts/coverage.sh --threshold
+          ./scripts/coverage.sh --threshold --ci-runtime-only
 
       - name: Upload coverage report
         if: always()
@@ -147,6 +144,51 @@ jobs:
             .tmp/coverage/**/coverage.cobertura.xml
             .tmp/coverage/analysis/
           if-no-files-found: warn
+          retention-days: 14
+
+  hosted-producer-analysis:
+    name: Hosted producer source analysis
+    runs-on: macos-26
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.401"
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+            .config/dotnet-tools.json
+
+      - name: Build uninstrumented source analysis
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+
+      - name: Test source analysis runner
+        run: python3 -m unittest scripts/hosted_producer_analysis_runner_test.py
+
+      # One complete authority: primary/additional production graphs and all adversarial fixtures.
+      # Two total slots fit the macOS host; the existing deadline includes discovery and queued work.
+      - name: Test hosted-producer source analysis
+        timeout-minutes: 30
+        run: |
+          python3 scripts/hosted_producer_analysis_runner.py \
+            --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+            --configuration Release --jobs 2 --timeout-seconds 1740 \
+            --results-directory .tmp/coverage/analysis
+
+      - name: Upload source analysis progress
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hosted-producer-analysis-macos
+          path: .tmp/coverage/analysis/
           retention-days: 14
 
   macos-workspace-check:
@@ -247,13 +289,8 @@ jobs:
           retention-days: 90
 
   windows-suite:
-    # Every Windows-only test guards itself with Skip.IfNot(OperatingSystem.IsWindows(), ...), so on
-    # the Linux and macOS lanes they report green while asserting nothing. Without this job the whole
-    # Windows surface -- Credential Manager, Job Objects, AppContainer, PATHEXT resolution, NTFS
-    # permissions -- is untested, which is how WindowsOsCredentialStore shipped persisting
-    # uninitialized heap in place of the operator's API key. That surface is the same on both
-    # shipping Windows architectures, so this lane covers x64 and windows-arm64-suite below covers
-    # the other one; what arm64 adds beyond a second copy is written there.
+    # Focused native/OS contracts run on each shipping Windows architecture. Portable runtime
+    # coverage is authoritative on macOS; ARM64 also checks actual Windows compiler inputs.
     #
     # The bare name is left alone on purpose. A repository's required-status-check configuration
     # refers to a workflow lane by this exact string, external to this file, so renaming it would
@@ -279,16 +316,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Setup native Python for source analysis
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
-        with:
-          python-version: "3.13"
-          architecture: "x64"
-
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -316,47 +347,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Category!=Perf: ArcanumPerfBaselineTests measures wall clock against absolute budgets on
-          # a shared runner. DESIGN 13.8 calls that harness explicitly not a gate, and coverage.sh
-          # excludes it for the same reason -- an unfiltered lane reds on scheduling noise instead.
+          # Keep the native/OS surface explicit; portable runtime coverage runs on macOS.
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            -c Release --no-build --no-restore --filter "Category!=Perf&Category!=HostedProducerAnalysis"
+            -c Release --no-build --no-restore --filter "Category!=Perf&Category!=HostedProducerAnalysis&(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherDeliveryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.SqlCipherCompatibilityTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Security.OsCredentialStoreRoundTripTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterWindowsBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsJobObjectSessionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerPolicyTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRestoreJournalTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessBoundaryBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessFilesystemJailTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Familiars.FamiliarExecutableResolverTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Test source analysis runner
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          python -m unittest scripts/hosted_producer_analysis_runner_test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      # Source analysis evaluates the native host's MSBuild inputs, so each Windows
-      # architecture runs the complete gate with bounded process concurrency.
-      - name: Test hosted-producer source analysis
-        timeout-minutes: 30
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          python scripts/hosted_producer_analysis_runner.py `
-            --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            --configuration Release --jobs 4 --timeout-seconds 1740 `
-            --results-directory .tmp/coverage/analysis
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Upload source analysis progress
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: hosted-producer-analysis-win-x64
-          path: .tmp/coverage/analysis/
-          retention-days: 14
 
       - name: Test Compendium
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
-            -c Release --no-build --no-restore
+            -c Release --no-build --no-restore --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The AOT diagnostic gate fails closed when ripgrep is absent. Windows runner images do not
@@ -440,16 +441,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Setup native Python for source analysis
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
-        with:
-          python-version: "3.13"
-          architecture: "arm64"
-
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "10.0.401"
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -502,47 +497,26 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Category!=Perf for the reason the x64 lane excludes it -- ArcanumPerfBaselineTests
-          # measures wall clock against absolute budgets, and DESIGN 13.8 states the harness is not
-          # a gate. It applies with more force here: no arm64 measurement exists to set a budget
-          # from, so those budgets are x64 numbers and this lane would red on the architecture.
+          # Same explicit native/OS surface as x64, exercised with the arm64 asset and SDK.
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            -c Release --no-build --no-restore --filter "Category!=Perf&Category!=HostedProducerAnalysis"
+            -c Release --no-build --no-restore --filter "Category!=Perf&Category!=HostedProducerAnalysis&(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherDeliveryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.SqlCipherCompatibilityTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Security.OsCredentialStoreRoundTripTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterWindowsBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsJobObjectSessionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerPolicyTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRestoreJournalTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessBoundaryBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessFilesystemJailTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Familiars.FamiliarExecutableResolverTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test source analysis runner
+      # These checks evaluate actual Windows compiler inputs without traversing producer roots.
+      - name: Verify Windows compiler inputs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python -m unittest scripts/hosted_producer_analysis_runner_test.py
+          dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
+            -c Release --no-build --no-restore --filter "Category!=Perf&(FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionCompilationsResolveGeneratedJsonSymbols|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionCompilerGraphUsesCanonicalProjectReferences|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionIncludesEveryFirstPartyDependencyAndApiCliRoots)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      # Retain the native arm64 source proof separately from the runtime suite.
-      - name: Test hosted-producer source analysis
-        timeout-minutes: 30
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          python scripts/hosted_producer_analysis_runner.py `
-            --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            --configuration Release --jobs 4 --timeout-seconds 1740 `
-            --results-directory .tmp/coverage/analysis
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Upload source analysis progress
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: hosted-producer-analysis-win-arm64
-          path: .tmp/coverage/analysis/
-          retention-days: 14
 
       - name: Test Compendium
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
-            -c Release --no-build --no-restore
+            -c Release --no-build --no-restore --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The AOT diagnostic gate fails closed when ripgrep is absent. The arm64 runner can execute

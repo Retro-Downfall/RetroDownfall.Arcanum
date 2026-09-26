@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -241,6 +242,50 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertIn("Category!=HostedProducerAnalysis", calls[0][calls[0].index("--filter") + 1])
         self.assertIn("not delivery qualification", result.stdout)
+
+    def test_ci_runtime_mode_preserves_coverage_and_names_required_analysis_job(self):
+        result, calls = self.run_gate("--ci-runtime-only", "--threshold")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(calls))
+        self.assertIn("Category!=Perf&Category!=HostedProducerAnalysis", calls[0])
+        self.assertIn("--collect:XPlat Code Coverage", calls[0])
+        self.assertIn("Hosted producer source analysis", result.stdout)
+        self.assertIn("mandatory", result.stdout)
+
+    def test_ci_runtime_mode_still_fails_thresholds(self):
+        result, calls = self.run_gate("--ci-runtime-only", "--threshold", THRESHOLD_EXIT="11")
+        self.assertEqual(11, result.returncode)
+        self.assertEqual(1, len(calls))
+
+    def test_ci_runtime_mode_rejects_feature_mode_or_missing_thresholds(self):
+        for arguments in [("--ci-runtime-only",), ("--ci-runtime-only", "--feature", "--threshold")]:
+            with self.subTest(arguments=arguments):
+                result, calls = self.run_gate(*arguments)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual([], calls)
+
+    def test_canonical_workflow_command_executes_complete_uninstrumented_analysis(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("  hosted-producer-analysis:\n", 1)[-1].split("\n  macos-workspace-check:", 1)[0]
+        command = re.search(r"        run: \|\n((?:          .*\n)+)", job)
+        self.assertIsNotNone(command, "The canonical source-analysis job must execute its runner")
+        result = subprocess.run(
+            ["bash", "-e", "-c", "\n".join(line[10:] for line in command[1].splitlines())],
+            cwd=self.root,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        discovery = [call for call in calls if "--list-tests" in call]
+        self.assertEqual(2, len(discovery))
+        self.assertIn("Category=HostedProducerProductionAnalysis", discovery[0])
+        self.assertIn("Category=HostedProducerAnalysis&Category!=HostedProducerProductionAnalysis", discovery[1])
+        self.assertTrue(all("Release" in call and "--no-build" in call for call in calls))
+        self.assertTrue(all(not any(arg.startswith("--collect") for arg in call) for call in calls))
+        self.assertEqual(2, len(list((self.root / ".tmp/coverage/analysis").rglob("*.trx"))))
 
     def test_missing_report_fails_closed(self):
         result, calls = self.run_gate(NO_REPORT="1")
