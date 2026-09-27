@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Annals;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Lexicon;
+
 using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
@@ -16,7 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 /// Raw-SQL read access to the Annals over the scoped <see cref="ArcanumDbContext"/>'s connection.
 /// </summary>
 /// <remarks>
-/// None of the four <c>annal_*</c> tables is part of the compiled EF model, so access goes through
+/// Annals tables and historical Lexicon provenance are outside the compiled EF model, so access goes through
 /// <see cref="DbCommand"/> rather than LINQ, mirroring <see cref="SagaMemoryStore"/>.
 /// </remarks>
 internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
@@ -62,11 +64,11 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
 
                 return new AnnalClaimHead(
                     reader.GetString(0),
-                    (AnnalSubjectStore)reader.GetInt32(1),
+                    (AnnalSubjectStore)ReadCode(reader, 1, 1, 2),
                     reader.GetString(2),
                     reader.GetString(3),
                     reader.GetInt32(4),
-                    (AnnalOperation)reader.GetInt32(5),
+                    (AnnalOperation)ReadCode(reader, 5, 1, 3),
                     ParseTimestamp(reader.GetString(6)));
             },
             cancellationToken).ConfigureAwait(false);
@@ -98,7 +100,7 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
                            (SELECT successor.RecordedAtUtc
                             FROM annal_versions AS successor
                             WHERE successor.PredecessorVersionId = version.VersionId) AS RecordedUntilUtc,
-                           version.PredecessorVersionId
+                           version.PredecessorVersionId, version.ContentHashFormatCode, version.ContentHash
                     FROM annal_versions AS version
                     WHERE version.ClaimId = @claimId
                     ORDER BY version.Revision
@@ -119,11 +121,13 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
                             reader.GetString(1),
                             reader.GetInt64(2),
                             reader.GetInt32(3),
-                            (AnnalOperation)reader.GetInt32(4),
-                            (AnnalOrigin)reader.GetInt32(5),
-                            (SagaMemoryScopeKind)reader.GetInt32(6),
+                            (AnnalOperation)ReadCode(reader, 4, 1, 3),
+                            (AnnalOrigin)ReadCode(reader, 5, 1, 4),
+                            (SagaMemoryScopeKind)ReadCode(reader, 6, 0, 3),
                             reader.IsDBNull(7) ? null : Guid.Parse(reader.GetString(7)),
-                            (ContentSensitivity)reader.GetInt32(8),
+                            (ContentSensitivity)ReadCode(reader, 8, 0, 1),
+                            (AnnalContentHashFormat)ReadCode(reader, 14, 1, 2),
+                            reader.IsDBNull(15) ? null : (byte[])reader.GetValue(15),
                             ParseTimestamp(reader.GetString(9)),
                             reader.IsDBNull(10) ? null : ParseTimestamp(reader.GetString(10)),
                             ParseTimestamp(reader.GetString(11)),
@@ -170,13 +174,69 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
                         new AnnalDependencyEdge(
                             reader.GetString(0),
                             reader.GetString(1),
-                            (AnnalDependencyRelation)reader.GetInt32(2),
+                            (AnnalDependencyRelation)ReadCode(reader, 2, 1, 3),
                             reader.GetInt32(3)));
                 }
 
                 return (IReadOnlyList<AnnalDependencyEdge>)edges;
             },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<LexiconAnnalFactProvenance>> GetLexiconFactProvenanceAsync(
+        string versionId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(versionId);
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand command = connection.CreateCommand();
+
+                command.CommandText = """
+                    SELECT AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey,
+                           AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType
+                    FROM lexicon_annal_fact_provenance
+                    WHERE AnnalVersionId = @versionId
+                    ORDER BY FactOrdinal
+                    """;
+
+                AddParameter(command, "@versionId", versionId);
+
+                List<LexiconAnnalFactProvenance> provenance = [];
+
+                await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    provenance.Add(new LexiconAnnalFactProvenance(
+                        reader.GetString(0),
+                        reader.GetInt32(1),
+                        Guid.Parse(reader.GetString(2)),
+                        Guid.Parse(reader.GetString(3)),
+                        reader.GetString(4),
+                        reader.GetInt32(5),
+                        reader.GetString(6),
+                        ParseTimestamp(reader.GetString(7)),
+                        reader.GetString(8)));
+                }
+
+                return (IReadOnlyList<LexiconAnnalFactProvenance>)provenance;
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static int ReadCode(DbDataReader reader, int ordinal, int minimum, int maximum)
+    {
+        if (reader.GetValue(ordinal) is not long code || code < minimum || code > maximum)
+        {
+            throw new InvalidDataException($"Invalid Annals {reader.GetName(ordinal)} code.");
+        }
+
+        return (int)code;
     }
 
     private static DateTimeOffset ParseTimestamp(string value) =>

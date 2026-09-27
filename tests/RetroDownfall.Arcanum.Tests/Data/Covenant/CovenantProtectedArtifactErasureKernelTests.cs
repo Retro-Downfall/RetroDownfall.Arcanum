@@ -82,6 +82,19 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             $"""
              INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
              VALUES ('{Format(artifactId)}', 'n', 'n', 'Person', '[]', '', '2026-08-16T00:00:00Z');
+             INSERT INTO annal_claims (ClaimId, SubjectStoreCode, SubjectId, CreatedAtUtc)
+             VALUES ('lexicon-claim', 2, '{artifactId:N}', '2026-08-16T00:00:00Z'),
+                    ('saga-claim', 1, '{artifactId:D}', '2026-08-16T00:00:00Z');
+             INSERT INTO annal_versions (VersionId, ClaimId, Revision, OperationCode, OriginCode,
+                 ScopeKindCode, SensitivityCode, ContentHash, ValidFromUtc, RecordedAtUtc)
+             VALUES ('lexicon-version', 'lexicon-claim', 1, 1, 1, 1, 0, zeroblob(32), '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z'),
+                    ('saga-version', 'saga-claim', 1, 1, 1, 1, 0, zeroblob(32), '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z');
+             INSERT INTO annal_heads (ClaimId, SubjectStoreCode, CurrentVersionId, CurrentRevision, CurrentOperationCode, UpdatedAtUtc)
+             VALUES ('lexicon-claim', 2, 'lexicon-version', 1, 1, '2026-08-16T00:00:00Z'),
+                    ('saga-claim', 1, 'saga-version', 1, 1, '2026-08-16T00:00:00Z');
+             INSERT INTO lexicon_annal_fact_provenance (AnnalVersionId, FactOrdinal, SessionId, AttachmentId,
+                 LogicalKey, AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType)
+             VALUES ('lexicon-version', 0, 'session', 'attachment', 'source', 1, 'attachment-digest', '2026-08-16T00:00:00Z', 'text');
              """);
 
         FakeCovenantAuthorityProvider provider = new();
@@ -107,6 +120,16 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1UL, erased.Value.ErasedCount);
 
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM lexicon_entries;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 2;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM annal_claims WHERE SubjectStoreCode = 1;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM annal_heads;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM annal_versions;"));
 
     }
 
@@ -396,6 +419,11 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                         "saga_memory_attachment_provenance",
                         "lexicon_entries",
                         "lexicon_fact_attachment_provenance",
+                        "annal_claims",
+                        "annal_versions",
+                        "annal_heads",
+                        "annal_dependencies",
+                        "lexicon_annal_fact_provenance",
                         "Entries",
                         "entry_embeddings",
                         "assistant_entry_finalizations",

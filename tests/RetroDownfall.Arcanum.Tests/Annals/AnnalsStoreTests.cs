@@ -93,6 +93,14 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
 
         Assert.Equal(AnnalOperation.Assert, head.CurrentOperation);
 
+        AnnalClaimVersion version = Assert.Single(await CreateStore().GetVersionsAsync(head.ClaimId, CancellationToken.None));
+
+        Assert.Equal(AnnalContentHashFormat.LegacyStoreDigest, version.ContentHashFormat);
+
+        Assert.Equal(
+            Convert.FromHexString("B2B08882507B362B02BD72A664F36775914BEB799D95E6DE89B23BDC56F65934"),
+            version.ContentHash);
+
     }
 
     /// <summary>

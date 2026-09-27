@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Lexicon;
+
 namespace RetroDownfall.Arcanum.Core.Annals;
 
 /// <summary>
@@ -28,6 +30,11 @@ public interface IAnnalsStore
 
     /// <summary>One version's dependency edges, in ordinal order.</summary>
     Task<IReadOnlyList<AnnalDependencyEdge>> GetDependenciesAsync(
+        string versionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>One Lexicon version's content-free source coordinates, in fact ordinal order.</summary>
+    Task<IReadOnlyList<LexiconAnnalFactProvenance>> GetLexiconFactProvenanceAsync(
         string versionId,
         CancellationToken cancellationToken);
 

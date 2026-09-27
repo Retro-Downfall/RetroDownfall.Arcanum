@@ -61,6 +61,8 @@ internal static class AnnalsErasurePlan
 
         return
         [
+            new("lexicon_annal_fact_provenance", $"AnnalVersionId IN ({versionScope})"),
+
             // Both endpoint columns, because an edge dies when either end does: a claim being erased may
             // be the target of an edge asserted by a version that survives, and leaving that edge would
             // leave a dependency pointing at nothing.
