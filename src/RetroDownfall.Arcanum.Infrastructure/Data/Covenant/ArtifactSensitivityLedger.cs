@@ -27,7 +27,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// to be recomputed from labels on a hot path, and it must never go clean while any tainted artifact
 /// is still counted.</para>
 /// </remarks>
-internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connections)
+internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSource connections)
     : IArtifactSensitivityLedger
 {
     public async Task<Result<LabeledArtifactWriteReceipt>> LabelAsync(
@@ -402,7 +402,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
 
     private static async Task InsertLabelAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
@@ -589,7 +589,7 @@ internal sealed class ArtifactSensitivityLedger(ICovenantConnectionSource connec
     /// </remarks>
     private static async Task<byte[]> MergedProvenanceDigestAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         Guid sessionId,
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)

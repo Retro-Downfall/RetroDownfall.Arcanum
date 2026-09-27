@@ -18,6 +18,61 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class ArtifactSensitivityLedgerTests
 {
+    [Theory]
+    [InlineData("LabelId = '11111111-1111-4111-8111-111111111111'")]
+    [InlineData("ArtifactKindCode = 6")]
+    [InlineData("ArtifactId = '11111111-1111-4111-8111-111111111111'")]
+    [InlineData("SessionId = NULL")]
+    [InlineData("CampaignId = NULL")]
+    [InlineData("TurnId = '11111111-1111-4111-8111-111111111111'")]
+    [InlineData("ArtifactRevision = 2")]
+    [InlineData("ArtifactContentDigest = zeroblob(32)")]
+    [InlineData("SensitivityCode = 0")]
+    [InlineData("ProvenanceModeCode = 2")]
+    [InlineData("ExactGenerationIds = zeroblob(16)")]
+    [InlineData("GenerationBloom = zeroblob(32)")]
+    [InlineData("SensitivityDigest = zeroblob(32)")]
+    [InlineData("ProducingPlanDigest = zeroblob(32)")]
+    [InlineData("ProducingAdmissionDigest = zeroblob(32)")]
+    [InlineData("ProducingMaintenanceReceiptDigest = zeroblob(32)")]
+    [InlineData("ArtifactLabelDigest = zeroblob(32)")]
+    [InlineData("CreatedAtUtc = '2026-09-01T00:00:00.0000000Z'")]
+    public async Task Lexicon_replacement_compares_every_old_label_column_even_if_digest_is_not_updated(string change)
+    {
+        await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Assert.True((await fixture.Ledger.LabelAsync(Tainted(SensitiveArtifactKind.Lexicon, artifactId, GenerationOne), CancellationToken.None)).IsSuccess);
+
+        ArtifactSensitivityLabel before = (await fixture.Ledger.TryReadLabelAsync(SensitiveArtifactKind.Lexicon, artifactId, CancellationToken.None)).Value!;
+
+        await using (SqliteCommand corrupt = fixture.Connection.CreateCommand())
+        {
+            // The intentionally inconsistent row proves each CAS predicate, independently of the
+            // digest. Production correction verifies this evidence before reaching replacement.
+            corrupt.CommandText = $"DROP TRIGGER IF EXISTS artifact_sensitivity_guard_update; PRAGMA ignore_check_constraints = ON; UPDATE artifact_sensitivity SET {change};";
+
+            await corrupt.ExecuteNonQueryAsync();
+        }
+
+        await using SqliteTransaction transaction = fixture.Connection.BeginTransaction();
+
+        var result = await ArtifactSensitivityLedger.ReplaceLexiconWithinAsync(fixture.Connection, transaction,
+            before, Digest(9), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.Lexicon.StaleCurationTarget, result.Error.Code);
+
+        await transaction.RollbackAsync();
+
+        Assert.Equal(1, await fixture.CountLabelsAsync());
+
+        var projection = (await fixture.Ledger.ReadSessionProjectionAsync(Session, CancellationToken.None)).Value;
+
+        Assert.Equal(1, projection.TaintedArtifactCount);
+
+        Assert.Equal(1, projection.Revision);
+    }
 
     private static readonly Guid Session = Guid.Parse("0A1B2C3D-4E5F-4A6B-8C9D-0E1F2A3B4C5D");
 

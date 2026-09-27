@@ -973,9 +973,9 @@ internal sealed partial class LexiconService(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
-        // MergeFacts is an uncapped union, so `retained` grows monotonically over an entry's life.
-        // Probing it with Enumerable.Contains made both loops below O(existing x retained) ordinal
-        // scans inside the BEGIN IMMEDIATE critical section.
+        // The caller supplies the complete resulting fact set: a scribe union or an operator
+        // replacement. Only exact unchanged canonical facts retain their attachment evidence.
+        // Hash membership keeps both paths linear inside BEGIN IMMEDIATE.
         HashSet<string> retainedSet = new(retained, StringComparer.Ordinal);
 
         Dictionary<string, AttachmentMemoryProvenance> sources = existing
