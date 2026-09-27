@@ -292,6 +292,96 @@ public sealed class LexiconCorrectionTests(GrimoireFixture fixture) : IAsyncLife
     }
 
     [Theory]
+    [InlineData("TaintedArtifactCount = 1.5", "TaintedArtifactCount", "real", false)]
+    [InlineData("TaintedArtifactCount = 'bad'", "TaintedArtifactCount", "text", false)]
+    [InlineData("Revision = 0.5", "Revision", "real", false)]
+    [InlineData("Revision = 'bad'", "Revision", "text", false)]
+    [InlineData("TaintedArtifactCount = 0", "TaintedArtifactCount", "integer", false)]
+    [InlineData("TaintedArtifactCount = -1", "TaintedArtifactCount", "integer", true)]
+    [InlineData("Revision = -1", "Revision", "integer", true)]
+    [InlineData("Revision = 9223372036854775807", "Revision", "integer", false)]
+    [InlineData(null, null, null, false)]
+    public async Task Invalid_session_projection_refuses_correction_and_rolls_back_all_surfaces(
+        string? assignment, string? column, string? storageClass, bool ignoreChecks)
+    {
+        await _test.SeedAsync();
+
+        await _test.ProtectAsync();
+
+        LexiconEntryDetail before = await _test.ShowProtectedAsync();
+
+        if (ignoreChecks)
+        {
+            // Negative counters violate the schema; deliberately seed hostile persisted state.
+            // Fractional and TEXT cases above exercise the real CHECK constraints unchanged.
+            await _test.ExecuteAsync("PRAGMA ignore_check_constraints = ON");
+        }
+
+        await _test.ExecuteAsync(assignment is null
+            ? "DELETE FROM session_sensitivity_state"
+            : $"UPDATE session_sensitivity_state SET {assignment}");
+
+        if (column is not null)
+        {
+            Assert.Equal(storageClass, await _test.ScalarAsync($"SELECT typeof({column}) FROM session_sensitivity_state"));
+        }
+
+        string[] snapshot = await _test.SnapshotAsync();
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        var result = await _test.Service.CorrectAsync(before.Target, new("Person", ["beta", "gamma"]), lease);
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, result.Error.Code);
+
+        Assert.Equal(snapshot, await _test.SnapshotAsync());
+
+        Assert.Equal(1L, await _test.ScalarAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'alpha'"));
+
+        Assert.Equal(0L, await _test.ScalarAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'gamma'"));
+
+        if (column is not null)
+        {
+            Assert.Equal(storageClass, await _test.ScalarAsync($"SELECT typeof({column}) FROM session_sensitivity_state"));
+        }
+    }
+
+    [Theory]
+    [InlineData(0L, 1L)]
+    [InlineData(9223372036854775806L, 9223372036854775807L)]
+    public async Task Supported_integer_session_revision_advances_once_without_changing_count(long priorRevision, long nextRevision)
+    {
+        await _test.SeedAsync();
+
+        ArtifactSensitivityLabel label = await _test.ProtectAsync();
+
+        LexiconEntryDetail before = await _test.ShowProtectedAsync();
+
+        await _test.ExecuteAsync($"UPDATE session_sensitivity_state SET Revision = {priorRevision}");
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        var result = await _test.Service.CorrectAsync(before.Target, new("Person", ["beta", "gamma"]), lease);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        SessionSensitivityProjection projection = (await ArtifactSensitivityLedger.ReadProjectionWithinAsync(
+            _test.Connection, null, label.SessionId!.Value, CancellationToken.None)).Value;
+
+        Assert.Equal(1, projection.TaintedArtifactCount);
+
+        Assert.Equal(nextRevision, projection.Revision);
+
+        Assert.Equal("integer", await _test.ScalarAsync("SELECT typeof(TaintedArtifactCount) FROM session_sensitivity_state"));
+
+        Assert.Equal("integer", await _test.ScalarAsync("SELECT typeof(Revision) FROM session_sensitivity_state"));
+    }
+
+    [Theory]
     [InlineData("claim")]
     [InlineData("version")]
     [InlineData("revision")]

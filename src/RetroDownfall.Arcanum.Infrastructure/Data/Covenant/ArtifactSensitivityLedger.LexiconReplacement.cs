@@ -110,12 +110,15 @@ internal sealed partial class ArtifactSensitivityLedger
 
             // One stable artifact is still counted exactly once. Its Session evidence advances
             // without lowering the conservative sensitivity maximum or losing generation history.
+            // INTEGER affinity does not guarantee INTEGER storage; reject coercible counters.
             command.CommandText = """
                 UPDATE session_sensitivity_state SET
                     MaximumSensitivityCode = max(MaximumSensitivityCode, $sensitivity),
                     GenerationProvenanceDigest = $provenance,
                     Revision = Revision + 1, UpdatedAtUtc = $at
-                WHERE SessionId = $session AND TaintedArtifactCount > 0 AND Revision < 9223372036854775807;
+                WHERE SessionId = $session
+                    AND typeof(TaintedArtifactCount) = 'integer' AND TaintedArtifactCount > 0
+                    AND typeof(Revision) = 'integer' AND Revision >= 0 AND Revision < 9223372036854775807;
                 """;
 
             command.Parameters.AddWithValue("$sensitivity", (long)successor.Sensitivity);
