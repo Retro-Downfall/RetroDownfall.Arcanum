@@ -739,12 +739,9 @@ internal static class AnnalsClaimWriter
 
     private static void RequireTransaction(DbConnection connection, DbTransaction? transaction)
     {
-        if (transaction is not null && ReferenceEquals(transaction.Connection, connection))
-        {
-            return;
-        }
-
-        if (transaction is null && connection is SqliteConnection sqlite
+        if (connection is SqliteConnection sqlite
+            && sqlite.State == System.Data.ConnectionState.Open
+            && (transaction is null || ReferenceEquals(transaction.Connection, connection))
             && SQLitePCL.raw.sqlite3_get_autocommit(sqlite.Handle) == 0)
         {
             return;

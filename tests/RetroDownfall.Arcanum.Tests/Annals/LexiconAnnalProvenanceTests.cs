@@ -2,6 +2,7 @@ using System.Data.Common;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -141,26 +142,140 @@ public sealed class LexiconAnnalProvenanceTests(GrimoireFixture fixture) : IAsyn
         Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
     }
 
-    [SkippableFact]
-    public async Task Structured_evidence_cannot_be_published_without_an_owning_transaction()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Structured_evidence_cannot_be_published_without_an_owning_transaction(bool assertClaim)
     {
         RequireSqlCipher();
 
         await SeedAsync();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => AppendAsync(transaction: null));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => AppendAsync(transaction: null, assertClaim));
 
-        Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM annal_claims;"));
+        Assert.Equal("0,0,0,0", await ReadPublicationCountsAsync());
     }
 
-    private Task<string?> AppendAsync(DbTransaction? transaction) =>
-        AnnalsClaimWriter.AppendCorrectionAsync(
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stale_managed_transaction_cannot_publish_structured_evidence(bool assertClaim)
+    {
+        RequireSqlCipher();
+
+        await SeedAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        await using DbTransaction transaction = await connection.BeginTransactionAsync();
+
+        await ExecuteAsync("COMMIT;", transaction);
+
+        try
+        {
+            Assert.Same(connection, transaction.Connection);
+
+            Assert.Equal(1, SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle));
+
+            Exception? failure = await Record.ExceptionAsync(() => AppendAsync(transaction, assertClaim));
+
+            Assert.Equal("0,0,0,0", await ReadPublicationCountsAsync(transaction));
+
+            Assert.IsType<InvalidOperationException>(failure);
+        }
+        finally
+        {
+            // Raw COMMIT leaves the provider object live; give its cleanup an empty transaction.
+            await ExecuteAsync("BEGIN IMMEDIATE;", transaction);
+
+            await transaction.RollbackAsync();
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Active_provider_transaction_owns_structured_evidence(bool assertClaim)
+    {
+        RequireSqlCipher();
+
+        await SeedAsync();
+
+        await using DbTransaction transaction = await _db.Database.GetDbConnection().BeginTransactionAsync();
+
+        Assert.NotNull(await AppendAsync(transaction, assertClaim));
+
+        Assert.Equal("1,1,1,2", await ReadPublicationCountsAsync(transaction));
+
+        await transaction.RollbackAsync();
+
+        Assert.Equal("0,0,0,0", await ReadPublicationCountsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Active_EF_transaction_owns_structured_evidence(bool assertClaim)
+    {
+        RequireSqlCipher();
+
+        await SeedAsync();
+
+        await using IDbContextTransaction transaction = await _db.Database.BeginTransactionAsync();
+
+        Assert.NotNull(await AppendAsync(transaction.GetDbTransaction(), assertClaim));
+
+        Assert.Equal("1,1,1,2", await ReadPublicationCountsAsync(transaction.GetDbTransaction()));
+
+        await transaction.RollbackAsync();
+
+        Assert.Equal("0,0,0,0", await ReadPublicationCountsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Another_connections_transaction_cannot_authorize_structured_evidence(bool assertClaim)
+    {
+        RequireSqlCipher();
+
+        await SeedAsync();
+
+        await using SqliteConnection otherConnection = new("Data Source=:memory:");
+
+        await otherConnection.OpenAsync();
+
+        await using DbTransaction otherTransaction = await otherConnection.BeginTransactionAsync();
+
+        await ExecuteAsync("BEGIN IMMEDIATE;");
+
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => AppendAsync(otherTransaction, assertClaim));
+
+            Assert.Equal("0,0,0,0", await ReadPublicationCountsAsync());
+        }
+        finally
+        {
+            await ExecuteAsync("ROLLBACK;");
+        }
+    }
+
+    private Task<string?> AppendAsync(DbTransaction? transaction, bool assertClaim = false) =>
+        assertClaim
+        ? AnnalsClaimWriter.AppendAssertAsync(
+            _db.Database.GetDbConnection(), transaction, AnnalSubjectStore.Lexicon, "entry", AnnalOrigin.OperatorStated,
+            SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
+            AnnalContentHashFormat.LexiconStructuredSnapshot, new byte[32], At, At, null, CancellationToken.None)
+        : AnnalsClaimWriter.AppendCorrectionAsync(
             _db.Database.GetDbConnection(), transaction, AnnalSubjectStore.Lexicon, "entry", AnnalOrigin.OperatorStated,
             SagaMemoryScopeKind.Global, null, ContentSensitivity.None,
             AnnalContentHashFormat.LexiconStructuredSnapshot, new byte[32], At, At, null, CancellationToken.None);
 
-    [SkippableFact]
-    public async Task Raw_owning_transaction_keeps_the_version_and_evidence_uncommitted_until_its_owner_finishes()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Raw_owning_transaction_keeps_the_version_and_evidence_uncommitted_until_its_owner_finishes(bool assertClaim)
     {
         RequireSqlCipher();
 
@@ -170,21 +285,25 @@ public sealed class LexiconAnnalProvenanceTests(GrimoireFixture fixture) : IAsyn
 
         try
         {
-            Assert.NotNull(await AppendAsync(transaction: null));
+            Assert.NotNull(await AppendAsync(transaction: null, assertClaim));
 
-            Assert.Equal(1L, await ScalarAsync("SELECT COUNT(*) FROM annal_versions;"));
-
-            Assert.Equal(2L, await ScalarAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+            Assert.Equal("1,1,1,2", await ReadPublicationCountsAsync());
         }
         finally
         {
             await ExecuteAsync("ROLLBACK;");
         }
 
-        Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM annal_claims;"));
-
-        Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+        Assert.Equal("0,0,0,0", await ReadPublicationCountsAsync());
     }
+
+    private Task<object?> ReadPublicationCountsAsync(DbTransaction? transaction = null) =>
+        ScalarAsync("""
+            SELECT (SELECT COUNT(*) FROM annal_claims) || ','
+                || (SELECT COUNT(*) FROM annal_versions) || ','
+                || (SELECT COUNT(*) FROM annal_heads) || ','
+                || (SELECT COUNT(*) FROM lexicon_annal_fact_provenance);
+            """, transaction);
 
     private async Task SeedAsync()
     {
@@ -212,9 +331,11 @@ public sealed class LexiconAnnalProvenanceTests(GrimoireFixture fixture) : IAsyn
         await command.ExecuteNonQueryAsync();
     }
 
-    private async Task<object?> ScalarAsync(string sql)
+    private async Task<object?> ScalarAsync(string sql, DbTransaction? transaction = null)
     {
         await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.Transaction = transaction;
 
         command.CommandText = sql;
 
