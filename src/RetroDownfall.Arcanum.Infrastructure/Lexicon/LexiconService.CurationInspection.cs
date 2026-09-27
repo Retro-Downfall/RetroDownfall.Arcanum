@@ -330,6 +330,8 @@ internal sealed partial class LexiconService
         {
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                RequireIntegrity(row.Entry.RetiredAtUtc is null);
+
                 return null;
             }
 

@@ -56,10 +56,17 @@ public sealed class LexiconCurationInspectionTests(GrimoireFixture fixture) : IA
         File.Delete(_path);
     }
 
-    [Fact]
-    public async Task Claimless_inspection_derives_complete_target_and_default_generation_from_stored_row()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Claimless_inspection_derives_complete_target_and_default_generation_from_stored_row(bool pinned)
     {
         Guid id = await SeedAsync();
+
+        if (pinned)
+        {
+            await ExecuteAsync("UPDATE lexicon_entries SET PinnedAtUtc = '2026-09-01T00:00:00.0000000Z';");
+        }
 
         var result = await _service.ShowExactAsync(Global, "  eNtItY  ", null);
 
@@ -94,6 +101,81 @@ public sealed class LexiconCurationInspectionTests(GrimoireFixture fixture) : IA
         Assert.Empty(detail.HistoricalFactProvenance);
 
         Assert.False(result.Value.ContainsProtectedContent);
+
+        Assert.Equal(pinned ? At : (DateTimeOffset?)null, detail.Entry.PinnedAtUtc);
+
+        var listed = await _service.ListInspectionAsync(null);
+
+        Assert.True(listed.IsSuccess, listed.Error.Message);
+
+        LexiconEntryDto entry = Assert.Single(listed.Value.Value);
+
+        Assert.Equal(id, entry.Id);
+
+        Assert.Equal(LexiconRetrievalEligibility.Eligible, entry.Eligibility);
+
+        Assert.Equal(pinned ? At : (DateTimeOffset?)null, entry.PinnedAtUtc);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Claimless_retired_row_is_not_a_legitimate_absent_head(bool list)
+    {
+        await SeedAsync();
+
+        await ExecuteAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-02T00:00:00.0000000Z';");
+
+        Error error = list
+            ? (await _service.ListInspectionAsync(null)).Error
+            : (await _service.ShowExactAsync(Global, "entity", null)).Error;
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, error.Code);
+    }
+
+    [Theory]
+    [InlineData("1.5", false)]
+    [InlineData("1.5", true)]
+    [InlineData("2147483648", false)]
+    [InlineData("2147483648", true)]
+    [InlineData("4294967297", false)]
+    [InlineData("4294967297", true)]
+    public async Task Current_provenance_version_rejects_non_positive_Int32_storage(string version, bool list)
+    {
+        await SeedAsync(withProvenance: true);
+
+        await ExecuteAsync("UPDATE lexicon_fact_attachment_provenance SET Version = " + version + ";");
+
+        Error error = list
+            ? (await _service.ListInspectionAsync(null)).Error
+            : (await _service.ShowExactAsync(Global, "entity", null)).Error;
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, error.Code);
+    }
+
+    [Theory]
+    [InlineData("1", 1)]
+    [InlineData("2147483647", int.MaxValue)]
+    public async Task Current_provenance_preserves_positive_Int32_versions_in_inspection_and_operational_reads(string storedVersion, int expected)
+    {
+        await SeedAsync(withProvenance: true);
+
+        await ExecuteAsync("UPDATE lexicon_fact_attachment_provenance SET Version = " + storedVersion + ";");
+
+        var exact = await _service.ShowExactAsync(Global, "entity", null);
+
+        Assert.True(exact.IsSuccess, exact.Error.Message);
+
+        var listed = await _service.ListInspectionAsync(null);
+
+        Assert.True(listed.IsSuccess, listed.Error.Message);
+
+        var operational = await _service.GetByNameAsync("entity", LexiconScope.Global);
+
+        Assert.True(operational.IsSuccess, operational.Error.Message);
+
+        Assert.All(new[] { exact.Value.Value.Entry, Assert.Single(listed.Value.Value), operational.Value! },
+            entry => Assert.Equal(expected, Assert.Single(entry.FactProvenance!).Source.Version));
     }
 
     [Theory]
@@ -356,9 +438,28 @@ public sealed class LexiconCurationInspectionTests(GrimoireFixture fixture) : IA
 
         await LabelAsync(global);
 
-        await _service.UpsertAsync("Entity", "general", ["campaign"], LexiconScope.ForCampaign(Campaign));
+        var campaign = await _service.UpsertAsync("Entity", "general", ["campaign"], LexiconScope.ForCampaign(Campaign));
 
-        await ExecuteAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-02T00:00:00.0000000Z' WHERE ScopeCampaignId <> ''; ");
+        Assert.True(campaign.IsSuccess, campaign.Error.Message);
+
+        await using (SqliteTransaction transaction = Connection.BeginTransaction())
+        {
+            string? baseline = await AnnalsClaimWriter.AppendAssertAsync(Connection, transaction, AnnalSubjectStore.Lexicon,
+                campaign.Value.Id.ToString("N"), AnnalOrigin.OperatorStated, SagaMemoryScopeKind.Campaign, Campaign.ToString("D"),
+                ContentSensitivity.None, AnnalContentHashFormat.LexiconStructuredSnapshot,
+                LexiconSnapshotDigest.Compute(LexiconValueNormalizer.NormalizeCorrection("Entity", "general", ["campaign"]).Value),
+                At, At, null, CancellationToken.None);
+
+            Assert.NotNull(baseline);
+
+            Assert.True(await AnnalsClaimWriter.AppendRetirementAsync(Connection, transaction, AnnalSubjectStore.Lexicon,
+                campaign.Value.Id.ToString("N"), AnnalOrigin.OperatorStated, SagaMemoryScopeKind.Campaign, Campaign.ToString("D"),
+                ContentSensitivity.None, At.AddDays(1), At.AddDays(1), null, CancellationToken.None));
+
+            await transaction.CommitAsync();
+        }
+
+        await ExecuteAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-02T00:00:00.0000000Z', CurationGeneration = 2 WHERE ScopeCampaignId <> ''; ");
 
         List<string> statements = CaptureStatements();
 

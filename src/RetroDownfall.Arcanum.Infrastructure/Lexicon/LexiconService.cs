@@ -1166,7 +1166,7 @@ internal sealed partial class LexiconService(
                 Guid.Parse(reader.GetString(2)),
                 Guid.Parse(reader.GetString(3)),
                 reader.GetString(4),
-                reader.GetInt32(5),
+                AnnalsStore.ReadCode(reader, 5, 1, int.MaxValue),
                 reader.GetString(6),
                 UtcInstantText.Parse(reader.GetString(7)),
                 reader.GetString(8),
