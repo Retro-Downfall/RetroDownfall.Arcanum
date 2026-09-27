@@ -30,15 +30,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 /// Writes use <c>BEGIN IMMEDIATE</c> inside <see cref="SqliteBusyRetry"/> so concurrent
 /// <c>scribe_lexicon</c> appends serialize and cannot lose facts.
 /// </summary>
-internal sealed class LexiconService(
+internal sealed partial class LexiconService(
     ArcanumDbContext db,
     ILogger<LexiconService> logger,
     IOptionsMonitor<ArcanumSettings> options,
-    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ILexiconService
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ILexiconService, ILexiconCurationService
 {
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
-    private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId";
+    private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId, RetiredAtUtc, PinnedAtUtc, CurationGeneration";
 
     public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
@@ -189,7 +189,11 @@ internal sealed class LexiconService(
                                 merged.ToArray(),
                                 now,
                                 factProvenance,
-                                scope.CampaignId));
+                                scope.CampaignId,
+                                existing?.RetiredAtUtc,
+                                existing?.PinnedAtUtc,
+                                existing?.CurationGeneration ?? 1,
+                                existing?.Eligibility ?? LexiconRetrievalEligibility.Eligible));
                     }
                     catch
                     {
@@ -222,29 +226,9 @@ internal sealed class LexiconService(
 
         string normalized = NormalizeName(trimmedName);
 
-        // The guard, not the purge. Reached without the sensitivity purge boundary, this method would
-        // remove a labelled Lexicon entity and strand its label (§10.20.2).
-        if (_labeledArtifactGuard is { } guard)
-        {
-            Result<LexiconEntryDto?> existing = await GetByNameInScopeAsync(trimmedName, scope, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (existing.IsSuccess && existing.Value is { } entity)
-            {
-                Result unlabeled = await guard
-                    .EnsureUnlabeledAsync(SensitiveArtifactKind.Lexicon, entity.Id, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (unlabeled.IsFailure)
-                {
-                    return unlabeled.Error;
-                }
-            }
-        }
-
         try
         {
-            bool removed = await SqliteBusyRetry.ExecuteAsync(
+            Result<bool> removed = await SqliteBusyRetry.ExecuteAsync(
                 async () =>
                 {
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -253,6 +237,23 @@ internal sealed class LexiconService(
 
                     try
                     {
+                        // Deletion must guard the exact identity even when it is retired. Operational
+                        // retrieval deliberately cannot see that row, and no content is needed here.
+                        if (_labeledArtifactGuard is { } guard
+                            && await ReadAllLifecycleIdentityForDeletionAsync(connection, normalized, scope.Key, cancellationToken)
+                                .ConfigureAwait(false) is { } identity)
+                        {
+                            Result unlabeled = await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Lexicon, identity, cancellationToken)
+                                .ConfigureAwait(false);
+
+                            if (unlabeled.IsFailure)
+                            {
+                                await ExecuteNonQueryAsync(connection, CancellationToken.None, "ROLLBACK").ConfigureAwait(false);
+
+                                return Result<bool>.Failure(unlabeled.Error);
+                            }
+                        }
+
                         // Before the entity goes, because the claim is found through the row that names
                         // it. Deliberately ungated: a claim written while the Annals was enabled has to
                         // stay removable after it is disabled, or turning the feature off would strand
@@ -291,7 +292,7 @@ internal sealed class LexiconService(
 
                         await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
 
-                        return affected > 0;
+                        return Result<bool>.Success(affected > 0);
                     }
                     catch
                     {
@@ -302,7 +303,7 @@ internal sealed class LexiconService(
                 },
                 cancellationToken).ConfigureAwait(false);
 
-            return Result<bool>.Success(removed);
+            return removed;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -437,11 +438,11 @@ internal sealed class LexiconService(
                     // The Campaign tier answers first and the global one only when it has not, which is
                     // the same shadowing MatchEntitiesAsync applies. A lookup that resolved differently
                     // from a match would let inspection describe an entity no turn would ever see.
-                    return await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
+                    return await ReadActiveByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
                             .ConfigureAwait(false)
                         ?? (scope.IsGlobal
                             ? null
-                            : await ReadByNormalizedAsync(
+                            : await ReadActiveByNormalizedAsync(
                                 connection,
                                 normalized,
                                 LexiconScope.Global.Key,
@@ -480,7 +481,7 @@ internal sealed class LexiconService(
                 {
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    return await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
+                    return await ReadActiveByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
                         .ConfigureAwait(false);
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -492,72 +493,6 @@ internal sealed class LexiconService(
             logger.LogWarning(ex, "Lexicon scoped get failed for entity {Name}.", trimmedName);
 
             return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon lookup failed.");
-        }
-    }
-
-    public async Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            return await SqliteBusyRetry.ExecuteAsync(
-                async () =>
-                {
-                    DbConnection connection = await OpenConnectionAsync(cancellationToken)
-                        .ConfigureAwait(false);
-
-                    await using DbCommand command = connection.CreateCommand();
-
-                    command.CommandText =
-                        """
-                        SELECT Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId
-                        FROM lexicon_entries
-                        ORDER BY Name COLLATE NOCASE, ScopeCampaignId, Id
-                        """;
-
-                    await using DbDataReader reader = await command
-                        .ExecuteReaderAsync(cancellationToken)
-                        .ConfigureAwait(false);
-
-                    List<LexiconEntryDto> entries = [];
-
-                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                    {
-                        entries.Add(ReadEntry(reader));
-                    }
-
-                    await reader.DisposeAsync().ConfigureAwait(false);
-
-                    if (entries.Count > 0)
-                    {
-                        Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadAllFactProvenanceAsync(
-                            connection,
-                            cancellationToken).ConfigureAwait(false);
-
-                        for (int index = 0; index < entries.Count; index++)
-                        {
-                            LexiconEntryDto entry = entries[index];
-
-                            entries[index] = entry with
-                            {
-                                FactProvenance = provenance.TryGetValue(entry.Id, out LexiconFactProvenance[]? facts)
-                                    ? facts
-                                    : [],
-                            };
-                        }
-                    }
-
-                    return Result<IReadOnlyList<LexiconEntryDto>>.Success(entries);
-                },
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(exception, "Lexicon list failed.");
-
-            return new Error(
-                ErrorCodes.Lexicon.SearchFailed,
-                "Lexicon listing failed.");
         }
     }
 
@@ -765,7 +700,7 @@ internal sealed class LexiconService(
             AddParameter(cmd, paramName, normalized[i]);
         }
 
-        _ = sql.Append(") AND ScopeCampaignId = @scopeKey ORDER BY UpdatedAt DESC LIMIT @limit");
+        _ = sql.Append(") AND ScopeCampaignId = @scopeKey AND RetiredAtUtc IS NULL ORDER BY UpdatedAt DESC LIMIT @limit");
 
         AddParameter(cmd, "@scopeKey", scopeKey);
 
@@ -833,10 +768,11 @@ internal sealed class LexiconService(
         // support it; mathematical boosting lives only in bm25().
         cmd.CommandText =
             """
-            SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt, e.ScopeCampaignId
+            SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt, e.ScopeCampaignId,
+                   e.RetiredAtUtc, e.PinnedAtUtc, e.CurationGeneration
             FROM lexicon_fts
             INNER JOIN lexicon_entries e ON e.rowid = lexicon_fts.rowid
-            WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey
+            WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey AND e.RetiredAtUtc IS NULL
             ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC
             LIMIT @limit
             """;
@@ -879,7 +815,7 @@ internal sealed class LexiconService(
         StringBuilder sql = new();
         _ = sql.Append("SELECT ")
             .Append(SelectColumns)
-            .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey AND (");
+            .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey AND RetiredAtUtc IS NULL AND (");
 
         AddParameter(cmd, "@scopeKey", scopeKey);
 
@@ -956,17 +892,53 @@ internal sealed class LexiconService(
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal);
 
-    private async Task<LexiconEntryDto?> ReadByNormalizedAsync(
+    private Task<LexiconEntryDto?> ReadActiveByNormalizedAsync(
+        DbConnection connection,
+        string normalized,
+        string scopeKey,
+        CancellationToken cancellationToken) =>
+        ReadNamedEntryAsync(connection, normalized, scopeKey,
+            $"SELECT {SelectColumns} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey AND RetiredAtUtc IS NULL LIMIT 1",
+            cancellationToken);
+
+    private static async Task<Guid?> ReadAllLifecycleIdentityForDeletionAsync(
         DbConnection connection,
         string normalized,
         string scopeKey,
         CancellationToken cancellationToken)
     {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT Id FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1";
+
+        AddParameter(command, "@normalized", normalized);
+
+        AddParameter(command, "@scopeKey", scopeKey);
+
+        object? identity = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return identity is string value ? Guid.Parse(value) : null;
+    }
+
+    private Task<LexiconEntryDto?> ReadByNormalizedAsync(
+        DbConnection connection,
+        string normalized,
+        string scopeKey,
+        CancellationToken cancellationToken) =>
+        ReadNamedEntryAsync(connection, normalized, scopeKey,
+            $"SELECT {SelectColumns} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1",
+            cancellationToken);
+
+    private async Task<LexiconEntryDto?> ReadNamedEntryAsync(
+        DbConnection connection,
+        string normalized,
+        string scopeKey,
+        string sql,
+        CancellationToken cancellationToken)
+    {
         await using DbCommand cmd = connection.CreateCommand();
 
-        cmd.CommandText =
-            $"SELECT {SelectColumns} FROM lexicon_entries "
-            + "WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1";
+        cmd.CommandText = sql;
 
         AddParameter(cmd, "@normalized", normalized);
 
@@ -1130,7 +1102,7 @@ internal sealed class LexiconService(
             : ReadFactProvenanceCoreAsync(connection, entryIds, cancellationToken);
 
     /// <summary>
-    /// Provenance for every entry in one read. <see cref="ListAsync"/> returns the entire
+    /// Provenance for every entry in one read. <see cref="ListInspectionAsync"/> returns the entire
     /// <c>lexicon_entries</c> table, so an <c>IN</c> clause would add one parameter per entry without
     /// narrowing anything — and would eventually collide with SQLite's bound-parameter ceiling.
     /// </summary>
@@ -1337,6 +1309,8 @@ internal sealed class LexiconService(
 
         string scopeKey = reader.GetString(5);
 
+        DateTimeOffset? retiredAt = reader.IsDBNull(6) ? null : UtcInstantText.Parse(reader.GetString(6));
+
         return new LexiconEntryDto(
             id,
             name,
@@ -1344,7 +1318,11 @@ internal sealed class LexiconService(
             DeserializeFacts(factsJson),
             updatedAt,
             FactProvenance: null,
-            ScopeCampaignId: scopeKey.Length == 0 ? null : Guid.Parse(scopeKey));
+            ScopeCampaignId: scopeKey.Length == 0 ? null : Guid.Parse(scopeKey),
+            RetiredAtUtc: retiredAt,
+            PinnedAtUtc: reader.IsDBNull(7) ? null : UtcInstantText.Parse(reader.GetString(7)),
+            CurationGeneration: ReadPositiveInteger(reader, 8),
+            Eligibility: retiredAt is null ? LexiconRetrievalEligibility.Eligible : LexiconRetrievalEligibility.Retired);
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)

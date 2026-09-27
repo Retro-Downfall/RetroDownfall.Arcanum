@@ -17,6 +17,35 @@ public sealed class SystemPromptBuilderTests
 {
 
     [Fact]
+    public void Model_and_tool_Lexicon_consumers_cannot_use_operator_inspection_or_direct_table_reads()
+    {
+        string root = RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
+
+        string[] directories =
+        [
+            "src/RetroDownfall.Arcanum.Api/Intelligence",
+            "src/RetroDownfall.Arcanum.Infrastructure/Intelligence",
+            "src/RetroDownfall.Arcanum.Infrastructure/Mcp",
+        ];
+
+        foreach (string directory in directories)
+        {
+            foreach (string path in Directory.EnumerateFiles(Path.Combine(root, directory), "*.cs", SearchOption.AllDirectories))
+            {
+                string source = File.ReadAllText(path);
+
+                Assert.DoesNotContain("ILexiconCurationService", source, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("ListInspectionAsync", source, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("FROM lexicon_entries", source, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        Assert.DoesNotContain(typeof(ILexiconService).GetMethods(), method => method.Name == "ListAsync");
+    }
+
+    [Fact]
     public void Build_MinimalRequest_IncludesPersonaAndNonePlaceholders()
     {
 

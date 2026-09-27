@@ -3,6 +3,7 @@ using System.Data;
 using System.Data.Common;
 
 using System.Diagnostics;
+using System.Text.Json.Serialization.Metadata;
 
 using Microsoft.AspNetCore.Builder;
 
@@ -334,7 +335,7 @@ internal static class MemoryEndpoints
     private static async Task<IResult> HandleSearchAsync(
         MemorySearchRequest? request,
         ArcanumDbContext db,
-        ILexiconService lexicon,
+        ILexiconCurationService lexicon,
         ISagaMemoryStore sagaStore,
         IGrimoireOrdinaryConnectionFactory connections,
         HttpContext context)
@@ -494,24 +495,15 @@ internal static class MemoryEndpoints
 
             if (slice > 0)
             {
-                Result<IReadOnlyList<LexiconEntryDto>> entries = await lexicon
-                    .ListAsync(context.RequestAborted)
-                    .ConfigureAwait(false);
-
-                if (entries.IsFailure)
+                return await RespondToLexiconInspectionAsync(lexicon, context, entries =>
                 {
-                    Result<MemorySearchResponse> failed = Result<MemorySearchResponse>.Failure(
-                        entries.Error);
+                    AddLexiconMatches(entries, query, results, slice + 1);
 
-                    return Results.Json(
-                        ApiResponse<MemorySearchResponse>.FromResult(failed, TraceId(context)),
-                        ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
-                        statusCode: ArcanumErrorMapper.ResolveStatusCode(entries.Error.Code));
-                }
+                    CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes);
 
-                AddLexiconMatches(entries.Value, query, results, slice + 1);
-
-                CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes);
+                    return new MemorySearchResponse(query, request.Scope, [.. results], [.. scopes],
+                        scopes.Exists(static scope => scope.HasMore));
+                }, ArcanumJsonContext.Default.ApiResponseMemorySearchResponse).ConfigureAwait(false);
             }
         }
 
@@ -579,22 +571,12 @@ internal static class MemoryEndpoints
 
     private static async Task<IResult> HandleLexiconListAsync(
         string? q,
-        ILexiconService lexicon,
+        ILexiconCurationService lexicon,
         HttpContext context)
     {
-        Result<IReadOnlyList<LexiconEntryDto>> listed = await lexicon
-            .ListAsync(context.RequestAborted)
-            .ConfigureAwait(false);
-
-        Result<LexiconListDto> result;
-
-        if (listed.IsFailure)
+        return await RespondToLexiconInspectionAsync(lexicon, context, listed =>
         {
-            result = Result<LexiconListDto>.Failure(listed.Error);
-        }
-        else
-        {
-            IEnumerable<LexiconEntryDto> entries = listed.Value;
+            IEnumerable<LexiconEntryDto> entries = listed;
 
             if (!string.IsNullOrWhiteSpace(q))
             {
@@ -603,16 +585,60 @@ internal static class MemoryEndpoints
                 entries = entries.Where(entry => LexiconMatches(entry, query));
             }
 
-            result = Result<LexiconListDto>.Success(
-                new LexiconListDto(entries.ToArray()));
-        }
+            return new LexiconListDto(entries.ToArray());
+        }, ArcanumJsonContext.Default.ApiResponseLexiconListDto).ConfigureAwait(false);
+    }
 
-        return Results.Json(
-            ApiResponse<LexiconListDto>.FromResult(result, TraceId(context)),
-            ArcanumJsonContext.Default.ApiResponseLexiconListDto,
-            statusCode: result.IsSuccess
-                ? StatusCodes.Status200OK
-                : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+    private static async Task<IResult> RespondToLexiconInspectionAsync<T>(
+        ILexiconCurationService lexicon,
+        HttpContext context,
+        Func<IReadOnlyList<LexiconEntryDto>, T> project,
+        JsonTypeInfo<ApiResponse<T>> typeInfo)
+    {
+        ICovenantSnapshotReadLease? owned = null;
+
+        try
+        {
+            if (context.RequestServices.GetService<ICovenantAvailability>()?.Current.FeatureEnabled == true
+                && context.RequestServices.GetService<ICovenantOperationGate>() is { } gate)
+            {
+                Result<CovenantInstallationReadLease> acquired = await gate
+                    .AcquireInstallationReadAsync(context.RequestAborted).ConfigureAwait(false);
+
+                if (acquired.IsFailure)
+                {
+                    return Results.Json(ApiResponse<T>.FromResult(Result<T>.Failure(acquired.Error), TraceId(context)),
+                        typeInfo, statusCode: ArcanumErrorMapper.ResolveStatusCode(acquired.Error.Code));
+                }
+
+                owned = acquired.Value;
+            }
+
+            var inspected = await lexicon.ListInspectionAsync(owned, context.RequestAborted).ConfigureAwait(false);
+
+            Result<T> result = inspected.IsFailure
+                ? Result<T>.Failure(inspected.Error)
+                : Result<T>.Success(project(inspected.Value.Value));
+
+            if (inspected.IsSuccess && inspected.Value.ContainsProtectedContent && owned is not null)
+            {
+                IResult response = new CovenantProtectedJsonResult<T>(owned, result, typeInfo);
+
+                owned = null;
+
+                return response;
+            }
+
+            return Results.Json(ApiResponse<T>.FromResult(result, TraceId(context)), typeInfo,
+                statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+        }
+        finally
+        {
+            if (owned is not null)
+            {
+                await owned.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     /// <remarks>
@@ -1272,7 +1298,9 @@ internal static class MemoryEndpoints
                 string.Join("; ", entry.Facts),
                 provenance,
                 LexiconRetention,
-                entry.Id.ToString("D")));
+                entry.Id.ToString("D"),
+                LexiconLifecycle: new LexiconEntryLifecycle(entry.RetiredAtUtc, entry.PinnedAtUtc),
+                LexiconEligibility: entry.Eligibility));
 
             taken++;
         }

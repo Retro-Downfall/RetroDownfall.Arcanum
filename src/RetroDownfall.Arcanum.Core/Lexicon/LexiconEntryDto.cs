@@ -18,4 +18,8 @@ public sealed record LexiconEntryDto(
     string[] Facts,
     DateTimeOffset UpdatedAt,
     LexiconFactProvenance[]? FactProvenance = null,
-    Guid? ScopeCampaignId = null);
+    Guid? ScopeCampaignId = null,
+    DateTimeOffset? RetiredAtUtc = null,
+    DateTimeOffset? PinnedAtUtc = null,
+    long CurationGeneration = 1,
+    LexiconRetrievalEligibility Eligibility = LexiconRetrievalEligibility.Eligible);

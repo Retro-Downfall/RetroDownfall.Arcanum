@@ -367,6 +367,8 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         builder.Services.AddScoped<ILexiconService>(static _ => throw new NotSupportedException());
 
+        builder.Services.AddScoped<ILexiconCurationService>(static _ => throw new NotSupportedException());
+
         builder.Services.AddScoped<ISagaMemoryStore>(static _ => throw new NotSupportedException());
 
         builder.Services.ConfigureHttpJsonOptions(static options =>

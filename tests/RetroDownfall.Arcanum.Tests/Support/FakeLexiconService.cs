@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
@@ -8,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// Grimoire. Mirrors the real service's name-normalization and append semantics closely enough for
 /// tool-call assertions.
 /// </summary>
-public sealed class FakeLexiconService : ILexiconService
+public sealed class FakeLexiconService : ILexiconService, ILexiconCurationService
 {
 
     /// <summary>
@@ -148,7 +149,8 @@ public sealed class FakeLexiconService : ILexiconService
         return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
     }
 
-    public Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
+    public Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> ListInspectionAsync(
+        ICovenantSnapshotReadLease? readLease,
         CancellationToken cancellationToken = default)
     {
 
@@ -157,8 +159,19 @@ public sealed class FakeLexiconService : ILexiconService
             .ToArray();
 
         return Task.FromResult(
-            Result<IReadOnlyList<LexiconEntryDto>>.Success(entries));
+            Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Success(new(entries, false)));
 
     }
+
+    public Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowExactAsync(
+        LexiconCurationScope scope, string name, ICovenantSnapshotReadLease? readLease,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<LexiconInspectionResult<LexiconEntryDetail>>.Failure(
+            new Error(ErrorCodes.Lexicon.SearchFailed, "This fake does not provide exact evidence.")));
+
+    public Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowEffectiveAsync(
+        LexiconCurationScope requestedScope, string name, ICovenantSnapshotReadLease? installationReadLease,
+        CancellationToken cancellationToken = default) =>
+        ShowExactAsync(requestedScope, name, installationReadLease, cancellationToken);
 
 }

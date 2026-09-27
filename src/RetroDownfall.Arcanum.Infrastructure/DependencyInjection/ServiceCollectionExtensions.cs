@@ -1364,7 +1364,11 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
-        services.AddScoped<ILexiconService, LexiconService>();
+        services.AddScoped<LexiconService>();
+
+        services.AddScoped<ILexiconService>(provider => provider.GetRequiredService<LexiconService>());
+
+        services.AddScoped<ILexiconCurationService>(provider => provider.GetRequiredService<LexiconService>());
 
         services.AddScoped<IAnnalsStore, AnnalsStore>();
 

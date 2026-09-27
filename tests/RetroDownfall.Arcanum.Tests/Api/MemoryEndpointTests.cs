@@ -561,6 +561,8 @@ public sealed class MemoryEndpointTests
 
                 services.AddSingleton<ILexiconService>(lexicon);
 
+                services.AddSingleton<ILexiconCurationService>(lexicon);
+
             },
         };
 
@@ -703,6 +705,8 @@ public sealed class MemoryEndpointTests
 
                 services.AddSingleton<ILexiconService>(lexicon);
 
+                services.AddSingleton<ILexiconCurationService>(lexicon);
+
             },
         };
 
@@ -762,6 +766,8 @@ public sealed class MemoryEndpointTests
                 services.RemoveAll<ILexiconService>();
 
                 services.AddSingleton<ILexiconService>(lexicon);
+
+                services.AddSingleton<ILexiconCurationService>(lexicon);
 
             },
         };
