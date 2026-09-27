@@ -19,7 +19,9 @@ public sealed class LexiconValueNormalizerTests
         Assert.Equal(
             ["Facts", "FactsJson", "FactsText", "Name", "NameNormalized", "Type"],
             projections.Select(static property => property.Name).Order(StringComparer.Ordinal));
+
         Assert.All(projections, static property => Assert.Null(property.SetMethod));
+
         Assert.Equal(typeof(ImmutableArray<string>), canonicalType.GetProperty("Facts")!.PropertyType);
 
         MethodInfo[] digestEntries = typeof(LexiconSnapshotDigest)

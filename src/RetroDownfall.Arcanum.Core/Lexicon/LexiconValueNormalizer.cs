@@ -17,10 +17,15 @@ public sealed class LexiconCanonicalValue
         string factsText)
     {
         Name = name;
+
         NameNormalized = nameNormalized;
+
         Type = type;
+
         Facts = [.. facts];
+
         FactsJson = factsJson;
+
         FactsText = factsText;
     }
 
