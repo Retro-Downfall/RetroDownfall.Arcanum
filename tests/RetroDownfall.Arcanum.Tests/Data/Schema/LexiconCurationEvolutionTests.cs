@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 
+using SQLitePCL;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -32,6 +34,81 @@ public sealed class LexiconCurationEvolutionTests
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT ContentHashFormatCode FROM annal_versions"));
 
         Assert.Equal(1L, await HitsAsync(connection, "inherited"));
+    }
+
+    [Theory]
+    [InlineData(false, 1, 1)]
+    [InlineData(false, 42, 2)]
+    [InlineData(true, 1, 1)]
+    [InlineData(true, 42, 2)]
+    public async Task Scalar_constraints_accept_positive_generations_and_both_hash_formats(
+        bool evolve,
+        int generation,
+        int format)
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        await PrepareAsync(connection, evolve);
+
+        await InsertLexiconGenerationAsync(connection, generation);
+
+        await InsertAnnalFormatAsync(connection, format);
+
+        Assert.Equal((long)generation, await ScalarAsync(connection, "SELECT CurationGeneration FROM lexicon_entries"));
+
+        Assert.Equal((long)format, await ScalarAsync(connection, "SELECT ContentHashFormatCode FROM annal_versions"));
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, -1)]
+    [InlineData(false, null)]
+    [InlineData(true, 0)]
+    [InlineData(true, -1)]
+    [InlineData(true, null)]
+    public async Task Scalar_constraints_reject_nonpositive_or_null_generations(bool evolve, int? generation)
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        await PrepareAsync(connection, evolve);
+
+        SqliteException error = await Assert.ThrowsAsync<SqliteException>(
+            () => InsertLexiconGenerationAsync(connection, generation));
+
+        Assert.Equal(
+            generation is null ? raw.SQLITE_CONSTRAINT_NOTNULL : raw.SQLITE_CONSTRAINT_CHECK,
+            error.SqliteExtendedErrorCode);
+
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM lexicon_entries"));
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 3)]
+    [InlineData(false, null)]
+    [InlineData(true, 0)]
+    [InlineData(true, 3)]
+    [InlineData(true, null)]
+    public async Task Scalar_constraints_reject_unsupported_or_null_hash_formats(bool evolve, int? format)
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        await PrepareAsync(connection, evolve);
+
+        SqliteException error = await Assert.ThrowsAsync<SqliteException>(
+            () => InsertAnnalFormatAsync(connection, format));
+
+        Assert.Equal(
+            format is null ? raw.SQLITE_CONSTRAINT_NOTNULL : raw.SQLITE_CONSTRAINT_CHECK,
+            error.SqliteExtendedErrorCode);
+
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM annal_versions"));
     }
 
     [Fact]
@@ -318,6 +395,44 @@ public sealed class LexiconCurationEvolutionTests
         }
 
         return definitions;
+    }
+
+    private static async Task InsertLexiconGenerationAsync(SqliteConnection connection, int? generation)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt, CurationGeneration)
+            VALUES ('entry', 'Entity', 'entity', 'person', '[]', 'a fact', '2026-01-01T00:00:00.0000000Z', $generation);
+            """;
+
+        _ = command.Parameters.AddWithValue("$generation", (object?)generation ?? DBNull.Value);
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task InsertAnnalFormatAsync(SqliteConnection connection, int? format)
+    {
+        await ExecuteAsync(connection, """
+            INSERT INTO annal_claims (ClaimId, SubjectStoreCode, SubjectId, CreatedAtUtc)
+            VALUES ('claim', 2, 'entry', '2026-01-01T00:00:00.0000000Z');
+            """);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        // A first version with a valid claim and hash isolates the new scalar constraint.
+        // Updating an existing version would hit the append-only trigger before testing it.
+        command.CommandText = """
+            INSERT INTO annal_versions
+                (VersionId, ClaimId, Revision, OperationCode, OriginCode, ScopeKindCode,
+                 SensitivityCode, ContentHash, ValidFromUtc, RecordedAtUtc, ContentHashFormatCode)
+            VALUES ('v1', 'claim', 1, 1, 4, 1, 0, zeroblob(32),
+                    '2026-01-01T00:00:00.0000000Z', '2026-01-01T00:00:00.0000000Z', $format);
+            """;
+
+        _ = command.Parameters.AddWithValue("$format", (object?)format ?? DBNull.Value);
+
+        _ = await command.ExecuteNonQueryAsync();
     }
 
     private static Task SeedAsync(SqliteConnection connection) => ExecuteAsync(connection, """
