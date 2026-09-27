@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -8,11 +9,9 @@ namespace RetroDownfall.Arcanum.Tests.Lexicon;
 
 public sealed class LexiconSnapshotDigestTests
 {
-
     [Fact]
     public void Canonical_bytes_follow_the_exact_format_2_grammar()
     {
-
         LexiconCanonicalValue value = Canonical("general", ["alpha"]);
 
         byte[] expected =
@@ -27,7 +26,6 @@ public sealed class LexiconSnapshotDigestTests
         ];
 
         Assert.Equal(expected, LexiconSnapshotDigest.Encode(value));
-
     }
 
     [Theory]
@@ -41,65 +39,57 @@ public sealed class LexiconSnapshotDigestTests
         string[] facts,
         string expected)
     {
-
         Assert.Equal(expected, LexiconSnapshotDigest.ComputeHex(Canonical(type, facts)));
-
     }
 
     [Fact]
     public void One_fact_containing_a_newline_differs_from_two_facts()
     {
-
         Assert.NotEqual(
             LexiconSnapshotDigest.Compute(Canonical("T", ["a\nb"])),
             LexiconSnapshotDigest.Compute(Canonical("T", ["a", "b"])));
-
     }
 
     [Fact]
     public void Type_and_fact_boundaries_cannot_collide()
     {
-
         Assert.NotEqual(
             LexiconSnapshotDigest.Compute(Canonical("ab", ["c"])),
             LexiconSnapshotDigest.Compute(Canonical("a", ["bc"])));
-
     }
 
     [Fact]
     public void Repeated_facts_disappear_on_the_shared_canonical_path_before_digesting()
     {
-
         LexiconCanonicalValue repeated = Canonical("T", ["alpha", "alpha", "beta", "alpha"]);
         LexiconCanonicalValue unique = Canonical("T", ["alpha", "beta"]);
 
-        Assert.Equal(["alpha", "beta"], repeated.Facts);
+        Assert.Equal<string>(["alpha", "beta"], repeated.Facts);
         Assert.Equal(
             LexiconSnapshotDigest.Compute(unique),
             LexiconSnapshotDigest.Compute(repeated));
-
     }
 
     [Fact]
     public void Unpaired_surrogates_fail_strict_encoding_even_for_a_manually_constructed_value()
     {
-
-        LexiconCanonicalValue invalidType = Manual("bad\ud800", ["fact"]);
-        LexiconCanonicalValue invalidFact = Manual("type", ["bad\ud800"]);
-
-        Assert.Throws<EncoderFallbackException>(() => LexiconSnapshotDigest.Encode(invalidType));
-        Assert.Throws<EncoderFallbackException>(() => LexiconSnapshotDigest.Encode(invalidFact));
-
+        Assert.Throws<EncoderFallbackException>(() =>
+            LexiconSnapshotDigest.Encode(
+                LexiconSnapshotDigest.FormatCode,
+                "bad\ud800",
+                ImmutableArray.Create("fact")));
+        Assert.Throws<EncoderFallbackException>(() =>
+            LexiconSnapshotDigest.Encode(
+                LexiconSnapshotDigest.FormatCode,
+                "type",
+                ImmutableArray.Create("bad\ud800")));
     }
 
     [Fact]
     public void Unsupported_format_count_and_byte_length_fail_before_writing()
     {
-
-        LexiconCanonicalValue value = Canonical("T", ["fact"]);
-
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            LexiconSnapshotDigest.Encode(format: 1, value));
+            LexiconSnapshotDigest.Encode(format: 1, "T", ImmutableArray.Create("fact")));
 
         using MemoryStream countDestination = new();
         using MemoryStream lengthDestination = new();
@@ -110,25 +100,21 @@ public sealed class LexiconSnapshotDigestTests
             LexiconSnapshotDigest.WriteByteLength(lengthDestination, (ulong)uint.MaxValue + 1));
         Assert.Equal(0, countDestination.Length);
         Assert.Equal(0, lengthDestination.Length);
-
     }
 
     [Fact]
     public void Sensitivity_labels_digest_the_same_exposed_canonical_bytes()
     {
-
         LexiconCanonicalValue value = Canonical("Project", ["ships Friday"]);
         byte[] bytes = LexiconSnapshotDigest.Encode(value);
 
         CovenantDigest expected = DerivedArtifactContentDigest.ForBytes(bytes);
 
         Assert.Equal(expected, LexiconSnapshotDigest.ComputeDerivedArtifactContentDigest(value));
-
     }
 
     private static LexiconCanonicalValue Canonical(string type, string[] facts)
     {
-
         Result<LexiconCanonicalValue> result = LexiconValueNormalizer.NormalizeCorrection(
             "snapshot",
             type,
@@ -137,16 +123,5 @@ public sealed class LexiconSnapshotDigestTests
         Assert.True(result.IsSuccess);
 
         return result.Value;
-
     }
-
-    private static LexiconCanonicalValue Manual(string type, string[] facts) =>
-        new(
-            "snapshot",
-            "SNAPSHOT",
-            type,
-            facts,
-            "[]",
-            string.Join('\n', facts));
-
 }

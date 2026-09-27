@@ -25,11 +25,9 @@ public sealed class AnnalContentDigestTests
     [Fact]
     public void Legacy_saga_format_1_bytes_are_pinned()
     {
-
         Assert.Equal(
             "608E75C81AB8335F1E92DE3C436631AC79301B3FA4AD4185DB289F72C7579DA2",
             Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")));
-
     }
 
     [Fact]
@@ -59,7 +57,6 @@ public sealed class AnnalContentDigestTests
     [Fact]
     public void Legacy_lexicon_format_1_bytes_are_pinned()
     {
-
         Assert.Equal(
             "683C20CCC6B22F04350A1E3E27C446F5D2EC96C3E00CEA8F318343989B09A7A2",
             Convert.ToHexString(AnnalContentDigest.ForLexiconEntry("Person", "alpha")));
@@ -69,7 +66,6 @@ public sealed class AnnalContentDigestTests
             Convert.ToHexString(AnnalContentDigest.ForLexiconEntry(
                 "Project",
                 "ships on Friday\nwritten in C#")));
-
     }
 
     [Fact]

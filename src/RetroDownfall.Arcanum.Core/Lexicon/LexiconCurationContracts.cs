@@ -35,7 +35,6 @@ public sealed record LexiconCurationScope(
     LexiconScopeKind Kind,
     Guid? CampaignId)
 {
-
     public Result Validate() =>
         Kind switch
         {
@@ -48,7 +47,6 @@ public sealed record LexiconCurationScope(
 
     private static Error Invalid(string message) =>
         new(ErrorCodes.Lexicon.InvalidScope, message);
-
 }
 
 public sealed record LexiconEntryLifecycle(
@@ -68,10 +66,8 @@ public sealed record LexiconCurationAnnalHead(
     AnnalContentHashFormat? ContentHashFormat,
     string? ContentHash)
 {
-
     public Result Validate()
     {
-
         if (!IsPresent)
         {
             return ClaimId is null
@@ -103,12 +99,10 @@ public sealed record LexiconCurationAnnalHead(
         return LexiconCurationValidation.IsSha256Hex(ContentHash)
             ? Result.Success()
             : Invalid("A content-bearing Lexicon Annals head requires a SHA-256 digest.");
-
     }
 
     private static Error Invalid(string message) =>
         new(ErrorCodes.Lexicon.InvalidCurationTarget, message);
-
 }
 
 public sealed record LexiconCurationSensitivityLabel(
@@ -118,10 +112,8 @@ public sealed record LexiconCurationSensitivityLabel(
     string? ArtifactContentDigest,
     GenerationProvenance? GenerationProvenance)
 {
-
     public Result Validate()
     {
-
         if (!IsPresent)
         {
             return LabelId is null
@@ -139,12 +131,10 @@ public sealed record LexiconCurationSensitivityLabel(
             && GenerationProvenance is not null
             ? Result.Success()
             : Invalid("A present Lexicon sensitivity label requires complete recognized evidence.");
-
     }
 
     private static Error Invalid(string message) =>
         new(ErrorCodes.Lexicon.InvalidCurationTarget, message);
-
 }
 
 public sealed record LexiconCurationTarget(
@@ -157,10 +147,8 @@ public sealed record LexiconCurationTarget(
     LexiconCurationAnnalHead AnnalHead,
     LexiconCurationSensitivityLabel SensitivityLabel)
 {
-
     public Result Validate()
     {
-
         if (Scope is null || Scope.Validate().IsFailure
             || string.IsNullOrWhiteSpace(NormalizedName)
             || EntryId == Guid.Empty
@@ -178,9 +166,7 @@ public sealed record LexiconCurationTarget(
         }
 
         return Result.Success();
-
     }
-
 }
 
 public sealed record LexiconCurationResult(
@@ -216,10 +202,8 @@ public sealed record LexiconInspectionResult<T>(
 
 internal static class LexiconCurationValidation
 {
-
     internal static bool IsSha256Hex(string? value)
     {
-
         if (value is not { Length: 64 })
         {
             return false;
@@ -234,7 +218,5 @@ internal static class LexiconCurationValidation
         }
 
         return true;
-
     }
-
 }

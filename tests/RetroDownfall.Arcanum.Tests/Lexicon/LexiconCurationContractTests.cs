@@ -14,7 +14,6 @@ public sealed class LexiconCurationContractTests
     [Fact]
     public void Global_and_Campaign_scopes_validate_only_with_their_canonical_identity_shape()
     {
-
         Guid campaignId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
         Assert.True(new LexiconCurationScope(LexiconScopeKind.Global, null).Validate().IsSuccess);
@@ -29,36 +28,30 @@ public sealed class LexiconCurationContractTests
         Assert.Equal(
             ErrorCodes.Lexicon.InvalidScope,
             new LexiconCurationScope(LexiconScopeKind.Campaign, Guid.Empty).Validate().Error.Code);
-
     }
 
     [Fact]
     public void Missing_or_zero_scope_kind_is_not_treated_as_Global()
     {
-
         LexiconCurationScope missing = JsonSerializer.Deserialize(
             "{\"campaignId\":null}",
             LexiconCurationContractJsonContext.Default.LexiconCurationScope)!;
 
         Assert.True(missing.Validate().IsFailure);
         Assert.True(new LexiconCurationScope(0, null).Validate().IsFailure);
-
     }
 
     [Fact]
     public void Unknown_scope_enum_text_is_refused_by_source_generated_serialization()
     {
-
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(
             "{\"kind\":\"Future\",\"campaignId\":null}",
             LexiconCurationContractJsonContext.Default.LexiconCurationScope));
-
     }
 
     [Fact]
     public void Omitted_evidence_presence_is_distinct_from_explicitly_absent_evidence()
     {
-
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(
             "{}",
             LexiconCurationContractJsonContext.Default.LexiconCurationAnnalHead));
@@ -80,13 +73,11 @@ public sealed class LexiconCurationContractTests
 
         Assert.False(absentLabel.IsPresent);
         Assert.True(absentLabel.Validate().IsSuccess);
-
     }
 
     [Fact]
     public void Absent_evidence_arms_reject_partial_values()
     {
-
         LexiconCurationAnnalHead partialHead = JsonSerializer.Deserialize(
             "{\"isPresent\":false,\"claimId\":\"claim-1\"}",
             LexiconCurationContractJsonContext.Default.LexiconCurationAnnalHead)!;
@@ -97,7 +88,6 @@ public sealed class LexiconCurationContractTests
 
         Assert.True(partialHead.Validate().IsFailure);
         Assert.True(partialLabel.Validate().IsFailure);
-
     }
 
     [Theory]
@@ -105,7 +95,6 @@ public sealed class LexiconCurationContractTests
     [InlineData(AnnalOperation.Correct)]
     public void Content_bearing_Annal_heads_require_a_format_and_sha256_digest(AnnalOperation operation)
     {
-
         LexiconCurationAnnalHead valid = PresentHead(operation, Digest);
 
         Assert.True(valid.Validate().IsSuccess);
@@ -113,25 +102,21 @@ public sealed class LexiconCurationContractTests
         Assert.True((valid with { ContentHash = "ABC" }).Validate().IsFailure);
         Assert.True((valid with { ContentHash = new string('G', 64) }).Validate().IsFailure);
         Assert.True((valid with { ContentHashFormat = 0 }).Validate().IsFailure);
-
     }
 
     [Fact]
     public void Retire_Annal_heads_require_format_but_forbid_a_content_digest()
     {
-
         LexiconCurationAnnalHead valid = PresentHead(AnnalOperation.Retire, null);
 
         Assert.True(valid.Validate().IsSuccess);
         Assert.True((valid with { ContentHash = Digest }).Validate().IsFailure);
         Assert.True((valid with { ContentHashFormat = null }).Validate().IsFailure);
-
     }
 
     [Fact]
     public void Present_sensitivity_evidence_requires_every_field_and_digest_shape()
     {
-
         LexiconCurationSensitivityLabel valid = new(
             true,
             Guid.Parse("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
@@ -144,20 +129,17 @@ public sealed class LexiconCurationContractTests
         Assert.True((valid with { ArtifactRevision = 0 }).Validate().IsFailure);
         Assert.True((valid with { ArtifactContentDigest = "not-a-digest" }).Validate().IsFailure);
         Assert.True((valid with { GenerationProvenance = null }).Validate().IsFailure);
-
     }
 
     [Fact]
     public void Closed_contract_enums_leave_zero_and_unknown_values_undefined()
     {
-
         Assert.False(Enum.IsDefined((LexiconScopeKind)0));
         Assert.False(Enum.IsDefined((LexiconScopeKind)255));
         Assert.False(Enum.IsDefined((LexiconRetrievalEligibility)0));
         Assert.False(Enum.IsDefined((LexiconCurationOutcomeKind)0));
         Assert.False(Enum.IsDefined((AnnalContentHashFormat)0));
         Assert.False(Enum.IsDefined((AnnalContentHashFormat)255));
-
     }
 
     private static LexiconCurationAnnalHead PresentHead(
@@ -171,7 +153,6 @@ public sealed class LexiconCurationContractTests
             operation,
             AnnalContentHashFormat.LexiconStructuredSnapshot,
             digest);
-
 }
 
 [JsonSourceGenerationOptions(

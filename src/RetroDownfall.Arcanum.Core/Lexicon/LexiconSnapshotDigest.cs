@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -18,8 +19,12 @@ public static class LexiconSnapshotDigest
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     /// <summary>Encodes the exact bytes hashed by both snapshot and sensitivity-label identity.</summary>
-    public static byte[] Encode(LexiconCanonicalValue value) =>
-        Encode(FormatCode, value);
+    public static byte[] Encode(LexiconCanonicalValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        return Encode(FormatCode, value.Type, value.Facts);
+    }
 
     /// <summary>Computes the raw SHA-256 format-2 snapshot identity.</summary>
     public static byte[] Compute(LexiconCanonicalValue value) =>
@@ -35,31 +40,35 @@ public static class LexiconSnapshotDigest
     public static CovenantDigest ComputeDerivedArtifactContentDigest(LexiconCanonicalValue value) =>
         DerivedArtifactContentDigest.ForBytes(Encode(value));
 
-    internal static byte[] Encode(byte format, LexiconCanonicalValue value)
+    internal static byte[] Encode(
+        byte format,
+        string type,
+        ImmutableArray<string> facts)
     {
-
-        ArgumentNullException.ThrowIfNull(value);
-
         if (format != FormatCode)
         {
             throw new ArgumentOutOfRangeException(nameof(format), "Only Lexicon snapshot format 2 is defined.");
         }
 
-        ArgumentNullException.ThrowIfNull(value.Type);
-        ArgumentNullException.ThrowIfNull(value.Facts);
+        ArgumentNullException.ThrowIfNull(type);
 
-        byte[] typeBytes = StrictUtf8.GetBytes(value.Type);
-        byte[][] factBytes = new byte[value.Facts.Length][];
+        if (facts.IsDefault)
+        {
+            throw new ArgumentException("Canonical Lexicon facts must be initialized.", nameof(facts));
+        }
+
+        byte[] typeBytes = StrictUtf8.GetBytes(type);
+        byte[][] factBytes = new byte[facts.Length][];
         int capacity;
 
         try
         {
             capacity = checked(Domain.Length + sizeof(byte) + sizeof(uint) + typeBytes.Length + sizeof(uint));
 
-            for (int index = 0; index < value.Facts.Length; index++)
+            for (int index = 0; index < facts.Length; index++)
             {
-                string fact = value.Facts[index]
-                    ?? throw new ArgumentException("A canonical Lexicon fact cannot be null.", nameof(value));
+                string fact = facts[index]
+                    ?? throw new ArgumentException("A canonical Lexicon fact cannot be null.", nameof(facts));
 
                 byte[] encoded = StrictUtf8.GetBytes(fact);
 
@@ -70,7 +79,7 @@ public static class LexiconSnapshotDigest
         catch (OverflowException)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(value),
+                nameof(facts),
                 "The canonical Lexicon snapshot exceeds the encoder's supported byte length.");
         }
 
@@ -80,7 +89,7 @@ public static class LexiconSnapshotDigest
         destination.WriteByte(format);
         WriteByteLength(destination, checked((ulong)typeBytes.LongLength));
         destination.Write(typeBytes);
-        WriteFactCount(destination, checked((ulong)value.Facts.LongLength));
+        WriteFactCount(destination, checked((ulong)facts.Length));
 
         foreach (byte[] fact in factBytes)
         {
@@ -89,7 +98,6 @@ public static class LexiconSnapshotDigest
         }
 
         return destination.ToArray();
-
     }
 
     internal static void WriteFactCount(Stream destination, ulong count) =>
@@ -100,7 +108,6 @@ public static class LexiconSnapshotDigest
 
     private static void WriteUnsigned32(Stream destination, ulong value, string parameterName)
     {
-
         ArgumentNullException.ThrowIfNull(destination);
 
         if (value > uint.MaxValue)
@@ -112,7 +119,5 @@ public static class LexiconSnapshotDigest
 
         BinaryPrimitives.WriteUInt32BigEndian(bytes, checked((uint)value));
         destination.Write(bytes);
-
     }
-
 }

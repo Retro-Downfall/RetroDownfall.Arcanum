@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -5,13 +6,36 @@ using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Lexicon;
 
-public sealed record LexiconCanonicalValue(
-    string Name,
-    string NameNormalized,
-    string Type,
-    string[] Facts,
-    string FactsJson,
-    string FactsText);
+public sealed class LexiconCanonicalValue
+{
+    internal LexiconCanonicalValue(
+        string name,
+        string nameNormalized,
+        string type,
+        IReadOnlyList<string> facts,
+        string factsJson,
+        string factsText)
+    {
+        Name = name;
+        NameNormalized = nameNormalized;
+        Type = type;
+        Facts = [.. facts];
+        FactsJson = factsJson;
+        FactsText = factsText;
+    }
+
+    public string Name { get; }
+
+    public string NameNormalized { get; }
+
+    public string Type { get; }
+
+    public ImmutableArray<string> Facts { get; }
+
+    public string FactsJson { get; }
+
+    public string FactsText { get; }
+}
 
 /// <summary>
 /// Produces the one canonical Lexicon value used by persistence, search, provenance, and digests.
@@ -42,7 +66,6 @@ public static class LexiconValueNormalizer
         IReadOnlyList<string>? currentFacts,
         bool correction)
     {
-
         string canonicalName = name?.Trim() ?? string.Empty;
 
         if (canonicalName.Length == 0
@@ -110,12 +133,10 @@ public static class LexiconValueNormalizer
                 factArray,
                 JsonSerializer.Serialize(factArray, LexiconJsonContext.Default.StringArray),
                 string.Join('\n', factArray)));
-
     }
 
     private static string ResolveType(string? type, string? currentType, bool correction)
     {
-
         string canonicalType = type?.Trim() ?? string.Empty;
 
         if (canonicalType.Length > 0 || correction)
@@ -128,7 +149,6 @@ public static class LexiconValueNormalizer
         return canonicalCurrentType.Length > 0
             ? canonicalCurrentType
             : LexiconLimits.DefaultType;
-
     }
 
     private static Result AddFacts(
@@ -137,7 +157,6 @@ public static class LexiconValueNormalizer
         HashSet<string> seen,
         bool correction)
     {
-
         foreach (string? fact in source)
         {
             string canonicalFact = fact?.Trim() ?? string.Empty;
@@ -159,7 +178,6 @@ public static class LexiconValueNormalizer
         }
 
         return Result.Success();
-
     }
 
     private static Error InvalidValue(bool correction, string message) =>
@@ -169,7 +187,6 @@ public static class LexiconValueNormalizer
 
     private static bool IsStrictUtf8(string value)
     {
-
         try
         {
             _ = StrictUtf8.GetByteCount(value);
@@ -180,7 +197,5 @@ public static class LexiconValueNormalizer
         {
             return false;
         }
-
     }
-
 }
