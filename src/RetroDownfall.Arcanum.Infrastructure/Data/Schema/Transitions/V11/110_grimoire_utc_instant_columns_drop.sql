@@ -1,0 +1,1 @@
+DROP VIEW grimoire_utc_instant_columns;

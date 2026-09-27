@@ -854,7 +854,9 @@ internal sealed class GrimoireSchemaInstaller(
 
             await using SqliteCommand command = connection.CreateCommand();
 
-            command.CommandText = "INSERT INTO lexicon_fts(lexicon_fts) VALUES('rebuild');";
+            // The corpus is empty here. Clear stale tokens without asking FTS to re-index retired
+            // external-content rows; populated corpora are maintained by the active-only triggers.
+            command.CommandText = "INSERT INTO lexicon_fts(lexicon_fts) VALUES('delete-all');";
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }

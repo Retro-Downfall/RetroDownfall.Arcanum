@@ -7,6 +7,18 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 public sealed partial class UtcInstantColumnInventoryTests
 {
     [Fact]
+    public void Lexicon_curation_instants_are_present_in_the_managed_inventory()
+    {
+        UtcInstantTable entries = Assert.Single(UtcInstantColumnInventory.Core, static table => table.TableName == "lexicon_entries");
+
+        Assert.Equal(["PinnedAtUtc", "RetiredAtUtc", "UpdatedAt"], entries.Columns.Order(StringComparer.Ordinal));
+
+        UtcInstantTable provenance = Assert.Single(UtcInstantColumnInventory.Core, static table => table.TableName == "lexicon_annal_fact_provenance");
+
+        Assert.Equal(["MaterializedAt"], provenance.Columns);
+    }
+
+    [Fact]
     public void Every_schema_TEXT_instant_is_classified_once_and_calendar_or_tick_values_are_excluded()
     {
         AssertInventory(
@@ -18,7 +30,7 @@ public sealed partial class UtcInstantColumnInventoryTests
             GrimoireSchemaCatalog.CovenantCanonicalObjects,
             UtcInstantColumnInventory.CovenantCanonical);
 
-        Assert.Equal(115, UtcInstantColumnInventory.Core.Sum(static table => table.Columns.Count));
+        Assert.Equal(118, UtcInstantColumnInventory.Core.Sum(static table => table.Columns.Count));
 
         Assert.Equal(
             13,

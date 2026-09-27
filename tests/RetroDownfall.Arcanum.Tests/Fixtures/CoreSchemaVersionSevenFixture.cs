@@ -127,7 +127,7 @@ internal static class CoreSchemaVersionSevenFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionTenFixture.Objects
             .Where(static definition => definition.Name is not "grimoire_utc_instant_columns"
                 and not "BatchAccountingRecoveryClaims")
             .Select(static definition => definition.Name switch

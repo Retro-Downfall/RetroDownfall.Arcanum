@@ -9,6 +9,17 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class GrimoireSchemaCatalogTests
 {
+    [Fact]
+    public void Historical_lexicon_provenance_is_installed_with_the_core_tables()
+    {
+        GrimoireSchemaObject provenance = Assert.Single(
+            GrimoireSchemaCatalog.CoreObjects, static item => item.Name == "lexicon_annal_fact_provenance");
+
+        Assert.Equal(GrimoireSchemaFamily.Core, provenance.Family);
+
+        Assert.Equal(GrimoireSchemaCategory.Tables, provenance.Category);
+    }
+
 
     [Fact]
     public void Catalog_is_populated_from_the_embedded_glob()
