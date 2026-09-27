@@ -1,4 +1,4 @@
-<Project TreatAsLocalProperty="ArcanumPortableMacOsNativeAotPackageSha512;ArcanumPortableMacOsNativeAotPackageVersion;IlcFrameworkNativePath;IlcSdkPath;_ArcanumBundledMacOsNativeAotPath;_ArcanumCryptoArchivePrepared;_ArcanumCryptoArchiveSource;_ArcanumMacOsSdkPath;_ArcanumPortableMacOsNativeAotPackagePath;_ArcanumPortableMacOsNativeAotPackageRoot;_ArcanumPortableMacOsNativeAotPackageSha512Path;_ArcanumPortableNativeAotPath;_ArcanumPreparedNativeAotPath;_ArcanumRequiresLegacyMacOsLld;_ArcanumRequiresPortableMacOsNativeAotBridge;_ArcanumVerifiedPortableNativeAotContents;_ArcanumVerifiedPortableNativeAotPackage;_ArcanumVerifiedPortableNativeAotRoot">
+<Project TreatAsLocalProperty="ArcanumPortableMacOsNativeAotPackageSha512;ArcanumPortableMacOsNativeAotPackageVersion;IlcFrameworkNativePath;IlcSdkPath;_ArcanumBundledMacOsNativeAotPath;_ArcanumCryptoArchivePrepared;_ArcanumCryptoArchiveSource;_ArcanumMacOsSdkPath;_ArcanumPortableMacOsNativeAotPackagePath;_ArcanumPortableMacOsNativeAotPackageRoot;_ArcanumPortableMacOsNativeAotPackageSha512Path;_ArcanumPortableNativeAotPath;_ArcanumPreparedNativeAotPath;_ArcanumRequiresLegacyMacOsLld;_ArcanumRequiresPortableMacOsNativeAotBridge;_ArcanumResolvedNuGetPackageRoot;_ArcanumVerifiedPortableNativeAotContents;_ArcanumVerifiedPortableNativeAotPackage;_ArcanumVerifiedPortableNativeAotRoot">
 
   <!-- Homebrew source-builds .NET without the portable Brotli and zlib archives and marks its
        Native AOT runtime pack nonportable. That makes ILC resolve OpenSSL and Brotli from the build
@@ -10,7 +10,7 @@
        moves ahead. PackageDownload is not represented in packages.lock.json, so the repository pins
        and verifies NuGet's SHA-512 package content hash below. -->
 
-  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true'">
+  <PropertyGroup Condition="('$(RuntimeIdentifier)' == 'osx-arm64' or $([System.String]::Copy(';$(RuntimeIdentifiers);').Contains(';osx-arm64;'))) and '$(PublishAot)' == 'true'">
 
     <_ArcanumBundledMacOsNativeAotPath>$(NetCoreRoot)packs/Microsoft.NETCore.App.Runtime.NativeAOT.osx-arm64/$(BundledNETCoreAppPackageVersion)/runtimes/osx-arm64/native/</_ArcanumBundledMacOsNativeAotPath>
 
@@ -33,7 +33,11 @@
 
     <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.12'">Qt7NCMotrQFrpukryPBpKeF/AawvptJv+v+c0Q3L29Y/ptFO8nFor+g8xKasWq4XNLL/hT/x+QBC7gacjeiIUQ==</ArcanumPortableMacOsNativeAotPackageSha512>
 
-    <_ArcanumPortableMacOsNativeAotPackageRoot>$(NuGetPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)/</_ArcanumPortableMacOsNativeAotPackageRoot>
+    <_ArcanumResolvedNuGetPackageRoot>$(NuGetPackageRoot)</_ArcanumResolvedNuGetPackageRoot>
+
+    <_ArcanumResolvedNuGetPackageRoot Condition="'$(_ArcanumResolvedNuGetPackageRoot)' == ''">$(RestorePackagesPath)</_ArcanumResolvedNuGetPackageRoot>
+
+    <_ArcanumPortableMacOsNativeAotPackageRoot>$([MSBuild]::EnsureTrailingSlash('$(_ArcanumResolvedNuGetPackageRoot)'))microsoft.netcore.app.runtime.nativeaot.osx-arm64/$(ArcanumPortableMacOsNativeAotPackageVersion)/</_ArcanumPortableMacOsNativeAotPackageRoot>
 
     <_ArcanumPortableMacOsNativeAotPackagePath>$(_ArcanumPortableMacOsNativeAotPackageRoot)microsoft.netcore.app.runtime.nativeaot.osx-arm64.$(ArcanumPortableMacOsNativeAotPackageVersion).nupkg</_ArcanumPortableMacOsNativeAotPackagePath>
 
@@ -44,7 +48,7 @@
   <Target
     Name="CollectArcanumPortableMacOsNativeAotPack"
     BeforeTargets="CollectPackageDownloads"
-    Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishAot)' == 'true' and '$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'">
+    Condition="('$(RuntimeIdentifier)' == 'osx-arm64' or $([System.String]::Copy(';$(RuntimeIdentifiers);').Contains(';osx-arm64;'))) and '$(PublishAot)' == 'true' and '$(_ArcanumRequiresPortableMacOsNativeAotBridge)' == 'true'">
 
     <Error
       Code="ARCAOT005"
