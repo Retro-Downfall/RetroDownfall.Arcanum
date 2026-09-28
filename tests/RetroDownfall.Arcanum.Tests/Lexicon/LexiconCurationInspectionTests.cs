@@ -523,6 +523,260 @@ public sealed class LexiconCurationInspectionTests(GrimoireFixture fixture) : IA
 
     private SqliteConnection Connection => (SqliteConnection)_db.Database.GetDbConnection();
 
+    [Theory]
+    [InlineData(null, "x")]
+    [InlineData("x", null)]
+    [InlineData(null, null)]
+    public async Task Ordinal_predicate_is_total_for_SQL_nulls(string? value, string? query)
+    {
+        await SeedAsync();
+
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = "SELECT arcanum_ordinal_contains($value, $query)";
+
+        command.Parameters.AddWithValue("$value", (object?)value ?? DBNull.Value);
+
+        command.Parameters.AddWithValue("$query", (object?)query ?? DBNull.Value);
+
+        Assert.Equal(0L, await command.ExecuteScalarAsync());
+    }
+
+    [Theory]
+    [InlineData("[123]")]
+    [InlineData("[null]")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    public async Task Search_never_treats_malformed_fact_values_as_a_nonmatch(string factsJson)
+    {
+        await SeedAsync();
+
+        await DisableGuardsAsync("lexicon_entries");
+
+        await ExecuteAsync("UPDATE lexicon_entries SET FactsJson = '" + factsJson + "'");
+
+        var result = await _service.SearchInspectionAsync("absent", 1, null);
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, result.Error.Code);
+    }
+
+    [Fact]
+    public async Task A_non_Lexicon_label_may_legitimately_reuse_the_same_artifact_guid()
+    {
+        Guid id = await SeedAsync();
+
+        ArtifactSensitivityLabel original = await LabelAsync(id);
+
+        ArtifactSensitivityLabel saga = new(original.LabelId, SensitiveArtifactKind.Saga, id,
+            null, null, null, 1, original.ArtifactContentDigest, original.Sensitivity,
+            original.Provenance, null, null, null, At);
+
+        await DisableGuardsAsync("artifact_sensitivity");
+
+        await ExecuteAsync($"UPDATE artifact_sensitivity SET ArtifactKindCode = 6, ArtifactLabelDigest = X'{Convert.ToHexString(saga.LabelDigest.Bytes)}'");
+
+        var show = await _service.ShowExactAsync(Global, "entity", null);
+
+        var list = await _service.ListInspectionAsync(null);
+
+        var counts = await _service.CountInspectionAsync(null);
+
+        Assert.True(show.IsSuccess, show.Error.Message);
+
+        Assert.True(list.IsSuccess, list.Error.Message);
+
+        Assert.True(counts.IsSuccess, counts.Error.Message);
+
+        Assert.Equal(id, show.Value.Value.Entry.Id);
+
+        Assert.Equal(id, Assert.Single(list.Value.Value).Id);
+
+        Assert.Equal(new LexiconInspectionCounts(1, 1), counts.Value.Value);
+
+        Assert.False(counts.Value.ContainsProtectedContent);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Batch_inspection_preserves_provenance_insertion_order_not_fact_index_order(bool search)
+    {
+        AttachmentMemoryProvenance source = new(Guid.NewGuid(), Guid.NewGuid(), "source", 1,
+            "hash", At, "WorkspaceFile", AttachmentSourceAvailability.Available);
+
+        Assert.True((await _service.UpsertAsync("Entity", "general", ["z-last", "a-first"], source, LexiconScope.Global)).IsSuccess);
+
+        var result = search ? await _service.SearchInspectionAsync("Entity", 1, null)
+            : await _service.ListInspectionAsync(null);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(new[] { "z-last", "a-first" }, Assert.Single(result.Value.Value).FactProvenance!.Select(item => item.Fact));
+    }
+
+    [Theory]
+    [InlineData(null, 1)]
+    [InlineData(1, 1)]
+    [InlineData(0, 0)]
+    [InlineData(-1, -1)]
+    [InlineData(int.MinValue, -1)]
+    public async Task Search_limit_is_explicit_and_negative_values_never_become_unbounded(int? limit, int expected)
+    {
+        await SeedAsync();
+
+        List<string> statements = CaptureStatements();
+
+        var result = await _service.SearchInspectionAsync("alpha", limit, null);
+
+        if (expected < 0)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidQuery, result.Error.Code);
+
+            Assert.Empty(statements);
+        }
+        else
+        {
+            Assert.True(result.IsSuccess, result.Error.Message);
+
+            Assert.Equal(expected, result.Value.Value.Count);
+        }
+    }
+
+    [Theory]
+    [InlineData("PinnedAtUtc = 'bad-time'")]
+    [InlineData("CurationGeneration = 0")]
+    public async Task Count_projection_refuses_malformed_lifecycle_metadata_without_needing_content(string assignment)
+    {
+        await SeedAsync();
+
+        await DisableGuardsAsync("lexicon_entries");
+
+        await ExecuteAsync("UPDATE lexicon_entries SET " + assignment);
+
+        var result = await _service.CountInspectionAsync(null);
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, result.Error.Code);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Counts_materialize_only_protected_content_and_preserve_digest_and_authority_checks(bool authorized, bool corrupt)
+    {
+        Guid id = await SeedAsync();
+
+        await LabelAsync(id, differentContent: corrupt);
+
+        Assert.True((await _service.UpsertAsync("Ordinary", "general", ["ordinary"], LexiconScope.Global)).IsSuccess);
+
+        HashSet<string> canonical = [];
+
+        Connection.CreateFunction<string, string, string>("observe_count_content", (value, identity) =>
+        {
+            canonical.Add(identity);
+
+            return value;
+        });
+
+        await ExecuteAsync("""
+            CREATE TEMP VIEW lexicon_entries AS
+            SELECT Id, Name, NameNormalized, Type, FactsJson,
+                   observe_count_content(FactsText, Id) AS FactsText, UpdatedAt,
+                   ScopeCampaignId, RetiredAtUtc, PinnedAtUtc, CurationGeneration
+            FROM main.lexicon_entries;
+            """);
+
+        List<string> statements = CaptureStatements();
+
+        var result = await _service.CountInspectionAsync(authorized ? new Lease(installation: true) : null);
+
+        Assert.Equal(authorized ? 1 : 0, canonical.Count);
+
+        Assert.True(statements.Count <= 8, $"Executed {statements.Count} statements.");
+
+        if (!authorized || corrupt)
+        {
+            Assert.Equal(!authorized ? ErrorCodes.Covenant.ForbiddenAuthority : ErrorCodes.Lexicon.CurationIntegrityFailed, result.Error.Code);
+        }
+        else
+        {
+            Assert.True(result.IsSuccess, result.Error.Message);
+
+            Assert.Equal(new LexiconInspectionCounts(2, 2), result.Value.Value);
+
+            Assert.True(result.Value.ContainsProtectedContent);
+        }
+    }
+
+    [Theory]
+    [InlineData("éCLAIR", "Éclair")]
+    [InlineData("雪", "雪")]
+    [InlineData("%_", "%_")]
+    [InlineData("quote\"", "quote\"")]
+    [InlineData("slash\\", "slash\\")]
+    [InlineData("line\nfeed", "line\nfeed")]
+    public async Task Query_projection_matches_deserialized_facts_with_ordinal_unicode_semantics(string query, string fact)
+    {
+        Assert.True((await _service.UpsertAsync("First", "general", [fact], LexiconScope.Global)).IsSuccess);
+
+        Assert.True((await _service.UpsertAsync("Second", "general", ["line", "feed", "not a match"], LexiconScope.Global)).IsSuccess);
+
+        var result = await _service.SearchInspectionAsync(query, 1, null);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal("First", Assert.Single(result.Value.Value).Name);
+    }
+
+    [Theory]
+    [InlineData("kind", false)]
+    [InlineData("kind", true)]
+    [InlineData("identity", false)]
+    [InlineData("identity", true)]
+    [InlineData("missing-label", false)]
+    [InlineData("missing-label", true)]
+    public async Task Contradictory_protected_identity_is_refused_before_any_canonical_materialization(string corruption, bool list)
+    {
+        Guid id = await SeedAsync();
+
+        await LabelAsync(id);
+
+        await AppendHeadAsync(id, AnnalContentHashFormat.LexiconStructuredSnapshot, ContentSensitivity.CovenantDerived);
+
+        await DisableGuardsAsync("artifact_sensitivity");
+
+        await ExecuteAsync(corruption switch
+        {
+            "kind" => "UPDATE artifact_sensitivity SET ArtifactKindCode = 6",
+            "identity" => "UPDATE artifact_sensitivity SET ArtifactId = 'BBBBBBBB-1111-4111-8111-BBBBBBBBBBBB'",
+            _ => "DELETE FROM artifact_sensitivity",
+        });
+
+        int canonicalReads = 0;
+
+        Connection.CreateFunction<string, string>("observe_canonical", value =>
+        {
+            canonicalReads++;
+
+            return value;
+        });
+
+        await ExecuteAsync("""
+            CREATE TEMP VIEW lexicon_entries AS
+            SELECT Id, Name, NameNormalized, Type, observe_canonical(FactsJson) AS FactsJson,
+                   FactsText, UpdatedAt, ScopeCampaignId, RetiredAtUtc, PinnedAtUtc, CurationGeneration
+            FROM main.lexicon_entries;
+            """);
+
+        Error error = list ? (await _service.ListInspectionAsync(null)).Error
+            : (await _service.ShowExactAsync(Global, "entity", null)).Error;
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, error.Code);
+
+        Assert.Equal(0, canonicalReads);
+    }
+
     private async Task<Guid> SeedAsync(bool withProvenance = false)
     {
         AttachmentMemoryProvenance provenance = new(Guid.NewGuid(), Guid.NewGuid(), "source", 1,

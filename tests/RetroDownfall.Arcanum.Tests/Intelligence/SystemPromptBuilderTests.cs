@@ -38,6 +38,10 @@ public sealed class SystemPromptBuilderTests
 
                 Assert.DoesNotContain("ListInspectionAsync", source, StringComparison.Ordinal);
 
+                Assert.DoesNotContain("SearchInspectionAsync", source, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("CountInspectionAsync", source, StringComparison.Ordinal);
+
                 Assert.DoesNotContain("FROM lexicon_entries", source, StringComparison.OrdinalIgnoreCase);
             }
         }

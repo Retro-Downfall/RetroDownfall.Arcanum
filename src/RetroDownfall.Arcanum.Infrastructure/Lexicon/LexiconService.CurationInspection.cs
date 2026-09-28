@@ -77,6 +77,10 @@ internal sealed partial class LexiconService
 
             (Guid id, LexiconCurationScope storedScope) = selected[0];
 
+            await VerifyInspectionAuthorityAsync(connection,
+                await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false),
+                readLease, id, cancellationToken).ConfigureAwait(false);
+
             ArtifactSensitivityLabel? label = await ReadVerifiedLabelAsync(connection, id, storedScope, cancellationToken).ConfigureAwait(false);
 
             RequireProtectedLease(label, readLease);
@@ -123,43 +127,46 @@ internal sealed partial class LexiconService
     public Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> ListInspectionAsync(
         ICovenantSnapshotReadLease? readLease,
         CancellationToken cancellationToken = default) =>
-        InInspectionSnapshotAsync<IReadOnlyList<LexiconEntryDto>>(readLease, requiredScope: null, async connection =>
+        SearchInspectionAsync(null, null, readLease, cancellationToken);
+
+    public Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> SearchInspectionAsync(
+        string? query, int? limit, ICovenantSnapshotReadLease? readLease,
+        CancellationToken cancellationToken = default)
+    {
+        if (limit < 0)
         {
-            List<(Guid Id, LexiconCurationScope Scope)> identities = await ReadInspectionIdentitiesAsync(
-                connection, "ORDER BY Name COLLATE NOCASE, ScopeCampaignId, Id", null, null, cancellationToken).ConfigureAwait(false);
+            return Task.FromResult(Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Failure(
+                new Error(ErrorCodes.Validation.InvalidQuery, "Lexicon inspection limit must be non-negative or omitted.")));
+        }
 
-            // Validate authority before materializing any protected content. All identity, label, row,
-            // provenance and head reads share this operation's deferred snapshot.
-            Dictionary<Guid, ArtifactSensitivityLabel?> labels = [];
+        return InInspectionSnapshotAsync<IReadOnlyList<LexiconEntryDto>>(readLease, requiredScope: null, async connection =>
+        {
+            List<LexiconEntryDto> entries = [];
 
-            foreach ((Guid id, LexiconCurationScope scope) in identities)
+            bool protectedContent = await StreamInspectionAsync(connection, query, limit, readLease,
+                entries.Add, cancellationToken).ConfigureAwait(false);
+
+            return new LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>(entries, protectedContent);
+        }, cancellationToken);
+    }
+
+    public Task<Result<LexiconInspectionResult<LexiconInspectionCounts>>> CountInspectionAsync(
+        ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) =>
+        InInspectionSnapshotAsync(readLease, requiredScope: null, async connection =>
+        {
+            bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
+            InspectionCounts counts = await VerifyInspectionAuthorityAsync(connection, curation, readLease, null, cancellationToken).ConfigureAwait(false);
+
+            if (counts.Protected)
             {
-                ArtifactSensitivityLabel? label = await ReadVerifiedLabelAsync(connection, id, scope, cancellationToken).ConfigureAwait(false);
-
-                RequireProtectedLease(label, readLease);
-
-                labels.Add(id, label);
+                // Counts never retain content. Only protected rows need canonical digest verification.
+                await StreamInspectionAsync(connection, null, null, readLease, static _ => { },
+                    cancellationToken, curation).ConfigureAwait(false);
             }
 
-            Dictionary<Guid, LexiconFactProvenance[]> provenance = identities.Count == 0 ? []
-                : await ReadAllFactProvenanceAsync(connection, cancellationToken).ConfigureAwait(false);
-
-            List<LexiconEntryDto> entries = new(identities.Count);
-
-            foreach ((Guid id, _) in identities)
-            {
-                InspectionRow row = await ReadInspectionRowAsync(connection, id, cancellationToken).ConfigureAwait(false);
-
-                row = row with { Entry = row.Entry with { FactProvenance = provenance.GetValueOrDefault(id) ?? [] } };
-
-                VerifyCurrentProvenance(row.Entry);
-
-                _ = await ReadVerifiedHeadAsync(connection, row, labels[id], cancellationToken).ConfigureAwait(false);
-
-                entries.Add(row.Entry);
-            }
-
-            return new LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>(entries, labels.Values.Any(label => label is not null));
+            return new LexiconInspectionResult<LexiconInspectionCounts>(
+                new(counts.Retained, counts.Eligible), counts.Protected);
         }, cancellationToken);
 
     private async Task<Result<LexiconInspectionResult<T>>> InInspectionSnapshotAsync<T>(
@@ -282,6 +289,11 @@ internal sealed partial class LexiconService
 
         RequireIntegrity(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
 
+        return ReadInspectionRow(reader, id);
+    }
+
+    private static InspectionRow ReadInspectionRow(DbDataReader reader, Guid id)
+    {
         LexiconEntryDto entry = ReadEntry(reader);
 
         Result<LexiconCanonicalValue> canonical = LexiconValueNormalizer.NormalizeCorrection(entry.Name, entry.Type, entry.Facts);
@@ -429,15 +441,15 @@ internal sealed partial class LexiconService
         return [.. versions];
     }
 
-    private static AnnalClaimVersion ReadInspectionVersion(DbDataReader reader)
+    private static AnnalClaimVersion ReadInspectionVersion(DbDataReader reader, int offset = 0)
     {
-        AnnalClaimVersion version = new(reader.GetString(0), reader.GetString(1), ReadPositiveInteger(reader, 2), AnnalsStore.ReadCode(reader, 3, 1, int.MaxValue),
-            (AnnalOperation)AnnalsStore.ReadCode(reader, 4, 1, 3), (AnnalOrigin)AnnalsStore.ReadCode(reader, 5, 1, 4),
-            (SagaMemoryScopeKind)AnnalsStore.ReadCode(reader, 6, 0, 3), reader.IsDBNull(7) ? null : Guid.Parse(reader.GetString(7)),
-            (ContentSensitivity)AnnalsStore.ReadCode(reader, 8, 0, 1), (AnnalContentHashFormat)AnnalsStore.ReadCode(reader, 9, 1, 2),
-            reader.IsDBNull(10) ? null : (byte[])reader.GetValue(10), UtcInstantText.Parse(reader.GetString(11)),
-            reader.IsDBNull(12) ? null : UtcInstantText.Parse(reader.GetString(12)), UtcInstantText.Parse(reader.GetString(13)),
-            reader.IsDBNull(14) ? null : UtcInstantText.Parse(reader.GetString(14)), reader.IsDBNull(15) ? null : reader.GetString(15));
+        AnnalClaimVersion version = new(reader.GetString(offset + 0), reader.GetString(offset + 1), ReadPositiveInteger(reader, offset + 2), AnnalsStore.ReadCode(reader, offset + 3, 1, int.MaxValue),
+            (AnnalOperation)AnnalsStore.ReadCode(reader, offset + 4, 1, 3), (AnnalOrigin)AnnalsStore.ReadCode(reader, offset + 5, 1, 4),
+            (SagaMemoryScopeKind)AnnalsStore.ReadCode(reader, offset + 6, 0, 3), reader.IsDBNull(offset + 7) ? null : Guid.Parse(reader.GetString(offset + 7)),
+            (ContentSensitivity)AnnalsStore.ReadCode(reader, offset + 8, 0, 1), (AnnalContentHashFormat)AnnalsStore.ReadCode(reader, offset + 9, 1, 2),
+            reader.IsDBNull(offset + 10) ? null : (byte[])reader.GetValue(offset + 10), UtcInstantText.Parse(reader.GetString(offset + 11)),
+            reader.IsDBNull(offset + 12) ? null : UtcInstantText.Parse(reader.GetString(offset + 12)), UtcInstantText.Parse(reader.GetString(offset + 13)),
+            reader.IsDBNull(offset + 14) ? null : UtcInstantText.Parse(reader.GetString(offset + 14)), reader.IsDBNull(offset + 15) ? null : reader.GetString(offset + 15));
 
         RequireIntegrity(!string.IsNullOrWhiteSpace(version.VersionId) && !string.IsNullOrWhiteSpace(version.ClaimId)
             && version.Sequence > 0 && version.Revision > 0
@@ -514,42 +526,47 @@ internal sealed partial class LexiconService
             return null;
         }
 
-        int mode = AnnalsStore.ReadCode(reader, 9, 1, 2);
+        return ReadInspectionLabel(reader, id, scope);
+    }
+
+    private static ArtifactSensitivityLabel ReadInspectionLabel(DbDataReader reader, Guid id, LexiconCurationScope scope, int offset = 0)
+    {
+        int mode = AnnalsStore.ReadCode(reader, offset + 9, 1, 2);
 
         GenerationProvenance provenance;
 
         if (mode == (int)GenerationProvenanceMode.Exact)
         {
-            RequireIntegrity(!reader.IsDBNull(10) && reader.IsDBNull(11));
+            RequireIntegrity(!reader.IsDBNull(offset + 10) && reader.IsDBNull(offset + 11));
 
-            byte[] bytes = (byte[])reader.GetValue(10);
+            byte[] bytes = (byte[])reader.GetValue(offset + 10);
 
             RequireIntegrity(bytes.Length is >= 16 and <= 128 && bytes.Length % 16 == 0);
 
             List<Guid> generations = [];
 
-            for (int offset = 0; offset < bytes.Length; offset += 16)
+            for (int byteOffset = 0; byteOffset < bytes.Length; byteOffset += 16)
             {
-                generations.Add(new Guid(bytes.AsSpan(offset, 16), bigEndian: true));
+                generations.Add(new Guid(bytes.AsSpan(byteOffset, 16), bigEndian: true));
             }
 
             provenance = new GenerationProvenance(GenerationProvenanceMode.Exact, [.. generations], []);
         }
         else
         {
-            RequireIntegrity(reader.IsDBNull(10) && !reader.IsDBNull(11));
+            RequireIntegrity(reader.IsDBNull(offset + 10) && !reader.IsDBNull(offset + 11));
 
-            provenance = GenerationProvenance.CreateBloom((byte[])reader.GetValue(11));
+            provenance = GenerationProvenance.CreateBloom((byte[])reader.GetValue(offset + 11));
         }
 
-        ArtifactSensitivityLabel label = new(Guid.Parse(reader.GetString(0)),
-            (SensitiveArtifactKind)AnnalsStore.ReadCode(reader, 1, 7, 7), Guid.Parse(reader.GetString(2)),
-            ReadOptionalGuid(reader, 3), ReadOptionalGuid(reader, 4), ReadOptionalGuid(reader, 5),
-            checked((ulong)ReadPositiveInteger(reader, 6)), new CovenantDigest((byte[])reader.GetValue(7)),
-            (ContentSensitivity)AnnalsStore.ReadCode(reader, 8, 1, 1), provenance,
-            new CovenantDigest((byte[])reader.GetValue(12)), ReadOptionalDigest(reader, 13),
-            ReadOptionalDigest(reader, 14), ReadOptionalDigest(reader, 15),
-            new CovenantDigest((byte[])reader.GetValue(16)), UtcInstantText.Parse(reader.GetString(17)));
+        ArtifactSensitivityLabel label = new(Guid.Parse(reader.GetString(offset + 0)),
+            (SensitiveArtifactKind)AnnalsStore.ReadCode(reader, offset + 1, 7, 7), Guid.Parse(reader.GetString(offset + 2)),
+            ReadOptionalGuid(reader, offset + 3), ReadOptionalGuid(reader, offset + 4), ReadOptionalGuid(reader, offset + 5),
+            checked((ulong)ReadPositiveInteger(reader, offset + 6)), new CovenantDigest((byte[])reader.GetValue(offset + 7)),
+            (ContentSensitivity)AnnalsStore.ReadCode(reader, offset + 8, 1, 1), provenance,
+            new CovenantDigest((byte[])reader.GetValue(offset + 12)), ReadOptionalDigest(reader, offset + 13),
+            ReadOptionalDigest(reader, offset + 14), ReadOptionalDigest(reader, offset + 15),
+            new CovenantDigest((byte[])reader.GetValue(offset + 16)), UtcInstantText.Parse(reader.GetString(offset + 17)));
 
         RequireIntegrity(label.ArtifactId == id && label.CampaignId == scope.CampaignId && label.ArtifactRevision > 0
             && (label.ProducingPlanDigest is null) == (label.ProducingAdmissionDigest is null));

@@ -206,10 +206,10 @@ internal static class MemoryEndpoints
         ArcanumDbContext db,
         IOptionsMonitor<ArcanumSettings> options,
         HttpContext context) =>
-        RespondToLexiconInspectionAsync(
+        RespondToLexiconCountsAsync(
             context.RequestServices.GetRequiredService<ILexiconCurationService>(),
             context,
-            entries => BuildSourcesAsync(sessionId, db, options, context, entries.Count),
+            counts => BuildSourcesAsync(sessionId, db, options, context, counts.Retained),
             ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
 
     private static async Task<Result<MemorySourcesDto>> BuildSourcesAsync(
@@ -259,11 +259,10 @@ internal static class MemoryEndpoints
         ArcanumDbContext db,
         IOptionsMonitor<ArcanumSettings> options,
         HttpContext context) =>
-        RespondToLexiconInspectionAsync(
+        RespondToLexiconCountsAsync(
             context.RequestServices.GetRequiredService<ILexiconCurationService>(),
             context,
-            entries => BuildExplainAsync(sessionId, db, options, context,
-                entries.Count(static entry => entry.Eligibility == LexiconRetrievalEligibility.Eligible)),
+            counts => BuildExplainAsync(sessionId, db, options, context, counts.Eligible),
             ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
 
     private static async Task<Result<MemoryExplainDto>> BuildExplainAsync(
@@ -527,7 +526,7 @@ internal static class MemoryEndpoints
 
                     return new MemorySearchResponse(query, request.Scope, [.. results], [.. scopes],
                         scopes.Exists(static scope => scope.HasMore));
-                }, ArcanumJsonContext.Default.ApiResponseMemorySearchResponse).ConfigureAwait(false);
+                }, ArcanumJsonContext.Default.ApiResponseMemorySearchResponse, query, slice + 1).ConfigureAwait(false);
             }
         }
 
@@ -598,36 +597,34 @@ internal static class MemoryEndpoints
         ILexiconCurationService lexicon,
         HttpContext context)
     {
-        return await RespondToLexiconInspectionAsync(lexicon, context, listed =>
-        {
-            IEnumerable<LexiconEntryDto> entries = listed;
-
-            if (!string.IsNullOrWhiteSpace(q))
-            {
-                string query = q.Trim();
-
-                entries = entries.Where(entry => LexiconMatches(entry, query));
-            }
-
-            return new LexiconListDto(entries.ToArray());
-        }, ArcanumJsonContext.Default.ApiResponseLexiconListDto).ConfigureAwait(false);
+        return await RespondToLexiconInspectionAsync(lexicon, context,
+            listed => new LexiconListDto(listed.ToArray()),
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto, q).ConfigureAwait(false);
     }
 
     private static Task<IResult> RespondToLexiconInspectionAsync<T>(
         ILexiconCurationService lexicon,
         HttpContext context,
         Func<IReadOnlyList<LexiconEntryDto>, T> project,
-        JsonTypeInfo<ApiResponse<T>> typeInfo) =>
+        JsonTypeInfo<ApiResponse<T>> typeInfo, string? query = null, int? limit = null) =>
         RespondToLexiconInspectionAsync(lexicon, context,
-            entries => Task.FromResult(Result<T>.Success(project(entries))), typeInfo);
+            entries => Task.FromResult(Result<T>.Success(project(entries))), typeInfo, query, limit);
 
     private static Task<IResult> RespondToLexiconInspectionAsync<T>(
         ILexiconCurationService lexicon,
         HttpContext context,
         Func<IReadOnlyList<LexiconEntryDto>, Task<Result<T>>> project,
-        JsonTypeInfo<ApiResponse<T>> typeInfo) =>
+        JsonTypeInfo<ApiResponse<T>> typeInfo, string? query = null, int? limit = null) =>
         RespondToLexiconReadAsync(context, null,
-            lease => lexicon.ListInspectionAsync(lease, context.RequestAborted), project, typeInfo);
+            lease => string.IsNullOrWhiteSpace(query) && limit is null
+                ? lexicon.ListInspectionAsync(lease, context.RequestAborted)
+                : lexicon.SearchInspectionAsync(query, limit, lease, context.RequestAborted), project, typeInfo);
+
+    private static Task<IResult> RespondToLexiconCountsAsync<T>(
+        ILexiconCurationService lexicon, HttpContext context,
+        Func<LexiconInspectionCounts, Task<Result<T>>> project, JsonTypeInfo<ApiResponse<T>> typeInfo) =>
+        RespondToLexiconReadAsync(context, null,
+            lease => lexicon.CountInspectionAsync(lease, context.RequestAborted), project, typeInfo);
 
     private static async Task<IResult> RespondToLexiconReadAsync<TRead, T>(
         HttpContext context,

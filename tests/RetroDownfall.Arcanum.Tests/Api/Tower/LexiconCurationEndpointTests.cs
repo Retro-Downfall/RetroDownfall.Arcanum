@@ -685,6 +685,10 @@ public sealed class LexiconCurationEndpointTests
 
         public Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> ListInspectionAsync(ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> SearchInspectionAsync(string? query, int? limit, ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result<LexiconInspectionResult<LexiconInspectionCounts>>> CountInspectionAsync(ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         private void Called(ICovenantOperationLease? lease)
         {
             Calls++;

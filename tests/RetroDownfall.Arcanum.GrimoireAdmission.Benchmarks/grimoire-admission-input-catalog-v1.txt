@@ -1439,6 +1439,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/WebResearchP
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/WebResearchTelemetry.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Correction.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CurationInspection.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.InspectionProjection.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Lifecycle.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Logging/AuditLogCursorCodec.cs

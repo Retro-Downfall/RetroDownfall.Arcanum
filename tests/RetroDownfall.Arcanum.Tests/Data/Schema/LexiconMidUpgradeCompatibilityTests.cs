@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -32,7 +33,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
     public static IEnumerable<object[]> Reads() =>
         from version in Enumerable.Range(2, 9)
-        from operation in new[] { "exact", "fts", "like", "effective", "scoped", "show", "show-effective", "list", "delete", "annals-provenance" }
+        from operation in new[] { "exact", "fts", "like", "effective", "scoped", "show", "show-effective", "list", "inspection-search", "inspection-count", "delete", "annals-provenance" }
         select new object[] { version, operation };
 
     [Theory]
@@ -88,13 +89,24 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
             Assert.Empty(result.Value.Value.HistoricalFactProvenance);
         }
-        else if (operation == "list")
+        else if (operation is "list" or "inspection-search")
         {
-            var result = await service.ListInspectionAsync(null);
+            var result = operation == "list" ? await service.ListInspectionAsync(null)
+                : await service.SearchInspectionAsync("searchable", 1, null);
 
             Assert.True(result.IsSuccess, result.Error.Message);
 
             entry = Assert.Single(result.Value.Value);
+        }
+        else if (operation == "inspection-count")
+        {
+            var result = await service.CountInspectionAsync(null);
+
+            Assert.True(result.IsSuccess, result.Error.Message);
+
+            Assert.Equal(new LexiconInspectionCounts(1, 1), result.Value.Value);
+
+            return;
         }
         else if (operation == "delete")
         {
@@ -228,9 +240,13 @@ public sealed class LexiconMidUpgradeCompatibilityTests
         Assert.True(retried.IsSuccess, retried.Error.Message);
     }
 
-    internal static LexiconService CreateService(ArcanumDbContext db, bool capture = true) =>
-        new(db, NullLogger<LexiconService>.Instance, new TestOptionsMonitor<ArcanumSettings>(
+    internal static LexiconService CreateService(ArcanumDbContext db, bool capture = true)
+    {
+        CovenantSqliteConnectionInitializer.Instance.EnsureAuthorizationFunctions((SqliteConnection)db.Database.GetDbConnection());
+
+        return new(db, NullLogger<LexiconService>.Instance, new TestOptionsMonitor<ArcanumSettings>(
             new ArcanumSettings { Features = new FeatureSettings { Annals = capture } }));
+    }
 
     [Fact]
     public async Task Schema_capability_and_dependent_read_share_a_snapshot_across_a_real_upgrade()

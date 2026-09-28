@@ -206,6 +206,11 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         CovenantSqliteConnectionState state)
     {
 
+        connection.CreateFunction<string?, string?, bool>("arcanum_ordinal_contains",
+            static (value, query) => value is not null && query is not null
+                && value.Contains(query, StringComparison.OrdinalIgnoreCase),
+            isDeterministic: true);
+
         foreach (CovenantSqliteAuthorizationKind kind in Enum.GetValues<CovenantSqliteAuthorizationKind>())
         {
 

@@ -17,6 +17,12 @@ public interface ILexiconCurationService
     Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> ListInspectionAsync(
         ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default);
 
+    Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> SearchInspectionAsync(
+        string? query, int? limit, ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default);
+
+    Task<Result<LexiconInspectionResult<LexiconInspectionCounts>>> CountInspectionAsync(
+        ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default);
+
     Task<Result<LexiconCurationResult>> CorrectAsync(
         LexiconCurationTarget target, LexiconReplacementContent replacement, CovenantWriteLease? writeLease,
         CancellationToken cancellationToken = default) => UnavailableMutation();
@@ -41,3 +47,6 @@ public interface ILexiconCurationService
         Task.FromResult(Result<LexiconCurationResult>.Failure(
             new Error(ErrorCodes.Lexicon.WriteFailed, "Lexicon curation mutation is unavailable.")));
 }
+
+/// <summary>Verified retained and retrieval-eligible counts; no canonical content is retained.</summary>
+public sealed record LexiconInspectionCounts(int Retained, int Eligible);

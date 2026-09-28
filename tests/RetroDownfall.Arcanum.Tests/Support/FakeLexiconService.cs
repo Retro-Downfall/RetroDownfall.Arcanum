@@ -164,12 +164,40 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
 
         IReadOnlyList<LexiconEntryDto> entries = _entries.Values
             .OrderBy(static entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static entry => entry.ScopeCampaignId?.ToString("D") ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(static entry => entry.Id.ToString("N"), StringComparer.Ordinal)
             .ToArray();
 
         return Task.FromResult(
             Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Success(new(entries, false)));
 
     }
+
+    public async Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> SearchInspectionAsync(
+        string? query, int? limit, ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default)
+    {
+        if (limit < 0)
+        {
+            return new Error(ErrorCodes.Validation.InvalidQuery, "Lexicon inspection limit must be non-negative or omitted.");
+        }
+
+        var listed = await ListInspectionAsync(readLease, cancellationToken);
+
+        string? trimmed = query?.Trim();
+
+        IReadOnlyList<LexiconEntryDto> entries = listed.Value.Value.Where(entry => string.IsNullOrEmpty(trimmed)
+            || entry.Name.Contains(trimmed, StringComparison.OrdinalIgnoreCase)
+            || entry.Type.Contains(trimmed, StringComparison.OrdinalIgnoreCase)
+            || entry.Facts.Any(fact => fact.Contains(trimmed, StringComparison.OrdinalIgnoreCase)))
+            .Take(limit ?? int.MaxValue).ToArray();
+
+        return Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Success(new(entries, false));
+    }
+
+    public Task<Result<LexiconInspectionResult<LexiconInspectionCounts>>> CountInspectionAsync(
+        ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<LexiconInspectionResult<LexiconInspectionCounts>>.Success(new(
+            new(_entries.Count, _entries.Values.Count(entry => entry.Eligibility == LexiconRetrievalEligibility.Eligible)), false)));
 
     public Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowExactAsync(
         LexiconCurationScope scope, string name, ICovenantSnapshotReadLease? readLease,

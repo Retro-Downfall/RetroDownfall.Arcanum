@@ -184,6 +184,7 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:ILexiconService",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ILexiconCurationService",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:RespondToLexiconCountsAsync:ILexiconCurationService",
             "WizardIntelligenceProvider.cs:outside-method:ILexiconService",
         ];
 
@@ -202,7 +203,9 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:DeleteByNameAsync",
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:FindAllLifecycleIdentityForDeletionAsync",
             "MemoryEndpoints.cs:HandleLexiconShowAsync:ShowEffectiveAsync",
+            "MemoryEndpoints.cs:RespondToLexiconCountsAsync:CountInspectionAsync",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ListInspectionAsync",
+            "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:SearchInspectionAsync",
         }, calls.Order(StringComparer.Ordinal));
     }
 

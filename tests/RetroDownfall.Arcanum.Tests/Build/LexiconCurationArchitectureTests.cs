@@ -16,6 +16,8 @@ public sealed class LexiconCurationArchitectureTests
 
     private const string Inspection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CurationInspection.cs";
 
+    private const string Projection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.InspectionProjection.cs";
+
     private const string Annals = "RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsStore.cs";
 
     private const string Writer = "RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsClaimWriter.cs";
@@ -25,6 +27,13 @@ public sealed class LexiconCurationArchitectureTests
     private const string EntryColumns = "Id,Name,Type,FactsJson,UpdatedAt,ScopeCampaignId,RetiredAtUtc,PinnedAtUtc,CurationGeneration";
 
     private const string VersionColumns = "VersionId,ClaimId,Sequence,Revision,OperationCode,OriginCode,ScopeKindCode,CampaignId,SensitivityCode,ContentHashFormatCode,ContentHash,ValidFromUtc,ValidToUtc,RecordedAtUtc,RecordedUntilUtc,PredecessorVersionId";
+
+    private const string LabelColumns = "LabelId,ArtifactKindCode,ArtifactId,SessionId,CampaignId,TurnId,ArtifactRevision,ArtifactContentDigest,SensitivityCode,ProvenanceModeCode,ExactGenerationIds,GenerationBloom,SensitivityDigest,ProducingPlanDigest,ProducingAdmissionDigest,ProducingMaintenanceReceiptDigest,ArtifactLabelDigest,CreatedAtUtc";
+
+    private const string EvidenceColumns = "Id,ScopeCampaignId,RetiredAtUtc," + LabelColumns
+        + ",ClaimId,CurrentVersionId,CurrentRevision,CurrentOperationCode,SubjectStoreCode,"
+        + "VersionId,ClaimId,Sequence,Revision,OperationCode,OriginCode,ScopeKindCode,CampaignId,SensitivityCode,ContentHashFormatCode,ContentHash,ValidFromUtc,ValidToUtc,RecordedAtUtc,NULL,PredecessorVersionId,"
+        + "HasLaterVersion,EvidenceCopies,PinnedAtUtc,CurationGeneration";
 
     public static TheoryData<string, string, int, string> Projections => new()
     {
@@ -36,6 +45,11 @@ public sealed class LexiconCurationArchitectureTests
         { Service, "ReadAllLifecycleIdentityForDeletionAsync", 0, "Id" },
         { Service, "ReadFactProvenanceCoreAsync", 0, "EntryId,Fact,SessionId,AttachmentId,LogicalKey,Version,ContentHash,MaterializedAt,SourceType,SourceAvailable" },
         { Inspection, "ReadInspectionIdentitiesAsync", 0, "Id,ScopeCampaignId" },
+        { Projection, "VerifyInspectionAuthorityAsync", 0, "OrphanLabels" },
+        { Projection, "VerifyInspectionAuthorityAsync", 2, EvidenceColumns },
+        { Projection, "StreamInspectionAsync", 0, "InvalidFacts" },
+        { Projection, "StreamInspectionAsync", 3, "Id" },
+        { Projection, "StreamInspectionAsync", 6, EntryColumns + ",NameNormalized,FactsText," + EvidenceColumns + ",FactProvenanceJson" },
         { Inspection, "ReadInspectionRowAsync", 0, EntryColumns + ",NameNormalized,FactsText" },
         { Inspection, "ReadVerifiedHeadAsync", 0, "ClaimId,CurrentVersionId,CurrentRevision,CurrentOperationCode,SubjectStoreCode" },
         { Inspection, "ReadVerifiedHeadAsync", 1, VersionColumns.Replace("RecordedUntilUtc", "NULL", StringComparison.Ordinal) },
@@ -64,11 +78,14 @@ public sealed class LexiconCurationArchitectureTests
         { Service, "ReadEntry", "GetString:0,GetString:1,GetString:2,GetString:3,GetString:4,GetString:5,GetString:6,GetString:7,ReadPositiveInteger:8" },
         { Service, "ReadFactProvenanceCoreAsync", "GetString:2,GetString:3,GetString:4,ReadCode:5,GetString:6,GetString:7,GetString:8,GetInt32:9,GetString:0,GetString:1" },
         { Inspection, "ReadInspectionIdentitiesAsync", "GetString:0,GetString:1" },
-        { Inspection, "ReadInspectionRowAsync", "GetString:9,GetString:10" },
+        { Inspection, "ReadInspectionRow", "GetString:9,GetString:10" },
+        { Projection, "ReadInspectionEvidence", "GetString:0,GetInt64:43,GetString:1,GetString:2,GetString:44,ReadPositiveInteger:45,ReadCode:25,GetInt64:42,GetString:21,GetString:22,ReadCode:23,ReadCode:24" },
+        { Projection, "StreamInspectionAsync", "GetString:57" },
+        { Projection, "ReadProjectedProvenance", "JsonTryGetInt32:4,JsonGetString:0,JsonGetString:1,JsonGetString:2,JsonGetString:3,JsonGetString:5,JsonGetString:6,JsonGetString:7,JsonGetInt32:8" },
         { Inspection, "ReadVerifiedHeadAsync", "ReadCode:4,GetString:0,GetString:1,ReadCode:2,ReadCode:3" },
         { Inspection, "ReadInspectionVersion", "GetString:0,GetString:1,ReadPositiveInteger:2,ReadCode:3,ReadCode:4,ReadCode:5,ReadCode:6,GetString:7,ReadCode:8,ReadCode:9,GetValue:10,GetString:11,GetString:12,GetString:13,GetString:14,GetString:15" },
         { Inspection, "ReadHistoricalSourcesAsync", "GetString:0,ReadCode:1,GetString:2,GetString:3,GetString:4,ReadCode:5,GetString:6,GetString:7,GetString:8,ReadCode:9,ReadCode:10" },
-        { Inspection, "ReadVerifiedLabelAsync", "ReadCode:9,GetValue:10,GetValue:11,GetString:0,ReadCode:1,GetString:2,ReadOptionalGuid:3,ReadOptionalGuid:4,ReadOptionalGuid:5,ReadPositiveInteger:6,GetValue:7,ReadCode:8,GetValue:12,ReadOptionalDigest:13,ReadOptionalDigest:14,ReadOptionalDigest:15,GetValue:16,GetString:17" },
+        { Inspection, "ReadInspectionLabel", "ReadCode:9,GetValue:10,GetValue:11,GetString:0,ReadCode:1,GetString:2,ReadOptionalGuid:3,ReadOptionalGuid:4,ReadOptionalGuid:5,ReadPositiveInteger:6,GetValue:7,ReadCode:8,GetValue:12,ReadOptionalDigest:13,ReadOptionalDigest:14,ReadOptionalDigest:15,GetValue:16,GetString:17" },
         { Annals, "GetClaimAsync", "GetString:0,ReadCode:1,GetString:2,GetString:3,GetInt32:4,ReadCode:5,GetString:6" },
         { Annals, "GetVersionsAsync", "GetString:0,GetString:1,GetInt64:2,GetInt32:3,ReadCode:4,ReadCode:5,ReadCode:6,GetString:7,ReadCode:8,ReadCode:14,GetValue:15,GetString:9,GetString:10,GetString:11,GetString:12,GetString:13" },
         { Annals, "GetLexiconFactProvenanceAsync", "GetString:0,GetInt32:1,GetString:2,GetString:3,GetString:4,GetInt32:5,GetString:6,GetString:7,GetString:8" },
@@ -90,7 +107,7 @@ public sealed class LexiconCurationArchitectureTests
 
         string[] readers = [.. methods.Where(method => ReaderSlots(method).Length > 0).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
+        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection or Projection).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
 
         string[] executed = [.. methods.Where(method => Calls(method, "ExecuteReaderAsync")).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
@@ -99,21 +116,24 @@ public sealed class LexiconCurationArchitectureTests
             "FillExactMatchesAsync", "FillFtsMatchesViaLikeAsync", "FillFtsMatchesViaMatchAsync",
             "ReadFactProvenanceCoreAsync", "ReadHistoricalSourcesAsync", "ReadInspectionHistoryAsync",
             "ReadInspectionIdentitiesAsync", "ReadInspectionRowAsync", "ReadNamedEntryAsync", "ReadVerifiedHeadAsync", "ReadVerifiedLabelAsync",
+            "StreamInspectionAsync", "VerifyInspectionAuthorityAsync",
         }.Order(StringComparer.Ordinal), executed);
 
         string[] projected = [.. methods.Where(method => SqlText(method).Contains("SELECT", StringComparison.Ordinal)
             && !new[] { "DeleteByNameAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection).Select(row => (string)row[1])
-            .Append("VersionColumnsFor").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
+        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection).Select(row => (string)row[1])
+            .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadNamedEntryAsync" })
         {
             Assert.True(Calls(Method(Service, method), "ReadEntry"), method);
         }
 
-        Assert.True(Calls(Method(Inspection, "ReadInspectionRowAsync"), "ReadEntry"));
+        Assert.True(Calls(Method(Inspection, "ReadInspectionRowAsync"), "ReadInspectionRow"));
+
+        Assert.True(Calls(Method(Inspection, "ReadInspectionRow"), "ReadEntry"));
 
         Assert.True(Calls(Method(Inspection, "ReadVerifiedHeadAsync"), "ReadInspectionVersion"));
 
@@ -121,13 +141,13 @@ public sealed class LexiconCurationArchitectureTests
 
         Assert.Equal(Enumerable.Range(0, 9), Ordinals(Service, "ReadEntry").Order());
 
-        Assert.Equal(Enumerable.Range(0, 11), Ordinals(Service, "ReadEntry").Concat(Ordinals(Inspection, "ReadInspectionRowAsync")).Order());
+        Assert.Equal(Enumerable.Range(0, 11), Ordinals(Service, "ReadEntry").Concat(Ordinals(Inspection, "ReadInspectionRow")).Order());
 
         foreach ((string path, string method, int count) in new (string, string, int)[]
         {
             (Service, "ReadFactProvenanceCoreAsync", 10), (Inspection, "ReadInspectionIdentitiesAsync", 2),
             (Inspection, "ReadVerifiedHeadAsync", 5), (Inspection, "ReadInspectionVersion", 16),
-            (Inspection, "ReadHistoricalSourcesAsync", 11), (Inspection, "ReadVerifiedLabelAsync", 18),
+            (Inspection, "ReadHistoricalSourcesAsync", 11), (Inspection, "ReadInspectionLabel", 18),
             (Annals, "GetClaimAsync", 7), (Annals, "GetVersionsAsync", 16),
             (Annals, "GetLexiconFactProvenanceAsync", 9), (Writer, "ReadHeadAsync", 7), (Backfill, "ReadBatchAsync", 5),
         })
@@ -163,6 +183,18 @@ public sealed class LexiconCurationArchitectureTests
         Assert.DoesNotContain("RetiredAtUtc IS NULL", SqlText(Method(Inspection, "ShowExactAsync")), StringComparison.Ordinal);
 
         Assert.DoesNotContain("RetiredAtUtc IS NULL", SqlText(Method(Inspection, "ListInspectionAsync")), StringComparison.Ordinal);
+
+        Assert.True(Calls(Method(Inspection, "ListInspectionAsync"), "SearchInspectionAsync"));
+
+        Assert.True(Calls(Method(Inspection, "SearchInspectionAsync"), "StreamInspectionAsync"));
+
+        Assert.True(Calls(Method(Inspection, "CountInspectionAsync"), "VerifyInspectionAuthorityAsync"));
+
+        Assert.DoesNotContain("RetiredAtUtc IS NULL", SqlText(Method(Projection, "StreamInspectionAsync")), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("RetiredAtUtc IS NULL", SqlText(Method(Projection, "VerifyInspectionAuthorityAsync")), StringComparison.Ordinal);
+
+        Assert.Contains("eligible+=reader.IsDBNull(2)?1:0", Tokens(Method(Projection, "VerifyInspectionAuthorityAsync")), StringComparison.Ordinal);
 
         Assert.Equal(["Id"], ProjectionColumns(SqlText(Method(Service, "ReadAllLifecycleIdentityForDeletionAsync")), 0));
 
@@ -207,14 +239,15 @@ public sealed class LexiconCurationArchitectureTests
     }
 
     [Fact]
-    public void Every_operational_service_consumer_and_call_is_explicitly_classified()
+    public void Every_operational_and_curation_service_consumer_and_call_is_explicitly_classified()
     {
         Dictionary<string, string[]> expected = new(StringComparer.Ordinal)
         {
             ["RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs"] = ["MatchEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs"] = ["GetByNameAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs"] = ["DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "UpsertAsync", "UpsertAsync"],
-            ["RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs"] = ["DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "ListInspectionAsync", "ShowEffectiveAsync"],
+            ["RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs"] = ["CountInspectionAsync", "DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "ListInspectionAsync", "SearchInspectionAsync", "ShowEffectiveAsync"],
+            ["RetroDownfall.Arcanum.Api/Tower/LexiconCurationEndpoints.cs"] = ["CorrectAsync", "PinAsync", "ReinstateAsync", "RetireAsync", "ShowExactAsync", "UnpinAsync"],
         };
 
         string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), "src");
@@ -222,7 +255,7 @@ public sealed class LexiconCurationArchitectureTests
         Dictionary<string, CompilationUnitSyntax> consumers = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.Contains("/obj/", StringComparison.Ordinal) && !path.Contains("/bin/", StringComparison.Ordinal))
             .Select(path => (Path: Path.GetRelativePath(root, path).Replace('\\', '/'), Tree: Parse(File.ReadAllText(path))))
-            .Where(item => item.Tree.DescendantNodes().OfType<IdentifierNameSyntax>().Any(identifier => identifier.Identifier.ValueText == "ILexiconService"))
+            .Where(item => UsesServiceContract(item.Tree))
             .Where(item => item.Path != Service && !item.Path.EndsWith("ServiceCollectionExtensions.cs", StringComparison.Ordinal))
             .ToDictionary(item => item.Path, item => item.Tree, StringComparer.Ordinal);
 
@@ -232,24 +265,71 @@ public sealed class LexiconCurationArchitectureTests
         {
             CompilationUnitSyntax tree = consumers[path];
 
-            HashSet<string> receivers = tree.DescendantNodes().OfType<ParameterSyntax>()
-                .Where(parameter => parameter.Type?.ToString() == "ILexiconService").Select(parameter => parameter.Identifier.ValueText)
-                .Concat(tree.DescendantNodes().OfType<VariableDeclarationSyntax>()
-                    .Where(declaration => declaration.Type.ToString() == "ILexiconService")
-                    .SelectMany(declaration => declaration.Variables.Select(variable => variable.Identifier.ValueText)))
-                .ToHashSet(StringComparer.Ordinal);
-
-            string[] actual = [.. tree.DescendantNodes().OfType<InvocationExpressionSyntax>()
-                .Select(invocation => invocation.Expression).OfType<MemberAccessExpressionSyntax>()
-                .Where(access => receivers.Contains(access.Expression.ToString()))
-                .Select(access => access.Name.Identifier.ValueText).Order(StringComparer.Ordinal)];
-
-            Assert.Equal(calls.Order(StringComparer.Ordinal), actual);
+            Assert.Equal(calls.Order(StringComparer.Ordinal), DiscoverServiceCalls(tree));
         }
 
         MethodDeclarationSyntax explain = Method("RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "HandleExplainAsync");
 
-        Assert.Contains("entry.Eligibility==LexiconRetrievalEligibility.Eligible", Tokens(explain), StringComparison.Ordinal);
+        Assert.Contains("counts.Eligible", Tokens(explain), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("lexicon")]
+    [InlineData("inspection")]
+    public void Consumer_discovery_cannot_omit_a_curation_only_file_or_renamed_parameter(string receiver)
+    {
+        CompilationUnitSyntax tree = Parse($$"""
+            using RetroDownfall.Arcanum.Core.Lexicon;
+            class CurationOnly
+            {
+                void Inspect(ILexiconCurationService {{receiver}})
+                {
+                    {{receiver}}.ShowExactAsync();
+                }
+            }
+            """);
+
+        Assert.True(UsesServiceContract(tree));
+
+        Assert.Equal(["ShowExactAsync"], DiscoverServiceCalls(tree));
+    }
+
+    [Fact]
+    public void Consumer_discovery_binds_same_named_receivers_to_their_own_declarations()
+    {
+        CompilationUnitSyntax tree = Parse("""
+            using RetroDownfall.Arcanum.Core.Lexicon;
+            class Other { public void GetByNameAsync() {} }
+            class Mixed
+            {
+                void Read(ILexiconService lexicon) { lexicon.GetByNameAsync(); }
+                void Unrelated(Other lexicon) { lexicon.GetByNameAsync(); }
+            }
+            """);
+
+        Assert.Equal(["GetByNameAsync"], DiscoverServiceCalls(tree));
+    }
+
+    private static bool UsesServiceContract(CompilationUnitSyntax tree) => tree.DescendantNodes()
+        .OfType<IdentifierNameSyntax>().Any(identifier => identifier.Identifier.ValueText is "ILexiconService" or "ILexiconCurationService");
+
+    private static string[] DiscoverServiceCalls(CompilationUnitSyntax tree)
+    {
+        CSharpCompilation compilation = CSharpCompilation.Create("LexiconConsumerInventory", [tree.SyntaxTree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+             MetadataReference.CreateFromFile(typeof(RetroDownfall.Arcanum.Core.Lexicon.ILexiconService).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        SemanticModel model = compilation.GetSemanticModel(tree.SyntaxTree);
+
+        return [.. tree.DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Select(invocation => invocation.Expression).OfType<MemberAccessExpressionSyntax>()
+            // Receiver symbols respect method/lambda/local scopes and primary-constructor capture.
+            // A same-named variable in another method cannot lend its service type to this call.
+            .Where(access => model.GetTypeInfo(access.Expression).Type?.ToDisplayString()
+                is "RetroDownfall.Arcanum.Core.Lexicon.ILexiconService"
+                    or "RetroDownfall.Arcanum.Core.Lexicon.ILexiconCurationService")
+            .Select(access => access.Name.Identifier.ValueText).Order(StringComparer.Ordinal)];
     }
 
     [Theory]
@@ -308,14 +388,33 @@ public sealed class LexiconCurationArchitectureTests
         {
             string name = invocation.Expression is MemberAccessExpressionSyntax member ? member.Name.Identifier.ValueText : invocation.Expression.ToString();
 
+            if (invocation.Expression is MemberAccessExpressionSyntax { Expression: ElementAccessExpressionSyntax element }
+                && element.ArgumentList.Arguments.Single().Expression is LiteralExpressionSyntax jsonSlot
+                && jsonSlot.Token.Value is int jsonOrdinal)
+            {
+                return $"Json{name}:{jsonOrdinal}";
+            }
+
             SeparatedSyntaxList<ArgumentSyntax> arguments = invocation.ArgumentList.Arguments;
 
             int index = name is "ReadCode" or "ReadPositiveInteger" or "ReadOptionalGuid" or "ReadOptionalDigest" ? 1 : 0;
 
             bool getter = name is "GetString" or "GetValue" or "GetInt32" or "GetInt64";
 
-            return (getter || index == 1) && arguments.Count > index
-                && arguments[index].Expression is LiteralExpressionSyntax literal && literal.Token.Value is int ordinal
+            ExpressionSyntax? slot = arguments.Count > index ? arguments[index].Expression : null;
+
+            if (slot is IdentifierNameSyntax { Identifier.ValueText: "offset" })
+            {
+                return getter ? $"{name}:0" : null;
+            }
+
+            if (slot is BinaryExpressionSyntax { RawKind: (int)SyntaxKind.AddExpression, Left: IdentifierNameSyntax { Identifier.ValueText: "offset" } } relative)
+            {
+                slot = relative.Right;
+            }
+
+            return (getter || index == 1)
+                && slot is LiteralExpressionSyntax literal && literal.Token.Value is int ordinal
                 ? $"{name}:{ordinal}" : null;
         }).OfType<string>()];
 
@@ -384,6 +483,8 @@ public sealed class LexiconCurationArchitectureTests
             if (node is InvocationExpressionSyntax invocation && invocation.Expression is IdentifierNameSyntax helper)
             {
                 if (helper.Identifier.ValueText == "EntryColumnsFor") return constants[legacy ? "LegacySelectColumns" : "SelectColumns"];
+
+                if (helper.Identifier.ValueText == "InspectionEvidenceColumns") return Expand(Method(Projection, "InspectionEvidenceColumns").ExpressionBody!.Expression);
 
                 if (helper.Identifier.ValueText == "VersionColumnsFor") return legacy
                     ? constants["VersionColumns"].Replace("v.ContentHashFormatCode", "1 AS ContentHashFormatCode", StringComparison.Ordinal)
