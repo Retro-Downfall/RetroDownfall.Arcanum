@@ -11,6 +11,26 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
+            ErrorCodes.Lexicon.InvalidName
+                or ErrorCodes.Lexicon.InvalidScope
+                or ErrorCodes.Lexicon.InvalidCurationTarget
+                or ErrorCodes.Lexicon.InvalidReplacement =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Lexicon.ProtectedMutationRefused =>
+                StatusCodes.Status403Forbidden,
+
+            ErrorCodes.Lexicon.StaleCurationTarget
+                or ErrorCodes.Lexicon.RetiredMutationRefused
+                or ErrorCodes.Lexicon.CurationGenerationExhausted
+                or ErrorCodes.Lexicon.ArtifactRevisionExhausted =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.Lexicon.CurationIntegrityFailed
+                or ErrorCodes.Lexicon.WriteFailed
+                or ErrorCodes.Lexicon.SearchFailed =>
+                StatusCodes.Status500InternalServerError,
+
             ErrorCodes.Validation.InvalidPrompt
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody

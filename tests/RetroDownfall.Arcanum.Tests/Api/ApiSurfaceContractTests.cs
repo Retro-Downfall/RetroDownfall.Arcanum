@@ -378,6 +378,8 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         _ = app.MapGroup("/api").MapMemoryEndpoints();
 
+        _ = app.MapGroup("/api").MapLexiconCurationEndpoints();
+
         await app.StartAsync();
 
         RouteEndpoint[] memoryRoutes =
@@ -392,7 +394,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         await app.StopAsync();
 
-        Assert.Equal(10, memoryRoutes.Length);
+        Assert.Equal(16, memoryRoutes.Length);
 
         string[] unnamed =
         [

@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -414,6 +415,39 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(MemoryExplainDto))]
 [JsonSerializable(typeof(ApiResponse<MemoryExplainDto>))]
 [JsonSerializable(typeof(LexiconListDto))]
+[JsonSerializable(typeof(LexiconShowRequest))]
+[JsonSerializable(typeof(LexiconCorrectRequest))]
+[JsonSerializable(typeof(LexiconRetireRequest))]
+[JsonSerializable(typeof(LexiconReinstateRequest))]
+[JsonSerializable(typeof(LexiconPinRequest))]
+[JsonSerializable(typeof(LexiconUnpinRequest))]
+[JsonSerializable(typeof(LexiconCurationScope))]
+[JsonSerializable(typeof(LexiconScopeKind))]
+[JsonSerializable(typeof(LexiconRetrievalEligibility))]
+[JsonSerializable(typeof(LexiconCurationOutcomeKind))]
+[JsonSerializable(typeof(LexiconEntryLifecycle))]
+[JsonSerializable(typeof(LexiconReplacementContent))]
+[JsonSerializable(typeof(LexiconCurationAnnalHead))]
+[JsonSerializable(typeof(LexiconCurationSensitivityLabel))]
+[JsonSerializable(typeof(LexiconCurationTarget))]
+[JsonSerializable(typeof(LexiconCurationResult))]
+[JsonSerializable(typeof(LexiconEntryDetail))]
+[JsonSerializable(typeof(LexiconAnnalFactProvenance))]
+[JsonSerializable(typeof(LexiconAnnalFactProvenance[]))]
+[JsonSerializable(typeof(LexiconFactProvenance))]
+[JsonSerializable(typeof(LexiconFactProvenance[]))]
+[JsonSerializable(typeof(AttachmentMemoryProvenance))]
+[JsonSerializable(typeof(AttachmentSourceAvailability))]
+[JsonSerializable(typeof(AnnalClaimVersion[]))]
+[JsonSerializable(typeof(AnnalOperation))]
+[JsonSerializable(typeof(AnnalOrigin))]
+[JsonSerializable(typeof(AnnalContentHashFormat))]
+[JsonSerializable(typeof(ContentSensitivity))]
+[JsonSerializable(typeof(SagaMemoryScopeKind))]
+[JsonSerializable(typeof(GenerationProvenance))]
+[JsonSerializable(typeof(GenerationProvenanceMode))]
+[JsonSerializable(typeof(ApiResponse<LexiconEntryDetail>))]
+[JsonSerializable(typeof(ApiResponse<LexiconCurationResult>))]
 [JsonSerializable(typeof(ApiResponse<LexiconListDto>))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Lexicon.LexiconEntryDto))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Lexicon.LexiconEntryDto[]))]

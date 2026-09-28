@@ -707,6 +707,56 @@ public sealed class MemoryEndpointTests
 
     }
 
+    [SkippableTheory]
+    [InlineData("show")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("reinstate")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    public async Task Static_curation_names_remain_ordinary_names_for_effective_GET_and_exact_DELETE(string name)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeLexiconService lexicon = new();
+
+        Assert.True((await lexicon.UpsertAsync(name, "Person", ["global"], LexiconScope.Global)).IsSuccess);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.AddSingleton<ILexiconService>(lexicon);
+
+                services.AddSingleton<ILexiconCurationService>(lexicon);
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid campaign = Guid.NewGuid();
+
+        using HttpResponseMessage effective = await client.GetAsync($"/api/memory/lexicon/{name}?campaignId={campaign:D}");
+
+        ApiResponse<LexiconEntryDto>? shown = await ReadAsync(effective, ArcanumJsonContext.Default.ApiResponseLexiconEntryDto);
+
+        Assert.Equal(HttpStatusCode.OK, effective.StatusCode);
+
+        Assert.Equal(["global"], shown!.Data!.Facts);
+
+        using HttpResponseMessage absentExact = await client.DeleteAsync($"/api/memory/lexicon/{name}?campaignId={campaign:D}");
+
+        Assert.Equal(HttpStatusCode.NotFound, absentExact.StatusCode);
+
+        Assert.NotNull((await lexicon.GetByNameAsync(name, LexiconScope.Global)).Value);
+
+        using HttpResponseMessage deleted = await client.DeleteAsync($"/api/memory/lexicon/{name}");
+
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        Assert.Null((await lexicon.GetByNameAsync(name, LexiconScope.Global)).Value);
+    }
+
     [SkippableFact]
 
     public async Task Search_bounds_the_saga_page_it_requests_and_caps_the_response()

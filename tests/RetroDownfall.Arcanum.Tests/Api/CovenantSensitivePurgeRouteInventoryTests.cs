@@ -107,7 +107,8 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
         string[] content = ["ExplainMemory", "ExplainSessionMemory", "GetLexiconEntry", "GetMemorySources",
-            "GetSessionMemorySources", "ListLexiconEntries", "SearchMemory"];
+            "GetSessionMemorySources", "ListLexiconEntries", "SearchMemory", "ShowLexiconEntry", "CorrectLexiconEntry",
+            "RetireLexiconEntry", "ReinstateLexiconEntry", "PinLexiconEntry", "UnpinLexiconEntry"];
 
         Endpoint[] routes = graph.Endpoints.OfType<RouteEndpoint>()
             .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/api/memory", StringComparison.Ordinal)).ToArray();
@@ -169,6 +170,12 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
         string[] expectedConsumers =
         [
+            "LexiconCurationEndpoints.cs:HandleShowAsync:ILexiconCurationService",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
             "MemoryEndpoints.cs:HandleSourcesAsync:ILexiconCurationService",
             "MemoryEndpoints.cs:HandleExplainAsync:ILexiconCurationService",
             "MemoryEndpoints.cs:HandleSearchAsync:ILexiconCurationService",
@@ -186,6 +193,12 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
         Assert.Equal(new[]
         {
+            "LexiconCurationEndpoints.cs:HandleShowAsync:ShowExactAsync",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:CorrectAsync",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:PinAsync",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ReinstateAsync",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:RetireAsync",
+            "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:UnpinAsync",
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:DeleteByNameAsync",
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:FindAllLifecycleIdentityForDeletionAsync",
             "MemoryEndpoints.cs:HandleLexiconShowAsync:ShowEffectiveAsync",
@@ -208,6 +221,8 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
             builder.WebHost.UseTestServer();
 
+            builder.Services.AddScoped<RetroDownfall.Arcanum.Core.Lexicon.ILexiconCurationService>(_ => throw new NotSupportedException());
+
             RouteGraph graph = new();
 
             graph._app = builder.Build();
@@ -219,6 +234,8 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             _ = api.MapSagaEndpoints();
 
             _ = api.MapMemoryEndpoints();
+
+            _ = api.MapLexiconCurationEndpoints();
 
             _ = api.MapEmbeddingsResetEndpoints();
 

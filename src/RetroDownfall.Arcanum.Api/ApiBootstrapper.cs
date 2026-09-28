@@ -1209,6 +1209,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapSagaCurationEndpoints();
 
+        apiGroup.MapLexiconCurationEndpoints();
+
         apiGroup.MapSpellEndpoints();
 
         apiGroup.MapSpellAuthoringEndpoints();

@@ -1,18 +1,70 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Serialization;
 
 public sealed class ArcanumJsonContextCompletenessTests
 {
+    [Theory]
+    [InlineData(typeof(LexiconShowRequest))]
+    [InlineData(typeof(LexiconCorrectRequest))]
+    [InlineData(typeof(LexiconRetireRequest))]
+    [InlineData(typeof(LexiconReinstateRequest))]
+    [InlineData(typeof(LexiconPinRequest))]
+    [InlineData(typeof(LexiconUnpinRequest))]
+    [InlineData(typeof(LexiconCurationScope))]
+    [InlineData(typeof(LexiconScopeKind))]
+    [InlineData(typeof(LexiconRetrievalEligibility))]
+    [InlineData(typeof(LexiconCurationOutcomeKind))]
+    [InlineData(typeof(LexiconEntryLifecycle))]
+    [InlineData(typeof(LexiconReplacementContent))]
+    [InlineData(typeof(LexiconCurationAnnalHead))]
+    [InlineData(typeof(LexiconCurationSensitivityLabel))]
+    [InlineData(typeof(LexiconCurationTarget))]
+    [InlineData(typeof(LexiconCurationResult))]
+    [InlineData(typeof(LexiconEntryDetail))]
+    [InlineData(typeof(LexiconEntryDto))]
+    [InlineData(typeof(LexiconEntryDto[]))]
+    [InlineData(typeof(LexiconAnnalFactProvenance))]
+    [InlineData(typeof(LexiconAnnalFactProvenance[]))]
+    [InlineData(typeof(LexiconFactProvenance))]
+    [InlineData(typeof(LexiconFactProvenance[]))]
+    [InlineData(typeof(AttachmentMemoryProvenance))]
+    [InlineData(typeof(AttachmentSourceAvailability))]
+    [InlineData(typeof(AnnalClaimVersion))]
+    [InlineData(typeof(AnnalClaimVersion[]))]
+    [InlineData(typeof(AnnalOperation))]
+    [InlineData(typeof(AnnalOrigin))]
+    [InlineData(typeof(AnnalContentHashFormat))]
+    [InlineData(typeof(ContentSensitivity))]
+    [InlineData(typeof(SagaMemoryScopeKind))]
+    [InlineData(typeof(GenerationProvenance))]
+    [InlineData(typeof(GenerationProvenanceMode))]
+    [InlineData(typeof(DataRetentionLexiconCurationInventory))]
+    [InlineData(typeof(ApiResponse<LexiconEntryDetail>))]
+    [InlineData(typeof(ApiResponse<LexiconCurationResult>))]
+    public void Lexicon_wire_types_have_explicit_source_generation_registrations(Type type)
+    {
+        Assert.Contains(typeof(ArcanumJsonContext).CustomAttributes, attribute => attribute.AttributeType == typeof(JsonSerializableAttribute)
+            && attribute.ConstructorArguments[0].Value is Type registered && registered == type);
+
+        Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type));
+    }
 
     [Theory]
     [InlineData(typeof(ApiResponse<bool>))]
@@ -40,6 +92,20 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(OpenAiReasoningEffort))]
     [InlineData(typeof(SubmitHumanResponseRequest))]
     [InlineData(typeof(Error))]
+    [InlineData(typeof(LexiconCurationScope))]
+    [InlineData(typeof(LexiconScopeKind))]
+    [InlineData(typeof(LexiconRetrievalEligibility))]
+    [InlineData(typeof(LexiconCurationOutcomeKind))]
+    [InlineData(typeof(LexiconEntryLifecycle))]
+    [InlineData(typeof(LexiconReplacementContent))]
+    [InlineData(typeof(LexiconCurationAnnalHead))]
+    [InlineData(typeof(LexiconCurationSensitivityLabel))]
+    [InlineData(typeof(LexiconCurationTarget))]
+    [InlineData(typeof(LexiconCurationResult))]
+    [InlineData(typeof(LexiconAnnalFactProvenance))]
+    [InlineData(typeof(LexiconEntryDetail))]
+    [InlineData(typeof(ApiResponse<LexiconEntryDetail>))]
+    [InlineData(typeof(ApiResponse<LexiconCurationResult>))]
     public void TypeInfo_RegisteredForType(Type type)
     {
 
