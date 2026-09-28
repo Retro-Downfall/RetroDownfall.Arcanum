@@ -145,6 +145,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycle.cs:CampaignPathMarkerLifecycle:recoveryKeys"] = "the only construction in src is the DI factory at ServiceCollectionExtensions.cs:1621, which passes the registered ICampaignRootIdentityRecoveryKeyProvider",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantManagementService.cs:CovenantManagementService:searchIndex"] = "the composed-host factory at ServiceCollectionExtensions.cs:1916 passes the required ICovenantSearchIndex and compiler; omission is a restricted list/status test seam, and QueryAsync fails closed with Covenant.Unavailable when either search dependency is absent",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:attachmentStore"] = "every use of the ISessionAttachmentStore is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:covenantErasureEffectDigests"] = "the null coalesces to a constructed default at the use site, so no host runs without a ICovenantErasureEffectDigestCalculator",
@@ -204,6 +206,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs:SpellCatalogService:progressObserver"] = "every use of the ISpellCatalogProgressObserver is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:labeledArtifactGuard"] = "the owner is registered at ServiceCollectionExtensions.cs:1234 and ICovenantLabeledArtifactGuard at :1949; a null skips the label guard on delete (LexiconService.cs:236), so the container supplying it is what keeps that refusal reachable",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:reviewTokenCodec"] = "the null coalesces to a MemoryReviewTokenCodec using TimeProvider.System at the field initializer, while the composed host supplies the registered IMemoryReviewTokenCodec; no instance runs without an authenticated review-token codec",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs:ArcanumInternalToolServer:workspaceCheckRuntime"] = "the null coalesces to a constructed default at the use site, so no host runs without a IWorkspaceCheckRuntime",
 

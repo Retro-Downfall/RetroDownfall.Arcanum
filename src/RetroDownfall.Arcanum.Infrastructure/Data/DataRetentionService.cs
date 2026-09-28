@@ -317,8 +317,11 @@ internal sealed partial class DataRetentionService(
                 "annal_heads",
                 "annal_dependencies",
                 "lexicon_annal_fact_provenance",
+                "annal_review_events",
+                "annal_review_decision_receipts",
+                "annal_review_markers",
             ],
-            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, and historical Lexicon source coordinates. Removed with the memory each claim describes; never aged out on their own.",
+            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, historical Lexicon source coordinates, and content-free exact-review state. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 

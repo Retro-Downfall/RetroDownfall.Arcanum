@@ -59,11 +59,23 @@ internal static class AnnalsErasurePlan
 
         string versionScope = $"SELECT VersionId FROM annal_versions WHERE ClaimId IN ({claimScope})";
 
+        string reviewEventScope = $"SELECT Sequence FROM annal_review_events WHERE VersionId IN ({versionScope})";
+
         return
         [
             .. subjectStoreCode == (int)AnnalSubjectStore.Lexicon
                 ? new[] { new AnnalsErasureStep("lexicon_annal_fact_provenance", $"AnnalVersionId IN ({versionScope})", RequiredFromCoreVersion: 11) }
                 : [],
+
+            new(
+                "annal_review_decision_receipts",
+                $"ReviewEventSequence IN ({reviewEventScope})",
+                RequiredFromCoreVersion: 12),
+
+            new(
+                "annal_review_events",
+                $"VersionId IN ({versionScope})",
+                RequiredFromCoreVersion: 12),
 
             // Both endpoint columns, because an edge dies when either end does: a claim being erased may
             // be the target of an edge asserted by a version that survives, and leaving that edge would

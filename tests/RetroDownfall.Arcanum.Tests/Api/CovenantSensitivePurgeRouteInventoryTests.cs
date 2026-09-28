@@ -106,22 +106,31 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
     {
         await using RouteGraph graph = await RouteGraph.CreateAsync();
 
-        string[] content = ["ExplainMemory", "ExplainSessionMemory", "GetLexiconEntry", "GetMemorySources",
+        string[] conditionalContent = ["ExplainMemory", "ExplainSessionMemory", "GetLexiconEntry", "GetMemorySources",
             "GetSessionMemorySources", "ListLexiconEntries", "SearchMemory", "ShowLexiconEntry", "CorrectLexiconEntry",
-            "RetireLexiconEntry", "ReinstateLexiconEntry", "PinLexiconEntry", "UnpinLexiconEntry"];
+            "RetireLexiconEntry", "ReinstateLexiconEntry", "PinLexiconEntry", "UnpinLexiconEntry",
+            "ListLexiconMemoryReviewQueue", "PrepareLexiconMemoryReview", "ApplyLexiconMemoryReview"];
+
+        string[] ordinaryContent = ["ListSagaMemoryReviewQueue", "PrepareSagaMemoryReview", "ApplySagaMemoryReview"];
+
+        string[] protectedContent = ["ListCovenantMemoryReviewQueue", "PrepareCovenantMemoryReview", "ApplyCovenantMemoryReview"];
 
         Endpoint[] routes = graph.Endpoints.OfType<RouteEndpoint>()
             .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/api/memory", StringComparison.Ordinal)).ToArray();
 
-        Assert.Equal(content.Concat(["GetMemoryStatus", "GetSessionMemoryStatus", "DeleteLexiconEntry"]).Order(StringComparer.Ordinal),
+        Assert.Equal(conditionalContent.Concat(ordinaryContent).Concat(protectedContent)
+            .Concat(["GetMemoryStatus", "GetSessionMemoryStatus", "DeleteLexiconEntry"]).Order(StringComparer.Ordinal),
             routes.Select(endpoint => endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName).Order(StringComparer.Ordinal));
 
         foreach (Endpoint route in routes)
         {
             string name = route.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName;
 
-            Assert.Equal(content.Contains(name, StringComparer.Ordinal),
+            Assert.Equal(conditionalContent.Contains(name, StringComparer.Ordinal),
                 route.Metadata.GetMetadata<CovenantConditionalReadRequirementMetadata>() is not null);
+
+            Assert.Equal(protectedContent.Contains(name, StringComparer.Ordinal),
+                route.Metadata.GetMetadata<CovenantAuthorityRequirementMetadata>() is not null);
 
             Assert.Equal(name == "DeleteLexiconEntry",
                 route.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>() is not null);

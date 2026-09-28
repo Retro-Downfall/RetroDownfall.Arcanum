@@ -394,7 +394,7 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         await app.StopAsync();
 
-        Assert.Equal(16, memoryRoutes.Length);
+        Assert.Equal(25, memoryRoutes.Length);
 
         string[] unnamed =
         [

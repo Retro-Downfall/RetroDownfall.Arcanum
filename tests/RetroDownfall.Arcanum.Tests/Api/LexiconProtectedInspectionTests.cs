@@ -279,7 +279,8 @@ public sealed class LexiconProtectedInspectionTests
     {
         await using InspectionHost host = await InspectionHost.CreateAsync();
 
-        string[] expected = ["ExplainMemory", "ExplainSessionMemory", "GetLexiconEntry", "GetMemorySources", "GetSessionMemorySources", "ListLexiconEntries", "SearchMemory"];
+        string[] expected = ["ApplyLexiconMemoryReview", "ExplainMemory", "ExplainSessionMemory", "GetLexiconEntry", "GetMemorySources",
+            "GetSessionMemorySources", "ListLexiconEntries", "ListLexiconMemoryReviewQueue", "PrepareLexiconMemoryReview", "SearchMemory"];
 
         string[] actual = host.Endpoints.Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/api/memory", StringComparison.Ordinal)
             && endpoint.Metadata.GetMetadata<CovenantConditionalReadRequirementMetadata>() is not null)

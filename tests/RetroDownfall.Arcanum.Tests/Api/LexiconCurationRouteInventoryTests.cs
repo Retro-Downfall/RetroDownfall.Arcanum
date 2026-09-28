@@ -42,7 +42,7 @@ public sealed class LexiconCurationRouteInventoryTests
             Assert.Null(route.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>());
         }
 
-        Assert.Equal(names.Skip(1).Order(StringComparer.Ordinal), endpoints
+        Assert.Equal(names.Skip(1).Append("ApplyLexiconMemoryReview").Order(StringComparer.Ordinal), endpoints
             .Where(endpoint => endpoint.Metadata.Any(item => item.GetType().Name == "CovenantConditionalExactWriteRequirementMetadata"))
             .Select(endpoint => endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName).Order(StringComparer.Ordinal));
     }

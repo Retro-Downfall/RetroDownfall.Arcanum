@@ -110,10 +110,13 @@ internal static class CliSurfaceExamples
         ["memory lexicon unpin"] = ["arcanum memory lexicon unpin Operator"],
         ["memory lexicon search"] = ["arcanum memory lexicon search \"ward policy\""],
         ["memory lexicon delete"] = [$"arcanum memory lexicon delete {SampleGuid}"],
+        ["memory lexicon review list"] = ["arcanum memory lexicon review list --limit 25"],
+        ["memory lexicon review apply"] = ["arcanum memory lexicon review apply --file lexicon-review.json"],
 
         // The Covenant. `set` shows the --file form because content never travels in an argument, and
         // `retire` shows the confirmation-bearing form rather than --yes.
         ["memory covenant list"] = ["arcanum memory covenant list"],
+        ["memory covenant search"] = ["arcanum memory covenant search \"build preferences\""],
         ["memory covenant show"] = ["arcanum memory covenant show preference.builds"],
         ["memory covenant set"] =
             ["arcanum memory covenant set preference.builds --file preference.txt --expected-revision 0"],
@@ -125,6 +128,8 @@ internal static class CliSurfaceExamples
             ["arcanum memory covenant pin preference.builds"],
         ["memory covenant unpin"] =
             ["arcanum memory covenant unpin preference.builds --expected-revision 1"],
+        ["memory covenant review list"] = ["arcanum memory covenant review list --lane confirmed --limit 25"],
+        ["memory covenant review apply"] = ["arcanum memory covenant review apply --file covenant-review.json"],
         ["memory saga show"] = ["arcanum memory saga show mem-01j9x8"],
         ["memory saga correct"] =
             ["arcanum memory saga correct mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000 --file corrected.txt"],
@@ -134,6 +139,8 @@ internal static class CliSurfaceExamples
             ["arcanum memory saga reinstate mem-01j9x8 --expected-content-hash 0000000000000000000000000000000000000000000000000000000000000000"],
         ["memory saga pin"] = ["arcanum memory saga pin mem-01j9x8"],
         ["memory saga unpin"] = ["arcanum memory saga unpin mem-01j9x8"],
+        ["memory saga review list"] = ["arcanum memory saga review list --limit 25"],
+        ["memory saga review apply"] = ["arcanum memory saga review apply --file saga-review.json"],
         ["memory covenant mask"] =
             ["arcanum memory covenant mask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
         ["memory covenant unmask"] =

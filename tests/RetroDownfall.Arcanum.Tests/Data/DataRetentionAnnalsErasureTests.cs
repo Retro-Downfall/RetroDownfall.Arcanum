@@ -430,7 +430,9 @@ public sealed partial class DataRetentionServiceTests
     {
         RequireSqlCipher();
 
-        _ = await SeedClaimedLexiconEntryAsync("history", string.Empty);
+        string entry = await SeedClaimedLexiconEntryAsync("history", string.Empty);
+
+        await SeedLexiconReviewStateAsync(entry, 1, null);
 
         Assert.Equal(1, await CountLexiconFtsMatchesAsync("history"));
 
@@ -440,11 +442,11 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionStatus status = await service.GetStatusAsync(CancellationToken.None);
 
-        AssertStatusRows(status, RetentionDataClass.Annals, 4, "lexicon_annal_fact_provenance");
+        AssertStatusRows(status, RetentionDataClass.Annals, 7, "lexicon_annal_fact_provenance");
 
         DataRetentionPlan plan = await service.PlanAsync(new DataRetentionRequest(DataRetentionOperation.FactoryReset), CancellationToken.None);
 
-        Assert.Equal(4, plan.Items.Where(static item => item.DataClass == RetentionDataClass.Annals).Sum(static item => item.DerivedRecords));
+        Assert.Equal(7, plan.Items.Where(static item => item.DataClass == RetentionDataClass.Annals).Sum(static item => item.DerivedRecords));
 
         (LongRunningOperationReconciliationSummary recovery, LongRunningOperation operation) =
             await ReconcileFactoryResetV0Async(service, "lexicon-history-factory-reset");
@@ -455,6 +457,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, recovery.RequiresAttention);
 
         Assert.Equal(0, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_review_decision_receipts"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_review_events"));
+
+        Assert.Equal(0, await CountTableRowsAsync("annal_review_markers"));
 
         Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
 
@@ -470,7 +478,9 @@ public sealed partial class DataRetentionServiceTests
 
         await SeedCampaignRowAsync(AnnalsCampaignA);
 
-        _ = await SeedClaimedLexiconEntryAsync("owned", AnnalsCampaignA.ToString());
+        string owned = await SeedClaimedLexiconEntryAsync("owned", AnnalsCampaignA.ToString());
+
+        await SeedLexiconReviewStateAsync(owned, 2, AnnalsCampaignA.ToString());
 
         string global = await SeedClaimedLexiconEntryAsync("global", string.Empty);
 
@@ -480,14 +490,15 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
 
-        // The FTS row, claim, head, version, and historical source coordinate are all owned.
-        Assert.Equal(5, plan.DerivedRecords);
+        // The entry, claim, head, version, historical source coordinate, review event, decision
+        // receipt, and Campaign marker are all owned.
+        Assert.Equal(8, plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> applied = await service.ApplyAsync(new(request, plan.PlanId), CancellationToken.None);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
-        Assert.Equal(5, applied.Value.DerivedRecordsDeleted);
+        Assert.Equal(8, applied.Value.DerivedRecordsDeleted);
 
         Assert.Equal(1, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
 
@@ -513,6 +524,34 @@ public sealed partial class DataRetentionServiceTests
         await SeedClaimAsync(2, id);
 
         return id;
+
+    }
+
+    private async Task SeedLexiconReviewStateAsync(
+        string entryId,
+        int scopeKindCode,
+        string? campaignId)
+    {
+
+        await ExecuteAsync(
+            """
+            INSERT INTO annal_review_decision_receipts
+                (DecisionId, ReviewEventSequence, RequestIdempotencyDigest, DecisionCode, ResponseReceiptDigest)
+            SELECT @decisionId, Sequence, zeroblob(32), 1, zeroblob(32)
+            FROM annal_review_events
+            WHERE SubjectStoreCode = 2 AND SubjectId = @entryId
+            """,
+            ("@decisionId", Guid.NewGuid().ToString("N")),
+            ("@entryId", entryId));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO annal_review_markers
+                (SubjectStoreCode, ScopeKindCode, CampaignId, MarkerGeneration, ReviewedThroughSequence, Revision)
+            VALUES (2, @scopeKindCode, @campaignId, X'0102030405060708090A0B0C0D0E0F10', 0, 1)
+            """,
+            ("@scopeKindCode", scopeKindCode),
+            ("@campaignId", campaignId is null ? DBNull.Value : campaignId));
 
     }
 

@@ -589,7 +589,7 @@ internal sealed partial class LexiconService
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = """
-            SELECT coalesce(max(Sequence), 0) FROM annal_review_events
+            SELECT coalesce(max(Sequence), 0) AS UpperSequence FROM annal_review_events
             WHERE SubjectStoreCode = 2 AND ScopeKindCode = @scope
                 AND ((@campaign IS NULL AND CampaignId IS NULL) OR CampaignId = @campaign)
             """;
@@ -615,7 +615,7 @@ internal sealed partial class LexiconService
             SELECT event.Sequence, event.VersionId, event.SubjectId,
                    version.Revision, version.OperationCode, version.OriginCode,
                    version.SourceSessionId, version.ContentHash,
-                   CASE WHEN head.CurrentVersionId = event.VersionId THEN 1 ELSE 0 END
+                   CASE WHEN head.CurrentVersionId = event.VersionId THEN 1 ELSE 0 END AS IsCurrent
             FROM annal_review_events event
             JOIN annal_versions version ON version.VersionId = event.VersionId
             JOIN annal_heads head ON head.ClaimId = event.ClaimId
@@ -660,7 +660,7 @@ internal sealed partial class LexiconService
             SELECT event.Sequence, event.VersionId, event.SubjectId,
                    version.Revision, version.OperationCode, version.OriginCode,
                    version.SourceSessionId, version.ContentHash,
-                   CASE WHEN head.CurrentVersionId = event.VersionId THEN 1 ELSE 0 END
+                   CASE WHEN head.CurrentVersionId = event.VersionId THEN 1 ELSE 0 END AS IsCurrent
             FROM annal_review_events event
             JOIN annal_versions version ON version.VersionId = event.VersionId
             JOIN annal_heads head ON head.ClaimId = event.ClaimId
@@ -1556,7 +1556,7 @@ internal sealed partial class LexiconService
             SELECT event.Sequence,
                    (head.CurrentVersionId <> event.VersionId OR
                     EXISTS(SELECT 1 FROM annal_review_decision_receipts receipt
-                           WHERE receipt.ReviewEventSequence = event.Sequence))
+                           WHERE receipt.ReviewEventSequence = event.Sequence)) AS IsReviewed
             FROM annal_review_events event
             JOIN annal_heads head ON head.ClaimId = event.ClaimId
             WHERE event.SubjectStoreCode = 2 AND event.ScopeKindCode = @scope

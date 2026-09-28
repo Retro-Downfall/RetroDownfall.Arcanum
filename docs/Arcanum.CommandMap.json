@@ -2983,7 +2983,9 @@
                   ]
                 }
               ],
-              "examples": [],
+              "examples": [
+                "arcanum memory covenant search \u0022build preferences\u0022"
+              ],
               "commands": []
             },
             {
@@ -3362,7 +3364,9 @@
                       "values": []
                     }
                   ],
-                  "examples": [],
+                  "examples": [
+                    "arcanum memory covenant review list --lane confirmed --limit 25"
+                  ],
                   "commands": []
                 },
                 {
@@ -3385,7 +3389,9 @@
                       "values": []
                     }
                   ],
-                  "examples": [],
+                  "examples": [
+                    "arcanum memory covenant review apply --file covenant-review.json"
+                  ],
                   "commands": []
                 }
               ]
@@ -3541,7 +3547,9 @@
                       "values": []
                     }
                   ],
-                  "examples": [],
+                  "examples": [
+                    "arcanum memory lexicon review list --limit 25"
+                  ],
                   "commands": []
                 },
                 {
@@ -3564,7 +3572,9 @@
                       "values": []
                     }
                   ],
-                  "examples": [],
+                  "examples": [
+                    "arcanum memory lexicon review apply --file lexicon-review.json"
+                  ],
                   "commands": []
                 }
               ]
@@ -3988,7 +3998,9 @@
                       "values": []
                     }
                   ],
-                  "examples": [],
+                  "examples": [
+                    "arcanum memory saga review list --limit 25"
+                  ],
                   "commands": []
                 },
                 {
@@ -4011,7 +4023,9 @@
                       "values": []
                     }
                   ],
-                  "examples": [],
+                  "examples": [
+                    "arcanum memory saga review apply --file saga-review.json"
+                  ],
                   "commands": []
                 }
               ]

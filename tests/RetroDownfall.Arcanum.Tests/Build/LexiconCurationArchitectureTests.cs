@@ -18,6 +18,8 @@ public sealed class LexiconCurationArchitectureTests
 
     private const string Projection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.InspectionProjection.cs";
 
+    private const string Review = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.MemoryReview.cs";
+
     private const string Annals = "RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsStore.cs";
 
     private const string Writer = "RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsClaimWriter.cs";
@@ -44,6 +46,17 @@ public sealed class LexiconCurationArchitectureTests
         { Service, "ReadByNormalizedAsync", 0, EntryColumns },
         { Service, "ReadAllLifecycleIdentityForDeletionAsync", 0, "Id" },
         { Service, "ReadFactProvenanceCoreAsync", 0, "EntryId,Fact,SessionId,AttachmentId,LogicalKey,Version,ContentHash,MaterializedAt,SourceType,SourceAvailable" },
+        { Review, "ReadOrCreateReviewMarkerAsync", 0, "MarkerGeneration,ReviewedThroughSequence,Revision" },
+        { Review, "ReadReviewUpperFrontierAsync", 0, "UpperSequence" },
+        { Review, "ReadReviewEventsAsync", 0, "Sequence,VersionId,SubjectId,Revision,OperationCode,OriginCode,SourceSessionId,ContentHash,IsCurrent" },
+        { Review, "ReadReviewEventAsync", 0, "Sequence,VersionId,SubjectId,Revision,OperationCode,OriginCode,SourceSessionId,ContentHash,IsCurrent" },
+        { Review, "EventIdentityMatchesAsync", 0, "VersionId" },
+        { Review, "ReadCorrectionOutputAsync", 0, "Sequence,SubjectId" },
+        { Review, "ReadStoredReceiptsAsync", 0, "DecisionId,ReviewEventSequence,RequestIdempotencyDigest,ResponseReceiptDigest" },
+        { Review, "ReadStoredReviewEventAsync", 0, "Sequence,SubjectId,VersionId,OperationCode" },
+        { Review, "ValidateResultingVersionAsync", 0, "Sequence,SubjectId,VersionId,OperationCode" },
+        { Review, "ApplyReviewActionAsync", 0, "CurrentVersionId" },
+        { Review, "AdvanceReviewMarkerAsync", 0, "Sequence,IsReviewed" },
         { Inspection, "ReadInspectionIdentitiesAsync", 0, "Id,ScopeCampaignId" },
         { Projection, "VerifyInspectionAuthorityAsync", 0, "OrphanLabels" },
         { Projection, "VerifyInspectionAuthorityAsync", 2, EvidenceColumns },
@@ -77,6 +90,13 @@ public sealed class LexiconCurationArchitectureTests
     {
         { Service, "ReadEntry", "GetString:0,GetString:1,GetString:2,GetString:3,GetString:4,GetString:5,GetString:6,GetString:7,ReadPositiveInteger:8" },
         { Service, "ReadFactProvenanceCoreAsync", "GetString:2,GetString:3,GetString:4,ReadCode:5,GetString:6,GetString:7,GetString:8,GetInt32:9,GetString:0,GetString:1" },
+        { Review, "ReadOrCreateReviewMarkerAsync", "GetValue:0,GetInt64:1,GetInt64:2,GetInt64:1,GetInt64:2" },
+        { Review, "ReadReviewEvent", "GetString:2,GetInt64:0,GetString:1,GetInt64:3,GetInt64:4,GetInt64:5,GetString:6,GetValue:7,GetInt64:8" },
+        { Review, "ReadCorrectionOutputAsync", "GetInt64:0,GetString:1" },
+        { Review, "ReadStoredReceiptsAsync", "GetString:0,GetInt64:1,GetValue:2,GetValue:3" },
+        { Review, "ReadStoredReviewEventAsync", "GetInt64:0,GetString:1,GetString:2,GetInt64:3" },
+        { Review, "ValidateResultingVersionAsync", "GetString:1,GetInt64:3" },
+        { Review, "AdvanceReviewMarkerAsync", "GetInt64:0,GetInt64:1" },
         { Inspection, "ReadInspectionIdentitiesAsync", "GetString:0,GetString:1" },
         { Inspection, "ReadInspectionRow", "GetString:9,GetString:10" },
         { Projection, "ReadInspectionEvidence", "GetString:0,GetInt64:43,GetString:1,GetString:2,GetString:44,ReadPositiveInteger:45,ReadCode:25,GetInt64:42,GetString:21,GetString:22,ReadCode:23,ReadCode:24" },
@@ -107,23 +127,27 @@ public sealed class LexiconCurationArchitectureTests
 
         string[] readers = [.. methods.Where(method => ReaderSlots(method).Length > 0).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection or Projection).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
+        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection or Projection or Review).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
 
         string[] executed = [.. methods.Where(method => Calls(method, "ExecuteReaderAsync")).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
         Assert.Equal(new[]
         {
-            "FillExactMatchesAsync", "FillFtsMatchesViaLikeAsync", "FillFtsMatchesViaMatchAsync",
+            "AdvanceReviewMarkerAsync", "FillExactMatchesAsync", "FillFtsMatchesViaLikeAsync", "FillFtsMatchesViaMatchAsync",
+            "ReadCorrectionOutputAsync",
             "ReadFactProvenanceCoreAsync", "ReadHistoricalSourcesAsync", "ReadInspectionHistoryAsync",
-            "ReadInspectionIdentitiesAsync", "ReadInspectionRowAsync", "ReadNamedEntryAsync", "ReadVerifiedHeadAsync", "ReadVerifiedLabelAsync",
+            "ReadInspectionIdentitiesAsync", "ReadInspectionRowAsync", "ReadNamedEntryAsync", "ReadOrCreateReviewMarkerAsync",
+            "ReadReviewEventAsync", "ReadReviewEventsAsync", "ReadStoredReceiptsAsync", "ReadStoredReviewEventAsync",
+            "ReadVerifiedHeadAsync", "ReadVerifiedLabelAsync",
             "StreamInspectionAsync", "VerifyInspectionAuthorityAsync",
+            "ValidateResultingVersionAsync",
         }.Order(StringComparer.Ordinal), executed);
 
         string[] projected = [.. methods.Where(method => SqlText(method).Contains("SELECT", StringComparison.Ordinal)
             && !new[] { "DeleteByNameAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection).Select(row => (string)row[1])
+        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection or Review).Select(row => (string)row[1])
             .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadNamedEntryAsync" })
@@ -138,6 +162,10 @@ public sealed class LexiconCurationArchitectureTests
         Assert.True(Calls(Method(Inspection, "ReadVerifiedHeadAsync"), "ReadInspectionVersion"));
 
         Assert.True(Calls(Method(Inspection, "ReadInspectionHistoryAsync"), "ReadInspectionVersion"));
+
+        Assert.True(Calls(Method(Review, "ReadReviewEventsAsync"), "ReadReviewEvent"));
+
+        Assert.True(Calls(Method(Review, "ReadReviewEventAsync"), "ReadReviewEvent"));
 
         Assert.Equal(Enumerable.Range(0, 9), Ordinals(Service, "ReadEntry").Order());
 
