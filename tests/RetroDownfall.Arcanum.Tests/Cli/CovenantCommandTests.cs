@@ -43,6 +43,25 @@ public sealed class CovenantCommandTests : IDisposable
 {
     private static CancellationToken Token => CancellationToken.None;
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("-")]
+    public async Task Set_reads_piped_input_with_omitted_file_or_literal_dash(string? file)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = await RunCliAsync(handler,
+            ["memory", "covenant", "set", "preference.builds", "--expected-revision", "0", "--yes",
+                .. file is null ? Array.Empty<string>() : ["--file", file]],
+            input: "Run build commands from the repository root.");
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(["POST /api/memory/covenant/set/prepare", "PUT /api/memory/covenant"], handler.Requests);
+
+        Assert.Contains("Run build commands from the repository root.", handler.Bodies[0], StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task A_declined_write_never_reaches_the_commit_route()
     {
@@ -904,7 +923,8 @@ public sealed class CovenantCommandTests : IDisposable
     private static Task<CliTestResult> RunCliAsync(
         RecordingHandler handler,
         string[] args,
-        IConfirmationPrompt? confirmationPrompt = null)
+        IConfirmationPrompt? confirmationPrompt = null,
+        string? input = null)
     {
         ServiceCollection services = new();
 
@@ -925,7 +945,7 @@ public sealed class CovenantCommandTests : IDisposable
             services.AddSingleton(confirmationPrompt);
         }
 
-        return CliTestHarness.RunAsync(services, args);
+        return CliTestHarness.RunAsync(services, args, input);
     }
 
     private static RootCommand Tree(RecordingHandler handler)

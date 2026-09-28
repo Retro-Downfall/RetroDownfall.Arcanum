@@ -14,6 +14,48 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 public sealed class CliSurfaceTests
 {
+    [Theory]
+    [InlineData("show")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("reinstate")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    public void Lexicon_curation_exposes_exact_campaign_and_safe_authored_content_options(string verb)
+    {
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        Command memory = Assert.Single(root.Subcommands, command => command.Name == "memory");
+
+        Command lexicon = Assert.Single(memory.Subcommands, command => command.Name == "lexicon");
+
+        Command command = Assert.Single(lexicon.Subcommands, command => command.Name == verb);
+
+        Option<Guid?> campaign = Assert.IsType<Option<Guid?>>(Assert.Single(command.Options, option => option.Name == "--campaign"));
+
+        Assert.Contains("-C", campaign.Aliases);
+
+        Assert.Equal("name", Assert.Single(command.Arguments).Name);
+
+        if (verb == "correct")
+        {
+            Option file = Assert.Single(command.Options, option => option.Name == "--file");
+
+            Assert.True(file.Required);
+
+            Assert.Contains("-f", file.Aliases);
+        }
+
+        Assert.Empty(root.Parse(["memory", "lexicon", verb, "Operator", "--json", "--plain", "--yes", "--no-context",
+            .. verb == "correct" ? new[] { "--file", "correction.json" } : []]).Errors);
+    }
+
     [Fact]
     public void Surface_projects_the_live_tree_root()
     {

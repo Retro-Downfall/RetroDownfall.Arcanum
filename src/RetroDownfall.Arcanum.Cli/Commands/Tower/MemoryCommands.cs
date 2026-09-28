@@ -457,39 +457,6 @@ public sealed partial class MemoryCommands(
         CancellationToken cancellationToken) =>
         WriteLexiconList(query, cancellationToken);
 
-    public async Task<int> LexiconShow(
-        string name,
-        CancellationToken cancellationToken)
-    {
-
-        Result<LexiconEntryDto> result = await apiClient
-            .GetLexiconAsync(name, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (result.IsFailure)
-        {
-
-            return WriteError(result.Error);
-
-        }
-
-        if (CliInvocationContext.Current.Json)
-        {
-
-            dispatcher.WriteJson(
-                result.Value,
-                ArcanumJsonContext.Default.LexiconEntryDto);
-
-            return 0;
-
-        }
-
-        WriteLexiconEntry(result.Value);
-
-        return 0;
-
-    }
-
     public async Task<int> LexiconDelete(
         string name,
         CancellationToken cancellationToken)
@@ -639,7 +606,7 @@ public sealed partial class MemoryCommands(
 
         dispatcher.WriteDiagnostic(error.Message);
 
-        return 1;
+        return CliFailureExit.ExitCode(error);
 
     }
 

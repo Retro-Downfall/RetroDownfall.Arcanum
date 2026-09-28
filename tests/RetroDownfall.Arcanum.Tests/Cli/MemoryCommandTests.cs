@@ -26,6 +26,29 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class MemoryCommandTests
 {
+    [Theory]
+    [InlineData("list", "")]
+    [InlineData("search", "?q=ward%20policy")]
+    public void Lexicon_list_and_search_keep_the_existing_read_contract(string verb, string expectedQuery)
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<LexiconListDto>(new([]), true, null),
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto));
+
+        CliTestResult result = RunCommand(handler,
+            ["memory", "lexicon", verb, .. verb == "search" ? new[] { "ward policy" } : []]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+
+        Assert.Equal("/api/memory/lexicon", request.RequestUri!.AbsolutePath);
+
+        Assert.Equal(expectedQuery, request.RequestUri.Query);
+    }
+
     [Fact]
 
     public void Memory_status_uses_active_session_and_renders_each_distinct_store()
