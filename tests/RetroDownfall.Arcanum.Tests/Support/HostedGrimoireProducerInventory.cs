@@ -1346,6 +1346,8 @@ internal static class HostedGrimoireProducerInventory
 
     internal static readonly IReadOnlySet<string> SchemaBackfillStrategies = new HashSet<string>(StringComparer.Ordinal)
     {
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.AnnalReviewEventBackfill",
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.CovenantReviewEventBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IdentitySpellingBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.MemoryAnnalsBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.SagaExtractionCursorBackfill",
