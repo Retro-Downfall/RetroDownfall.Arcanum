@@ -669,9 +669,8 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     }
 
     private static bool IsProvenanceWrite(string statement) =>
-        statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal)
-        && (statement.Contains("DELETE", StringComparison.Ordinal)
-            || statement.Contains("INSERT", StringComparison.Ordinal));
+        statement.TrimStart().StartsWith("DELETE FROM lexicon_fact_attachment_provenance", StringComparison.Ordinal)
+        || statement.TrimStart().StartsWith("INSERT INTO lexicon_fact_attachment_provenance", StringComparison.Ordinal);
 
     [SkippableFact]
     public async Task ListInspectionAsync_HydratesProvenanceForEveryEntityWithOneQuery()

@@ -69,37 +69,16 @@ internal sealed partial class LexiconService(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
-        string trimmedName = name?.Trim() ?? string.Empty;
+        Result<LexiconCanonicalValue> incoming = LexiconValueNormalizer.NormalizeScribe(name, type, facts);
 
-        if (trimmedName.Length == 0)
+        if (incoming.IsFailure)
         {
-            return new Error(ErrorCodes.Lexicon.InvalidName, "Lexicon entity name is required.");
+            return incoming.Error;
         }
 
-        if (trimmedName.Length > LexiconLimits.MaxNameLength)
-        {
-            return new Error(
-                ErrorCodes.Lexicon.InvalidName,
-                $"Lexicon entity name exceeds the {LexiconLimits.MaxNameLength} character limit.");
-        }
+        string trimmedName = incoming.Value.Name;
 
-        string normalized = NormalizeName(trimmedName);
-
-        List<string> incoming = NormalizeIncomingFacts(facts);
-
-        if (incoming.Count == 0)
-        {
-            return new Error(ErrorCodes.Lexicon.InvalidFact, "scribe_lexicon requires at least one non-empty fact.");
-        }
-
-        string trimmedType = type?.Trim() ?? string.Empty;
-
-        if (trimmedType.Length > LexiconLimits.MaxTypeLength)
-        {
-            return new Error(
-                ErrorCodes.Lexicon.InvalidFact,
-                $"Lexicon entity type exceeds the {LexiconLimits.MaxTypeLength} character limit.");
-        }
+        string normalized = incoming.Value.NameNormalized;
 
         try
         {
@@ -117,40 +96,75 @@ internal sealed partial class LexiconService(
                     {
                         LexiconEntryDto? existing = await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken).ConfigureAwait(false);
 
-                        string resolvedType = ResolveType(existing, trimmedType);
+                        if (existing?.RetiredAtUtc is not null)
+                        {
+                            throw new InspectionException(new Error(ErrorCodes.Lexicon.RetiredMutationRefused,
+                                "A retired Lexicon entry must be reinstated before scribing."));
+                        }
 
-                        List<string> merged = MergeFacts(existing, incoming);
+                        Result<LexiconCanonicalValue> merged = LexiconValueNormalizer.NormalizeScribe(
+                            existing?.Name ?? trimmedName, type, incoming.Value.Facts, existing?.Type, existing?.Facts);
+
+                        if (merged.IsFailure)
+                        {
+                            throw new InspectionException(merged.Error);
+                        }
+
+                        LexiconCanonicalValue content = merged.Value;
+
+                        ArtifactSensitivityLabel? label = existing is null ? null : await ReadVerifiedLabelAsync(connection,
+                            existing.Id, new(scope.IsGlobal ? LexiconScopeKind.Global : LexiconScopeKind.Campaign, scope.CampaignId),
+                            cancellationToken).ConfigureAwait(false);
+
+                        AnnalClaimVersion? head = existing is null ? null : await ReadVerifiedScribeHeadAsync(
+                            connection, existing, label, cancellationToken).ConfigureAwait(false);
+
+                        bool changed = existing is null || existing.Type != content.Type
+                            || !existing.Facts.SequenceEqual(content.Facts, StringComparer.Ordinal);
+
+                        if (!changed)
+                        {
+                            await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
+
+                            return Result<LexiconEntryDto>.Success(existing!);
+                        }
+
+                        if (label is not null)
+                        {
+                            throw new InspectionException(new Error(ErrorCodes.Lexicon.ProtectedMutationRefused,
+                                "A protected Lexicon entry requires operator correction to change its content."));
+                        }
+
+                        if (existing?.CurationGeneration == long.MaxValue)
+                        {
+                            throw new InspectionException(new Error(ErrorCodes.Lexicon.CurationGenerationExhausted,
+                                "The Lexicon curation generation is exhausted."));
+                        }
 
                         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-                        string factsJson = SerializeFacts(merged);
-
-                        string factsText = BuildFactsText(merged);
+                        now = existing is null || now > existing.UpdatedAt ? now : existing.UpdatedAt.AddTicks(1);
 
                         Guid id = existing?.Id ?? Guid.NewGuid();
 
                         if (existing is null)
                         {
-                            await InsertAsync(connection, id, trimmedName, normalized, scope.Key, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                            await InsertAsync(connection, id, content.Name, normalized, scope.Key, content.Type, content.FactsJson, content.FactsText, now, cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
-                            await UpdateAsync(connection, id, trimmedName, normalized, scope.Key, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                            await UpdateAsync(connection, id, content.Name, normalized, scope.Key, content.Type, content.FactsJson, content.FactsText, now, cancellationToken).ConfigureAwait(false);
                         }
 
-                        if (options.CurrentValue.Features.Annals)
+                        LexiconFactProvenance[] factProvenance = await ReplaceFactProvenanceAsync(
+                            connection, id, existing?.FactProvenance ?? [], incoming.Value.Facts, content.Facts,
+                            provenance, cancellationToken).ConfigureAwait(false);
+
+                        if (options.CurrentValue.Features.Annals || head is not null)
                         {
-                            // One call for both arms. The writer decides between an assertion and a
-                            // correction from the claim it finds, so a first write and a later one cannot
-                            // disagree about which this is, and a merge that added no fact appends
-                            // nothing at all.
-                            //
-                            // AgentAsserted rather than AgentExtracted: a Lexicon write is a tool call a
-                            // model chose to make, not something taken from a transcript behind its back.
-                            //
-                            // The transaction argument is null because this method drives its transaction
-                            // with raw BEGIN IMMEDIATE text and has no object to hand over. The commands
-                            // run on this same connection, so they are inside it regardless.
+                            // Publish after replacing current provenance so immutable ordinal evidence
+                            // describes the resulting canonical value. Existing history must continue
+                            // to describe its row even when ordinary capture is disabled.
                             _ = await AnnalsClaimWriter.AppendCorrectionAsync(
                                 connection,
                                 transaction: null,
@@ -163,36 +177,28 @@ internal sealed partial class LexiconService(
                                 scope.CampaignId is null ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign,
                                 scope.CampaignId?.ToString(),
                                 ContentSensitivity.None,
-                                AnnalContentDigest.ForLexiconEntry(resolvedType, factsText),
+                                AnnalContentHashFormat.LexiconStructuredSnapshot,
+                                LexiconSnapshotDigest.Compute(content),
                                 now,
                                 now,
                                 sourceSessionId: null,
                                 cancellationToken).ConfigureAwait(false);
                         }
 
-                        LexiconFactProvenance[] factProvenance = await ReplaceFactProvenanceAsync(
-                            connection,
-                            id,
-                            existing?.FactProvenance ?? [],
-                            incoming,
-                            merged,
-                            provenance,
-                            cancellationToken).ConfigureAwait(false);
-
                         await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
 
                         return Result<LexiconEntryDto>.Success(
                             new LexiconEntryDto(
                                 id,
-                                trimmedName,
-                                resolvedType,
-                                merged.ToArray(),
+                                content.Name,
+                                content.Type,
+                                content.Facts.ToArray(),
                                 now,
                                 factProvenance,
                                 scope.CampaignId,
                                 existing?.RetiredAtUtc,
                                 existing?.PinnedAtUtc,
-                                existing?.CurationGeneration ?? 1,
+                                existing is null ? 1 : existing.CurationGeneration + 1,
                                 existing?.Eligibility ?? LexiconRetrievalEligibility.Eligible));
                     }
                     catch
@@ -204,11 +210,60 @@ internal sealed partial class LexiconService(
                 },
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (InspectionException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Lexicon upsert failed for entity {Name}.", trimmedName);
 
             return new Error(ErrorCodes.Lexicon.WriteFailed, "Lexicon write failed.");
+        }
+    }
+
+    private static async Task<AnnalClaimVersion?> ReadVerifiedScribeHeadAsync(
+        DbConnection connection, LexiconEntryDto existing, ArtifactSensitivityLabel? label, CancellationToken cancellationToken)
+    {
+        try
+        {
+            InspectionRow row = await ReadInspectionRowAsync(connection, existing.Id, cancellationToken).ConfigureAwait(false);
+
+            row = row with { Entry = row.Entry with { FactProvenance = existing.FactProvenance } };
+
+            VerifyCurrentProvenance(row.Entry);
+
+            return await ReadVerifiedHeadAsync(connection, row, label, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException or OverflowException
+            or InvalidCastException or InvalidOperationException or JsonException)
+        {
+            throw new InspectionException(IntegrityError);
+        }
+    }
+
+    public async Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > LexiconLimits.MaxNameLength)
+        {
+            return new Error(ErrorCodes.Lexicon.InvalidName, "A valid Lexicon entity name is required.");
+        }
+
+        try
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            return Result<Guid?>.Success(await ReadAllLifecycleIdentityForDeletionAsync(
+                connection, NormalizeName(name), scope.Key, cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Lexicon deletion identity lookup failed.");
+
+            return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon deletion identity lookup failed.");
         }
     }
 
@@ -498,93 +553,6 @@ internal sealed partial class LexiconService(
 
     private static string NormalizeName(string value) =>
         value.Trim().ToUpperInvariant();
-
-    private static List<string> NormalizeIncomingFacts(IReadOnlyList<string> facts)
-    {
-        List<string> result = [];
-
-        if (facts is null)
-        {
-            return result;
-        }
-
-        foreach (string fact in facts)
-        {
-            string trimmed = fact?.Trim() ?? string.Empty;
-
-            if (trimmed.Length == 0)
-            {
-                continue;
-            }
-
-            result.Add(trimmed);
-        }
-
-        return result;
-    }
-
-    private static string ResolveType(LexiconEntryDto? existing, string incomingType)
-    {
-        if (!string.IsNullOrEmpty(incomingType))
-        {
-            return incomingType;
-        }
-
-        if (existing is not null)
-        {
-            return existing.Type;
-        }
-
-        return LexiconLimits.DefaultType;
-    }
-
-    private static List<string> MergeFacts(LexiconEntryDto? existing, List<string> incoming)
-    {
-        List<string> merged = [];
-
-        HashSet<string> seen = new(StringComparer.Ordinal);
-
-        if (existing is not null)
-        {
-            foreach (string fact in existing.Facts)
-            {
-                if (seen.Add(fact))
-                {
-                    merged.Add(fact);
-                }
-            }
-        }
-
-        foreach (string fact in incoming)
-        {
-            if (seen.Add(fact))
-            {
-                merged.Add(fact);
-            }
-        }
-
-        return merged;
-    }
-
-    private static string SerializeFacts(List<string> facts) =>
-        JsonSerializer.Serialize(facts, LexiconJsonContext.Default.ListString);
-
-    private static string BuildFactsText(List<string> facts)
-    {
-        StringBuilder sb = new(facts.Count * 32);
-
-        for (int i = 0; i < facts.Count; i++)
-        {
-            if (i > 0)
-            {
-                _ = sb.Append('\n');
-            }
-
-            _ = sb.Append(facts[i]);
-        }
-
-        return sb.ToString();
-    }
 
     private static string[] DeserializeFacts(string factsJson)
     {
@@ -1278,7 +1246,8 @@ internal sealed partial class LexiconService(
                 Type = @type,
                 FactsJson = @factsJson,
                 FactsText = @factsText,
-                UpdatedAt = @updatedAt
+                UpdatedAt = @updatedAt,
+                CurationGeneration = CurationGeneration + 1
             WHERE Id = @id
             """;
 

@@ -7,10 +7,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Lexicon;
@@ -37,9 +39,23 @@ public sealed class LexiconAnnalsWriteThroughTests : IAsyncLifetime
     [InlineData(true, true)]
     public async Task Operator_correction_records_baseline_and_coordinates_independently_of_capture(bool legacy, bool capture)
     {
-        await using CorrectionFixture test = new(_fixture, annals: legacy);
+        await using CorrectionFixture test = new(_fixture, annals: false);
 
         LexiconEntryDetail before = await test.SeedAsync();
+
+        if (legacy)
+        {
+            await using SqliteTransaction transaction = test.Connection.BeginTransaction();
+
+            await AnnalsClaimWriter.AppendCorrectionAsync(test.Connection, transaction, AnnalSubjectStore.Lexicon,
+                before.Entry.Id.ToString("N"), AnnalOrigin.AgentAsserted, SagaMemoryScopeKind.Global, null,
+                ContentSensitivity.None, AnnalContentDigest.ForLexiconEntry(before.Entry.Type, string.Join('\n', before.Entry.Facts)),
+                before.Entry.UpdatedAt, before.Entry.UpdatedAt, null, CancellationToken.None);
+
+            await transaction.CommitAsync();
+
+            before = await test.ShowAsync();
+        }
 
         string[] immutableVersions = (await test.SnapshotAsync()).Where(row => row.StartsWith("annal_versions:", StringComparison.Ordinal)).ToArray();
 

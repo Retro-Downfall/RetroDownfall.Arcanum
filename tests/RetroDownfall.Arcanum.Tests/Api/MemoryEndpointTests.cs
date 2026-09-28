@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -41,6 +42,7 @@ using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Lexicon;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -50,6 +52,90 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class MemoryEndpointTests
 {
+    [SkippableTheory]
+    [InlineData(false, "purged")]
+    [InlineData(true, "purged")]
+    [InlineData(true, "blocked")]
+    [InlineData(true, "failed")]
+    public async Task Hard_delete_resolves_retired_protected_identity_before_conditional_purge(bool retired, string disposition)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        await using CorrectionFixture owner = new(grimoire);
+
+        await owner.SeedAsync();
+
+        await owner.ProtectAsync();
+
+        LexiconEntryDetail before = await owner.ShowProtectedAsync();
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        if (retired)
+        {
+            Assert.True((await owner.Service.RetireAsync(before.Target, lease)).IsSuccess);
+        }
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        await using ArcanumDbContext purgeDb = grimoire.CreateContext(owner.Path);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.AddSingleton<ILexiconService>(owner.Concrete);
+
+                services.AddSingleton<ICovenantSensitiveArtifactPurger>(new LifecyclePurger(owner, purgeDb, disposition));
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.DeleteAsync("/api/memory/lexicon/Entity");
+
+        if (disposition == "purged")
+        {
+            Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM artifact_sensitivity"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM lexicon_entries"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM annal_versions"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM lexicon_annal_fact_provenance"));
+        }
+        else
+        {
+            Assert.False(response.IsSuccessStatusCode);
+
+            Assert.Equal(snapshot, await owner.SnapshotAsync());
+        }
+    }
+
+    [SkippableFact]
+    public async Task Hard_delete_refuses_unavailable_all_lifecycle_identity_lookup()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<ILexiconService>(new LegacyDeletionLexicon()),
+        };
+
+        HttpResponseMessage response = await factory.CreateAuthenticatedClient().DeleteAsync("/api/memory/lexicon/Entity");
+
+        Assert.False(response.IsSuccessStatusCode);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(ErrorCodes.Lexicon.SearchFailed, body, StringComparison.Ordinal);
+    }
 
     private readonly ArcanumWebApplicationFactory _factory;
 

@@ -70,6 +70,14 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         return Task.FromResult(Result<LexiconEntryDto>.Success(entry));
     }
 
+    public Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+        string name, LexiconScope scope, CancellationToken cancellationToken = default)
+    {
+        _ = _entries.TryGetValue((scope.Key, name.Trim().ToUpperInvariant()), out LexiconEntryDto? entry);
+
+        return Task.FromResult(Result<Guid?>.Success(entry?.Id));
+    }
+
     public Task<Result<bool>> DeleteByNameAsync(
         string name,
         LexiconScope scope,

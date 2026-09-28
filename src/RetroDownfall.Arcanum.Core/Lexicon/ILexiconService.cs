@@ -53,6 +53,17 @@ public interface ILexiconService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Resolves only an identity, including retired rows, in exactly the requested scope.
+    /// For conditional purge and deletion only; exposes no protected content and never falls back to Global.
+    /// </summary>
+    Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<Guid?>.Failure(new Error(ErrorCodes.Lexicon.SearchFailed,
+            "All-lifecycle Lexicon deletion lookup is unavailable.")));
+
+    /// <summary>
     /// Eligible active rows only: exact <c>NameNormalized</c> matches first, then column-weighted FTS5
     /// (<c>bm25(lexicon_fts, 3.0, 2.0, 1.0)</c>) for unresolved terms. Deduplicated by Id; exact
     /// hits ordered before FTS hits. Empty entity input returns an empty result without querying.

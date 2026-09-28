@@ -691,14 +691,22 @@ internal static class MemoryEndpoints
         // Resolved to an identity first, because the purge boundary keys on the artifact's own id and
         // the route names an entity. A name lookup that finds nothing simply leaves the ordinary path to
         // produce its existing 404.
-        Result<LexiconEntryDto?> existing = await lexicon
-            .GetByNameInScopeAsync(name, scope, context.RequestAborted)
+        Result<Guid?> existing = await lexicon
+            .FindAllLifecycleIdentityForDeletionAsync(name, scope, context.RequestAborted)
             .ConfigureAwait(false);
 
-        if (existing.IsSuccess && existing.Value is { } entity)
+        if (existing.IsFailure)
+        {
+            return Results.Json(
+                ApiResponse<string>.FromResult(Result<string>.Failure(existing.Error), TraceId(context)),
+                ArcanumJsonContext.Default.ApiResponseString,
+                statusCode: ArcanumErrorMapper.ResolveStatusCode(existing.Error.Code));
+        }
+
+        if (existing.Value is { } identity)
         {
             Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
-                .DispatchAsync(purger, SensitiveArtifactKind.Lexicon, entity.Id, context.RequestAborted)
+                .DispatchAsync(purger, SensitiveArtifactKind.Lexicon, identity, context.RequestAborted)
                 .ConfigureAwait(false);
 
             if (purged.IsFailure)
@@ -723,7 +731,7 @@ internal static class MemoryEndpoints
                     statusCode: ArcanumErrorMapper.ResolveStatusCode(blocked.Code));
             }
 
-            if (purged.Value.WasPurged(entity.Id))
+            if (purged.Value.WasPurged(identity))
             {
                 return Results.NoContent();
             }
