@@ -5,7 +5,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 /// <summary>
 /// One table an Annals erasure clears, and the rows of it that erasure owns.
 /// </summary>
-internal sealed record AnnalsErasureStep(string Table, string Predicate);
+internal sealed record AnnalsErasureStep(string Table, string Predicate, int? RequiredFromCoreVersion = null);
 
 /// <summary>
 /// The ordered statements every Annals erasure runs, stated once.
@@ -61,6 +61,10 @@ internal static class AnnalsErasurePlan
 
         return
         [
+            .. subjectStoreCode == (int)AnnalSubjectStore.Lexicon
+                ? new[] { new AnnalsErasureStep("lexicon_annal_fact_provenance", $"AnnalVersionId IN ({versionScope})", RequiredFromCoreVersion: 11) }
+                : [],
+
             // Both endpoint columns, because an edge dies when either end does: a claim being erased may
             // be the target of an edge asserted by a version that survives, and leaving that edge would
             // leave a dependency pointing at nothing.

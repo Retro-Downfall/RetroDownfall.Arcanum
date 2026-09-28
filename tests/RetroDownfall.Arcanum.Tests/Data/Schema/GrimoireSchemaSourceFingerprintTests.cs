@@ -21,6 +21,19 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 public sealed class GrimoireSchemaSourceFingerprintTests
 {
     [Fact]
+    public void Version_ten_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(CoreSchemaVersionTenFixture.PublishedFingerprint, CoreSchemaVersionTenFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain core =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        Assert.True(core.TryGetStep(10, out _));
+
+        Assert.Equal(CoreSchemaVersionTenFixture.Fingerprint, core.SourceDefinitionFingerprintFor(10));
+    }
+
+    [Fact]
     public void Version_nine_reconstruction_matches_the_pinned_fingerprint()
     {
         Assert.Equal(

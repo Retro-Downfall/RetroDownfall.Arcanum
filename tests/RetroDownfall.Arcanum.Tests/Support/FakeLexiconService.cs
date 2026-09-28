@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
@@ -8,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// Grimoire. Mirrors the real service's name-normalization and append semantics closely enough for
 /// tool-call assertions.
 /// </summary>
-public sealed class FakeLexiconService : ILexiconService
+public sealed class FakeLexiconService : ILexiconService, ILexiconCurationService
 {
 
     /// <summary>
@@ -67,6 +68,14 @@ public sealed class FakeLexiconService : ILexiconService
         _entries[(scope.Key, normalized)] = entry;
 
         return Task.FromResult(Result<LexiconEntryDto>.Success(entry));
+    }
+
+    public Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+        string name, LexiconScope scope, CancellationToken cancellationToken = default)
+    {
+        _ = _entries.TryGetValue((scope.Key, name.Trim().ToUpperInvariant()), out LexiconEntryDto? entry);
+
+        return Task.FromResult(Result<Guid?>.Success(entry?.Id));
     }
 
     public Task<Result<bool>> DeleteByNameAsync(
@@ -148,17 +157,86 @@ public sealed class FakeLexiconService : ILexiconService
         return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
     }
 
-    public Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
+    public Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> ListInspectionAsync(
+        ICovenantSnapshotReadLease? readLease,
         CancellationToken cancellationToken = default)
     {
 
         IReadOnlyList<LexiconEntryDto> entries = _entries.Values
             .OrderBy(static entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static entry => entry.ScopeCampaignId?.ToString("D") ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(static entry => entry.Id.ToString("N"), StringComparer.Ordinal)
             .ToArray();
 
         return Task.FromResult(
-            Result<IReadOnlyList<LexiconEntryDto>>.Success(entries));
+            Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Success(new(entries, false)));
 
+    }
+
+    public async Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> SearchInspectionAsync(
+        string? query, int? limit, ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default)
+    {
+        if (limit < 0)
+        {
+            return new Error(ErrorCodes.Validation.InvalidQuery, "Lexicon inspection limit must be non-negative or omitted.");
+        }
+
+        var listed = await ListInspectionAsync(readLease, cancellationToken);
+
+        string? trimmed = query?.Trim();
+
+        IReadOnlyList<LexiconEntryDto> entries = listed.Value.Value.Where(entry => string.IsNullOrEmpty(trimmed)
+            || entry.Name.Contains(trimmed, StringComparison.OrdinalIgnoreCase)
+            || entry.Type.Contains(trimmed, StringComparison.OrdinalIgnoreCase)
+            || entry.Facts.Any(fact => fact.Contains(trimmed, StringComparison.OrdinalIgnoreCase)))
+            .Take(limit ?? int.MaxValue).ToArray();
+
+        return Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Success(new(entries, false));
+    }
+
+    public Task<Result<LexiconInspectionResult<LexiconInspectionCounts>>> CountInspectionAsync(
+        ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<LexiconInspectionResult<LexiconInspectionCounts>>.Success(new(
+            new(_entries.Count, _entries.Values.Count(entry => entry.Eligibility == LexiconRetrievalEligibility.Eligible)), false)));
+
+    public Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowExactAsync(
+        LexiconCurationScope scope, string name, ICovenantSnapshotReadLease? readLease,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<LexiconInspectionResult<LexiconEntryDetail>>.Failure(
+            new Error(ErrorCodes.Lexicon.SearchFailed, "This fake does not provide exact evidence.")));
+
+    public async Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowEffectiveAsync(
+        LexiconCurationScope requestedScope, string name, ICovenantSnapshotReadLease? installationReadLease,
+        CancellationToken cancellationToken = default)
+    {
+        // This compatibility fake owns no label ledger and must never stand in for protected inspection.
+        if (installationReadLease is not null)
+        {
+            return new Error(ErrorCodes.Covenant.ForbiddenAuthority, "This fake cannot verify protected inspection.");
+        }
+
+        Result<LexiconEntryDto?> found = await GetByNameAsync(name,
+            LexiconScope.ForResolvedCampaign(requestedScope.CampaignId), cancellationToken);
+
+        if (found.Value is not { } entry)
+        {
+            return new Error(ErrorCodes.Lexicon.NotFound, "Lexicon entity was not found.");
+        }
+
+        LexiconCurationScope scope = entry.ScopeCampaignId is { } campaign
+            ? new(LexiconScopeKind.Campaign, campaign) : new(LexiconScopeKind.Global, null);
+
+        LexiconEntryLifecycle lifecycle = new(entry.RetiredAtUtc, entry.PinnedAtUtc);
+
+        LexiconCanonicalValue canonical = LexiconValueNormalizer.NormalizeCorrection(entry.Name, entry.Type, entry.Facts).Value;
+
+        string digest = LexiconSnapshotDigest.ComputeHex(canonical);
+
+        LexiconCurationTarget target = new(scope, canonical.NameNormalized, entry.Id, entry.CurationGeneration,
+            digest, lifecycle, new(false, null, null, null, null, null, null), new(false, null, null, null, null));
+
+        return new LexiconInspectionResult<LexiconEntryDetail>(new(entry, scope, null, lifecycle, entry.Eligibility,
+            entry.CurationGeneration, digest, target, [], []), false);
     }
 
 }

@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Lexicon;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -10,6 +11,41 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableFact]
+    public async Task Workspace_reset_preserves_Lexicon_lifecycle_and_Annals_in_every_scope()
+    {
+        RequireSqlCipher();
+
+        WorkspaceResetGraph graph = await SeedWorkspaceResetGraphAsync();
+
+        await SeedCampaignRowAsync(ResetCampaignB);
+
+        LexiconEntryDetail sameCampaign = await SeedLifecycleLexiconAsync("workspace-owner", graph.TargetCampaignId);
+
+        LexiconEntryDetail otherCampaign = await SeedLifecycleLexiconAsync("other-owner", ResetCampaignB);
+
+        LexiconEntryDetail global = await SeedLifecycleLexiconAsync("installation", null);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = WorkspaceResetRequest(graph);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(new(request, plan.PlanId));
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.True(result.Value.Reconciled);
+
+        Assert.Equal(0, await CountAsync("workspace_file_chunks", "ChunkId", graph.TargetChunkId));
+
+        await AssertLifecycleLexiconUnchangedAsync(sameCampaign);
+
+        await AssertLifecycleLexiconUnchangedAsync(otherCampaign);
+
+        await AssertLifecycleLexiconUnchangedAsync(global);
+    }
 
     [SkippableFact]
 

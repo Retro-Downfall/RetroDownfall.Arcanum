@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -18,12 +19,16 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Lexicon;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -3651,6 +3656,75 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.Contains("Bob", result.Content![0].Text!, StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData(false, true, "purged")]
+    [InlineData(true, true, "purged")]
+    [InlineData(true, true, "blocked")]
+    [InlineData(true, true, "failed")]
+    [InlineData(true, true, "missing")]
+    [InlineData(true, false, "purged")]
+    [InlineData(true, false, "missing")]
+    public async Task ToolsCall_delete_lexicon_respects_retired_identity_and_purge_disposition(bool retired, bool labeled, string disposition)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        await using CorrectionFixture owner = new(grimoire);
+
+        LexiconEntryDetail before = await owner.SeedAsync();
+
+        if (labeled)
+        {
+            await owner.ProtectAsync();
+
+            before = await owner.ShowProtectedAsync();
+        }
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        if (retired)
+        {
+            Assert.True((await owner.Service.RetireAsync(before.Target, lease)).IsSuccess);
+        }
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        await using ArcanumDbContext db = grimoire.CreateContext(owner.Path);
+
+        LexiconService lexicon = new(db, NullLogger<LexiconService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new()), FixtureLabeledArtifactGuard.For(db));
+
+        await using ArcanumDbContext purgeDb = grimoire.CreateContext(owner.Path);
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableLexiconSystem = true },
+            lexiconService: lexicon,
+            sensitivePurger: disposition == "missing" ? null : new LifecyclePurger(owner, purgeDb, disposition));
+
+        McpToolsCallResultWire result = await session.CallToolAsync("delete_lexicon",
+            JsonSerializer.SerializeToElement(new DeleteLexiconParams("Entity"), McpJsonSerializerContext.Default.DeleteLexiconParams));
+
+        bool refused = labeled && disposition != "purged";
+
+        Assert.Equal(refused, result.IsError);
+
+        if (refused)
+        {
+            Assert.Equal(snapshot, await owner.SnapshotAsync());
+        }
+        else
+        {
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM lexicon_entries"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM artifact_sensitivity"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM annal_versions"));
+        }
+    }
+
     /// <summary>
     /// The pacer cannot apply an override for a name absent from Arcanum:Daemon:Jobs — the default,
     /// since DaemonSettings.Jobs is empty, the tool is advertised unconditionally, and no MCP tool
@@ -4254,7 +4328,9 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
         IGrimoireRepository? grimoireRepository = null,
         ResourceLimits? resourceLimits = null,
-        IUnseenServantPacer? suppliedPacer = null)
+        IUnseenServantPacer? suppliedPacer = null,
+        ILexiconService? lexiconService = null,
+        ICovenantSensitiveArtifactPurger? sensitivePurger = null)
     {
         string? normalizedRoot = configureWorkspace
             ? Path.GetFullPath(_workspace.Root)
@@ -4284,7 +4360,12 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
                     Security = new SecuritySettings { AllowUnsandboxedToolChildren = true },
                 }));
 
-        services.AddSingleton<ILexiconService, FakeLexiconService>();
+        services.AddSingleton<ILexiconService>(lexiconService ?? new FakeLexiconService());
+
+        if (sensitivePurger is not null)
+        {
+            services.AddSingleton(sensitivePurger);
+        }
 
         if (grimoireRepository is not null)
         {

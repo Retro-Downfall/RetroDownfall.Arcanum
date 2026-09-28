@@ -75,29 +75,37 @@ internal static class AuthoredContentReader
         CancellationToken cancellationToken)
     {
 
-        if (file is { Length: > 0 })
+        try
         {
+            if (file is { Length: > 0 } && file != "-")
+            {
+                return File.Exists(file)
+                    ? Result<string>.Success(await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false))
+                    : Result<string>.Failure(new Error(
+                        ErrorCodes.Validation.InvalidBody,
+                        $"No file exists at '{file}'."));
+            }
 
-            return File.Exists(file)
-                ? Result<string>.Success(await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false))
-                : Result<string>.Failure(new Error(
+            if (file != "-" && !Console.IsInputRedirected)
+            {
+                return Result<string>.Failure(new Error(
                     ErrorCodes.Validation.InvalidBody,
-                    $"No file exists at '{file}'."));
+                    $"{subject} content comes from --file or piped standard input, not from a command-line argument."));
+            }
 
+            return Result<string>.Success(
+                await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
         }
-
-        if (!Console.IsInputRedirected)
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or NotSupportedException
+            or System.Security.SecurityException)
         {
-
             return Result<string>.Failure(new Error(
                 ErrorCodes.Validation.InvalidBody,
-                $"{subject} content comes from --file or piped standard input, not from a command-line argument."));
-
+                $"Could not read {subject} content. Check the input path and access permissions."));
         }
-
-        return Result<string>.Success(
-            await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
-
     }
 
 }

@@ -2,9 +2,12 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -22,11 +25,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed record CovenantArtifactPurgeTarget(
     string Table,
     string KeyColumn,
-    bool ExistsConditionally = false)
+    bool ExistsConditionally = false,
+    AnnalSubjectStore? AnnalStore = null,
+    int? RequiredFromCoreVersion = null)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
-    internal string DeleteBy(string parameter) =>
-        $"DELETE FROM {Table} WHERE {CovenantIdentitySql.Keyed(KeyColumn, parameter)};";
+    internal string DeleteBy(string parameter)
+    {
+        string predicate = AnnalStore is { } store
+            ? AnnalsErasurePlan.ForSubjectQuery(
+                store,
+                $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}")
+                .Single(step => string.Equals(step.Table, Table, StringComparison.Ordinal)).Predicate
+            : CovenantIdentitySql.Keyed(KeyColumn, parameter);
+
+        return $"DELETE FROM {Table} WHERE {predicate};";
+    }
 }
 
 /// <summary>
@@ -83,20 +97,12 @@ internal static class CovenantArtifactPurgePlans
                 + CovenantIdentitySql.Keyed("\"Id\"", "$sessionKey")
                 + ";"),
 
-        // FOLLOW-UP, and its trigger is labelling rather than a date: the Saga and Lexicon plans below
-        // take the durable row and leave the Annals claim describing it. A removal of a saga_memories or
-        // lexicon_entries row is required to take that store's claims in the same transaction - a memory
-        // reset's recovery counts only the store's own tables and infers from them that the Annals went
-        // too - and these plans do not. Every consumer of this table inherits that, this kernel and the
-        // staged-restore purger alike, so it is a property of the plan rather than of one caller.
-        //
-        // Out of reach while nothing labels either kind, which is what makes this a record rather than a
-        // live defect. Closing it is an erasure ordering over annal_heads, annal_versions and
-        // annal_claims, and the purge policy for these two kinds saying so. Whoever first labels a Saga
-        // memory or a Lexicon entry is the person this is addressed to, and it belongs to that change.
+        // Both live erasure and staged restore consume these projections. Annals ownership therefore
+        // belongs here, using the same ordered plan as direct deletion and memory reset.
         [SensitiveArtifactKind.Saga] = new(
             SensitiveArtifactKind.Saga,
             [
+                .. AnnalsTargets(AnnalSubjectStore.Saga),
                 new CovenantArtifactPurgeTarget("saga_memory_embeddings", "MemoryId"),
                 VectorMirror("saga_memory_embeddings_vec", "MemoryId"),
                 new CovenantArtifactPurgeTarget("saga_memory_attachment_provenance", "MemoryId"),
@@ -107,7 +113,10 @@ internal static class CovenantArtifactPurgePlans
 
         [SensitiveArtifactKind.Lexicon] = new(
             SensitiveArtifactKind.Lexicon,
-            [new CovenantArtifactPurgeTarget("lexicon_fact_attachment_provenance", "EntryId")],
+            [
+                .. AnnalsTargets(AnnalSubjectStore.Lexicon),
+                new CovenantArtifactPurgeTarget("lexicon_fact_attachment_provenance", "EntryId"),
+            ],
             new CovenantArtifactPurgeTarget("lexicon_entries", "Id"),
             CurrentPointerTable: null,
             RedactionSql: null),
@@ -131,6 +140,10 @@ internal static class CovenantArtifactPurgePlans
                 + CovenantIdentitySql.Keyed("\"Id\"", "$artifactKey")
                 + ";"),
     };
+
+    private static IEnumerable<CovenantArtifactPurgeTarget> AnnalsTargets(AnnalSubjectStore store) =>
+        AnnalsErasurePlan.ForStore(store)
+            .Select(step => new CovenantArtifactPurgeTarget(step.Table, "SubjectId", AnnalStore: store, RequiredFromCoreVersion: step.RequiredFromCoreVersion));
 
     /// <summary>
     /// One embedding mirror the sqlite-vec accelerator owns, holding the same content as its BLOB
@@ -348,6 +361,12 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
+            if (projection.RequiredFromCoreVersion is { } requiredVersion
+                && await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
+            {
+                continue;
+            }
+
             if (projection.ExistsConditionally
                 && !await TableExistsAsync(connection, transaction, projection.Table, cancellationToken)
                     .ConfigureAwait(false))

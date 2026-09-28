@@ -316,8 +316,9 @@ internal sealed partial class DataRetentionService(
                 "annal_versions",
                 "annal_heads",
                 "annal_dependencies",
+                "lexicon_annal_fact_provenance",
             ],
-            "Bitemporal claim identities, immutable versions, current pointers, and dependency edges over Saga and Lexicon rows. Removed with the memory each claim describes; never aged out on their own.",
+            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, and historical Lexicon source coordinates. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -2752,7 +2753,7 @@ internal sealed partial class DataRetentionService(
     /// Every table a whole-store reset clears, in delete order.
     /// </summary>
     /// <remarks>
-    /// The Annals steps carry a predicate rather than clearing their tables outright, because the four
+    /// The Annals steps carry a predicate rather than clearing their tables outright, because the shared
     /// tables hold both stores' claims: resetting Saga must leave the Lexicon's claims exactly where they
     /// were, and a bare <c>DELETE FROM annal_claims</c> would take both. Their order and their predicates
     /// come from <see cref="AnnalsErasurePlan"/>, which the claim writer also reads, so a store reset and

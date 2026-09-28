@@ -122,14 +122,17 @@ public sealed class MemorySagaCurationCommandTests
     /// own write verbs take content that way: it would otherwise sit in shell history and in the
     /// process list of a shared machine.
     /// </summary>
-    [Fact]
-    public async Task Correct_reads_the_replacement_text_from_piped_standard_input()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("-")]
+    public async Task Correct_reads_the_replacement_text_from_piped_standard_input(string? file)
     {
         RecordingHandler handler = new() { Outcome = SagaCurationOutcomeKind.Applied };
 
         CliTestResult result = await RunAsync(
             handler,
-            ["memory", "saga", "correct", MemoryId, "--expected-content-hash", ServerContentHash, "--yes"],
+            ["memory", "saga", "correct", MemoryId, "--expected-content-hash", ServerContentHash, "--yes",
+                .. file is null ? Array.Empty<string>() : ["--file", file]],
             input: "the operator prefers spaces");
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);

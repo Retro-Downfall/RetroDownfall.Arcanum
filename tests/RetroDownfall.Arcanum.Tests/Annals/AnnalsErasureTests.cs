@@ -144,6 +144,19 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_dependencies;"));
 
+        _ = await CountAsync("""
+            INSERT INTO lexicon_annal_fact_provenance
+                (AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey, AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType)
+            SELECT VersionId, 0, 'session', 'attachment', 'source', 1, 'attachment-hash', RecordedAtUtc, 'text'
+            FROM annal_versions;
+            PRAGMA foreign_keys = OFF;
+            SELECT 0;
+            """);
+
+        Assert.Equal(3, await CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
+        Assert.Equal(0, await CountAsync("PRAGMA foreign_keys;"));
+
         Result<bool> deleted = await lexicon.DeleteByNameAsync("config", LexiconScope.Global, CancellationToken.None);
 
         Assert.True(deleted.IsSuccess && deleted.Value);
@@ -155,6 +168,8 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM annal_heads;"));
 
         Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM annal_dependencies;"));
+
+        Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
 
     }
 

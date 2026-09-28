@@ -1,6 +1,19 @@
 namespace RetroDownfall.Arcanum.Core.Annals;
 
 /// <summary>
+/// Which durable byte grammar gives one Annals content digest its meaning.
+/// </summary>
+/// <remarks>
+/// Values are persisted. Format 1 preserves every digest written before structured Lexicon
+/// snapshots existed; format 2 binds the exact ordered type-and-facts representation.
+/// </remarks>
+public enum AnnalContentHashFormat
+{
+    LegacyStoreDigest = 1,
+    LexiconStructuredSnapshot = 2,
+}
+
+/// <summary>
 /// Which durable store holds the row a claim is about.
 /// </summary>
 /// <remarks>

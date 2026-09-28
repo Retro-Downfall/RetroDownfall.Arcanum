@@ -26,10 +26,141 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Core.Lexicon;
+
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableTheory]
+    [InlineData("pin")]
+    [InlineData("delete")]
+    [InlineData("freshen")]
+    public async Task ApplyAsync_LexiconPinAfterInternalPlanning_PreservesEvidenceAndReportsDistinctConflict(string change)
+    {
+        RequireSqlCipher();
+
+        LexiconEntryDetail entry = await SeedCuratableLexiconAsync("race subject");
+
+        string id = entry.Entry.Id.ToString("N");
+
+        string candidate = "lexicon:" + id;
+
+        TaskCompletionSource planned = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource resume = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+
+        HeartbeatCountingOperationStore operations = new(new LongRunningOperationStore(_db!, TestOrdinaryConnectionFactory.For(_db!)))
+        {
+            AfterStartAsync = async cancellationToken =>
+            {
+                planned.TrySetResult();
+
+                await resume.Task.WaitAsync(cancellationToken);
+            },
+        };
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.LexiconEntries = EnabledRule();
+
+        var service = CreateService(settings, operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, timeout.Token);
+
+        Assert.Equal(candidate, Assert.Single(plan.CandidateIds));
+
+        Task<Result<DataRetentionApplyResult>> apply = service.ApplyAsync(new(request, plan.PlanId), timeout.Token);
+
+        try
+        {
+            await planned.Task.WaitAsync(timeout.Token);
+
+            await using ArcanumDbContext other = _fixture.CreateContext(_dbPath);
+
+            LexiconService lexicon = CreateLexiconService(other);
+
+            if (change == "pin")
+            {
+                var pinned = await lexicon.PinAsync(entry.Target, null, timeout.Token);
+
+                Assert.True(pinned.IsSuccess, pinned.Error.Message);
+            }
+            else if (change == "delete")
+            {
+                Assert.True((await lexicon.DeleteByNameAsync(entry.Entry.Name, LexiconScope.Global, timeout.Token)).IsSuccess);
+            }
+            else
+            {
+                Assert.True((await lexicon.UpsertAsync(entry.Entry.Name, "concept", ["fresh"], LexiconScope.Global, timeout.Token)).IsSuccess);
+            }
+        }
+        finally
+        {
+            resume.TrySetResult();
+        }
+
+        var applied = await apply.WaitAsync(timeout.Token);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(0, applied.Value.RowsDeleted);
+
+        Assert.Equal(0, applied.Value.DerivedRecordsDeleted);
+
+        Assert.True(applied.Value.Reconciled);
+
+        if (change == "delete")
+        {
+            Assert.Empty(applied.Value.Conflicts);
+
+            Assert.Equal(0, await CountAllAsync("lexicon_entries"));
+
+            return;
+        }
+
+        DataRetentionConflict conflict = Assert.Single(applied.Value.Conflicts);
+
+        Assert.Equal(change == "pin" ? ErrorCodes.Data.PinnedAfterPlanning : ErrorCodes.Data.PlanChanged, conflict.Code);
+
+        Assert.Equal(candidate, conflict.ResourceId);
+
+        Assert.DoesNotContain(entry.Entry.Name, conflict.Message, StringComparison.Ordinal);
+
+        if (change == "pin")
+        {
+            var detail = await CreateLexiconService().ShowExactAsync(new(LexiconScopeKind.Global, null), entry.Entry.Name, null);
+
+            Assert.True(detail.IsSuccess, detail.Error.Message);
+
+            LexiconEntryDetail after = detail.Value.Value;
+
+            Assert.NotNull(after.Lifecycle.PinnedAtUtc);
+
+            Assert.Equal(entry.CurationGeneration + 1, after.CurationGeneration);
+
+            Assert.Equal(entry.Entry.UpdatedAt, after.Entry.UpdatedAt);
+
+            Assert.Equal(entry.Entry.Facts, after.Entry.Facts);
+
+            Assert.Equal(entry.Entry.FactProvenance, after.Entry.FactProvenance);
+
+            Assert.Equal(entry.Target.AnnalHead, after.Target.AnnalHead);
+
+            Assert.Equal(entry.AnnalHistory.Select(version => version.VersionId), after.AnnalHistory.Select(version => version.VersionId));
+
+            Assert.Equal(entry.HistoricalFactProvenance, after.HistoricalFactProvenance);
+
+            Assert.Equal("1", await ReadScalarStringAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'retentionevidence'"));
+        }
+    }
+
     [SkippableTheory]
 
     [InlineData("pinned-entry", ErrorCodes.Data.Blocked)]

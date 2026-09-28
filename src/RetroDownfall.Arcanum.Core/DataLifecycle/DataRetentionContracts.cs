@@ -260,6 +260,13 @@ public sealed record DataRetentionSagaCurationInventory(
     long PinnedRows,
     long PinnedRowsExemptFromPlan);
 
+/// <summary>
+/// Total pinned Lexicon entries and the pinned entries this plan's retention cutoff would otherwise select.
+/// </summary>
+public sealed record DataRetentionLexiconCurationInventory(
+    long PinnedRows,
+    long PinnedRowsExemptFromPlan);
+
 public sealed record DataRetentionPlan(
     string PlanId,
     DataRetentionRequest Request,
@@ -276,7 +283,9 @@ public sealed record DataRetentionPlan(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DataRetentionCovenantInventory? Covenant = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionSagaCurationInventory? SagaCuration = null);
+    DataRetentionSagaCurationInventory? SagaCuration = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionLexiconCurationInventory? LexiconCuration = null);
 
 /// <summary>
 /// A plan and the optional Covenant read lease that protects its response until serialization ends.

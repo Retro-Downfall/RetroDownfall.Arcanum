@@ -16,6 +16,25 @@ namespace RetroDownfall.Arcanum.Tests.Daemons;
 public sealed class UnseenServantDaemonJobTests
 {
     [Fact]
+    public void Daemon_Lexicon_reads_stay_on_the_active_operational_boundary()
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        string source = File.ReadAllText(Path.Combine(root,
+            "src/RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs"));
+
+        Assert.DoesNotContain("ILexiconCurationService", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ListInspectionAsync", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SearchInspectionAsync", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("CountInspectionAsync", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("FROM lexicon_entries", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void BuildDaemonStateName_IsDeterministicAndBounded()
     {
         string a = UnseenServantDaemonJob.BuildDaemonStateName("MarketWatcher", "KalshiSpread");

@@ -70,6 +70,8 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
 
         foreach (PendingClaim claim in pending)
         {
+            // This v3 sweep precedes the v11 format column. Its original SQL shape writes format-1
+            // bytes; the v11 additive default identifies those rows without rewriting their content.
             if (await AnnalsClaimWriter.AppendAssertAsync(
                     connection,
                     transaction,
@@ -79,11 +81,13 @@ internal sealed class MemoryAnnalsBackfill : IGrimoireSchemaBackfill
                     claim.ScopeKind,
                     claim.CampaignId,
                     ContentSensitivity.None,
+                    AnnalContentHashFormat.LegacyStoreDigest,
                     claim.ContentHash,
                     claim.Timestamp,
                     claim.Timestamp,
                     sourceSessionId: null,
-                    cancellationToken).ConfigureAwait(false))
+                    cancellationToken,
+                    legacySchema: true).ConfigureAwait(false) is not null)
             {
                 written++;
             }

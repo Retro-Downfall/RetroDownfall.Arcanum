@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Core.Lexicon;
 /// Agent-directed Lexicon memory: a structured entity graph (Name + Type + Facts) persisted in the
 /// Grimoire via raw SQL over <c>lexicon_entries</c> with an FTS5 <c>lexicon_fts</c> index (see
 /// <c>Infrastructure/Data/Schema/</c>). Abstracted behind an interface so the same domain logic backs
-/// the in-process MCP tools and (later) Minimal API routes. Not used by the legacy operator
+/// the in-process MCP tools and authenticated API deletion. Operator content inspection and curation use ILexiconCurationService. Not used by the legacy operator
 /// key-value Lore surface (<c>/api/lore</c>, <c>arcanum lore</c>, <c>MageSettings</c>).
 /// </summary>
 public interface ILexiconService
@@ -53,7 +53,18 @@ public interface ILexiconService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Tiered retrieval: exact <c>NameNormalized</c> matches first, then column-weighted FTS5
+    /// Resolves only an identity, including retired rows, in exactly the requested scope.
+    /// For conditional purge and deletion only; exposes no protected content and never falls back to Global.
+    /// </summary>
+    Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<Guid?>.Failure(new Error(ErrorCodes.Lexicon.SearchFailed,
+            "All-lifecycle Lexicon deletion lookup is unavailable.")));
+
+    /// <summary>
+    /// Eligible active rows only: exact <c>NameNormalized</c> matches first, then column-weighted FTS5
     /// (<c>bm25(lexicon_fts, 3.0, 2.0, 1.0)</c>) for unresolved terms. Deduplicated by Id; exact
     /// hits ordered before FTS hits. Empty entity input returns an empty result without querying.
     /// </summary>
@@ -73,8 +84,8 @@ public interface ILexiconService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Looks up a single entity by case-insensitive name, resolving the Campaign tier before the global
-    /// one exactly as <see cref="MatchEntitiesAsync"/> does; null when neither holds it.
+    /// Looks up an eligible active entity by case-insensitive name, resolving Campaign before Global.
+    /// Retired Campaign rows do not shadow active Global rows; null when neither holds an active row.
     /// </summary>
     Task<Result<LexiconEntryDto?>> GetByNameAsync(
         string name,
@@ -82,29 +93,14 @@ public interface ILexiconService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Looks up the entity held by exactly one tier, with no fallback to the global one.
+    /// Looks up an eligible active entity held by exactly one tier, without Global fallback.
     /// </summary>
     /// <remarks>
-    /// The tier-exact counterpart to <see cref="GetByNameAsync"/>, for the callers that must act on one
-    /// scope's entity rather than on whichever entity a turn would see. Deletion is the reason it
-    /// exists: resolving a Campaign delete through the shadowing lookup would find the global entity
-    /// whenever the Campaign held none, and act on it.
+    /// Retired operator detail is available through <see cref="ILexiconCurationService.ShowExactAsync"/>.
     /// </remarks>
     Task<Result<LexiconEntryDto?>> GetByNameInScopeAsync(
         string name,
         LexiconScope scope,
         CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Lists every Lexicon entity for explicit inspection. This is intentionally not tied to the
-    /// prompt-time match limit because inspection must not hide durable memory from the operator.
-    /// </summary>
-    Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(
-            Result<IReadOnlyList<LexiconEntryDto>>.Failure(
-                new Error(
-                    ErrorCodes.Lexicon.SearchFailed,
-                    "Lexicon listing is unavailable.")));
 
 }

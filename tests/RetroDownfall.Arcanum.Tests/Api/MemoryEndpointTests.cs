@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -41,6 +42,7 @@ using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Lexicon;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -50,6 +52,141 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class MemoryEndpointTests
 {
+    [SkippableFact]
+    public async Task Explain_excludes_retired_Lexicon_rows_while_operator_inspection_keeps_them()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        await using CorrectionFixture owner = new(grimoire);
+
+        await owner.SeedAsync();
+
+        LexiconEntryDetail before = await owner.ShowAsync();
+
+        Assert.True((await owner.Service.RetireAsync(before.Target, null)).IsSuccess);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<ILexiconCurationService>(owner.Service),
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage explained = await client.GetAsync("/api/memory/explain");
+
+        ApiResponse<MemoryExplainDto>? explain = await ReadAsync(explained, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.False(EligibleSource(explain!.Data!, "Lexicon"));
+
+        using HttpResponseMessage listed = await client.GetAsync("/api/memory/lexicon");
+
+        ApiResponse<LexiconListDto>? list = await ReadAsync(listed, ArcanumJsonContext.Default.ApiResponseLexiconListDto);
+
+        Assert.Equal(LexiconRetrievalEligibility.Retired, Assert.Single(list!.Data!.Entries).Eligibility);
+
+        using HttpResponseMessage sourced = await client.GetAsync("/api/memory/sources");
+
+        ApiResponse<MemorySourcesDto>? sources = await ReadAsync(sourced, ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
+
+        Assert.Equal(1, Assert.Single(sources!.Data!.Sources, source => source.Name == "Lexicon").Count);
+
+        LexiconEntryDetail retired = await owner.ShowAsync();
+
+        Assert.True((await owner.Service.ReinstateAsync(retired.Target, null)).IsSuccess);
+
+        using HttpResponseMessage reinstated = await client.GetAsync("/api/memory/explain");
+
+        ApiResponse<MemoryExplainDto>? active = await ReadAsync(reinstated, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.True(EligibleSource(active!.Data!, "Lexicon"));
+    }
+
+    [SkippableTheory]
+    [InlineData(false, "purged")]
+    [InlineData(true, "purged")]
+    [InlineData(true, "blocked")]
+    [InlineData(true, "failed")]
+    public async Task Hard_delete_resolves_retired_protected_identity_before_conditional_purge(bool retired, string disposition)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        await using CorrectionFixture owner = new(grimoire);
+
+        await owner.SeedAsync();
+
+        await owner.ProtectAsync();
+
+        LexiconEntryDetail before = await owner.ShowProtectedAsync();
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        if (retired)
+        {
+            Assert.True((await owner.Service.RetireAsync(before.Target, lease)).IsSuccess);
+        }
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        await using ArcanumDbContext purgeDb = grimoire.CreateContext(owner.Path);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.AddSingleton<ILexiconService>(owner.Concrete);
+
+                services.AddSingleton<ICovenantSensitiveArtifactPurger>(new LifecyclePurger(owner, purgeDb, disposition));
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.DeleteAsync("/api/memory/lexicon/Entity");
+
+        if (disposition == "purged")
+        {
+            Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM artifact_sensitivity"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM lexicon_entries"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM annal_versions"));
+
+            Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM lexicon_annal_fact_provenance"));
+        }
+        else
+        {
+            Assert.False(response.IsSuccessStatusCode);
+
+            Assert.Equal(snapshot, await owner.SnapshotAsync());
+        }
+    }
+
+    [SkippableFact]
+    public async Task Hard_delete_refuses_unavailable_all_lifecycle_identity_lookup()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<ILexiconService>(new LegacyDeletionLexicon()),
+        };
+
+        HttpResponseMessage response = await factory.CreateAuthenticatedClient().DeleteAsync("/api/memory/lexicon/Entity");
+
+        Assert.False(response.IsSuccessStatusCode);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(ErrorCodes.Lexicon.SearchFailed, body, StringComparison.Ordinal);
+    }
 
     private readonly ArcanumWebApplicationFactory _factory;
 
@@ -561,6 +698,8 @@ public sealed class MemoryEndpointTests
 
                 services.AddSingleton<ILexiconService>(lexicon);
 
+                services.AddSingleton<ILexiconCurationService>(lexicon);
+
             },
         };
 
@@ -617,6 +756,56 @@ public sealed class MemoryEndpointTests
 
         Assert.NotNull(remainingArcanum.Value);
 
+    }
+
+    [SkippableTheory]
+    [InlineData("show")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("reinstate")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    public async Task Static_curation_names_remain_ordinary_names_for_effective_GET_and_exact_DELETE(string name)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeLexiconService lexicon = new();
+
+        Assert.True((await lexicon.UpsertAsync(name, "Person", ["global"], LexiconScope.Global)).IsSuccess);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.AddSingleton<ILexiconService>(lexicon);
+
+                services.AddSingleton<ILexiconCurationService>(lexicon);
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid campaign = Guid.NewGuid();
+
+        using HttpResponseMessage effective = await client.GetAsync($"/api/memory/lexicon/{name}?campaignId={campaign:D}");
+
+        ApiResponse<LexiconEntryDto>? shown = await ReadAsync(effective, ArcanumJsonContext.Default.ApiResponseLexiconEntryDto);
+
+        Assert.Equal(HttpStatusCode.OK, effective.StatusCode);
+
+        Assert.Equal(["global"], shown!.Data!.Facts);
+
+        using HttpResponseMessage absentExact = await client.DeleteAsync($"/api/memory/lexicon/{name}?campaignId={campaign:D}");
+
+        Assert.Equal(HttpStatusCode.NotFound, absentExact.StatusCode);
+
+        Assert.NotNull((await lexicon.GetByNameAsync(name, LexiconScope.Global)).Value);
+
+        using HttpResponseMessage deleted = await client.DeleteAsync($"/api/memory/lexicon/{name}");
+
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        Assert.Null((await lexicon.GetByNameAsync(name, LexiconScope.Global)).Value);
     }
 
     [SkippableFact]
@@ -703,6 +892,8 @@ public sealed class MemoryEndpointTests
 
                 services.AddSingleton<ILexiconService>(lexicon);
 
+                services.AddSingleton<ILexiconCurationService>(lexicon);
+
             },
         };
 
@@ -762,6 +953,8 @@ public sealed class MemoryEndpointTests
                 services.RemoveAll<ILexiconService>();
 
                 services.AddSingleton<ILexiconService>(lexicon);
+
+                services.AddSingleton<ILexiconCurationService>(lexicon);
 
             },
         };

@@ -80,6 +80,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
 
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
     }
 
     /// <summary>
@@ -153,6 +155,14 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         LexiconEntryDto entry = await harness.UpsertLexiconEntryAsync("Nimue", "The lake keeps her counsel.");
 
+        await harness.ExecuteAsync("""
+            INSERT INTO lexicon_annal_fact_provenance
+                (AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey, AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType)
+            SELECT VersionId, 0, 'session', 'attachment', 'source', 1, 'attachment-hash', RecordedAtUtc, 'text' FROM annal_versions;
+            """);
+
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
         await harness.LabelAsync(SensitiveArtifactKind.Lexicon, entry.Id, sessionId: null, entry.Name);
 
         CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Lexicon, entry.Id);
@@ -162,6 +172,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(CovenantErasureBlocker.None, progress.Blocker);
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM lexicon_entries;"));
+
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
 
     }
 

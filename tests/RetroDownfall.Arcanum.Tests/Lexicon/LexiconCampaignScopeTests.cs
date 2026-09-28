@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -34,6 +35,28 @@ public sealed class LexiconCampaignScopeTests : IAsyncLifetime
     private ArcanumDbContext? _db;
 
     private LexiconService? _service;
+
+    [Fact]
+    public async Task Retired_campaign_row_falls_through_to_active_global_for_get_and_match()
+    {
+        await UpsertAsync("config", LexiconScope.Global, "active global");
+
+        await UpsertAsync("config", LexiconScope.ForCampaign(CampaignA), "retired campaign");
+
+        await _db!.Database.OpenConnectionAsync();
+
+        await using var command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = "UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-01T00:00:00.0000000Z' WHERE ScopeCampaignId <> '';";
+
+        await command.ExecuteNonQueryAsync();
+
+        Assert.Equal(["active global"], await FactsAsync("config", LexiconScope.ForCampaign(CampaignA)));
+
+        var matches = await _service!.MatchEntitiesAsync(["config"], 10, LexiconScope.ForCampaign(CampaignA));
+
+        Assert.Equal(["active global"], Assert.Single(matches.Value).Facts);
+    }
 
     public LexiconCampaignScopeTests(GrimoireFixture fixture) => _fixture = fixture;
 
@@ -240,13 +263,13 @@ public sealed class LexiconCampaignScopeTests : IAsyncLifetime
 
         _ = await UpsertAsync("config", LexiconScope.ForCampaign(CampaignA), "this campaign's answer");
 
-        Result<IReadOnlyList<LexiconEntryDto>> listed = await _service!.ListAsync(CancellationToken.None);
+        var listed = await _service!.ListInspectionAsync(null, CancellationToken.None);
 
         Assert.True(listed.IsSuccess);
 
         Assert.Equal(
             [null, CampaignA],
-            listed.Value
+            listed.Value.Value
                 .Where(static entry => entry.Name == "config")
                 .Select(static entry => entry.ScopeCampaignId)
                 .OrderBy(static id => id));

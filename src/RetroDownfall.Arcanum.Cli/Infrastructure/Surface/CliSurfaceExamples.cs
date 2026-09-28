@@ -102,7 +102,12 @@ internal static class CliSurfaceExamples
         ["memory sources"] = ["arcanum memory sources"],
         ["memory explain"] = ["arcanum memory explain"],
         ["memory lexicon list"] = ["arcanum memory lexicon list"],
-        ["memory lexicon show"] = [$"arcanum memory lexicon show {SampleGuid}"],
+        ["memory lexicon show"] = ["arcanum memory lexicon show Operator", $"arcanum memory lexicon show Operator --campaign {SampleGuid}"],
+        ["memory lexicon correct"] = ["arcanum memory lexicon correct Operator --file correction.json", "arcanum memory lexicon correct Operator --file - --yes --json"],
+        ["memory lexicon retire"] = ["arcanum memory lexicon retire Operator"],
+        ["memory lexicon reinstate"] = ["arcanum memory lexicon reinstate Operator"],
+        ["memory lexicon pin"] = ["arcanum memory lexicon pin Operator"],
+        ["memory lexicon unpin"] = ["arcanum memory lexicon unpin Operator"],
         ["memory lexicon search"] = ["arcanum memory lexicon search \"ward policy\""],
         ["memory lexicon delete"] = [$"arcanum memory lexicon delete {SampleGuid}"],
 

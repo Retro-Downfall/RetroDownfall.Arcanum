@@ -847,14 +847,14 @@ internal sealed class GrimoireSchemaInstaller(
     {
         try
         {
-            if (!await LexiconCorpusIsEmptyAsync(connection, cancellationToken).ConfigureAwait(false))
-            {
-                return;
-            }
-
             await using SqliteCommand command = connection.CreateCommand();
 
-            command.CommandText = "INSERT INTO lexicon_fts(lexicon_fts) VALUES('rebuild');";
+            // The emptiness check and cleanup share one statement's write transaction. A writer
+            // arriving before it executes must keep the tokens its insert trigger just published.
+            command.CommandText = """
+                INSERT INTO lexicon_fts(lexicon_fts)
+                SELECT 'delete-all' WHERE NOT EXISTS (SELECT 1 FROM lexicon_entries);
+                """;
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -864,23 +864,6 @@ internal sealed class GrimoireSchemaInstaller(
                 ex,
                 "The Lexicon FTS rebuild after schema install failed; search may be incomplete until the next rebuild.");
         }
-    }
-
-    /// <summary>
-    /// Whether the Lexicon holds no entities, answered by an existence probe rather than a count so
-    /// the guard costs one index seek on a corpus the rebuild it guards would have read in full.
-    /// </summary>
-    private static async Task<bool> LexiconCorpusIsEmptyAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = "SELECT 1 FROM lexicon_entries LIMIT 1;";
-
-        object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-
-        return result is null || result == DBNull.Value;
     }
 
     /// <summary>

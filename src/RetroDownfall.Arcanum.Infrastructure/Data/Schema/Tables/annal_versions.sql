@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS annal_versions (
     ValidToUtc TEXT NULL,
     RecordedAtUtc TEXT NOT NULL,
     PredecessorVersionId TEXT NULL REFERENCES annal_versions(VersionId) ON DELETE CASCADE,
-    SourceSessionId TEXT NULL,
+    SourceSessionId TEXT NULL, ContentHashFormatCode INTEGER NOT NULL DEFAULT 1 CHECK (ContentHashFormatCode IN (1, 2)),
     -- A Campaign-scoped version names its Campaign, and no other kind borrows one. The two unresolved
     -- kinds are deliberately reachable here: a version that copies an unresolved subject's scope has to
     -- be able to say so rather than rounding it up to installation-global authority.

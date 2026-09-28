@@ -96,7 +96,9 @@ public sealed record MemorySearchResultDto(
     string Provenance,
     string Retention,
     string SourceId,
-    MemoryCampaignScopeDto? CampaignScope = null);
+    MemoryCampaignScopeDto? CampaignScope = null,
+    LexiconEntryLifecycle? LexiconLifecycle = null,
+    LexiconRetrievalEligibility? LexiconEligibility = null);
 
 /// <summary>
 /// What one scope contributed, and whether it had more to give. Scopes are consulted in order against

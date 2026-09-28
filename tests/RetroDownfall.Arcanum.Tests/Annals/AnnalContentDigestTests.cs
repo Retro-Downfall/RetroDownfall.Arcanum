@@ -23,6 +23,14 @@ public sealed class AnnalContentDigestTests
     }
 
     [Fact]
+    public void Legacy_saga_format_1_bytes_are_pinned()
+    {
+        Assert.Equal(
+            "608E75C81AB8335F1E92DE3C436631AC79301B3FA4AD4185DB289F72C7579DA2",
+            Convert.ToHexString(AnnalContentDigest.ForSagaMemory("the operator prefers tabs")));
+    }
+
+    [Fact]
     public void Different_saga_content_digests_differently()
     {
 
@@ -44,6 +52,20 @@ public sealed class AnnalContentDigestTests
             AnnalContentDigest.ForLexiconEntry("Person", "alpha"),
             AnnalContentDigest.ForLexiconEntry("PersonAlpha", string.Empty));
 
+    }
+
+    [Fact]
+    public void Legacy_lexicon_format_1_bytes_are_pinned()
+    {
+        Assert.Equal(
+            "683C20CCC6B22F04350A1E3E27C446F5D2EC96C3E00CEA8F318343989B09A7A2",
+            Convert.ToHexString(AnnalContentDigest.ForLexiconEntry("Person", "alpha")));
+
+        Assert.Equal(
+            "1383F83CDF19A8C2835F6E1A391125BD0470715A7836468D25C4E15D3F778A0B",
+            Convert.ToHexString(AnnalContentDigest.ForLexiconEntry(
+                "Project",
+                "ships on Friday\nwritten in C#")));
     }
 
     [Fact]

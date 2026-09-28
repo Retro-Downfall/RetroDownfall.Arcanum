@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Core.Lexicon;
+
 using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -26,6 +28,160 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class MemoryCommandTests
 {
+    [Theory]
+    [InlineData("list", false)]
+    [InlineData("list", true)]
+    [InlineData("search", false)]
+    [InlineData("search", true)]
+    public void Lexicon_plain_inspection_identifies_retrieval_retirement_and_pin_state(string verb, bool retired)
+    {
+        LexiconEntryDto entry = InspectionEntry(retired);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<LexiconListDto>(new([entry]), true, null),
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto));
+
+        CliTestResult result = RunCommand(handler,
+            ["memory", "lexicon", verb, .. verb == "search" ? new[] { "Operator" } : [], "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains($"Retrieval: {(retired ? "Retired" : "Eligible")}", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(retired ? "retired: 2026-09-20 12:34:56Z" : "retired: not retired", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(retired ? "pinned: 2026-09-21 01:02:03Z" : "pinned: not pinned", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Current visible fact", result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("search")]
+    public void Lexicon_json_inspection_retains_the_complete_entry_array(string verb)
+    {
+        LexiconEntryDto[] entries = [InspectionEntry(true), InspectionEntry(false)];
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<LexiconListDto>(new(entries), true, null),
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto));
+
+        CliTestResult result = RunCommand(handler,
+            ["memory", "lexicon", verb, .. verb == "search" ? new[] { "Operator" } : [], "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(JsonSerializer.Serialize(entries, ArcanumJsonContext.Default.LexiconEntryDtoArray), result.Output.Trim());
+
+        Assert.Empty(result.Error);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Generic_plain_search_identifies_lexicon_lifecycle_without_changing_other_stores(bool retired)
+    {
+        LexiconEntryDto entry = InspectionEntry(retired);
+
+        MemorySearchResponse payload = SearchInspection(entry);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string lexicon = result.Output.Split("[saga]", StringSplitOptions.None)[0];
+
+        Assert.Contains($"Retrieval: {(retired ? "Retired" : "Eligible")}", lexicon, StringComparison.Ordinal);
+
+        Assert.Contains(retired ? "retired: 2026-09-20 12:34:56Z" : "retired: not retired", lexicon, StringComparison.Ordinal);
+
+        Assert.Contains(retired ? "pinned: 2026-09-21 01:02:03Z" : "pinned: not pinned", lexicon, StringComparison.Ordinal);
+
+        Assert.Equal("Visible Saga\n  Saga visible content\n  Provenance: Saga source\n  Retention: Saga retention",
+            result.Output.Split("[saga] ", StringSplitOptions.None)[1].Trim().ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void Generic_plain_search_does_not_infer_eligibility_from_missing_lexicon_metadata()
+    {
+        MemorySearchResponse payload = new("visible", MemorySearchScope.All,
+            [new(MemorySearchScope.Lexicon, "Legacy Lexicon", "Current visible fact", "Lexicon source", "Lexicon retention", "legacy")]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("Retrieval: unknown", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("retired: unknown", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("pinned: unknown", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Eligible", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Generic_json_search_keeps_its_existing_complete_response_shape()
+    {
+        MemorySearchResponse payload = SearchInspection(InspectionEntry(true));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(JsonSerializer.Serialize(payload, ArcanumJsonContext.Default.MemorySearchResponse), result.Output.Trim());
+
+        Assert.Empty(result.Error);
+    }
+
+    private static LexiconEntryDto InspectionEntry(bool retired) => new(
+        Guid.Parse("68da8f04-a6f1-47cb-b6a6-64b9dff75457"), "Operator", "Person", ["Current visible fact"], DateTimeOffset.UnixEpoch,
+        RetiredAtUtc: retired ? new DateTimeOffset(2026, 9, 20, 12, 34, 56, TimeSpan.Zero) : null,
+        PinnedAtUtc: retired ? new DateTimeOffset(2026, 9, 21, 1, 2, 3, TimeSpan.Zero) : null,
+        Eligibility: retired ? LexiconRetrievalEligibility.Retired : LexiconRetrievalEligibility.Eligible);
+
+    private static MemorySearchResponse SearchInspection(LexiconEntryDto entry) => new("visible", MemorySearchScope.All,
+        [
+            new(MemorySearchScope.Lexicon, "Visible Lexicon", "Current visible fact", "Lexicon source", "Lexicon retention", "lexicon",
+                LexiconLifecycle: new(entry.RetiredAtUtc, entry.PinnedAtUtc), LexiconEligibility: entry.Eligibility),
+            new(MemorySearchScope.Saga, "Visible Saga", "Saga visible content", "Saga source", "Saga retention", "saga"),
+        ]);
+
+    [Theory]
+    [InlineData("list", "")]
+    [InlineData("search", "?q=ward%20policy")]
+    public void Lexicon_list_and_search_keep_the_existing_read_contract(string verb, string expectedQuery)
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<LexiconListDto>(new([]), true, null),
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto));
+
+        CliTestResult result = RunCommand(handler,
+            ["memory", "lexicon", verb, .. verb == "search" ? new[] { "ward policy" } : []]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+
+        Assert.Equal("/api/memory/lexicon", request.RequestUri!.AbsolutePath);
+
+        Assert.Equal(expectedQuery, request.RequestUri.Query);
+    }
+
     [Fact]
 
     public void Memory_status_uses_active_session_and_renders_each_distinct_store()

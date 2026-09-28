@@ -3,6 +3,8 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -150,10 +152,47 @@ internal sealed partial class ArcanumInternalToolServer
 
             // Deletion is aimed at the tier the turn writes to, so a Forbidden Art cast inside one
             // Campaign can never take the installation's entity of the same name with it.
-            Result<bool> result = await lexicon
+            LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false);
+
+            bool purgedIdentity = false;
+
+            if (scope.ServiceProvider.GetService<ICovenantSensitiveArtifactPurger>() is { } purger)
+            {
+                Result<Guid?> identity = await lexicon.FindAllLifecycleIdentityForDeletionAsync(
+                    name, lexiconScope, cancellationToken).ConfigureAwait(false);
+
+                if (identity.IsFailure)
+                {
+                    return ToolError(identity.Error.Message);
+                }
+
+                if (identity.Value is { } artifactId)
+                {
+                    var purged = await purger.PurgeAsync([new(SensitiveArtifactKind.Lexicon, artifactId)], cancellationToken).ConfigureAwait(false);
+
+                    if (purged.IsFailure)
+                    {
+                        return ToolError(purged.Error.Message);
+                    }
+
+                    if (purged.Value.IsBlocked)
+                    {
+                        return ToolError("The protected Lexicon entry could not be erased and was left unchanged.");
+                    }
+
+                    purgedIdentity = purged.Value.WasPurged(artifactId);
+
+                    if (!purgedIdentity && !purged.Value.RequiresOrdinaryDelete(artifactId))
+                    {
+                        return ToolError("The Lexicon purge did not authorize ordinary deletion.");
+                    }
+                }
+            }
+
+            Result<bool> result = purgedIdentity ? Result<bool>.Success(true) : await lexicon
                 .DeleteByNameAsync(
                     name,
-                    await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false),
+                    lexiconScope,
                     cancellationToken)
                 .ConfigureAwait(false);
 

@@ -13,7 +13,7 @@ internal static class CoreSchemaVersionNineFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects.Where(
+        .. CoreSchemaVersionTenFixture.Objects.Where(
             static definition => definition.Name != "BatchAccountingRecoveryClaims"),
     ];
 

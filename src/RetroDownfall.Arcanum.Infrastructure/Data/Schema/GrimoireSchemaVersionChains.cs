@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 10 and declares nine steps, Covenant canonical is at version 4 and declares three,
+/// Core is at version 11 and declares ten steps, Covenant canonical is at version 4 and declares three,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -79,8 +79,13 @@ internal static class GrimoireSchemaVersionChains
     /// their guards across success, cancellation, failure, and restart. Version 10 adds the private
     /// durable claim that makes batch accounting recovery and artifact cleanup crash-resumable
     /// without exposing a nonstandard batch status.</para>
+    ///
+    /// <para>Version 11 adds Lexicon retirement, pinning, and a curation generation, distinguishes
+    /// legacy and snapshot Annals hashes, and preserves content-free attachment coordinates by
+    /// Annals version. Its atomic step replaces every Lexicon FTS trigger and rebuilds the search
+    /// projection from active rows alone.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 10;
+    internal const int CoreSchemaVersion = 11;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -174,6 +179,11 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 10)] =
                 "B0C9CE2CA6C343080B23E8DA8D79E6E3BC14B1120862C71C0095CC6B4668AD5E",
 
+            // Captured before any version-11 head edit. The version-10 fixture freezes every
+            // replaced object and excludes historical Lexicon provenance to preserve this identity.
+            [(GrimoireSchemaTransactionTier.Core, 11)] =
+                "B484778B9288D99C4337FA3C95BEB56B95FDAE6B1D149C6A9A2A822591BBE951",
+
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture
             // reconstructs that tree by removing those objects from the shipped list and a test hashes
@@ -233,7 +243,7 @@ internal static class GrimoireSchemaVersionChains
 
             [(GrimoireSchemaTransactionTier.Core, 9)] = new UtcInstantCanonicalizationBackfill(
                 "core-utc-instant-canonicalization",
-                UtcInstantColumnInventory.Core),
+                UtcInstantColumnInventory.CoreVersionNine),
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 4)] = new UtcInstantCanonicalizationBackfill(
                 "covenant-utc-instant-canonicalization",

@@ -27165,6 +27165,23 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && diagnostic.Detail == "System.Data.Common.DbParameterCollection.Clear");
     }
 
+    [Theory]
+    [InlineData("_ = SQLitePCL.raw.sqlite3_get_autocommit(null!);", "SQLitePCL.raw.sqlite3_get_autocommit")]
+    [InlineData("System.Data.Common.DbTransaction transaction = null!; _ = transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
+    public void TransactionStateInspectionIsReviewedDatabaseSupport(string body, string member)
+    {
+        string source = FixtureSource(body);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.DoesNotContain(result.Items, site => site.Callee == member);
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == member);
+    }
+
     [Fact]
     public void ExternalCapabilityInterfacesAreClassifiedAtTheirExactBoundary()
     {

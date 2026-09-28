@@ -119,6 +119,12 @@
         "memory covenant show",
         "memory covenant unmask",
         "memory covenant unpin",
+        "memory lexicon correct",
+        "memory lexicon pin",
+        "memory lexicon reinstate",
+        "memory lexicon retire",
+        "memory lexicon show",
+        "memory lexicon unpin",
         "run"
       ]
     },
@@ -137,6 +143,7 @@
       "scopes": [
         "memory covenant correct",
         "memory covenant set",
+        "memory lexicon correct",
         "memory saga correct"
       ]
     },
@@ -3229,7 +3236,7 @@
         {
           "path": "memory lexicon",
           "name": "lexicon",
-          "description": "Inspect or explicitly delete Lexicon entities.",
+          "description": "Inspect, curate, or explicitly delete Lexicon entities.",
           "runnable": false,
           "aliases": [],
           "arguments": [],
@@ -3252,7 +3259,7 @@
             {
               "path": "memory lexicon show",
               "name": "show",
-              "description": "Show a Lexicon entity by name.",
+              "description": "Show one exact Global or Campaign Lexicon entity and its curation target.",
               "runnable": true,
               "aliases": [],
               "arguments": [
@@ -3264,9 +3271,23 @@
                   "values": []
                 }
               ],
-              "options": [],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
               "examples": [
-                "arcanum memory lexicon show 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5"
+                "arcanum memory lexicon show Operator",
+                "arcanum memory lexicon show Operator --campaign 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5"
               ],
               "commands": []
             },
@@ -3309,6 +3330,188 @@
               "options": [],
               "examples": [
                 "arcanum memory lexicon delete 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory lexicon correct",
+              "name": "correct",
+              "description": "Replace the type and complete facts of one exact Lexicon entry after inspection.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read replacement JSON containing type and facts from this path, or use - for stdin (requires --yes).",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon correct Operator --file correction.json",
+                "arcanum memory lexicon correct Operator --file - --yes --json"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory lexicon retire",
+              "name": "retire",
+              "description": "Remove an exact Lexicon entry from retrieval while retaining it for inspection.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon retire Operator"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory lexicon reinstate",
+              "name": "reinstate",
+              "description": "Make a retired exact Lexicon entry eligible for retrieval again.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon reinstate Operator"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory lexicon pin",
+              "name": "pin",
+              "description": "Protect an exact Lexicon entry from automatic retention pruning.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon pin Operator"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory lexicon unpin",
+              "name": "unpin",
+              "description": "Release an exact Lexicon entry\u0027s protection from automatic retention pruning.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon unpin Operator"
               ],
               "commands": []
             }

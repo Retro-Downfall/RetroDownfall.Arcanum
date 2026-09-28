@@ -11,6 +11,27 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
+            ErrorCodes.Lexicon.InvalidName
+                or ErrorCodes.Lexicon.InvalidFact
+                or ErrorCodes.Lexicon.InvalidScope
+                or ErrorCodes.Lexicon.InvalidCurationTarget
+                or ErrorCodes.Lexicon.InvalidReplacement =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Lexicon.ProtectedMutationRefused =>
+                StatusCodes.Status403Forbidden,
+
+            ErrorCodes.Lexicon.StaleCurationTarget
+                or ErrorCodes.Lexicon.RetiredMutationRefused
+                or ErrorCodes.Lexicon.CurationGenerationExhausted
+                or ErrorCodes.Lexicon.ArtifactRevisionExhausted =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.Lexicon.CurationIntegrityFailed
+                or ErrorCodes.Lexicon.WriteFailed
+                or ErrorCodes.Lexicon.SearchFailed =>
+                StatusCodes.Status500InternalServerError,
+
             ErrorCodes.Validation.InvalidPrompt
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody
@@ -30,6 +51,7 @@ internal static class ArcanumErrorMapper
             // lacks permission — 503 (retry later / ask an operator to enable it) fits better than the
             // 403 this used to share with genuine access-control failures below.
             ErrorCodes.Api.TooManyConnections
+                or ErrorCodes.Lexicon.CurationUnavailable
                 or ErrorCodes.Embeddings.ProviderUnavailable
                 or ErrorCodes.Embeddings.FeatureDisabled
                 // A curation write refused because nothing could embed is the same answer as the

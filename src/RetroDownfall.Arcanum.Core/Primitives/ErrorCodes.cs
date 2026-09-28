@@ -578,6 +578,8 @@ public static class ErrorCodes
 
         public const string ResetInProgress = "Data.ResetInProgress";
 
+        public const string PinnedAfterPlanning = "Data.PinnedAfterPlanning";
+
         public const string RecoveryRequired = "Data.RecoveryRequired";
 
         public const string FileLocked = "Data.FileLocked";
@@ -735,6 +737,26 @@ public static class ErrorCodes
         public const string InvalidName = "Lexicon.InvalidName";
 
         public const string InvalidFact = "Lexicon.InvalidFact";
+
+        public const string InvalidScope = "Lexicon.InvalidScope";
+
+        public const string InvalidCurationTarget = "Lexicon.InvalidCurationTarget";
+
+        public const string InvalidReplacement = "Lexicon.InvalidReplacement";
+
+        public const string StaleCurationTarget = "Lexicon.StaleCurationTarget";
+
+        public const string RetiredMutationRefused = "Lexicon.RetiredMutationRefused";
+
+        public const string ProtectedMutationRefused = "Lexicon.ProtectedMutationRefused";
+
+        public const string CurationIntegrityFailed = "Lexicon.CurationIntegrityFailed";
+
+        public const string CurationUnavailable = "Lexicon.CurationUnavailable";
+
+        public const string CurationGenerationExhausted = "Lexicon.CurationGenerationExhausted";
+
+        public const string ArtifactRevisionExhausted = "Lexicon.ArtifactRevisionExhausted";
 
         public const string NotFound = "Lexicon.NotFound";
 

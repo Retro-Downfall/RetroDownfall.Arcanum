@@ -89,7 +89,7 @@ internal static partial class CliCommandTree
                     ActiveSession(sp, pr.GetValue(explainSession)),
                     ct).ConfigureAwait(false));
 
-        Command lexicon = new("lexicon", "Inspect or explicitly delete Lexicon entities.");
+        Command lexicon = new("lexicon", "Inspect, curate, or explicitly delete Lexicon entities.");
 
         Command lexiconList = new("list", "List Lexicon entities.");
 
@@ -97,16 +97,21 @@ internal static partial class CliCommandTree
             async (ParseResult pr, CancellationToken ct) =>
                 await handler.LexiconList(ct).ConfigureAwait(false));
 
-        Command lexiconShow = new("show", "Show a Lexicon entity by name.");
+        Command lexiconShow = new("show", "Show one exact Global or Campaign Lexicon entity and its curation target.");
 
         Argument<string> showName = new("name") { Description = "Lexicon entity name." };
 
+        Option<Guid?> showCampaign = LexiconCampaignOption();
+
         lexiconShow.Add(showName);
+
+        lexiconShow.Add(showCampaign);
 
         lexiconShow.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
                 await handler.LexiconShow(
                     pr.GetValue(showName)!,
+                    pr.GetValue(showCampaign),
                     ct).ConfigureAwait(false));
 
         Command lexiconSearch = new("search", "Search Lexicon names, types, and facts.");
@@ -141,6 +146,38 @@ internal static partial class CliCommandTree
 
         lexicon.Add(lexiconDelete);
 
+        Command lexiconCorrect = new("correct", "Replace the type and complete facts of one exact Lexicon entry after inspection.");
+
+        Argument<string> correctName = new("name") { Description = "Lexicon entity name." };
+
+        Option<Guid?> correctCampaign = LexiconCampaignOption();
+
+        Option<string> correctFile = new("--file", "-f")
+        {
+            Required = true,
+            Description = "Read replacement JSON containing type and facts from this path, or use - for stdin (requires --yes).",
+        };
+
+        lexiconCorrect.Add(correctName);
+
+        lexiconCorrect.Add(correctCampaign);
+
+        lexiconCorrect.Add(correctFile);
+
+        lexiconCorrect.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.LexiconCorrect(pr.GetValue(correctName)!, pr.GetValue(correctCampaign),
+                pr.GetValue(correctFile)!, ct).ConfigureAwait(false));
+
+        lexicon.Add(lexiconCorrect);
+
+        AddLexiconMutation(lexicon, "retire", "Remove an exact Lexicon entry from retrieval while retaining it for inspection.", handler.LexiconRetire);
+
+        AddLexiconMutation(lexicon, "reinstate", "Make a retired exact Lexicon entry eligible for retrieval again.", handler.LexiconReinstate);
+
+        AddLexiconMutation(lexicon, "pin", "Protect an exact Lexicon entry from automatic retention pruning.", handler.LexiconPin);
+
+        AddLexiconMutation(lexicon, "unpin", "Release an exact Lexicon entry's protection from automatic retention pruning.", handler.LexiconUnpin);
+
         memory.Add(status);
 
         memory.Add(sources);
@@ -164,6 +201,30 @@ internal static partial class CliCommandTree
         Arity = ArgumentArity.ZeroOrOne,
         Description = "Optional session GUID, exact title, or unique title prefix.",
     };
+
+    private static Option<Guid?> LexiconCampaignOption() => new("--campaign", "-C")
+    {
+        Description = "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+    };
+
+    private static void AddLexiconMutation(Command lexicon, string verb, string description,
+        Func<string, Guid?, CancellationToken, Task<int>> handler)
+    {
+        Command command = new(verb, description);
+
+        Argument<string> name = new("name") { Description = "Lexicon entity name." };
+
+        Option<Guid?> campaign = LexiconCampaignOption();
+
+        command.Add(name);
+
+        command.Add(campaign);
+
+        command.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler(pr.GetValue(name)!, pr.GetValue(campaign), ct).ConfigureAwait(false));
+
+        lexicon.Add(command);
+    }
 
     /// <summary>
     /// The <c>memory saga</c> subgroup: curation over one Saga memory at a time.
