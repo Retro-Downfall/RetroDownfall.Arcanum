@@ -2753,7 +2753,7 @@ internal sealed partial class DataRetentionService(
     /// Every table a whole-store reset clears, in delete order.
     /// </summary>
     /// <remarks>
-    /// The Annals steps carry a predicate rather than clearing their tables outright, because the four
+    /// The Annals steps carry a predicate rather than clearing their tables outright, because the shared
     /// tables hold both stores' claims: resetting Saga must leave the Lexicon's claims exactly where they
     /// were, and a bare <c>DELETE FROM annal_claims</c> would take both. Their order and their predicates
     /// come from <see cref="AnnalsErasurePlan"/>, which the claim writer also reads, so a store reset and

@@ -52,6 +52,57 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class MemoryEndpointTests
 {
+    [SkippableFact]
+    public async Task Explain_excludes_retired_Lexicon_rows_while_operator_inspection_keeps_them()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        await using CorrectionFixture owner = new(grimoire);
+
+        await owner.SeedAsync();
+
+        LexiconEntryDetail before = await owner.ShowAsync();
+
+        Assert.True((await owner.Service.RetireAsync(before.Target, null)).IsSuccess);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<ILexiconCurationService>(owner.Service),
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage explained = await client.GetAsync("/api/memory/explain");
+
+        ApiResponse<MemoryExplainDto>? explain = await ReadAsync(explained, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.False(EligibleSource(explain!.Data!, "Lexicon"));
+
+        using HttpResponseMessage listed = await client.GetAsync("/api/memory/lexicon");
+
+        ApiResponse<LexiconListDto>? list = await ReadAsync(listed, ArcanumJsonContext.Default.ApiResponseLexiconListDto);
+
+        Assert.Equal(LexiconRetrievalEligibility.Retired, Assert.Single(list!.Data!.Entries).Eligibility);
+
+        using HttpResponseMessage sourced = await client.GetAsync("/api/memory/sources");
+
+        ApiResponse<MemorySourcesDto>? sources = await ReadAsync(sourced, ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
+
+        Assert.Equal(1, Assert.Single(sources!.Data!.Sources, source => source.Name == "Lexicon").Count);
+
+        LexiconEntryDetail retired = await owner.ShowAsync();
+
+        Assert.True((await owner.Service.ReinstateAsync(retired.Target, null)).IsSuccess);
+
+        using HttpResponseMessage reinstated = await client.GetAsync("/api/memory/explain");
+
+        ApiResponse<MemoryExplainDto>? active = await ReadAsync(reinstated, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.True(EligibleSource(active!.Data!, "Lexicon"));
+    }
+
     [SkippableTheory]
     [InlineData(false, "purged")]
     [InlineData(true, "purged")]

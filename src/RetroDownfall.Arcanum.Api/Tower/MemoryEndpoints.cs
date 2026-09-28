@@ -262,7 +262,8 @@ internal static class MemoryEndpoints
         RespondToLexiconInspectionAsync(
             context.RequestServices.GetRequiredService<ILexiconCurationService>(),
             context,
-            entries => BuildExplainAsync(sessionId, db, options, context, entries.Count),
+            entries => BuildExplainAsync(sessionId, db, options, context,
+                entries.Count(static entry => entry.Eligibility == LexiconRetrievalEligibility.Eligible)),
             ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
 
     private static async Task<Result<MemoryExplainDto>> BuildExplainAsync(

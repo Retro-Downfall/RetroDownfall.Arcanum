@@ -12,6 +12,7 @@ internal static class ArcanumErrorMapper
         errorCode switch
         {
             ErrorCodes.Lexicon.InvalidName
+                or ErrorCodes.Lexicon.InvalidFact
                 or ErrorCodes.Lexicon.InvalidScope
                 or ErrorCodes.Lexicon.InvalidCurationTarget
                 or ErrorCodes.Lexicon.InvalidReplacement =>

@@ -93,6 +93,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Connection.Unreachable, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Saga.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Lexicon.InvalidName, 400)]
+    [InlineData(ErrorCodes.Lexicon.InvalidFact, 400)]
     [InlineData(ErrorCodes.Lexicon.InvalidScope, 400)]
     [InlineData(ErrorCodes.Lexicon.InvalidCurationTarget, 400)]
     [InlineData(ErrorCodes.Lexicon.InvalidReplacement, 400)]

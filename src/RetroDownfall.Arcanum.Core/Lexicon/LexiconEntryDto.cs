@@ -7,8 +7,8 @@ public sealed record LexiconFactProvenance(
     AttachmentMemoryProvenance Source);
 
 /// <summary>
-/// A single Lexicon entity surfaced to MCP tools, the inference pipeline, and (later) Minimal APIs.
-/// Mirrors the <c>lexicon_entries</c> raw-SQL table (see <c>Infrastructure/Data/Schema/Tables/lexicon_entries.sql</c>) one-to-one,
+/// A single Lexicon entity surfaced to MCP tools, the inference pipeline, and authenticated memory APIs.
+/// Projects the <c>lexicon_entries</c> raw-SQL table (see <c>Infrastructure/Data/Schema/Tables/lexicon_entries.sql</c>) with explicit lifecycle and retrieval eligibility,
 /// with <c>FactsJson</c> deserialized into the <c>Facts</c> string array.
 /// </summary>
 public sealed record LexiconEntryDto(

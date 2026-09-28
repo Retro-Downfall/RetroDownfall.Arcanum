@@ -592,7 +592,7 @@ Inspects and deletes long-term associative Saga memory. These commands do not me
 
 Inspect distinct Arcanum memory sources and retention policies.
 
-Provides read-only cross-store inspection, explicit Lexicon deletion, and per-memory curation over one named Saga memory at a time. Search results retain their source scope; there is intentionally no generic delete-all-memory command, and every curation verb names the one store it changes both in what it asks and in what it reports. Each Saga curation verb that writes asks for confirmation first, naming the memory and saying that no other memory store is touched; the global `--yes` approves them for automation.
+Provides read-only cross-store inspection, explicit Lexicon deletion, and curation over one named Lexicon or Saga memory at a time. Search results retain their source scope; there is intentionally no generic delete-all-memory command. Every curation mutation names its store and measured subject before confirmation; global `--yes` approves the prompt for automation.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -600,9 +600,14 @@ Provides read-only cross-store inspection, explicit Lexicon deletion, and per-me
 | `arcanum memory sources [<session>]` | Describe provenance and retention for every memory source. | None beyond global or inherited family options. |
 | `arcanum memory search <query>` | Search persisted memory with an explicit or displayed scope. | `--scope <scope>` — session, attachments, workspace, saga, lexicon, or all (default).<br>`--session <session>` — Optional session GUID, exact title, or unique title prefix.<br>`--workspace <workspace>` — Optional workspace ID; omit to search every indexed workspace. |
 | `arcanum memory explain [<session>]` | Explain what can be eligible for the next turn and why, and name the Campaign scope a turn would draw memory from before one runs. The sentence is printed even when nothing is narrowed, because "every memory on the installation is a candidate" is the fact most worth stating plainly. `arcanum memory status` prints the same sentence, and `arcanum memory search` reports it once per search. | None beyond global or inherited family options. |
-| `arcanum memory lexicon [command]` | Inspect or explicitly delete Lexicon entities. | None beyond global or inherited family options. |
+| `arcanum memory lexicon [command]` | Inspect, curate, or explicitly delete Lexicon entities. | None beyond global or inherited family options. |
 | `arcanum memory lexicon list` | List Lexicon entities. | None beyond global or inherited family options. |
-| `arcanum memory lexicon show <name>` | Show a Lexicon entity by name. | None beyond global or inherited family options. |
+| `arcanum memory lexicon show <name>` | Inspect one exact Global or Campaign entry, including retired content, current provenance, lifecycle, eligibility, curation target, and Annals evidence. | `--campaign`, `-C <id>` — exact nonempty Campaign GUID; omitted means exact Global. |
+| `arcanum memory lexicon correct <name> --file <path\|->` | Replace the type and complete ordered facts after exact inspection and confirmation. | `--file`, `-f <path\|->` — required JSON file or literal `-` for stdin; stdin requires `--yes`.<br>`--campaign`, `-C <id>` — exact Campaign; omitted means exact Global. |
+| `arcanum memory lexicon retire <name>` | Remove one exact entry from operational retrieval, keeping its content and history inspectable. | `--campaign`, `-C <id>` — exact Campaign; omitted means exact Global. |
+| `arcanum memory lexicon reinstate <name>` | Restore one retired exact entry's eligibility and Campaign shadowing. | `--campaign`, `-C <id>` — exact Campaign; omitted means exact Global. |
+| `arcanum memory lexicon pin <name>` | Exempt one exact entry from automatic retention pruning. | `--campaign`, `-C <id>` — exact Campaign; omitted means exact Global. |
+| `arcanum memory lexicon unpin <name>` | Release one exact entry's automatic-retention exemption. | `--campaign`, `-C <id>` — exact Campaign; omitted means exact Global. |
 | `arcanum memory lexicon search <query>` | Search Lexicon names, types, and facts. | None beyond global or inherited family options. |
 | `arcanum memory lexicon delete <name>` | Delete one explicitly named Lexicon entity. | None beyond global or inherited family options. |
 | `arcanum memory saga [command]` | Curate one Saga memory: read it, correct it, and decide whether retrieval and retention keep it. Distinct from the top-level `arcanum saga`, which is that store's own read-and-delete surface and answers what is in there rather than what has been decided about one memory. | None beyond global or inherited family options. |
@@ -612,6 +617,32 @@ Provides read-only cross-store inspection, explicit Lexicon deletion, and per-me
 | `arcanum memory saga reinstate <id> --expected-content-hash <hex>` | Put a retired Saga memory back into retrieval. Reinstating a memory that was never retired succeeds on the same terms as an already-retired retirement, and reports which of the two happened. | None beyond global or inherited family options. |
 | `arcanum memory saga pin <id>` | Mark one Saga memory durable, so retention will not prune it. Takes no content hash: a pin is not a statement about what a memory says, and requiring proof of the text would make pinning fail after an unrelated correction. | None beyond global or inherited family options. |
 | `arcanum memory saga unpin <id>` | Release a pin, so retention may prune this memory again. | None beyond global or inherited family options. |
+
+#### Exact Lexicon curation
+
+The six Lexicon curation verbs use authenticated static POSTs. Omitted `--campaign` means exact Global even when saved or active context names a Campaign. `--campaign` selects that exact Campaign and never falls back to Global. The existing effective GET API still supports Campaign-to-Global lookup; it is not the curation command's show route. List/search retain retired entries with lifecycle markers, while `memory explain` requires an eligible active row before describing Lexicon as a next-turn candidate. Legacy `lexicon delete` remains a separate hard-delete command and has no `--campaign` option in the registered tree.
+
+Correction JSON supplies the complete replacement, for example:
+
+```json
+{"type":"Person","facts":["Uses dark mode.","Prefers concise replies."]}
+```
+
+```bash
+arcanum memory lexicon show Operator --json
+arcanum memory lexicon correct Operator --file correction.json
+arcanum memory lexicon correct Operator --file - --yes --json < correction.json
+arcanum memory lexicon retire Operator --campaign 12345678-1234-1234-1234-123456789abc
+arcanum memory lexicon reinstate Operator --yes
+arcanum memory lexicon pin Operator --yes
+arcanum memory lexicon unpin Operator --yes
+```
+
+The CLI validates file access and JSON content before exact show or confirmation. Literal `--file -` requires `--yes` before reading stdin or making any request because consuming input to EOF leaves no confirmation channel. Missing file, unreadable input, malformed JSON, empty type, or a fact set with no nonempty fact is a local input failure. Correction does not accept replacement facts in argv. It trims type/facts and drops empty/exact duplicate facts; it neither merges with the old facts nor renames/moves the entry.
+
+Each mutation calls exact show, renders the measured entry, lifecycle, version evidence and intended effect, confirms unless `--yes`, and forwards the returned target unchanged. `--yes` skips only the prompt. Decline sends no mutation and exits successfully. A stale-target conflict requires a fresh inspection; the CLI never retries against a new target automatically. Retired entries must be reinstated before correction. Pins protect automatic pruning but permit operator correction, retirement, explicit deletion, and resets.
+
+All direct options remain available, including `--json`, `--plain`, `--yes`, and `--no-context`. Under `--json`, stdout contains exactly one result document: `LexiconEntryDetail` for show or decline, `LexiconCurationResult` for a successful mutation, and the existing error shape for failure. Preflight/effect text, prompts, and diagnostics go to stderr. Exit codes are 0 for success (including unchanged/desired-state outcomes and decline), 1 for domain/host refusal, 2 for invalid command/configuration/input, 3 for connection failures, and 130 for cancellation. The CLI does not ask the operator to transcribe hashes or generation fields.
 
 #### Dedicated Covenant management commands (nine registered, the rest contract-frozen)
 
