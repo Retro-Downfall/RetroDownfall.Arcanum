@@ -43,6 +43,9 @@ internal static class BackupRestoreProtectedStateInspector
     /// </remarks>
     internal static readonly string[] CanonicalContentTables =
     [
+        "covenant_review_decision_receipts",
+        "covenant_review_markers",
+        "covenant_review_events",
         "covenant_search_outbox",
         "covenant_curation_receipts",
         "covenant_curation_heads",

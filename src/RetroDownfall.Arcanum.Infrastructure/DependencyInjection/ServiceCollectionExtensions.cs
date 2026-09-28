@@ -31,6 +31,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -53,6 +54,7 @@ using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Pattern;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
@@ -1362,6 +1364,8 @@ public static class ServiceCollectionExtensions
         // does not.
         services.AddScoped<ISagaCurationService, SagaCurationService>();
 
+        services.AddScoped<ISagaMemoryReviewService, SagaMemoryReviewService>();
+
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
         services.AddScoped<LexiconService>();
@@ -1370,6 +1374,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILexiconCurationService>(provider => provider.GetRequiredService<LexiconService>());
 
+        services.AddScoped<ILexiconMemoryReviewService>(provider => provider.GetRequiredService<LexiconService>());
+
         services.AddScoped<IAnnalsStore, AnnalsStore>();
 
         // One owner for the Campaign-scoped-memory gate, so retrieval and every inspection surface
@@ -1377,6 +1383,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IMemoryScopeResolver, MemoryScopeResolver>();
 
         services.AddSingleton(TimeProvider.System);
+
+        services.AddSingleton<IMemoryReviewTokenCodec>(static provider =>
+            new MemoryReviewTokenCodec(provider.GetRequiredService<TimeProvider>()));
+
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
         // internal, so the composed constructor cannot be reached by a reflective activator.
         services.AddScoped<IGrimoireRepository>(
@@ -1909,7 +1919,9 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantOperationGate>(),
             sp.GetRequiredService<ICovenantAvailability>(),
             sp.GetRequiredService<ICovenantEnvelopeCodec>(),
-            sp.GetRequiredService<ICampaignAvailabilityReader>()));
+            sp.GetRequiredService<ICampaignAvailabilityReader>(),
+            sp.GetRequiredService<ICovenantSearchIndex>(),
+            sp.GetRequiredService<CovenantSearchQueryCompiler>()));
 
         // The operator's write path. Scoped because it borrows the caller's own connection and lease
         // for the life of one request; a singleton would outlive both.
@@ -1921,6 +1933,14 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
+            sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped<ICovenantMemoryReviewService>(static sp => new CovenantMemoryReviewService(
+            sp.GetRequiredService<ICovenantConnectionSource>(),
+            sp.GetRequiredService<ICovenantCompiler>(),
+            sp.GetRequiredService<IMemoryReviewTokenCodec>(),
+            sp.GetRequiredService<CovenantMutationKernel>(),
+            sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<TimeProvider>()));
 
         services.AddScoped<ICovenantContextProvider>(

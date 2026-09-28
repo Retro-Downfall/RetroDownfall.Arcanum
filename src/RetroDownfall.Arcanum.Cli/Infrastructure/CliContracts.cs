@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -86,6 +87,12 @@ public sealed record CliErrorPayload(
     string Error,
     int ExitCode);
 
+public sealed record MemoryReviewCancellationPayload(
+    MemoryReviewStore Store,
+    Guid RequestId,
+    MemoryReviewAction Action,
+    bool Cancelled);
+
 public sealed record SessionShowPayload(
     Guid Id,
     Guid? CampaignId,
@@ -133,7 +140,8 @@ public sealed record CovenantListPayload(
     CovenantEntryPayload[] Entries,
     string? NextCursor,
     bool Truncated,
-    CovenantSearchHealthDto Search);
+    CovenantSearchHealthDto Search,
+    CovenantPageTruncation? TruncationReason = null);
 
 /// <summary>
 /// One scoped key with both lanes, and its history when <c>--history</c> was asked for.
@@ -1045,6 +1053,7 @@ internal static class CliFailureMapper
     WriteIndented = false)]
 [JsonSerializable(typeof(CliTextPayload))]
 [JsonSerializable(typeof(CliErrorPayload))]
+[JsonSerializable(typeof(MemoryReviewCancellationPayload))]
 [JsonSerializable(typeof(CliContextStatusPayload))]
 [JsonSerializable(typeof(CliContextMutationResult))]
 [JsonSerializable(typeof(SessionShowPayload))]

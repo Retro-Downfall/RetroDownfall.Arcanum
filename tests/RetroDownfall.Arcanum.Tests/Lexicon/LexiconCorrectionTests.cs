@@ -690,7 +690,10 @@ internal sealed class CorrectionFixture : IAsyncDisposable
 
     internal SqliteConnection Connection => (SqliteConnection)_db.Database.GetDbConnection();
 
-    internal CorrectionFixture(GrimoireFixture fixture, bool annals = false)
+    internal CorrectionFixture(
+        GrimoireFixture fixture,
+        bool annals = false,
+        RetroDownfall.Arcanum.Core.Memory.IMemoryReviewTokenCodec? reviewTokenCodec = null)
     {
         Path = fixture.CopyDatabase();
 
@@ -699,7 +702,7 @@ internal sealed class CorrectionFixture : IAsyncDisposable
         Settings = new ArcanumSettings { Features = new FeatureSettings { Annals = annals } };
 
         Concrete = new LexiconService(_db, Logger,
-            new TestOptionsMonitor<ArcanumSettings>(Settings));
+            new TestOptionsMonitor<ArcanumSettings>(Settings), reviewTokenCodec: reviewTokenCodec);
     }
 
     internal async Task<LexiconEntryDetail> SeedAsync()

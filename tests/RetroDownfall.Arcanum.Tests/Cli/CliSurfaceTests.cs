@@ -299,18 +299,28 @@ public sealed class CliSurfaceTests
     /// is read by someone rather than absorbed.
     /// </remarks>
     [Fact]
-    public void The_covenant_heading_states_the_number_of_verbs_the_tree_registers()
+    public void The_covenant_heading_states_the_direct_verbs_and_review_branch_the_tree_registers()
     {
-        int registered = Walk(BuildMap())
-            .Count(static command =>
-                command.Path.StartsWith("memory covenant ", StringComparison.Ordinal));
+        CliSurfaceCommand covenant = Assert.Single(
+            Walk(BuildMap()),
+            static command => command.Path == "memory covenant");
+
+        int directVerbs = covenant.Commands.Count(static command => command.Name != "review");
+
+        CliSurfaceCommand review = Assert.Single(
+            covenant.Commands,
+            static command => command.Name == "review");
 
         string reference = File.ReadAllText(CommandReferencePath());
 
-        Assert.Equal(9, registered);
+        Assert.Equal(10, directVerbs);
+
+        Assert.Equal(
+            ["apply", "list"],
+            review.Commands.Select(static command => command.Name).Order(StringComparer.Ordinal));
 
         Assert.Contains(
-            $"#### Dedicated Covenant management commands ({NumberWord(registered)} registered, the rest contract-frozen)",
+            $"#### Dedicated Covenant management commands ({NumberWord(directVerbs)} direct verbs plus review, the rest contract-frozen)",
             reference,
             StringComparison.Ordinal);
     }

@@ -114,9 +114,11 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.Core, 9),
                         (GrimoireSchemaTransactionTier.Core, 10),
                         (GrimoireSchemaTransactionTier.Core, 11),
+                        (GrimoireSchemaTransactionTier.Core, 12),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 2),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 3),
                         (GrimoireSchemaTransactionTier.CovenantCanonical, 4),
+                        (GrimoireSchemaTransactionTier.CovenantCanonical, 5),
                     ]);
             });
 
@@ -249,6 +251,11 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "lexicon_fts_repopulate_active",
                 "grimoire_utc_instant_columns_drop",
                 "grimoire_utc_instant_columns",
+                "annal_review_events",
+                "annal_review_decision_receipts",
+                "annal_review_markers",
+                "annal_review_events_head_insert",
+                "annal_review_events_head_update",
                 "covenant_curation_versions",
                 "covenant_curation_versions_head_candidate_index",
                 "covenant_curation_versions_global_revision_index",
@@ -303,6 +310,11 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "covenant_version_attachment_provenance_guard_delete",
                 "covenant_version_attachment_provenance_guard_update",
                 "covenant_utc_instant_columns",
+                "covenant_review_events",
+                "covenant_review_decision_receipts",
+                "covenant_review_markers",
+                "covenant_review_events_head_insert",
+                "covenant_review_events_head_update",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }

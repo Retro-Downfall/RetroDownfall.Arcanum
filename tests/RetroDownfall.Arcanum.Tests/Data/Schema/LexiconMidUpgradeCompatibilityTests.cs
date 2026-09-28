@@ -233,7 +233,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM annal_versions;"));
 
-        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
 
         var retried = await InvokeAsync();
 
@@ -280,7 +280,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
         {
             await measured.Task.WaitAsync(TimeSpan.FromSeconds(20));
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
 
             await using SqliteTransaction transaction = connection.BeginTransaction();
 
@@ -403,7 +403,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
             if (pinAfterUpgrade)
             {
-                _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+                _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
 
                 LexiconService lexicon = CreateService(db);
 
@@ -456,7 +456,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
         if (missingDeclaredTable)
         {
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
 
             await ExecuteAsync(connection, "DROP TABLE lexicon_annal_fact_provenance;");
         }
@@ -563,7 +563,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
         await SeedAsync(connection);
 
-        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
 
         if (missingTable)
         {
@@ -622,7 +622,7 @@ public sealed class LexiconMidUpgradeCompatibilityTests
         if (version == 2)
         {
             GrimoireSchemaInstallResult pending = await GrimoireSchemaTestInstaller.InstallAsync(
-                connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+                connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
 
             Assert.Equal(GrimoireSchemaTierHealth.TransitionIncomplete, pending.Core.Health);
 

@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Memory;
 
@@ -89,6 +90,31 @@ public sealed record MemorySearchRequest(
     string? WorkspaceId = null,
     int? Limit = null);
 
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<MemorySearchActionKind>))]
+public enum MemorySearchActionKind
+{
+    ShowSagaMemory = 1,
+    ShowLexiconEntry = 2,
+}
+
+public sealed record MemorySagaTargetDto(string MemoryId);
+
+public sealed record MemoryLexiconTargetDto(
+    string Name,
+    LexiconCurationScope Scope);
+
+/// <summary>
+/// A typed handoff to the owning store's exact inspection operation.
+/// </summary>
+/// <remarks>
+/// This is deliberately not a shell command. API consumers choose how to present or invoke the
+/// operation, and search results from stores without an exact inspection handoff leave it absent.
+/// </remarks>
+public sealed record MemorySearchActionDto(
+    MemorySearchActionKind Kind,
+    MemorySagaTargetDto? Saga = null,
+    MemoryLexiconTargetDto? Lexicon = null);
+
 public sealed record MemorySearchResultDto(
     MemorySearchScope Scope,
     string Title,
@@ -98,7 +124,8 @@ public sealed record MemorySearchResultDto(
     string SourceId,
     MemoryCampaignScopeDto? CampaignScope = null,
     LexiconEntryLifecycle? LexiconLifecycle = null,
-    LexiconRetrievalEligibility? LexiconEligibility = null);
+    LexiconRetrievalEligibility? LexiconEligibility = null,
+    MemorySearchActionDto? Action = null);
 
 /// <summary>
 /// What one scope contributed, and whether it had more to give. Scopes are consulted in order against

@@ -23,7 +23,7 @@ public sealed class LexiconCurationEvolutionTests
 
         await SeedAsync(connection);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 11);
+        await InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 11);
 
         Assert.Null(await ScalarAsync(connection, "SELECT RetiredAtUtc FROM lexicon_entries"));
 
@@ -360,7 +360,7 @@ public sealed class LexiconCurationEvolutionTests
             await InstallAsync(connection, CoreSchemaVersionTenFixture.ChainSet(), 10);
         }
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 11);
+        await InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 11);
     }
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)

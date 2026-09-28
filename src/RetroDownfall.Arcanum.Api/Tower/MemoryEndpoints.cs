@@ -148,6 +148,8 @@ internal static class MemoryEndpoints
         .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteLexiconEntry");
 
+        apiGroup.MapMemoryReviewEndpoints();
+
         return apiGroup;
     }
 
@@ -1292,7 +1294,10 @@ internal static class MemoryEndpoints
                 provenance,
                 SagaRetention,
                 memory.Id,
-                reported));
+                reported,
+                Action: new MemorySearchActionDto(
+                    MemorySearchActionKind.ShowSagaMemory,
+                    Saga: new MemorySagaTargetDto(memory.Id))));
         }
     }
 
@@ -1341,7 +1346,14 @@ internal static class MemoryEndpoints
                 LexiconRetention,
                 entry.Id.ToString("D"),
                 LexiconLifecycle: new LexiconEntryLifecycle(entry.RetiredAtUtc, entry.PinnedAtUtc),
-                LexiconEligibility: entry.Eligibility));
+                LexiconEligibility: entry.Eligibility,
+                Action: new MemorySearchActionDto(
+                    MemorySearchActionKind.ShowLexiconEntry,
+                    Lexicon: new MemoryLexiconTargetDto(
+                        entry.Name,
+                        entry.ScopeCampaignId is { } campaignId
+                            ? new LexiconCurationScope(LexiconScopeKind.Campaign, campaignId)
+                            : new LexiconCurationScope(LexiconScopeKind.Global, null)))));
 
             taken++;
         }

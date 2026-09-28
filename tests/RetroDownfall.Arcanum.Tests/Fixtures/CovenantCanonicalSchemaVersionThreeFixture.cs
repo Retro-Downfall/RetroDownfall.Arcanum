@@ -13,6 +13,7 @@ internal static class CovenantCanonicalSchemaVersionThreeFixture
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
         .. GrimoireSchemaCatalog.CovenantCanonicalObjects
+            .Where(static definition => !definition.Name.StartsWith("covenant_review_", StringComparison.Ordinal))
             .Where(static definition => definition.Name != "covenant_utc_instant_columns"),
     ];
 

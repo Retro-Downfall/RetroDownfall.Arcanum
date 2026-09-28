@@ -117,6 +117,12 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Saga.StaleContent, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Saga.AlreadyRetired, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Saga.EmbeddingUnavailable, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.MemoryReview.InvalidToken, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.MemoryReview.InvalidTokenFacts, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.MemoryReview.StaleObservation, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryReview.UnseenObservation, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryReview.RequestReuse, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.MemoryReview.IntegrityFailure, StatusCodes.Status500InternalServerError)]
     // A malformed expected-content hash is a request-shape problem, and the curation service is the
     // caller that raises it. Unmapped, it reached the operator as a 500 saying Arcanum broke.
     [InlineData(ErrorCodes.Validation.InvalidFields, StatusCodes.Status400BadRequest)]

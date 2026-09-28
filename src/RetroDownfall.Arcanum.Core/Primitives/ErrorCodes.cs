@@ -922,6 +922,22 @@ public static class ErrorCodes
         public const string InvalidConfig = "Sanctum.InvalidConfig";
     }
 
+    /// <summary>Cross-store exact-version review workflow.</summary>
+    public static class MemoryReview
+    {
+        public const string InvalidToken = "MemoryReview.InvalidToken";
+
+        public const string InvalidTokenFacts = "MemoryReview.InvalidTokenFacts";
+
+        public const string StaleObservation = "MemoryReview.StaleObservation";
+
+        public const string UnseenObservation = "MemoryReview.UnseenObservation";
+
+        public const string RequestReuse = "MemoryReview.RequestReuse";
+
+        public const string IntegrityFailure = "MemoryReview.IntegrityFailure";
+    }
+
     /// <summary>
     /// Covenant — the durable operator-and-agent profile, its authority boundary, and its tiers.
     /// </summary>

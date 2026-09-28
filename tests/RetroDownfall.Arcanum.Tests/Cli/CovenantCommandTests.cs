@@ -414,6 +414,91 @@ public sealed class CovenantCommandTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Search_posts_protected_text_and_follows_the_typed_query_cursor()
+    {
+        RecordingHandler handler = new() { ListPages = 2 };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Search(
+            "dark mode",
+            campaignId: null,
+            allScopes: false,
+            lane: null,
+            CovenantLifecycle.Set,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Equal(
+            ["POST /api/memory/covenant/query", "POST /api/memory/covenant/query"],
+            handler.Requests);
+
+        Assert.Contains("\"query\":\"dark mode\"", handler.Bodies[0], StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("\"cursor\":\"cursor-1\"", handler.Bodies[1], StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("preference.page1", string.Join("\n", dispatcher.Payloads), StringComparison.Ordinal);
+
+        Assert.Contains("preference.page2", string.Join("\n", dispatcher.Payloads), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Json_search_preserves_server_truncation_when_no_cursor_can_continue_it()
+    {
+        RecordingHandler handler = new()
+        {
+            ServerTruncated = true,
+            ServerTruncationReason = CovenantPageTruncation.FallbackCandidateCapReached,
+        };
+
+        CliTestResult result = await RunCliAsync(
+            handler,
+            ["memory", "covenant", "search", "dark mode", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.True(document.RootElement.GetProperty("truncated").GetBoolean());
+
+        Assert.Equal(
+            nameof(CovenantPageTruncation.FallbackCandidateCapReached),
+            document.RootElement.GetProperty("truncationReason").GetString());
+    }
+
+    [Fact]
+    public async Task Human_search_warns_when_the_server_truncated_without_a_continuation()
+    {
+        RecordingHandler handler = new()
+        {
+            ServerTruncated = true,
+            ServerTruncationReason = CovenantPageTruncation.FallbackCandidateCapReached,
+        };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        int exitCode = await commands.Search(
+            "dark mode",
+            campaignId: null,
+            allScopes: false,
+            lane: null,
+            CovenantLifecycle.Set,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        string diagnostics = string.Join("\n", dispatcher.Diagnostics);
+
+        Assert.Contains("incomplete", diagnostics, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            nameof(CovenantPageTruncation.FallbackCandidateCapReached),
+            diagnostics,
+            StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// A reactivating write says so on both halves of the protocol.
     /// </summary>
@@ -1210,6 +1295,10 @@ public sealed class CovenantCommandTests : IDisposable
         /// <summary>How many list pages exist before the cursor runs out.</summary>
         internal int ListPages { get; init; } = 1;
 
+        internal bool ServerTruncated { get; init; }
+
+        internal CovenantPageTruncation ServerTruncationReason { get; init; } = CovenantPageTruncation.None;
+
         private int _listCalls;
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -1241,7 +1330,8 @@ public sealed class CovenantCommandTests : IDisposable
                 // confirmation path exists to catch.
                 body = Preflight(HeadRevision, ExpectedRevisionOf(Bodies[^1]));
             }
-            else if (path.EndsWith("list", StringComparison.Ordinal))
+            else if (path.EndsWith("list", StringComparison.Ordinal)
+                || path.EndsWith("query", StringComparison.Ordinal))
             {
                 _listCalls++;
 
@@ -1468,10 +1558,10 @@ public sealed class CovenantCommandTests : IDisposable
                             CovenantSearchHealthState.Healthy,
                             CovenantSearchExecutionMode.CanonicalFallback,
                             CovenantSearchRebuildGuidance.None),
-                        call < ListPages,
+                        call < ListPages || ServerTruncated,
                         call < ListPages
                             ? CovenantPageTruncation.PageSizeReached
-                            : CovenantPageTruncation.None)),
+                            : ServerTruncationReason)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantPageDto);
     }

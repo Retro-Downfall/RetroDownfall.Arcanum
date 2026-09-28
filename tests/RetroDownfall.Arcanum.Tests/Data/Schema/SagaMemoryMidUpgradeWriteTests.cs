@@ -193,7 +193,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             Assert.Single(await store.GetVersionsAsync(legacy.ClaimId, CancellationToken.None)).ContentHashFormat);
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(
-            connection, GrimoireSchemaVersionChains.Default, TestDimensions, CancellationToken.None);
+            connection, CoreSchemaVersionElevenFixture.ChainSet(), TestDimensions, CancellationToken.None);
 
         await using (SqliteTransaction transaction = connection.BeginTransaction())
         {

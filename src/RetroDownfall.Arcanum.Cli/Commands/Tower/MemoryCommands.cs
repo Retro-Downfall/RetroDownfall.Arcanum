@@ -373,6 +373,29 @@ public sealed partial class MemoryCommands(
                 dispatcher.WritePayload($"  {LexiconLifecycleText(match.LexiconLifecycle, match.LexiconEligibility)}");
             }
 
+            if (match.Action is { } action)
+            {
+                switch (action)
+                {
+                    case { Kind: MemorySearchActionKind.ShowSagaMemory, Saga: { } saga }:
+                        dispatcher.WritePayload("  Next action: show Saga memory");
+                        dispatcher.WritePayload($"  Memory id: {saga.MemoryId}");
+                        break;
+
+                    case { Kind: MemorySearchActionKind.ShowLexiconEntry, Lexicon: { } lexicon }:
+                        dispatcher.WritePayload("  Next action: show Lexicon entry");
+                        dispatcher.WritePayload($"  Name: {lexicon.Name}");
+                        dispatcher.WritePayload(
+                            lexicon.Scope.Kind is LexiconScopeKind.Campaign
+                                ? $"  Scope: Campaign {lexicon.Scope.CampaignId:D}"
+                                : "  Scope: Global");
+                        break;
+
+                    default:
+                        break;
+                }
+            }
+
         }
 
         if (result.Value.Results.Length == 0)

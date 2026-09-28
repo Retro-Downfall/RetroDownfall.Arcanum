@@ -102,6 +102,15 @@ public sealed partial class ArcanumApiClient
             ArcanumJsonContext.Default.ApiResponseCovenantPageDto,
             cancellationToken);
 
+    public Task<Result<CovenantPageDto>> QueryCovenantAsync(
+        CovenantQueryRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostCovenantAsync(
+            "api/memory/covenant/query",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CovenantQueryRequest),
+            ArcanumJsonContext.Default.ApiResponseCovenantPageDto,
+            cancellationToken);
+
     public Task<Result<CovenantDetailDto>> ShowCovenantAsync(
         CovenantDetailRequest request,
         CancellationToken cancellationToken = default) =>

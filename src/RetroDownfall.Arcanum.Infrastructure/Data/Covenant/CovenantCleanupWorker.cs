@@ -222,6 +222,13 @@ internal sealed class CovenantCleanupWorker(
         // trip the composite foreign keys the canonical tier relies on.
         await ExecuteAsync(
                 transaction,
+                "DELETE FROM covenant_review_markers WHERE CampaignId = $campaign;",
+                cancellationToken,
+                ("$campaign", campaign))
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+                transaction,
                 """
                 DELETE FROM covenant_version_attachment_provenance
                 WHERE VersionId IN (

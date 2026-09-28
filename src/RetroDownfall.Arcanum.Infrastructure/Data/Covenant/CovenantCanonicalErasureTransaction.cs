@@ -114,6 +114,9 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     /// </remarks>
     private static readonly string[] FamilyTablesInDeletionOrder =
     [
+        "covenant_review_decision_receipts",
+        "covenant_review_markers",
+        "covenant_review_events",
         "covenant_turn_receipts",
         "covenant_turn_receipt_aggregate",
         "covenant_mutation_receipts",

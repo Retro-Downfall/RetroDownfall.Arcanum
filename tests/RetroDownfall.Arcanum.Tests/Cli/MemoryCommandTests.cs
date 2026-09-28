@@ -106,6 +106,111 @@ public sealed class MemoryCommandTests
     }
 
     [Fact]
+    public void Generic_plain_search_renders_typed_store_specific_follow_ups()
+    {
+        MemorySearchResponse payload = new("visible", MemorySearchScope.All,
+        [
+            new(
+                MemorySearchScope.Session,
+                "Session",
+                "session content",
+                "session source",
+                "session retention",
+                "session-id"),
+            new(
+                MemorySearchScope.Saga,
+                "Saga",
+                "saga content",
+                "saga source",
+                "saga retention",
+                "saga-id",
+                Action: new MemorySearchActionDto(
+                    MemorySearchActionKind.ShowSagaMemory,
+                    Saga: new MemorySagaTargetDto("saga-id"))),
+            new(
+                MemorySearchScope.Lexicon,
+                "Lexicon",
+                "lexicon content",
+                "lexicon source",
+                "lexicon retention",
+                "lexicon-id",
+                Action: new MemorySearchActionDto(
+                    MemorySearchActionKind.ShowLexiconEntry,
+                    Lexicon: new MemoryLexiconTargetDto(
+                        "Operator",
+                        new LexiconCurationScope(LexiconScopeKind.Campaign, Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))))),
+        ]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("Next action: show Saga memory", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Memory id: saga-id", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Next action: show Lexicon entry",
+            result.Output,
+            StringComparison.Ordinal);
+
+        Assert.Contains("Name: Operator", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Scope: Campaign aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            result.Output,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Next: arcanum", result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Ada Lovelace")]
+    [InlineData("O'Brien")]
+    [InlineData("Operator; continue")]
+    [InlineData("$(whoami)")]
+    public void Generic_plain_search_renders_lexicon_follow_up_names_as_data(string name)
+    {
+        Guid campaignId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+
+        MemorySearchResponse payload = new("visible", MemorySearchScope.Lexicon,
+        [
+            new(
+                MemorySearchScope.Lexicon,
+                "Lexicon",
+                "lexicon content",
+                "lexicon source",
+                "lexicon retention",
+                "lexicon-id",
+                Action: new MemorySearchActionDto(
+                    MemorySearchActionKind.ShowLexiconEntry,
+                    Lexicon: new MemoryLexiconTargetDto(
+                        name,
+                        new LexiconCurationScope(LexiconScopeKind.Campaign, campaignId)))),
+        ]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("Next action: show Lexicon entry", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"Name: {name}", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"Scope: Campaign {campaignId:D}", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain($"arcanum memory lexicon show {name}", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Generic_plain_search_does_not_infer_eligibility_from_missing_lexicon_metadata()
     {
         MemorySearchResponse payload = new("visible", MemorySearchScope.All,

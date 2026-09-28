@@ -14,12 +14,14 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
@@ -35,9 +37,16 @@ internal sealed partial class LexiconService(
     ArcanumDbContext db,
     ILogger<LexiconService> logger,
     IOptionsMonitor<ArcanumSettings> options,
-    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ILexiconService, ILexiconCurationService
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
+    IMemoryReviewTokenCodec? reviewTokenCodec = null,
+    TimeProvider? reviewTimeProvider = null) : ILexiconService, ILexiconCurationService, ILexiconMemoryReviewService
 {
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
+
+    private readonly IMemoryReviewTokenCodec _reviewTokenCodec =
+        reviewTokenCodec ?? new MemoryReviewTokenCodec(TimeProvider.System);
+
+    private readonly TimeProvider _reviewTimeProvider = reviewTimeProvider ?? TimeProvider.System;
 
     private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId, RetiredAtUtc, PinnedAtUtc, CurationGeneration";
 

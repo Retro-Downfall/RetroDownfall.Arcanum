@@ -2677,6 +2677,11 @@ internal sealed partial class DataRetentionService(
         {
             MemoryResetScope.Saga =>
             [
+                new(
+                    "annal_review_markers",
+                    "SubjectStoreCode = 1 AND ScopeKindCode = @campaignKind AND CampaignId = @campaignId",
+                    campaignAndKind),
+
                 .. AnnalsResetSelections(
                     AnnalSubjectStore.Saga,
                     "SELECT \"Id\" FROM \"saga_memories\""
@@ -2731,6 +2736,11 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Lexicon =>
             [
+                new(
+                    "annal_review_markers",
+                    "SubjectStoreCode = 2 AND ScopeKindCode = 2 AND CampaignId = @campaignId",
+                    campaignOnly),
+
                 .. AnnalsResetSelections(
                     AnnalSubjectStore.Lexicon,
                     "SELECT Id FROM lexicon_entries WHERE ScopeCampaignId = @campaignId",
@@ -2782,6 +2792,7 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Saga =>
                 [
+                    new("annal_review_markers", "SubjectStoreCode = 1", []),
                     .. AnnalsResetSelections(AnnalSubjectStore.Saga),
                     Whole("saga_memory_embeddings_vec"),
                     Whole("saga_memory_embeddings"),
@@ -2804,6 +2815,7 @@ internal sealed partial class DataRetentionService(
             // whole reset. A whole-store Lexicon reset could not complete at all while any entry existed.
             MemoryResetScope.Lexicon =>
                 [
+                    new("annal_review_markers", "SubjectStoreCode = 2", []),
                     .. AnnalsResetSelections(AnnalSubjectStore.Lexicon),
                     Whole("lexicon_fact_attachment_provenance"),
                     Whole("lexicon_entries"),

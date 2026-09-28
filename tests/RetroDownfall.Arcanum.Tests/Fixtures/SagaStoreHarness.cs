@@ -69,6 +69,13 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// <summary>A live <see cref="SagaMemoryStore"/> over the temporary Grimoire.</summary>
     internal SagaMemoryStore Store { get; }
 
+    /// <summary>The scoped context used by infrastructure services sharing this harness.</summary>
+    internal ArcanumDbContext Context => _db;
+
+    /// <summary>A separately admitted connection to this harness's same temporary Grimoire.</summary>
+    internal ArcanumDbContext CreateSiblingContext() =>
+        _fixture.CreateContext(((SqliteConnection)Connection).DataSource);
+
     /// <summary>A live <see cref="IAnnalsStore"/> reading the same temporary Grimoire.</summary>
     public IAnnalsStore Annals { get; }
 

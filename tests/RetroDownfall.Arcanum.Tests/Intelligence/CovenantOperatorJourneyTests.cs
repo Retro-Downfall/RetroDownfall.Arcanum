@@ -598,6 +598,70 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Free_text_query_compiles_terms_and_binds_its_cursor_to_the_exact_query()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        Result<CovenantMutationResultDto> firstWrite = await SetCampaignAsync(
+            CampaignA,
+            "journey.searchable.first",
+            "searchable preference one",
+            expectedRevision: 0);
+
+        Result<CovenantMutationResultDto> secondWrite = await SetCampaignAsync(
+            CampaignA,
+            "journey.searchable.second",
+            "searchable preference two",
+            expectedRevision: 0);
+
+        Assert.True(firstWrite.IsSuccess, firstWrite.IsFailure ? firstWrite.Error.Message : null);
+
+        Assert.True(secondWrite.IsSuccess, secondWrite.IsFailure ? secondWrite.Error.Message : null);
+
+        await using CovenantInstallationReadLease read = await InstallationReadAsync();
+
+        CovenantManagementService management = ManagementService();
+
+        CovenantQueryRequest request = new(
+            CovenantCursorScopeSelection.Campaign,
+            CampaignA,
+            "searchable",
+            Lane: null,
+            CovenantLifecycle.Set,
+            CampaignA,
+            Limit: 1,
+            Cursor: null);
+
+        Result<CovenantPageDto> first = await management.QueryAsync(request, read, CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+        Assert.Single(first.Value.Items);
+
+        Assert.NotNull(first.Value.NextCursor);
+
+        Result<CovenantPageDto> second = await management.QueryAsync(
+            request with { Cursor = first.Value.NextCursor },
+            read,
+            CancellationToken.None);
+
+        Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : null);
+
+        Assert.Single(second.Value.Items);
+
+        Result<CovenantPageDto> mismatched = await management.QueryAsync(
+            request with { Query = "different", Cursor = first.Value.NextCursor },
+            read,
+            CancellationToken.None);
+
+        Assert.True(mismatched.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleCursor, mismatched.Error.Code);
+    }
+
+    [SkippableFact]
     public async Task A_turn_with_the_feature_off_sends_the_bytes_an_installation_that_never_had_a_covenant_sends()
     {
 
@@ -1072,7 +1136,9 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             OperationGate(),
             _availability,
             _codec,
-            new CampaignAvailabilityReader(new FixedCovenantConnectionSource(Connection())));
+            new CampaignAvailabilityReader(new FixedCovenantConnectionSource(Connection())),
+            new CovenantSearchIndex(new FixedCovenantConnectionSource(Connection())),
+            new CovenantSearchQueryCompiler());
 
     private CovenantMutationService MutationService() =>
         new(

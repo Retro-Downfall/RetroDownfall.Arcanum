@@ -146,6 +146,8 @@ internal static partial class CliCommandTree
 
         lexicon.Add(lexiconDelete);
 
+        lexicon.Add(BuildLexiconReview(handler));
+
         Command lexiconCorrect = new("correct", "Replace the type and complete facts of one exact Lexicon entry after inspection.");
 
         Argument<string> correctName = new("name") { Description = "Lexicon entity name." };
@@ -357,6 +359,8 @@ internal static partial class CliCommandTree
         saga.Add(pin);
 
         saga.Add(unpin);
+
+        saga.Add(BuildSagaReview(handler));
 
         return saga;
 

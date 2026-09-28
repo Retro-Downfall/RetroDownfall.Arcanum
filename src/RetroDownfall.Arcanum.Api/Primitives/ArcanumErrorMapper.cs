@@ -32,6 +32,18 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Lexicon.SearchFailed =>
                 StatusCodes.Status500InternalServerError,
 
+            ErrorCodes.MemoryReview.InvalidToken
+                or ErrorCodes.MemoryReview.InvalidTokenFacts =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.MemoryReview.StaleObservation
+                or ErrorCodes.MemoryReview.UnseenObservation
+                or ErrorCodes.MemoryReview.RequestReuse =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.MemoryReview.IntegrityFailure =>
+                StatusCodes.Status500InternalServerError,
+
             ErrorCodes.Validation.InvalidPrompt
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody

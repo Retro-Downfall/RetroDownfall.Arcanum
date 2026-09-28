@@ -287,6 +287,7 @@ internal static class CoreSchemaVersionTenFixture
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
         .. GrimoireSchemaCatalog.CoreObjects
+            .Where(static definition => !definition.Name.StartsWith("annal_review_", StringComparison.Ordinal))
             .Where(static definition => definition.Name != "lexicon_annal_fact_provenance")
             .Select(static definition => definition.Name switch
             {

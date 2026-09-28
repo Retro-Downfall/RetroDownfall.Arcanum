@@ -115,6 +115,8 @@
         "memory covenant mask",
         "memory covenant pin",
         "memory covenant retire",
+        "memory covenant review list",
+        "memory covenant search",
         "memory covenant set",
         "memory covenant show",
         "memory covenant unmask",
@@ -123,8 +125,10 @@
         "memory lexicon pin",
         "memory lexicon reinstate",
         "memory lexicon retire",
+        "memory lexicon review list",
         "memory lexicon show",
         "memory lexicon unpin",
+        "memory saga review list",
         "run"
       ]
     },
@@ -142,9 +146,12 @@
       "option": "--file",
       "scopes": [
         "memory covenant correct",
+        "memory covenant review apply",
         "memory covenant set",
         "memory lexicon correct",
-        "memory saga correct"
+        "memory lexicon review apply",
+        "memory saga correct",
+        "memory saga review apply"
       ]
     },
     {
@@ -2914,6 +2921,72 @@
               "commands": []
             },
             {
+              "path": "memory covenant search",
+              "name": "search",
+              "description": "Search current Covenant preference heads.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "query",
+                  "description": "The preference text or key prefix to find.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--all-scopes",
+                  "aliases": [],
+                  "description": "Search Global and every Campaign scope together.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--lane",
+                  "aliases": [],
+                  "description": "Confirmed (operator-authored) or Proposed (agent-suggested). Omit for both.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Confirmed",
+                    "Proposed"
+                  ]
+                },
+                {
+                  "name": "--lifecycle",
+                  "aliases": [],
+                  "description": "Set (the default), Retired, or Any.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "Any",
+                    "Retired",
+                    "Set"
+                  ]
+                }
+              ],
+              "examples": [],
+              "commands": []
+            },
+            {
               "path": "memory covenant show",
               "name": "show",
               "description": "Show both lane heads for one preference key.",
@@ -3230,6 +3303,92 @@
                 "arcanum memory covenant unmask preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77 --expected-revision 1"
               ],
               "commands": []
+            },
+            {
+              "path": "memory covenant review",
+              "name": "review",
+              "description": "Review newly written Covenant versions without gating their normal eligibility.",
+              "runnable": false,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [],
+              "commands": [
+                {
+                  "path": "memory covenant review list",
+                  "name": "list",
+                  "description": "List unreviewed Covenant versions in one exact scope and lane, newest first.",
+                  "runnable": true,
+                  "aliases": [],
+                  "arguments": [],
+                  "options": [
+                    {
+                      "name": "--campaign",
+                      "aliases": [
+                        "-C"
+                      ],
+                      "description": "Exact Campaign GUID. Omit for exact Global scope.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": [],
+                      "completion": "campaign"
+                    },
+                    {
+                      "name": "--lane",
+                      "aliases": [],
+                      "description": "Exact Covenant lane: confirmed or proposed.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    },
+                    {
+                      "name": "--limit",
+                      "aliases": [],
+                      "description": "Maximum versions to return, from 1 through 50.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    },
+                    {
+                      "name": "--cursor",
+                      "aliases": [],
+                      "description": "Opaque continuation cursor returned by the preceding page.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    }
+                  ],
+                  "examples": [],
+                  "commands": []
+                },
+                {
+                  "path": "memory covenant review apply",
+                  "name": "apply",
+                  "description": "Prepare, confirm, and atomically apply one exact-version Covenant review decision file.",
+                  "runnable": true,
+                  "aliases": [],
+                  "arguments": [],
+                  "options": [
+                    {
+                      "name": "--file",
+                      "aliases": [
+                        "-f"
+                      ],
+                      "description": "JSON review request path, or - for stdin with --yes.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    }
+                  ],
+                  "examples": [],
+                  "commands": []
+                }
+              ]
             }
           ]
         },
@@ -3332,6 +3491,83 @@
                 "arcanum memory lexicon delete 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5"
               ],
               "commands": []
+            },
+            {
+              "path": "memory lexicon review",
+              "name": "review",
+              "description": "Review newly written Lexicon versions without gating their normal eligibility.",
+              "runnable": false,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [],
+              "commands": [
+                {
+                  "path": "memory lexicon review list",
+                  "name": "list",
+                  "description": "List unreviewed Lexicon versions in one exact scope, newest first.",
+                  "runnable": true,
+                  "aliases": [],
+                  "arguments": [],
+                  "options": [
+                    {
+                      "name": "--campaign",
+                      "aliases": [
+                        "-C"
+                      ],
+                      "description": "Exact Campaign GUID. Omit for exact Global scope.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": [],
+                      "completion": "campaign"
+                    },
+                    {
+                      "name": "--limit",
+                      "aliases": [],
+                      "description": "Maximum versions to return, from 1 through 50.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    },
+                    {
+                      "name": "--cursor",
+                      "aliases": [],
+                      "description": "Opaque continuation cursor returned by the preceding page.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    }
+                  ],
+                  "examples": [],
+                  "commands": []
+                },
+                {
+                  "path": "memory lexicon review apply",
+                  "name": "apply",
+                  "description": "Prepare, confirm, and atomically apply one exact-version Lexicon review decision file.",
+                  "runnable": true,
+                  "aliases": [],
+                  "arguments": [],
+                  "options": [
+                    {
+                      "name": "--file",
+                      "aliases": [
+                        "-f"
+                      ],
+                      "description": "JSON review request path, or - for stdin with --yes.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    }
+                  ],
+                  "examples": [],
+                  "commands": []
+                }
+              ]
             },
             {
               "path": "memory lexicon correct",
@@ -3693,6 +3929,92 @@
                 "arcanum memory saga unpin mem-01j9x8"
               ],
               "commands": []
+            },
+            {
+              "path": "memory saga review",
+              "name": "review",
+              "description": "Review newly written Saga versions without gating their normal eligibility.",
+              "runnable": false,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [],
+              "commands": [
+                {
+                  "path": "memory saga review list",
+                  "name": "list",
+                  "description": "List unreviewed Saga versions in one exact scope, newest first.",
+                  "runnable": true,
+                  "aliases": [],
+                  "arguments": [],
+                  "options": [
+                    {
+                      "name": "--campaign",
+                      "aliases": [
+                        "-C"
+                      ],
+                      "description": "Exact Campaign GUID. Omit for exact Global scope.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": [],
+                      "completion": "campaign"
+                    },
+                    {
+                      "name": "--unresolved",
+                      "aliases": [],
+                      "description": "Review legacy Saga versions whose Campaign scope could not be resolved.",
+                      "recursive": false,
+                      "takesValue": false,
+                      "repeatable": false,
+                      "values": []
+                    },
+                    {
+                      "name": "--limit",
+                      "aliases": [],
+                      "description": "Maximum versions to return, from 1 through 50.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    },
+                    {
+                      "name": "--cursor",
+                      "aliases": [],
+                      "description": "Opaque continuation cursor returned by the preceding page.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    }
+                  ],
+                  "examples": [],
+                  "commands": []
+                },
+                {
+                  "path": "memory saga review apply",
+                  "name": "apply",
+                  "description": "Prepare, confirm, and atomically apply one exact-version Saga review decision file.",
+                  "runnable": true,
+                  "aliases": [],
+                  "arguments": [],
+                  "options": [
+                    {
+                      "name": "--file",
+                      "aliases": [
+                        "-f"
+                      ],
+                      "description": "JSON review request path, or - for stdin with --yes.",
+                      "recursive": false,
+                      "takesValue": true,
+                      "repeatable": false,
+                      "values": []
+                    }
+                  ],
+                  "examples": [],
+                  "commands": []
+                }
+              ]
             }
           ]
         }

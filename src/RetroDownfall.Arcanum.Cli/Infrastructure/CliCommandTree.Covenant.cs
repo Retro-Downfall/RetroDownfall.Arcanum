@@ -30,6 +30,8 @@ internal static partial class CliCommandTree
 
         CovenantCommands handler = sp.GetRequiredService<CovenantCommands>();
 
+        MemoryCommands memoryHandler = sp.GetRequiredService<MemoryCommands>();
+
         Command covenant = new(
             "covenant",
             "Read and write the standing agreement between this operator and the agent.");
@@ -109,6 +111,44 @@ internal static partial class CliCommandTree
                     pr.GetValue(allScopes),
                     pr.GetValue(listLane),
                     pr.GetValue(listLifecycle) ?? CovenantLifecycle.Set,
+                    ct).ConfigureAwait(false));
+
+        Command search = new("search", "Search current Covenant preference heads.");
+
+        Argument<string> searchQuery = new("query") { Description = "The preference text or key prefix to find." };
+
+        Option<bool> searchAllScopes = new("--all-scopes")
+        {
+            Description = "Search Global and every Campaign scope together.",
+        };
+
+        Option<CovenantLane?> searchLane = LaneOption(
+            "Confirmed (operator-authored) or Proposed (agent-suggested). Omit for both.");
+
+        Option<CovenantLifecycle?> searchLifecycle = new("--lifecycle")
+        {
+            Description = "Set (the default), Retired, or Any.",
+            CustomParser = static result => Parse<CovenantLifecycle>(result, "Covenant lifecycle"),
+        };
+
+        search.Add(searchQuery);
+
+        search.Add(campaign);
+
+        search.Add(searchAllScopes);
+
+        search.Add(searchLane);
+
+        search.Add(searchLifecycle);
+
+        search.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Search(
+                    pr.GetValue(searchQuery)!,
+                    pr.GetValue(campaign),
+                    pr.GetValue(searchAllScopes),
+                    pr.GetValue(searchLane),
+                    pr.GetValue(searchLifecycle) ?? CovenantLifecycle.Set,
                     ct).ConfigureAwait(false));
 
         Command show = new("show", "Show both lane heads for one preference key.");
@@ -228,6 +268,8 @@ internal static partial class CliCommandTree
 
         covenant.Add(list);
 
+        covenant.Add(search);
+
         covenant.Add(show);
 
         covenant.Add(retire);
@@ -259,6 +301,8 @@ internal static partial class CliCommandTree
             "unmask",
             "Let a masked Global preference apply in this Campaign again.",
             campaignRequired: true));
+
+        covenant.Add(BuildCovenantReview(memoryHandler));
 
         return covenant;
 

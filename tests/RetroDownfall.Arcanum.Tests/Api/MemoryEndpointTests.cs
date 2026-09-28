@@ -601,6 +601,8 @@ public sealed class MemoryEndpointTests
 
         Assert.Equal(MemorySearchScope.Session, entryMatch.Scope);
 
+        Assert.Null(entryMatch.Action);
+
         Assert.Contains("lantern coordinates", entryMatch.Content, StringComparison.Ordinal);
 
         HttpResponseMessage summaryResponse = await client.PostAsJsonAsync(
@@ -736,6 +738,14 @@ public sealed class MemoryEndpointTests
 
         Assert.Equal(MemorySearchScope.Lexicon, match.Scope);
 
+        Assert.Equal(MemorySearchActionKind.ShowLexiconEntry, match.Action?.Kind);
+
+        Assert.Equal("Operator", match.Action?.Lexicon?.Name);
+
+        Assert.Equal(LexiconScopeKind.Global, match.Action?.Lexicon?.Scope.Kind);
+
+        Assert.Null(match.Action?.Lexicon?.Scope.CampaignId);
+
         Assert.Contains("Lexicon entity: Operator", match.Provenance, StringComparison.Ordinal);
 
         Assert.Contains("explicit", match.Retention, StringComparison.OrdinalIgnoreCase);
@@ -854,6 +864,15 @@ public sealed class MemoryEndpointTests
         Assert.Equal(MemoryEndpoints.SearchResultLimit + 1, saga.RequestedLimit);
 
         Assert.Equal(MemoryEndpoints.SearchResultLimit, envelope.Data.Results.Length);
+
+        Assert.All(
+            envelope.Data.Results,
+            match =>
+            {
+                Assert.Equal(MemorySearchActionKind.ShowSagaMemory, match.Action?.Kind);
+
+                Assert.Equal(match.SourceId, match.Action?.Saga?.MemoryId);
+            });
 
         Assert.True(envelope.Data.HasMore);
 

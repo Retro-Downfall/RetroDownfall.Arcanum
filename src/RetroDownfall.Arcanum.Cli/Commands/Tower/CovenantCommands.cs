@@ -436,8 +436,9 @@ public sealed class CovenantCommands(
                 new CovenantListPayload(
                     [.. items.Select(Project)],
                     NextCursor: null,
-                    stalled,
-                    last.Search),
+                    last.Truncated || stalled,
+                    last.Search,
+                    last.Truncated ? last.TruncationReason : null),
                 CliJsonContext.Default.CovenantListPayload);
 
             return (int)CliExitCode.Success;
@@ -470,6 +471,124 @@ public sealed class CovenantCommands(
 
         return (int)CliExitCode.Success;
 
+    }
+
+    public async Task<int> Search(
+        string query,
+        Guid? campaignId,
+        bool allScopes,
+        CovenantLane? lane,
+        CovenantLifecycle lifecycle,
+        CancellationToken cancellationToken)
+    {
+        CovenantCursorScopeSelection selection = allScopes
+            ? CovenantCursorScopeSelection.AllScopes
+            : campaignId is null
+                ? CovenantCursorScopeSelection.Global
+                : CovenantCursorScopeSelection.Campaign;
+
+        List<CovenantHeadDto> items = [];
+
+        string? cursor = null;
+
+        CovenantPageDto last;
+
+        bool stalled;
+
+        while (true)
+        {
+            Result<CovenantPageDto> page = await apiClient
+                .QueryCovenantAsync(
+                    new CovenantQueryRequest(
+                        selection,
+                        campaignId,
+                        query,
+                        lane,
+                        lifecycle,
+                        EffectiveForCampaignId: campaignId,
+                        Limit: PageSize,
+                        Cursor: cursor),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.IsFailure)
+            {
+                return Fail(page.Error, CliExitCode.GenericError);
+            }
+
+            items.AddRange(page.Value.Items);
+
+            if (page.Value.NextCursor is not { Length: > 0 } next)
+            {
+                last = page.Value;
+
+                stalled = false;
+
+                break;
+            }
+
+            if (string.Equals(next, cursor, StringComparison.Ordinal))
+            {
+                last = page.Value;
+
+                stalled = true;
+
+                break;
+            }
+
+            cursor = next;
+        }
+
+        if (invocationContext.Options.Json)
+        {
+            dispatcher.WriteJson(
+                new CovenantListPayload(
+                    [.. items.Select(Project)],
+                    NextCursor: null,
+                    last.Truncated || stalled,
+                    last.Search,
+                    last.Truncated ? last.TruncationReason : null),
+                CliJsonContext.Default.CovenantListPayload);
+
+            return (int)CliExitCode.Success;
+        }
+
+        if (items.Count == 0)
+        {
+            dispatcher.WritePayload("No Covenant entries matched.");
+
+            WriteSearchTruncation(last, stalled);
+
+            return (int)CliExitCode.Success;
+        }
+
+        foreach (CovenantHeadDto item in items)
+        {
+            dispatcher.WritePayload(
+                $"{item.Key}  [{item.Lane}]  revision {item.LaneRevision}  {item.CompiledByteCost} bytes  {item.Origin}");
+        }
+
+        WriteSearchTruncation(last, stalled);
+
+        return (int)CliExitCode.Success;
+    }
+
+    private void WriteSearchTruncation(CovenantPageDto last, bool stalled)
+    {
+        if (!last.Truncated && !stalled)
+        {
+            return;
+        }
+
+        if (stalled)
+        {
+            dispatcher.WriteDiagnostic("The server stopped advancing its cursor; these search results are incomplete.");
+
+            return;
+        }
+
+        dispatcher.WriteDiagnostic(
+            $"The server truncated these search results ({last.TruncationReason}); these search results are incomplete.");
     }
 
     public async Task<int> Show(string key, Guid? campaignId, bool history, CancellationToken cancellationToken)
