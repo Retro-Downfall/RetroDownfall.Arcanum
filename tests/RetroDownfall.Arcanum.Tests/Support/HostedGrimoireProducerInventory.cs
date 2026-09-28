@@ -44601,7 +44601,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "System.Data.Common.DbTransaction"
                     && definition.Name is "Dispose" or "DisposeAsync"
                 || type == "SQLitePCL.raw"
-                    && definition.Name == "sqlite3_errcode";
+                    && definition.Name is "sqlite3_errcode" or "sqlite3_get_autocommit";
         }
 
         private static bool IsReviewedDatabaseSupportMember(
@@ -44640,6 +44640,8 @@ internal static class HostedGrimoireProducerInventory
                     && property.Name == "FieldCount"
                 || type == "System.Data.Common.DbParameter"
                     && property.Name is "DbType" or "ParameterName" or "Value"
+                || type == "System.Data.Common.DbTransaction"
+                    && property.Name == "Connection"
                 || type == "SQLitePCL.sqlite3_backup"
                     && property.Name == "IsInvalid";
         }

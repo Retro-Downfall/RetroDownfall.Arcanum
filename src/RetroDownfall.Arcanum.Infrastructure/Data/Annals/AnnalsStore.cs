@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
@@ -85,57 +86,64 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbCommand command = connection.CreateCommand();
-
-                // The transaction-time end is derived here rather than stored, so there is one owner of
-                // the rule and no column an append-only guard would have to be relaxed for. The
-                // correlated subquery returns at most one row: a version has at most one successor,
-                // because a revision is unique within its claim and each names exactly one predecessor.
-                command.CommandText =
-                    """
-                    SELECT version.VersionId, version.ClaimId, version.Sequence, version.Revision,
-                           version.OperationCode, version.OriginCode, version.ScopeKindCode,
-                           version.CampaignId, version.SensitivityCode, version.ValidFromUtc,
-                           version.ValidToUtc, version.RecordedAtUtc,
-                           (SELECT successor.RecordedAtUtc
-                            FROM annal_versions AS successor
-                            WHERE successor.PredecessorVersionId = version.VersionId) AS RecordedUntilUtc,
-                           version.PredecessorVersionId, version.ContentHashFormatCode, version.ContentHash
-                    FROM annal_versions AS version
-                    WHERE version.ClaimId = @claimId
-                    ORDER BY version.Revision
-                    """;
-
-                AddParameter(command, "@claimId", claimId);
-
-                List<AnnalClaimVersion> versions = [];
-
-                await using DbDataReader reader =
-                    await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
                 {
-                    versions.Add(
-                        new AnnalClaimVersion(
-                            reader.GetString(0),
-                            reader.GetString(1),
-                            reader.GetInt64(2),
-                            reader.GetInt32(3),
-                            (AnnalOperation)ReadCode(reader, 4, 1, 3),
-                            (AnnalOrigin)ReadCode(reader, 5, 1, 4),
-                            (SagaMemoryScopeKind)ReadCode(reader, 6, 0, 3),
-                            reader.IsDBNull(7) ? null : Guid.Parse(reader.GetString(7)),
-                            (ContentSensitivity)ReadCode(reader, 8, 0, 1),
-                            (AnnalContentHashFormat)ReadCode(reader, 14, 1, 2),
-                            reader.IsDBNull(15) ? null : (byte[])reader.GetValue(15),
-                            ParseTimestamp(reader.GetString(9)),
-                            reader.IsDBNull(10) ? null : ParseTimestamp(reader.GetString(10)),
-                            ParseTimestamp(reader.GetString(11)),
-                            reader.IsDBNull(12) ? null : ParseTimestamp(reader.GetString(12)),
-                            reader.IsDBNull(13) ? null : reader.GetString(13)));
-                }
+                    await using DbCommand command = connection.CreateCommand();
 
-                return (IReadOnlyList<AnnalClaimVersion>)versions;
+                    // Inspect per call: a live reader may outlast the atomic v10-to-v11 transition.
+                    bool hasFormat = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken).ConfigureAwait(false) >= 11;
+
+                    // The transaction-time end is derived here rather than stored, so there is one owner of
+                    // the rule and no column an append-only guard would have to be relaxed for. The
+                    // correlated subquery returns at most one row: a version has at most one successor,
+                    // because a revision is unique within its claim and each names exactly one predecessor.
+                    command.CommandText =
+                        $"""
+                        SELECT version.VersionId, version.ClaimId, version.Sequence, version.Revision,
+                               version.OperationCode, version.OriginCode, version.ScopeKindCode,
+                               version.CampaignId, version.SensitivityCode, version.ValidFromUtc,
+                               version.ValidToUtc, version.RecordedAtUtc,
+                               (SELECT successor.RecordedAtUtc
+                                FROM annal_versions AS successor
+                                WHERE successor.PredecessorVersionId = version.VersionId) AS RecordedUntilUtc,
+                               version.PredecessorVersionId,
+                               {(hasFormat ? "version.ContentHashFormatCode" : "1")} AS ContentHashFormatCode, version.ContentHash
+                        FROM annal_versions AS version
+                        WHERE version.ClaimId = @claimId
+                        ORDER BY version.Revision
+                        """;
+
+                    AddParameter(command, "@claimId", claimId);
+
+                    List<AnnalClaimVersion> versions = [];
+
+                    await using DbDataReader reader =
+                        await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        versions.Add(
+                            new AnnalClaimVersion(
+                                reader.GetString(0),
+                                reader.GetString(1),
+                                reader.GetInt64(2),
+                                reader.GetInt32(3),
+                                (AnnalOperation)ReadCode(reader, 4, 1, 3),
+                                (AnnalOrigin)ReadCode(reader, 5, 1, 4),
+                                (SagaMemoryScopeKind)ReadCode(reader, 6, 0, 3),
+                                reader.IsDBNull(7) ? null : Guid.Parse(reader.GetString(7)),
+                                (ContentSensitivity)ReadCode(reader, 8, 0, 1),
+                                (AnnalContentHashFormat)ReadCode(reader, 14, 1, 2),
+                                reader.IsDBNull(15) ? null : (byte[])reader.GetValue(15),
+                                ParseTimestamp(reader.GetString(9)),
+                                reader.IsDBNull(10) ? null : ParseTimestamp(reader.GetString(10)),
+                                ParseTimestamp(reader.GetString(11)),
+                                reader.IsDBNull(12) ? null : ParseTimestamp(reader.GetString(12)),
+                                reader.IsDBNull(13) ? null : reader.GetString(13)));
+                    }
+
+                    return (IReadOnlyList<AnnalClaimVersion>)versions;
+                }, cancellationToken).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
     }
@@ -194,37 +202,45 @@ internal sealed class AnnalsStore(ArcanumDbContext db) : IAnnalsStore
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbCommand command = connection.CreateCommand();
-
-                command.CommandText = """
-                    SELECT AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey,
-                           AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType
-                    FROM lexicon_annal_fact_provenance
-                    WHERE AnnalVersionId = @versionId
-                    ORDER BY FactOrdinal
-                    """;
-
-                AddParameter(command, "@versionId", versionId);
-
-                List<LexiconAnnalFactProvenance> provenance = [];
-
-                await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
                 {
-                    provenance.Add(new LexiconAnnalFactProvenance(
-                        reader.GetString(0),
-                        reader.GetInt32(1),
-                        Guid.Parse(reader.GetString(2)),
-                        Guid.Parse(reader.GetString(3)),
-                        reader.GetString(4),
-                        reader.GetInt32(5),
-                        reader.GetString(6),
-                        ParseTimestamp(reader.GetString(7)),
-                        reader.GetString(8)));
-                }
+                    if (await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken).ConfigureAwait(false) < 11)
+                    {
+                        return (IReadOnlyList<LexiconAnnalFactProvenance>)[];
+                    }
 
-                return (IReadOnlyList<LexiconAnnalFactProvenance>)provenance;
+                    await using DbCommand command = connection.CreateCommand();
+
+                    command.CommandText = """
+                        SELECT AnnalVersionId, FactOrdinal, SessionId, AttachmentId, LogicalKey,
+                               AttachmentVersion, AttachmentContentHash, MaterializedAt, SourceType
+                        FROM lexicon_annal_fact_provenance
+                        WHERE AnnalVersionId = @versionId
+                        ORDER BY FactOrdinal
+                        """;
+
+                    AddParameter(command, "@versionId", versionId);
+
+                    List<LexiconAnnalFactProvenance> provenance = [];
+
+                    await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        provenance.Add(new LexiconAnnalFactProvenance(
+                            reader.GetString(0),
+                            reader.GetInt32(1),
+                            Guid.Parse(reader.GetString(2)),
+                            Guid.Parse(reader.GetString(3)),
+                            reader.GetString(4),
+                            reader.GetInt32(5),
+                            reader.GetString(6),
+                            ParseTimestamp(reader.GetString(7)),
+                            reader.GetString(8)));
+                    }
+
+                    return (IReadOnlyList<LexiconAnnalFactProvenance>)provenance;
+                }, cancellationToken).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
     }

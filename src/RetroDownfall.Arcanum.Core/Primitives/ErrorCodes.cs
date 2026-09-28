@@ -752,6 +752,8 @@ public static class ErrorCodes
 
         public const string CurationIntegrityFailed = "Lexicon.CurationIntegrityFailed";
 
+        public const string CurationUnavailable = "Lexicon.CurationUnavailable";
+
         public const string CurationGenerationExhausted = "Lexicon.CurationGenerationExhausted";
 
         public const string ArtifactRevisionExhausted = "Lexicon.ArtifactRevisionExhausted";

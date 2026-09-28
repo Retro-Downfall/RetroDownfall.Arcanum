@@ -21,6 +21,31 @@ namespace RetroDownfall.Arcanum.Tests.Api.Serialization;
 public sealed class ArcanumJsonContextCompletenessTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Generation_provenance_roundtrips_exact_and_Bloom_payloads(bool overflow)
+    {
+        Guid[] identities = Enumerable.Range(1, overflow ? CovenantLimits.MaxExactGenerationIds + 1 : 2)
+            .Select(static index => new Guid(index, 0, 0, new byte[8]))
+            .ToArray();
+
+        GenerationProvenance value = GenerationProvenance.Create(identities);
+
+        string json = JsonSerializer.Serialize(value, ArcanumJsonContext.Default.GenerationProvenance);
+
+        GenerationProvenance restored = Assert.IsType<GenerationProvenance>(
+            JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.GenerationProvenance));
+
+        Assert.Equal(overflow ? GenerationProvenanceMode.BloomOverflow : GenerationProvenanceMode.Exact, restored.Mode);
+
+        Assert.Equal(value, restored);
+
+        Assert.Equal(value.ExactGenerationIds.ToArray(), restored.ExactGenerationIds.ToArray());
+
+        Assert.Equal(value.BloomBits.ToArray(), restored.BloomBits.ToArray());
+    }
+
+    [Theory]
     [InlineData(typeof(LexiconShowRequest))]
     [InlineData(typeof(LexiconCorrectRequest))]
     [InlineData(typeof(LexiconRetireRequest))]

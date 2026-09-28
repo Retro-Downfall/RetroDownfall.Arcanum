@@ -51,6 +51,7 @@ internal static class ArcanumErrorMapper
             // lacks permission — 503 (retry later / ask an operator to enable it) fits better than the
             // 403 this used to share with genuine access-control failures below.
             ErrorCodes.Api.TooManyConnections
+                or ErrorCodes.Lexicon.CurationUnavailable
                 or ErrorCodes.Embeddings.ProviderUnavailable
                 or ErrorCodes.Embeddings.FeatureDisabled
                 // A curation write refused because nothing could embed is the same answer as the

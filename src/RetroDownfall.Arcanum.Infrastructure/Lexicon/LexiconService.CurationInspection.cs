@@ -21,6 +21,9 @@ internal sealed partial class LexiconService
         v.PredecessorVersionId
         """;
 
+    private static string VersionColumnsFor(bool curation) => curation ? VersionColumns
+        : VersionColumns.Replace("v.ContentHashFormatCode", "1 AS ContentHashFormatCode", StringComparison.Ordinal);
+
     public Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowExactAsync(
         LexiconCurationScope scope,
         string name,
@@ -61,8 +64,11 @@ internal sealed partial class LexiconService
 
         return InInspectionSnapshotAsync(readLease, requiredLeaseScope, async connection =>
         {
+            string snapshotSelection = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false)
+                ? selection : selection.Replace(" AND RetiredAtUtc IS NULL", "", StringComparison.Ordinal);
+
             List<(Guid Id, LexiconCurationScope Scope)> selected = await ReadInspectionIdentitiesAsync(
-                connection, selection, NormalizeName(name), ScopeKey(scope), cancellationToken).ConfigureAwait(false);
+                connection, snapshotSelection, NormalizeName(name), ScopeKey(scope), cancellationToken).ConfigureAwait(false);
 
             if (selected.Count == 0)
             {
@@ -264,9 +270,11 @@ internal sealed partial class LexiconService
 
     private static async Task<InspectionRow> ReadInspectionRowAsync(DbConnection connection, Guid id, CancellationToken cancellationToken)
     {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText = $"SELECT {SelectColumns}, NameNormalized, FactsText FROM lexicon_entries WHERE Id = @id";
+        command.CommandText = $"SELECT {EntryColumnsFor(curation)}, NameNormalized, FactsText FROM lexicon_entries WHERE Id = @id";
 
         AddParameter(command, "@id", id.ToString("N"));
 
@@ -349,10 +357,13 @@ internal sealed partial class LexiconService
 
         command.Parameters.Clear();
 
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         // The summary validates only the current version. It never expands complete history.
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT v.VersionId, v.ClaimId, v.Sequence, v.Revision, v.OperationCode, v.OriginCode,
-                   v.ScopeKindCode, v.CampaignId, v.SensitivityCode, v.ContentHashFormatCode, v.ContentHash,
+                   v.ScopeKindCode, v.CampaignId, v.SensitivityCode,
+                   {(curation ? "v.ContentHashFormatCode" : "1")} AS ContentHashFormatCode, v.ContentHash,
                    v.ValidFromUtc, v.ValidToUtc, v.RecordedAtUtc, NULL, v.PredecessorVersionId
             FROM annal_versions v WHERE v.VersionId = @version AND v.ClaimId = @claim
                 AND NOT EXISTS (SELECT 1 FROM annal_versions later WHERE later.ClaimId = v.ClaimId AND later.Revision > v.Revision)
@@ -389,9 +400,11 @@ internal sealed partial class LexiconService
     private static async Task<AnnalClaimVersion[]> ReadInspectionHistoryAsync(
         DbConnection connection, AnnalClaimVersion head, LexiconCurationScope scope, CancellationToken cancellationToken)
     {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText = $"SELECT {VersionColumns} FROM annal_versions v WHERE v.ClaimId = @claim ORDER BY v.Revision";
+        command.CommandText = $"SELECT {VersionColumnsFor(curation)} FROM annal_versions v WHERE v.ClaimId = @claim ORDER BY v.Revision";
 
         AddParameter(command, "@claim", head.ClaimId);
 
@@ -441,6 +454,11 @@ internal sealed partial class LexiconService
     private static async Task<LexiconAnnalFactProvenance[]> ReadHistoricalSourcesAsync(
         DbConnection connection, string claimId, CancellationToken cancellationToken)
     {
+        if (!await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = """

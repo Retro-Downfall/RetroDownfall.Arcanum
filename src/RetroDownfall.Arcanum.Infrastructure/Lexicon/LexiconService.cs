@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
@@ -39,6 +40,16 @@ internal sealed partial class LexiconService(
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
     private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId, RetiredAtUtc, PinnedAtUtc, CurationGeneration";
+
+    private const string LegacySelectColumns = "Id, Name, Type, FactsJson, UpdatedAt, ScopeCampaignId, NULL AS RetiredAtUtc, NULL AS PinnedAtUtc, 1 AS CurationGeneration";
+
+    private static string EntryColumnsFor(bool curation) => curation ? SelectColumns : LegacySelectColumns;
+
+    private static async Task<bool> HasCurationAsync(DbConnection connection, CancellationToken cancellationToken) =>
+        await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken).ConfigureAwait(false) >= 11;
+
+    private static readonly Error CurationUnavailableError = new(ErrorCodes.Lexicon.CurationUnavailable,
+        "Lexicon curation is temporarily unavailable while the Core schema transition completes.");
 
     public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
@@ -94,6 +105,8 @@ internal sealed partial class LexiconService(
 
                     try
                     {
+                        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
                         LexiconEntryDto? existing = await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken).ConfigureAwait(false);
 
                         if (existing?.RetiredAtUtc is not null)
@@ -177,12 +190,13 @@ internal sealed partial class LexiconService(
                                 scope.CampaignId is null ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign,
                                 scope.CampaignId?.ToString(),
                                 ContentSensitivity.None,
-                                AnnalContentHashFormat.LexiconStructuredSnapshot,
-                                LexiconSnapshotDigest.Compute(content),
+                                curation ? AnnalContentHashFormat.LexiconStructuredSnapshot : AnnalContentHashFormat.LegacyStoreDigest,
+                                curation ? LexiconSnapshotDigest.Compute(content) : AnnalContentDigest.ForLexiconEntry(content.Type, content.FactsText),
                                 now,
                                 now,
                                 sourceSessionId: null,
-                                cancellationToken).ConfigureAwait(false);
+                                cancellationToken,
+                                legacySchema: !curation).ConfigureAwait(false);
                         }
 
                         await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
@@ -198,7 +212,7 @@ internal sealed partial class LexiconService(
                                 scope.CampaignId,
                                 existing?.RetiredAtUtc,
                                 existing?.PinnedAtUtc,
-                                existing is null ? 1 : existing.CurationGeneration + 1,
+                                !curation || existing is null ? 1 : existing.CurationGeneration + 1,
                                 existing?.Eligibility ?? LexiconRetrievalEligibility.Eligible));
                     }
                     catch
@@ -399,65 +413,68 @@ internal sealed partial class LexiconService(
                 {
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    // The Campaign tier is resolved whole - exact hits, then FTS hits - before the
-                    // global one, and a name the Campaign answered is never answered again from the
-                    // global tier. Shadowing rather than merging: two contradictory facts about one term
-                    // reaching the same prompt is the outcome this scoping exists to prevent.
-                    HashSet<Guid> seenIds = new(clampedLimit);
-
-                    HashSet<string> shadowedNames = new(StringComparer.Ordinal);
-
-                    List<LexiconEntryDto> ordered = new(clampedLimit);
-
-                    if (!scope.IsGlobal)
+                    return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
                     {
-                        await FillTierAsync(
-                            connection,
-                            scope.Key,
-                            normalized,
-                            clampedLimit,
-                            seenIds,
-                            shadowedNames,
-                            ordered,
-                            cancellationToken).ConfigureAwait(false);
-                    }
+                        // The Campaign tier is resolved whole - exact hits, then FTS hits - before the
+                        // global one, and a name the Campaign answered is never answered again from the
+                        // global tier. Shadowing rather than merging: two contradictory facts about one term
+                        // reaching the same prompt is the outcome this scoping exists to prevent.
+                        HashSet<Guid> seenIds = new(clampedLimit);
 
-                    if (ordered.Count < clampedLimit)
-                    {
-                        await FillTierAsync(
-                            connection,
-                            LexiconScope.Global.Key,
-                            normalized,
-                            clampedLimit,
-                            seenIds,
-                            shadowedNames,
-                            ordered,
-                            cancellationToken).ConfigureAwait(false);
-                    }
+                        HashSet<string> shadowedNames = new(StringComparer.Ordinal);
 
-                    if (ordered.Count > clampedLimit)
-                    {
-                        ordered = ordered.GetRange(0, clampedLimit);
-                    }
+                        List<LexiconEntryDto> ordered = new(clampedLimit);
 
-                    Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadFactProvenanceBatchAsync(
-                        connection,
-                        ordered.ConvertAll(static entry => entry.Id),
-                        cancellationToken).ConfigureAwait(false);
-
-                    for (int index = 0; index < ordered.Count; index++)
-                    {
-                        LexiconEntryDto entry = ordered[index];
-
-                        ordered[index] = entry with
+                        if (!scope.IsGlobal)
                         {
-                            FactProvenance = provenance.TryGetValue(entry.Id, out LexiconFactProvenance[]? facts)
-                                ? facts
-                                : [],
-                        };
-                    }
+                            await FillTierAsync(
+                                connection,
+                                scope.Key,
+                                normalized,
+                                clampedLimit,
+                                seenIds,
+                                shadowedNames,
+                                ordered,
+                                cancellationToken).ConfigureAwait(false);
+                        }
 
-                    return Result<IReadOnlyList<LexiconEntryDto>>.Success(ordered);
+                        if (ordered.Count < clampedLimit)
+                        {
+                            await FillTierAsync(
+                                connection,
+                                LexiconScope.Global.Key,
+                                normalized,
+                                clampedLimit,
+                                seenIds,
+                                shadowedNames,
+                                ordered,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+
+                        if (ordered.Count > clampedLimit)
+                        {
+                            ordered = ordered.GetRange(0, clampedLimit);
+                        }
+
+                        Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadFactProvenanceBatchAsync(
+                            connection,
+                            ordered.ConvertAll(static entry => entry.Id),
+                            cancellationToken).ConfigureAwait(false);
+
+                        for (int index = 0; index < ordered.Count; index++)
+                        {
+                            LexiconEntryDto entry = ordered[index];
+
+                            ordered[index] = entry with
+                            {
+                                FactProvenance = provenance.TryGetValue(entry.Id, out LexiconFactProvenance[]? facts)
+                                    ? facts
+                                    : [],
+                            };
+                        }
+
+                        return Result<IReadOnlyList<LexiconEntryDto>>.Success(ordered);
+                    }, cancellationToken).ConfigureAwait(false);
                 },
                 cancellationToken).ConfigureAwait(false);
         }
@@ -490,18 +507,21 @@ internal sealed partial class LexiconService(
                 {
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    // The Campaign tier answers first and the global one only when it has not, which is
-                    // the same shadowing MatchEntitiesAsync applies. A lookup that resolved differently
-                    // from a match would let inspection describe an entity no turn would ever see.
-                    return await ReadActiveByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
-                            .ConfigureAwait(false)
-                        ?? (scope.IsGlobal
-                            ? null
-                            : await ReadActiveByNormalizedAsync(
-                                connection,
-                                normalized,
-                                LexiconScope.Global.Key,
-                                cancellationToken).ConfigureAwait(false));
+                    return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
+                    {
+                        // The Campaign tier answers first and the global one only when it has not, which is
+                        // the same shadowing MatchEntitiesAsync applies. A lookup that resolved differently
+                        // from a match would let inspection describe an entity no turn would ever see.
+                        return await ReadActiveByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
+                                .ConfigureAwait(false)
+                            ?? (scope.IsGlobal
+                                ? null
+                                : await ReadActiveByNormalizedAsync(
+                                    connection,
+                                    normalized,
+                                    LexiconScope.Global.Key,
+                                    cancellationToken).ConfigureAwait(false));
+                    }, cancellationToken).ConfigureAwait(false);
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -536,8 +556,9 @@ internal sealed partial class LexiconService(
                 {
                     DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                    return await ReadActiveByNormalizedAsync(connection, normalized, scope.Key, cancellationToken)
-                        .ConfigureAwait(false);
+                    return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                        () => ReadActiveByNormalizedAsync(connection, normalized, scope.Key, cancellationToken),
+                        cancellationToken).ConfigureAwait(false);
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -647,11 +668,13 @@ internal sealed partial class LexiconService(
         HashSet<string> exactNames,
         CancellationToken cancellationToken)
     {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand cmd = connection.CreateCommand();
 
         StringBuilder sql = new();
         _ = sql.Append("SELECT ")
-            .Append(SelectColumns)
+            .Append(EntryColumnsFor(curation))
             .Append(" FROM lexicon_entries WHERE NameNormalized IN (");
 
         for (int i = 0; i < normalized.Count; i++)
@@ -668,7 +691,9 @@ internal sealed partial class LexiconService(
             AddParameter(cmd, paramName, normalized[i]);
         }
 
-        _ = sql.Append(") AND ScopeCampaignId = @scopeKey AND RetiredAtUtc IS NULL ORDER BY UpdatedAt DESC LIMIT @limit");
+        _ = sql.Append(") AND ScopeCampaignId = @scopeKey")
+            .Append(curation ? " AND RetiredAtUtc IS NULL" : "")
+            .Append(" ORDER BY UpdatedAt DESC LIMIT @limit");
 
         AddParameter(cmd, "@scopeKey", scopeKey);
 
@@ -728,6 +753,8 @@ internal sealed partial class LexiconService(
         List<LexiconEntryDto> ftsHits,
         CancellationToken cancellationToken)
     {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand cmd = connection.CreateCommand();
 
         // bm25() weight arguments map positionally to the FTS5 columns (Name, Type, FactsText):
@@ -735,12 +762,14 @@ internal sealed partial class LexiconService(
         // better matches, so sort ASC. No Lucene caret boosting inside MATCH — SQLite FTS5 does not
         // support it; mathematical boosting lives only in bm25().
         cmd.CommandText =
-            """
+            $"""
             SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt, e.ScopeCampaignId,
-                   e.RetiredAtUtc, e.PinnedAtUtc, e.CurationGeneration
+                   {(curation ? "e.RetiredAtUtc" : "NULL")} AS RetiredAtUtc,
+                   {(curation ? "e.PinnedAtUtc" : "NULL")} AS PinnedAtUtc,
+                   {(curation ? "e.CurationGeneration" : "1")} AS CurationGeneration
             FROM lexicon_fts
             INNER JOIN lexicon_entries e ON e.rowid = lexicon_fts.rowid
-            WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey AND e.RetiredAtUtc IS NULL
+            WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey {(curation ? "AND e.RetiredAtUtc IS NULL" : "")}
             ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC
             LIMIT @limit
             """;
@@ -778,12 +807,16 @@ internal sealed partial class LexiconService(
         List<LexiconEntryDto> ftsHits,
         CancellationToken cancellationToken)
     {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand cmd = connection.CreateCommand();
 
         StringBuilder sql = new();
         _ = sql.Append("SELECT ")
-            .Append(SelectColumns)
-            .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey AND RetiredAtUtc IS NULL AND (");
+            .Append(EntryColumnsFor(curation))
+            .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey")
+            .Append(curation ? " AND RetiredAtUtc IS NULL" : "")
+            .Append(" AND (");
 
         AddParameter(cmd, "@scopeKey", scopeKey);
 
@@ -860,14 +893,18 @@ internal sealed partial class LexiconService(
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal);
 
-    private Task<LexiconEntryDto?> ReadActiveByNormalizedAsync(
+    private async Task<LexiconEntryDto?> ReadActiveByNormalizedAsync(
         DbConnection connection,
         string normalized,
         string scopeKey,
-        CancellationToken cancellationToken) =>
-        ReadNamedEntryAsync(connection, normalized, scopeKey,
-            $"SELECT {SelectColumns} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey AND RetiredAtUtc IS NULL LIMIT 1",
-            cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        return await ReadNamedEntryAsync(connection, normalized, scopeKey,
+            $"SELECT {EntryColumnsFor(curation)} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey {(curation ? "AND RetiredAtUtc IS NULL" : "")} LIMIT 1",
+            cancellationToken).ConfigureAwait(false);
+    }
 
     private static async Task<Guid?> ReadAllLifecycleIdentityForDeletionAsync(
         DbConnection connection,
@@ -888,14 +925,18 @@ internal sealed partial class LexiconService(
         return identity is string value ? Guid.Parse(value) : null;
     }
 
-    private Task<LexiconEntryDto?> ReadByNormalizedAsync(
+    private async Task<LexiconEntryDto?> ReadByNormalizedAsync(
         DbConnection connection,
         string normalized,
         string scopeKey,
-        CancellationToken cancellationToken) =>
-        ReadNamedEntryAsync(connection, normalized, scopeKey,
-            $"SELECT {SelectColumns} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1",
-            cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        return await ReadNamedEntryAsync(connection, normalized, scopeKey,
+            $"SELECT {EntryColumnsFor(curation)} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1",
+            cancellationToken).ConfigureAwait(false);
+    }
 
     private async Task<LexiconEntryDto?> ReadNamedEntryAsync(
         DbConnection connection,
@@ -1235,10 +1276,12 @@ internal sealed partial class LexiconService(
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken)
     {
+        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
-            """
+            $"""
             UPDATE lexicon_entries
             SET Name = @name,
                 NameNormalized = @normalized,
@@ -1246,8 +1289,7 @@ internal sealed partial class LexiconService(
                 Type = @type,
                 FactsJson = @factsJson,
                 FactsText = @factsText,
-                UpdatedAt = @updatedAt,
-                CurationGeneration = CurationGeneration + 1
+                UpdatedAt = @updatedAt{(curation ? ", CurationGeneration = CurationGeneration + 1" : "")}
             WHERE Id = @id
             """;
 

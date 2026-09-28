@@ -55,6 +55,11 @@ internal sealed partial class LexiconService
 
         try
         {
+            if (!await HasCurationAsync(await OpenConnectionAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false))
+            {
+                return CurationUnavailableError;
+            }
+
             Require(await ValidateCurationLeaseAsync(writeLease, target.Scope, cancellationToken).ConfigureAwait(false));
 
             return await SqliteBusyRetry.ExecuteAsync(async () =>

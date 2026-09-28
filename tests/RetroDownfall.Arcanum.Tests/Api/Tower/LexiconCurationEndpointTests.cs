@@ -25,6 +25,7 @@ public sealed class LexiconCurationEndpointTests
     public static TheoryData<string, int> Errors => new()
     {
         { ErrorCodes.Lexicon.InvalidName, 400 },
+        { "Lexicon.CurationUnavailable", 503 },
         { ErrorCodes.Lexicon.InvalidScope, 400 },
         { ErrorCodes.Lexicon.InvalidCurationTarget, 400 },
         { ErrorCodes.Lexicon.InvalidReplacement, 400 },
@@ -423,6 +424,41 @@ public sealed class LexiconCurationEndpointTests
             Assert.Equal(acquisition ? 0 : 1, probe.Calls);
 
             Assert.Equal(acquisition ? 0 : 1, probe.Registration?.Disposals ?? 0);
+
+            Assert.DoesNotContain("secret fact", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("reinstate")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    public async Task Protected_transition_unavailability_preserves_authority_precedence(string route)
+    {
+        foreach (string authority in new[] { "valid", "denied", "stale" })
+        {
+            Probe probe = new() { Protected = true, Error = "Lexicon.CurationUnavailable", Deny = authority == "denied", Stale = authority == "stale" };
+
+            await using ArcanumWebApplicationFactory factory = CreateFactory(probe);
+
+            using HttpClient client = factory.CreateAuthenticatedClient();
+
+            using HttpResponseMessage response = await client.PostAsync(Path(route), Json(probe.Body(route)));
+
+            await RefusalAsync(response, authority == "stale" ? 409 : 503, authority switch
+            {
+                "denied" => ErrorCodes.Covenant.Unavailable,
+                "stale" => ErrorCodes.Covenant.StaleSnapshot,
+                _ => "Lexicon.CurationUnavailable",
+            });
+
+            Assert.Equal(authority == "denied" ? 0 : 1, probe.Calls);
+
+            Assert.Equal(1, probe.Acquisitions);
+
+            Assert.Equal(authority == "denied" ? 0 : 1, probe.Registration?.Disposals ?? 0);
 
             Assert.DoesNotContain("secret fact", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         }

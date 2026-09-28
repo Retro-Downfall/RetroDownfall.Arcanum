@@ -55,6 +55,8 @@ public sealed class LexiconCurationArchitectureTests
     public void Every_projection_preserves_its_complete_ordered_column_contract(string path, string method, int query, string expected)
     {
         Assert.Equal(expected.Split(','), ProjectionColumns(SqlText(Method(path, method)), query));
+
+        Assert.Equal(expected.Split(','), ProjectionColumns(SqlText(Method(path, method), legacy: true), query));
     }
 
     public static TheoryData<string, string, string> Readers => new()
@@ -103,7 +105,8 @@ public sealed class LexiconCurationArchitectureTests
             && !new[] { "DeleteByNameAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection).Select(row => (string)row[1]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
+        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection).Select(row => (string)row[1])
+            .Append("VersionColumnsFor").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadNamedEntryAsync" })
         {
@@ -139,6 +142,8 @@ public sealed class LexiconCurationArchitectureTests
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadActiveByNormalizedAsync" })
         {
             Assert.Matches(@"\b(?:e\.)?RetiredAtUtc IS NULL\b", SqlText(Method(Service, method)));
+
+            Assert.DoesNotContain("RetiredAtUtc IS NULL", SqlText(Method(Service, method), legacy: true), StringComparison.Ordinal);
         }
 
         Assert.Matches(@"\bRetiredAtUtc IS NULL\b", SqlText(Method(Inspection, "ShowEffectiveAsync")));
@@ -172,6 +177,33 @@ public sealed class LexiconCurationArchitectureTests
         {
             Assert.True(Calls(Method(Service, caller), callee), caller + " must reach " + callee);
         }
+    }
+
+    [Fact]
+    public void Capability_dependent_reads_share_the_snapshot_and_retention_probes_inside_its_write_transaction()
+    {
+        foreach ((string path, string method) in new (string, string)[]
+        {
+            (Service, "MatchEntitiesAsync"), (Service, "GetByNameAsync"), (Service, "GetByNameInScopeAsync"),
+            (Annals, "GetVersionsAsync"), (Annals, "GetLexiconFactProvenanceAsync"),
+            ("RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "AddLexiconCandidatesAsync"),
+        })
+        {
+            Assert.True(Calls(Method(path, method), "InSnapshotAsync"), method + " must retain the capability snapshot");
+        }
+
+        MethodDeclarationSyntax deletion = Method("RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DeleteLexiconCandidateAsync");
+
+        InvocationExpressionSyntax begin = Assert.Single(deletion.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() == "BeginMutationTransactionAsync");
+
+        InvocationExpressionSyntax capability = Assert.Single(deletion.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() == "GrimoireCoreSchemaVersion.ReadAsync");
+
+        Assert.True(begin.SpanStart < capability.SpanStart);
+
+        Assert.Equal(new[] { "connection", "cancellationToken", "transaction" },
+            capability.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
     }
 
     [Fact]
@@ -260,7 +292,7 @@ public sealed class LexiconCurationArchitectureTests
         {
             "AnnalsClaimWriter.SnapshotLexiconProvenanceAsync",
             "DataRetentionService.BuildMemoryResetSelections",
-            "DataRetentionService.Pruning.AddLexiconCandidatesAsync",
+            "DataRetentionService.Pruning.AddLexiconCandidatesCoreAsync",
             "DataRetentionService.Pruning.DeleteLexiconCandidateAsync",
             "GrimoireSchemaInstaller.TryRebuildLexiconFtsAsync",
             "MemoryAnnalsBackfill.ReadBatchAsync",
@@ -337,10 +369,10 @@ public sealed class LexiconCurationArchitectureTests
         throw new InvalidOperationException("Unterminated SELECT: " + sql);
     }
 
-    private static string SqlText(MethodDeclarationSyntax method)
+    private static string SqlText(MethodDeclarationSyntax method, bool legacy = false)
     {
         Dictionary<string, string> constants = LexiconTrees().SelectMany(tree => tree.DescendantNodes().OfType<VariableDeclaratorSyntax>())
-            .Where(variable => variable.Identifier.ValueText is "SelectColumns" or "VersionColumns")
+            .Where(variable => variable.Identifier.ValueText is "SelectColumns" or "LegacySelectColumns" or "VersionColumns")
             .ToDictionary(variable => variable.Identifier.ValueText, variable => ((LiteralExpressionSyntax)variable.Initializer!.Value).Token.ValueText);
 
         string Expand(SyntaxNode node)
@@ -348,6 +380,23 @@ public sealed class LexiconCurationArchitectureTests
             if (node is LiteralExpressionSyntax literal && literal.Token.Value is string value) return value;
 
             if (node is IdentifierNameSyntax identifier && constants.TryGetValue(identifier.Identifier.ValueText, out string? constant)) return constant;
+
+            if (node is InvocationExpressionSyntax invocation && invocation.Expression is IdentifierNameSyntax helper)
+            {
+                if (helper.Identifier.ValueText == "EntryColumnsFor") return constants[legacy ? "LegacySelectColumns" : "SelectColumns"];
+
+                if (helper.Identifier.ValueText == "VersionColumnsFor") return legacy
+                    ? constants["VersionColumns"].Replace("v.ContentHashFormatCode", "1 AS ContentHashFormatCode", StringComparison.Ordinal)
+                    : constants["VersionColumns"];
+            }
+
+            if (node is ConditionalExpressionSyntax conditional && conditional.Condition is IdentifierNameSyntax capability
+                && capability.Identifier.ValueText is "curation" or "hasFormat" or "legacySchema")
+            {
+                bool whenTrue = capability.Identifier.ValueText == "legacySchema" ? legacy : !legacy;
+
+                return Expand(whenTrue ? conditional.WhenTrue : conditional.WhenFalse);
+            }
 
             if (node is InterpolatedStringExpressionSyntax interpolated) return string.Concat(interpolated.Contents.Select(content =>
                 content is InterpolatedStringTextSyntax text ? text.TextToken.ValueText : Expand(((InterpolationSyntax)content).Expression)));

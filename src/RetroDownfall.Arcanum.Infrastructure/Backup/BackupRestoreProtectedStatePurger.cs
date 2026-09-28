@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -208,6 +209,12 @@ internal static class BackupRestoreProtectedStatePurger
 
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
+            if (projection.RequiredFromCoreVersion is { } requiredVersion
+                && await GrimoireCoreSchemaVersion.ReadAsync(staged, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
+            {
+                continue;
+            }
+
             if (projection.ExistsConditionally
                 && !await BackupRestoreDatabaseWorker
                     .TableExistsAsync(staged, projection.Table, cancellationToken, transaction)

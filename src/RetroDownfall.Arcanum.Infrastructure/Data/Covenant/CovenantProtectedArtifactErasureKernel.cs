@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -25,7 +26,8 @@ internal sealed record CovenantArtifactPurgeTarget(
     string Table,
     string KeyColumn,
     bool ExistsConditionally = false,
-    AnnalSubjectStore? AnnalStore = null)
+    AnnalSubjectStore? AnnalStore = null,
+    int? RequiredFromCoreVersion = null)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter)
@@ -141,7 +143,7 @@ internal static class CovenantArtifactPurgePlans
 
     private static IEnumerable<CovenantArtifactPurgeTarget> AnnalsTargets(AnnalSubjectStore store) =>
         AnnalsErasurePlan.ForStore(store)
-            .Select(step => new CovenantArtifactPurgeTarget(step.Table, "SubjectId", AnnalStore: store));
+            .Select(step => new CovenantArtifactPurgeTarget(step.Table, "SubjectId", AnnalStore: store, RequiredFromCoreVersion: step.RequiredFromCoreVersion));
 
     /// <summary>
     /// One embedding mirror the sqlite-vec accelerator owns, holding the same content as its BLOB
@@ -359,6 +361,12 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
         foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
         {
+            if (projection.RequiredFromCoreVersion is { } requiredVersion
+                && await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
+            {
+                continue;
+            }
+
             if (projection.ExistsConditionally
                 && !await TableExistsAsync(connection, transaction, projection.Table, cancellationToken)
                     .ConfigureAwait(false))

@@ -27,6 +27,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Core.Annals;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -2188,12 +2189,29 @@ internal sealed partial class DataRetentionService
         List<string> candidates,
         CancellationToken cancellationToken)
     {
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+            () => AddLexiconCandidatesCoreAsync(connection, retention, limit, items, candidates, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesCoreAsync(
+        DbConnection connection,
+        RetentionSettings retention,
+        int limit,
+        List<DataRetentionPlanItem> items,
+        List<string> candidates,
+        CancellationToken cancellationToken)
+    {
         RetentionRuleSettings rule = retention.LexiconEntries;
 
-        long pinnedRows = await CountTableAsync(
+        bool curation = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken).ConfigureAwait(false) >= 11;
+
+        long pinnedRows = curation ? await CountTableAsync(
             "lexicon_entries",
             "PinnedAtUtc IS NOT NULL",
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false) : 0;
 
         if (!rule.Enabled || candidates.Count >= limit)
         {
@@ -2203,16 +2221,16 @@ internal sealed partial class DataRetentionService
         DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
-        long pinnedRowsExemptFromPlan = await CountTableAsync(
+        long pinnedRowsExemptFromPlan = curation ? await CountTableAsync(
             "lexicon_entries",
             "PinnedAtUtc IS NOT NULL AND julianday(UpdatedAt) <= julianday(@cutoff)",
             cancellationToken,
-            ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false);
+            ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false) : 0;
 
         string[] ids = await ReadStringIdsAsync(
             "lexicon_entries",
             "Id",
-            "julianday(UpdatedAt) <= julianday(@cutoff) AND PinnedAtUtc IS NULL",
+            "julianday(UpdatedAt) <= julianday(@cutoff)" + (curation ? " AND PinnedAtUtc IS NULL" : ""),
             "UpdatedAt, Id",
             limit - candidates.Count,
             cancellationToken,
@@ -6051,14 +6069,16 @@ internal sealed partial class DataRetentionService
                 entryId,
                 cancellationToken).ConfigureAwait(false);
 
+            bool curation = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) >= 11;
+
             rows = await ExecuteAsync(
                 connection,
                 transaction,
-                """
+                $"""
                 DELETE FROM lexicon_entries
                 WHERE Id = @id
                   AND julianday(UpdatedAt) <= julianday(@cutoff)
-                  AND PinnedAtUtc IS NULL
+                  {(curation ? "AND PinnedAtUtc IS NULL" : "")}
                 """,
                 cancellationToken,
                 ("@id", entryId),
@@ -6066,7 +6086,7 @@ internal sealed partial class DataRetentionService
 
             if (rows == 0)
             {
-                bool pinned = await CountInTransactionAsync(
+                bool pinned = curation && await CountInTransactionAsync(
                     connection,
                     transaction,
                     "lexicon_entries",

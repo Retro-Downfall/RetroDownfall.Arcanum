@@ -68,8 +68,11 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
     }
 
-    [Fact]
-    public async Task An_ordinary_purge_authority_erases_under_the_retention_purge_scope()
+    [Theory]
+    [InlineData("current")]
+    [InlineData("missing")]
+    [InlineData("malformed")]
+    public async Task An_ordinary_purge_authority_requires_committed_schema_metadata_and_erases_under_the_retention_purge_scope(string metadata)
     {
 
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
@@ -97,6 +100,13 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
              VALUES ('lexicon-version', 0, 'session', 'attachment', 'source', 1, 'attachment-digest', '2026-08-16T00:00:00Z', 'text');
              """);
 
+        if (metadata != "current")
+        {
+            await fixture.ExecuteAsync(metadata == "missing"
+                ? "DELETE FROM grimoire_feature_schemas WHERE FamilyCode = 0 AND TransactionTierCode = 0;"
+                : "UPDATE grimoire_feature_schemas SET SchemaVersion = 11.5 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+        }
+
         FakeCovenantAuthorityProvider provider = new();
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(authority: provider);
@@ -109,6 +119,22 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             lease,
             CovenantErasureAuthorityFixture.OperatorContext(provider),
             CovenantErasureAuthorityFixture.Issuer(provider)).Value;
+
+        if (metadata != "current")
+        {
+            _ = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Kernel.ErasePageAsync(
+                fixture.Page(artifactId, labelId, SensitiveArtifactKind.Lexicon, sessionId: null), authority, Token).AsTask());
+
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM lexicon_entries;"));
+
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM lexicon_annal_fact_provenance;"));
+
+            Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM annal_versions;"));
+
+            return;
+        }
 
         Result<CovenantArtifactErasureProgress> erased = await fixture.Kernel.ErasePageAsync(
             fixture.Page(artifactId, labelId, SensitiveArtifactKind.Lexicon, sessionId: null),
@@ -410,6 +436,7 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
                 await database.InstallCoreObjectsAsync(
                     [
+                        "grimoire_feature_schemas",
                         "Campaigns",
                         "Sessions",
                         "artifact_sensitivity",
@@ -438,6 +465,10 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
                 await database.ExecuteAsync(
                     $"""
+                     INSERT INTO grimoire_feature_schemas
+                         (FamilyCode, TransactionTierCode, SchemaVersion, SourceDefinitionFingerprint,
+                          InstalledCatalogFingerprint, InstalledAtUtc, HealthCode)
+                     VALUES (0, 0, 11, hex(zeroblob(32)), 'sha256:' || hex(zeroblob(32)), '2026-08-16T00:00:00Z', 0);
                      INSERT INTO "Sessions" ("Id", "Title", "CreatedAt", "UpdatedAt")
                      VALUES ('{Format(SessionId)}', 'erasure', '2026-08-16T00:00:00Z', '2026-08-16T00:00:00Z');
                      """,

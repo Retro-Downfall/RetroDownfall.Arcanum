@@ -611,12 +611,16 @@ public sealed class InstallationResetContractTests
             typeof(HostProcessToolsOsMarkerEvidence),
             typeof(CovenantHostToolsState),
             typeof(ImmutableArray<CampaignMarkerInventoryEntryV1>),
-            typeof(ImmutableArray<Guid>),
         ];
 
         Assert.All(
             checkpointOnlyTypes,
             type => Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type)));
+
+        // GenerationProvenance shares this collection shape with the private reset checkpoint.
+        Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(typeof(ImmutableArray<Guid>)));
+
+        Assert.NotNull(InstallationResetActiveJsonContext.Default.GetTypeInfo(typeof(ImmutableArray<Guid>)));
 
         Type[] activeRegistrations = DeclaredJsonTypes(
             typeof(InstallationResetActiveJsonContext));

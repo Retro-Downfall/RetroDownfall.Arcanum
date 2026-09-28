@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
@@ -56,7 +57,7 @@ internal static class AnnalsClaimWriter
         => await AppendAssertCoreAsync(
             connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
             AnnalContentHashFormat.LegacyStoreDigest, contentHash, validFrom, recordedAt, sourceSessionId,
-            cancellationToken).ConfigureAwait(false) is not null;
+            cancellationToken, legacySchema: subjectStore == AnnalSubjectStore.Saga).ConfigureAwait(false) is not null;
 
     internal static async Task<string?> AppendAssertAsync(
         DbConnection connection,
@@ -198,7 +199,7 @@ internal static class AnnalsClaimWriter
         => await AppendCorrectionCoreAsync(
             connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
             AnnalContentHashFormat.LegacyStoreDigest, contentHash, validFrom, recordedAt, sourceSessionId,
-            cancellationToken).ConfigureAwait(false) is not null;
+            cancellationToken, legacySchema: subjectStore == AnnalSubjectStore.Saga).ConfigureAwait(false) is not null;
 
     internal static async Task<string?> AppendCorrectionAsync(
         DbConnection connection,
@@ -214,13 +215,14 @@ internal static class AnnalsClaimWriter
         DateTimeOffset validFrom,
         DateTimeOffset recordedAt,
         Guid? sourceSessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
     {
         RequireTransaction(connection, transaction);
 
         return await AppendCorrectionCoreAsync(
             connection, transaction, subjectStore, subjectId, origin, scopeKind, campaignId, sensitivity,
-            contentHashFormat, contentHash, validFrom, recordedAt, sourceSessionId, cancellationToken)
+            contentHashFormat, contentHash, validFrom, recordedAt, sourceSessionId, cancellationToken, legacySchema)
             .ConfigureAwait(false);
     }
 
@@ -238,7 +240,8 @@ internal static class AnnalsClaimWriter
         DateTimeOffset validFrom,
         DateTimeOffset recordedAt,
         Guid? sourceSessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool legacySchema = false)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -246,9 +249,9 @@ internal static class AnnalsClaimWriter
 
         ArgumentNullException.ThrowIfNull(contentHash);
 
-        ValidateFormat(contentHashFormat, subjectStore);
+        ValidateFormat(contentHashFormat, subjectStore, legacySchema);
 
-        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
+        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken, legacySchema)
             .ConfigureAwait(false);
 
         if (head is null)
@@ -267,7 +270,8 @@ internal static class AnnalsClaimWriter
                 validFrom,
                 recordedAt,
                 sourceSessionId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                legacySchema).ConfigureAwait(false);
         }
 
         if (head.ContentHashFormat == contentHashFormat
@@ -294,7 +298,8 @@ internal static class AnnalsClaimWriter
             recordedAt,
             head.CurrentVersionId,
             sourceSessionId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            legacySchema).ConfigureAwait(false);
 
         await SupersedeAndAdvanceHeadAsync(
             connection,
@@ -353,7 +358,10 @@ internal static class AnnalsClaimWriter
 
         ArgumentException.ThrowIfNullOrEmpty(subjectId);
 
-        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken)
+        // Saga keeps the v3-compatible shape; v11 supplies the same legacy format through its default.
+        bool legacySchema = subjectStore == AnnalSubjectStore.Saga;
+
+        HeadRow? head = await ReadHeadAsync(connection, transaction, subjectStore, subjectId, cancellationToken, legacySchema)
             .ConfigureAwait(false);
 
         if (head is null)
@@ -384,7 +392,8 @@ internal static class AnnalsClaimWriter
             recordedAt,
             head.CurrentVersionId,
             sourceSessionId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            legacySchema).ConfigureAwait(false);
 
         await SupersedeAndAdvanceHeadAsync(
             connection,
@@ -480,6 +489,12 @@ internal static class AnnalsClaimWriter
     {
         foreach (AnnalsErasureStep step in steps)
         {
+            if (step.RequiredFromCoreVersion is { } requiredVersion
+                && await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
+            {
+                continue;
+            }
+
             await ExecuteAsync(
                 connection,
                 transaction,
