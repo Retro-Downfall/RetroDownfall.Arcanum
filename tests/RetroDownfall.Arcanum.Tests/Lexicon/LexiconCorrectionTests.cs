@@ -129,7 +129,11 @@ public sealed class LexiconCorrectionTests(GrimoireFixture fixture) : IAsyncLife
 
         string[] snapshot = await _test.SnapshotAsync();
 
-        var result = await _test.Service.CorrectAsync(target, new("general", ["alpha", "beta"]), null);
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        var result = await _test.Service.CorrectAsync(target, new("general", ["alpha", "beta"]), field == "label" ? lease : null);
 
         Assert.Equal(ErrorCodes.Lexicon.StaleCurationTarget, result.Error.Code);
 

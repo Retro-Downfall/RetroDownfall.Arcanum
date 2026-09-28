@@ -47,6 +47,12 @@ internal sealed partial class LexiconService
             return new Error(ErrorCodes.Lexicon.InvalidCurationTarget, "A complete Lexicon target is required.");
         }
 
+        if (target.SensitivityLabel.IsPresent && writeLease is null)
+        {
+            return new Error(ErrorCodes.Lexicon.ProtectedMutationRefused,
+                "A protected Lexicon lifecycle change requires an exact-scope write capability.");
+        }
+
         try
         {
             Require(await ValidateCurationLeaseAsync(writeLease, target.Scope, cancellationToken).ConfigureAwait(false));

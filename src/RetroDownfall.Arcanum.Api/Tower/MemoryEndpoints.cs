@@ -100,39 +100,46 @@ internal static class MemoryEndpoints
             "/memory/sources",
             (ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
                 HandleSourcesAsync(null, db, options, context))
+        .RequireConditionalCovenantReadAuthority()
         .WithName("GetMemorySources");
 
         apiGroup.MapGet(
             "/memory/sources/{sessionId:guid}",
             (Guid sessionId, ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
                 HandleSourcesAsync(sessionId, db, options, context))
+        .RequireConditionalCovenantReadAuthority()
         .WithName("GetSessionMemorySources");
 
         apiGroup.MapPost(
             "/memory/search",
             HandleSearchAsync)
+        .RequireConditionalCovenantReadAuthority()
         .WithName("SearchMemory");
 
         apiGroup.MapGet(
             "/memory/explain",
             (ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
                 HandleExplainAsync(null, db, options, context))
+        .RequireConditionalCovenantReadAuthority()
         .WithName("ExplainMemory");
 
         apiGroup.MapGet(
             "/memory/explain/{sessionId:guid}",
             (Guid sessionId, ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
                 HandleExplainAsync(sessionId, db, options, context))
+        .RequireConditionalCovenantReadAuthority()
         .WithName("ExplainSessionMemory");
 
         apiGroup.MapGet(
             "/memory/lexicon",
             HandleLexiconListAsync)
+        .RequireConditionalCovenantReadAuthority()
         .WithName("ListLexiconEntries");
 
         apiGroup.MapGet(
             "/memory/lexicon/{**name}",
             HandleLexiconShowAsync)
+        .RequireConditionalCovenantReadAuthority()
         .WithName("GetLexiconEntry");
 
         apiGroup.MapDelete(
@@ -194,11 +201,23 @@ internal static class MemoryEndpoints
                 : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
     }
 
-    private static async Task<IResult> HandleSourcesAsync(
+    private static Task<IResult> HandleSourcesAsync(
         Guid? sessionId,
         ArcanumDbContext db,
         IOptionsMonitor<ArcanumSettings> options,
-        HttpContext context)
+        HttpContext context) =>
+        RespondToLexiconInspectionAsync(
+            context.RequestServices.GetRequiredService<ILexiconCurationService>(),
+            context,
+            entries => BuildSourcesAsync(sessionId, db, options, context, entries.Count),
+            ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
+
+    private static async Task<Result<MemorySourcesDto>> BuildSourcesAsync(
+        Guid? sessionId,
+        ArcanumDbContext db,
+        IOptionsMonitor<ArcanumSettings> options,
+        HttpContext context,
+        int lexiconCount)
     {
         Result<MemoryStatusDto> status = await BuildStatusAsync(
             sessionId,
@@ -207,7 +226,8 @@ internal static class MemoryEndpoints
             context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestServices.GetService<ICovenantManagementService>(),
             context.RequestServices.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-            context.RequestAborted).ConfigureAwait(false);
+            context.RequestAborted,
+            lexiconCount).ConfigureAwait(false);
 
         Result<MemorySourcesDto> result;
 
@@ -231,19 +251,26 @@ internal static class MemoryEndpoints
                 new MemorySourcesDto(status.Value.SessionId, sources));
         }
 
-        return Results.Json(
-            ApiResponse<MemorySourcesDto>.FromResult(result, TraceId(context)),
-            ArcanumJsonContext.Default.ApiResponseMemorySourcesDto,
-            statusCode: result.IsSuccess
-                ? StatusCodes.Status200OK
-                : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+        return result;
     }
 
-    private static async Task<IResult> HandleExplainAsync(
+    private static Task<IResult> HandleExplainAsync(
         Guid? sessionId,
         ArcanumDbContext db,
         IOptionsMonitor<ArcanumSettings> options,
-        HttpContext context)
+        HttpContext context) =>
+        RespondToLexiconInspectionAsync(
+            context.RequestServices.GetRequiredService<ILexiconCurationService>(),
+            context,
+            entries => BuildExplainAsync(sessionId, db, options, context, entries.Count),
+            ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+    private static async Task<Result<MemoryExplainDto>> BuildExplainAsync(
+        Guid? sessionId,
+        ArcanumDbContext db,
+        IOptionsMonitor<ArcanumSettings> options,
+        HttpContext context,
+        int lexiconCount)
     {
         MemoryScope scope = await ResolveScopeAsync(sessionId, context).ConfigureAwait(false);
 
@@ -254,7 +281,8 @@ internal static class MemoryEndpoints
             context.RequestServices.GetService<ICovenantAvailability>(),
             context.RequestServices.GetService<ICovenantManagementService>(),
             context.RequestServices.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-            context.RequestAborted).ConfigureAwait(false);
+            context.RequestAborted,
+            lexiconCount).ConfigureAwait(false);
 
         Result<MemoryExplainDto> result;
 
@@ -324,12 +352,7 @@ internal static class MemoryEndpoints
                     MemoryCampaignScopeReport.Describe(scope)));
         }
 
-        return Results.Json(
-            ApiResponse<MemoryExplainDto>.FromResult(result, TraceId(context)),
-            ArcanumJsonContext.Default.ApiResponseMemoryExplainDto,
-            statusCode: result.IsSuccess
-                ? StatusCodes.Status200OK
-                : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+        return result;
     }
 
     private static async Task<IResult> HandleSearchAsync(
@@ -589,44 +612,66 @@ internal static class MemoryEndpoints
         }, ArcanumJsonContext.Default.ApiResponseLexiconListDto).ConfigureAwait(false);
     }
 
-    private static async Task<IResult> RespondToLexiconInspectionAsync<T>(
+    private static Task<IResult> RespondToLexiconInspectionAsync<T>(
         ILexiconCurationService lexicon,
         HttpContext context,
         Func<IReadOnlyList<LexiconEntryDto>, T> project,
+        JsonTypeInfo<ApiResponse<T>> typeInfo) =>
+        RespondToLexiconInspectionAsync(lexicon, context,
+            entries => Task.FromResult(Result<T>.Success(project(entries))), typeInfo);
+
+    private static Task<IResult> RespondToLexiconInspectionAsync<T>(
+        ILexiconCurationService lexicon,
+        HttpContext context,
+        Func<IReadOnlyList<LexiconEntryDto>, Task<Result<T>>> project,
+        JsonTypeInfo<ApiResponse<T>> typeInfo) =>
+        RespondToLexiconReadAsync(context, null,
+            lease => lexicon.ListInspectionAsync(lease, context.RequestAborted), project, typeInfo);
+
+    private static async Task<IResult> RespondToLexiconReadAsync<TRead, T>(
+        HttpContext context,
+        CovenantOperationScope? scope,
+        Func<ICovenantSnapshotReadLease?, Task<Result<LexiconInspectionResult<TRead>>>> inspect,
+        Func<TRead, Task<Result<T>>> project,
         JsonTypeInfo<ApiResponse<T>> typeInfo)
     {
         ICovenantSnapshotReadLease? owned = null;
 
         try
         {
-            if (context.RequestServices.GetService<ICovenantAvailability>()?.Current.FeatureEnabled == true
-                && context.RequestServices.GetService<ICovenantOperationGate>() is { } gate)
+            Result<CovenantExportAdmission> acquired = await context.RequestServices
+                .GetRequiredService<ICovenantExportPolicy>()
+                .AcquireConditionalReadAsync(scope, context.RequestAborted).ConfigureAwait(false);
+
+            if (acquired.IsFailure)
             {
-                Result<CovenantInstallationReadLease> acquired = await gate
-                    .AcquireInstallationReadAsync(context.RequestAborted).ConfigureAwait(false);
-
-                if (acquired.IsFailure)
-                {
-                    return Results.Json(ApiResponse<T>.FromResult(Result<T>.Failure(acquired.Error), TraceId(context)),
-                        typeInfo, statusCode: ArcanumErrorMapper.ResolveStatusCode(acquired.Error.Code));
-                }
-
-                owned = acquired.Value;
+                return Results.Json(ApiResponse<T>.FromResult(Result<T>.Failure(acquired.Error), TraceId(context)),
+                    typeInfo, statusCode: ArcanumErrorMapper.ResolveStatusCode(acquired.Error.Code));
             }
 
-            var inspected = await lexicon.ListInspectionAsync(owned, context.RequestAborted).ConfigureAwait(false);
+            owned = acquired.Value.ReadLease;
+
+            Result<LexiconInspectionResult<TRead>> inspected = await inspect(owned).ConfigureAwait(false);
 
             Result<T> result = inspected.IsFailure
                 ? Result<T>.Failure(inspected.Error)
-                : Result<T>.Success(project(inspected.Value.Value));
+                : await project(inspected.Value.Value).ConfigureAwait(false);
 
-            if (inspected.IsSuccess && inspected.Value.ContainsProtectedContent && owned is not null)
+            if (result.IsSuccess && inspected.Value.ContainsProtectedContent)
             {
-                IResult response = new CovenantProtectedJsonResult<T>(owned, result, typeInfo);
+                if (owned is null)
+                {
+                    result = Result<T>.Failure(new Error(ErrorCodes.Covenant.ForbiddenAuthority,
+                        "Protected Lexicon content requires read authority."));
+                }
+                else
+                {
+                    IResult response = new CovenantProtectedJsonResult<T>(owned, result, typeInfo);
 
-                owned = null;
+                    owned = null;
 
-                return response;
+                    return response;
+                }
             }
 
             return Results.Json(ApiResponse<T>.FromResult(result, TraceId(context)), typeInfo,
@@ -647,31 +692,20 @@ internal static class MemoryEndpoints
     /// It resolves the way a turn in that Campaign would - that Campaign first, then global - so what an
     /// operator inspects is what the model would be shown.
     /// </remarks>
-    private static async Task<IResult> HandleLexiconShowAsync(
+    private static Task<IResult> HandleLexiconShowAsync(
         string name,
         Guid? campaignId,
-        ILexiconService lexicon,
+        ILexiconCurationService lexicon,
         HttpContext context)
     {
-        Result<LexiconEntryDto?> lookup = await lexicon
-            .GetByNameAsync(name, LexiconScope.ForResolvedCampaign(campaignId), context.RequestAborted)
-            .ConfigureAwait(false);
+        LexiconCurationScope scope = campaignId is { } campaign
+            ? new(LexiconScopeKind.Campaign, campaign)
+            : new(LexiconScopeKind.Global, null);
 
-        Result<LexiconEntryDto> result = lookup.IsFailure
-            ? Result<LexiconEntryDto>.Failure(lookup.Error)
-            : lookup.Value is null
-                ? Result<LexiconEntryDto>.Failure(
-                    new Error(
-                        ErrorCodes.Lexicon.NotFound,
-                        "Lexicon entity was not found."))
-                : Result<LexiconEntryDto>.Success(lookup.Value);
-
-        return Results.Json(
-            ApiResponse<LexiconEntryDto>.FromResult(result, TraceId(context)),
-            ArcanumJsonContext.Default.ApiResponseLexiconEntryDto,
-            statusCode: result.IsSuccess
-                ? StatusCodes.Status200OK
-                : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+        return RespondToLexiconReadAsync(context, campaignId is null ? CovenantOperationScope.Global : null,
+            lease => lexicon.ShowEffectiveAsync(scope, name, lease, context.RequestAborted),
+            detail => Task.FromResult(Result<LexiconEntryDto>.Success(detail.Entry)),
+            ArcanumJsonContext.Default.ApiResponseLexiconEntryDto);
     }
 
     /// <remarks>
@@ -808,7 +842,8 @@ internal static class MemoryEndpoints
         ICovenantAvailability? availability,
         ICovenantManagementService? management,
         IGrimoireOrdinaryConnectionFactory connections,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? verifiedLexiconCount = null)
     {
         await using IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(
             db,
@@ -871,7 +906,7 @@ internal static class MemoryEndpoints
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
-        int lexicon = await CountAsync(
+        int lexicon = verifiedLexiconCount ?? await CountAsync(
             connection,
             "SELECT COUNT(*) FROM lexicon_entries",
             null,

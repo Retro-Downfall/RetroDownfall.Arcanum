@@ -1062,7 +1062,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "BuildStatusAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "BuildStatusAsync(8)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1090,7 +1090,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "BuildStatusAsync(7)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "BuildStatusAsync(8)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

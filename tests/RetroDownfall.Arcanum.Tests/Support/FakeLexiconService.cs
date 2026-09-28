@@ -177,9 +177,38 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         Task.FromResult(Result<LexiconInspectionResult<LexiconEntryDetail>>.Failure(
             new Error(ErrorCodes.Lexicon.SearchFailed, "This fake does not provide exact evidence.")));
 
-    public Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowEffectiveAsync(
+    public async Task<Result<LexiconInspectionResult<LexiconEntryDetail>>> ShowEffectiveAsync(
         LexiconCurationScope requestedScope, string name, ICovenantSnapshotReadLease? installationReadLease,
-        CancellationToken cancellationToken = default) =>
-        ShowExactAsync(requestedScope, name, installationReadLease, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // This compatibility fake owns no label ledger and must never stand in for protected inspection.
+        if (installationReadLease is not null)
+        {
+            return new Error(ErrorCodes.Covenant.ForbiddenAuthority, "This fake cannot verify protected inspection.");
+        }
+
+        Result<LexiconEntryDto?> found = await GetByNameAsync(name,
+            LexiconScope.ForResolvedCampaign(requestedScope.CampaignId), cancellationToken);
+
+        if (found.Value is not { } entry)
+        {
+            return new Error(ErrorCodes.Lexicon.NotFound, "Lexicon entity was not found.");
+        }
+
+        LexiconCurationScope scope = entry.ScopeCampaignId is { } campaign
+            ? new(LexiconScopeKind.Campaign, campaign) : new(LexiconScopeKind.Global, null);
+
+        LexiconEntryLifecycle lifecycle = new(entry.RetiredAtUtc, entry.PinnedAtUtc);
+
+        LexiconCanonicalValue canonical = LexiconValueNormalizer.NormalizeCorrection(entry.Name, entry.Type, entry.Facts).Value;
+
+        string digest = LexiconSnapshotDigest.ComputeHex(canonical);
+
+        LexiconCurationTarget target = new(scope, canonical.NameNormalized, entry.Id, entry.CurationGeneration,
+            digest, lifecycle, new(false, null, null, null, null, null, null), new(false, null, null, null, null));
+
+        return new LexiconInspectionResult<LexiconEntryDetail>(new(entry, scope, null, lifecycle, entry.Eligibility,
+            entry.CurationGeneration, digest, target, [], []), false);
+    }
 
 }

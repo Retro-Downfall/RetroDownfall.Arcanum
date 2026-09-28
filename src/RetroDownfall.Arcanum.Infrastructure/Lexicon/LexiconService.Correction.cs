@@ -34,6 +34,12 @@ internal sealed partial class LexiconService
             return normalized.Error;
         }
 
+        if (target.SensitivityLabel.IsPresent && writeLease is null)
+        {
+            return new Error(ErrorCodes.Lexicon.ProtectedMutationRefused,
+                "A protected Lexicon correction requires an exact-scope write capability.");
+        }
+
         try
         {
             Require(await ValidateCurationLeaseAsync(writeLease, target.Scope, cancellationToken).ConfigureAwait(false));
@@ -187,6 +193,11 @@ internal sealed partial class LexiconService
         }
 
         ArtifactSensitivityLabel? label = await ReadVerifiedLabelAsync(connection, target.EntryId, target.Scope, cancellationToken).ConfigureAwait(false);
+
+        if (label is not null && !target.SensitivityLabel.IsPresent)
+        {
+            throw new InspectionException(StaleTargetError);
+        }
 
         InspectionRow row = await ReadInspectionRowAsync(connection, target.EntryId, cancellationToken).ConfigureAwait(false);
 

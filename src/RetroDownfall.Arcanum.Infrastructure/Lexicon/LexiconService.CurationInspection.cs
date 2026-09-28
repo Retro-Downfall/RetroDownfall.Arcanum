@@ -34,7 +34,8 @@ internal sealed partial class LexiconService
         string name,
         ICovenantSnapshotReadLease? installationReadLease,
         CancellationToken cancellationToken = default) =>
-        InspectNamedAsync(requestedScope, name, installationReadLease, requiredLeaseScope: null,
+        InspectNamedAsync(requestedScope, name, installationReadLease,
+            requestedScope?.Kind == LexiconScopeKind.Global ? requestedScope : null,
             "WHERE NameNormalized = @name AND RetiredAtUtc IS NULL AND ScopeCampaignId IN (@scope, '') "
                 + "ORDER BY CASE WHEN ScopeCampaignId = @scope THEN 0 ELSE 1 END LIMIT 1", cancellationToken);
 

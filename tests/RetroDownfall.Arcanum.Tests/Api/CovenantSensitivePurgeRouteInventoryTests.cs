@@ -7,11 +7,14 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -96,6 +99,98 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
 
         Assert.Equal([.. DeletionRoutes.Order(StringComparer.Ordinal)], declared);
 
+    }
+
+    [Fact]
+    public async Task Memory_route_inventory_classifies_every_projection_and_keeps_hard_delete_separate()
+    {
+        await using RouteGraph graph = await RouteGraph.CreateAsync();
+
+        string[] content = ["ExplainMemory", "ExplainSessionMemory", "GetLexiconEntry", "GetMemorySources",
+            "GetSessionMemorySources", "ListLexiconEntries", "SearchMemory"];
+
+        Endpoint[] routes = graph.Endpoints.OfType<RouteEndpoint>()
+            .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/api/memory", StringComparison.Ordinal)).ToArray();
+
+        Assert.Equal(content.Concat(["GetMemoryStatus", "GetSessionMemoryStatus", "DeleteLexiconEntry"]).Order(StringComparer.Ordinal),
+            routes.Select(endpoint => endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName).Order(StringComparer.Ordinal));
+
+        foreach (Endpoint route in routes)
+        {
+            string name = route.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName;
+
+            Assert.Equal(content.Contains(name, StringComparer.Ordinal),
+                route.Metadata.GetMetadata<CovenantConditionalReadRequirementMetadata>() is not null);
+
+            Assert.Equal(name == "DeleteLexiconEntry",
+                route.Metadata.GetMetadata<CovenantConditionalSensitivityPurgeMetadata>() is not null);
+        }
+    }
+
+    [Fact]
+    public void Operator_Lexicon_read_sources_are_closed_to_verified_inspection_and_the_status_only_count()
+    {
+        string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), "src", "RetroDownfall.Arcanum.Api");
+
+        List<string> consumers = [];
+
+        List<string> sql = [];
+
+        List<string> calls = [];
+
+        foreach (string path in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar).Any(part => part is "bin" or "obj")))
+        {
+            CompilationUnitSyntax unit = CSharpSyntaxTree.ParseText(File.ReadAllText(path)).GetCompilationUnitRoot();
+
+            string Location(Microsoft.CodeAnalysis.SyntaxNode node) => Path.GetFileName(path) + ":"
+                + (node.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "outside-method");
+
+            foreach (IdentifierNameSyntax type in unit.DescendantNodes().OfType<IdentifierNameSyntax>()
+                .Where(type => type.Identifier.ValueText is "ILexiconService" or "ILexiconCurationService"))
+            {
+                consumers.Add(Location(type) + ":" + type.Identifier.ValueText);
+            }
+
+            foreach (LiteralExpressionSyntax literal in unit.DescendantNodes().OfType<LiteralExpressionSyntax>()
+                .Where(literal => literal.Token.ValueText.Contains("lexicon_", StringComparison.OrdinalIgnoreCase)))
+            {
+                sql.Add(Location(literal) + ":" + literal.Token.ValueText);
+            }
+
+            foreach (InvocationExpressionSyntax invocation in unit.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (invocation.Expression is MemberAccessExpressionSyntax member && member.Expression.ToString() == "lexicon")
+                {
+                    calls.Add(Location(invocation) + ":" + member.Name.Identifier.ValueText);
+                }
+            }
+        }
+
+        string[] expectedConsumers =
+        [
+            "MemoryEndpoints.cs:HandleSourcesAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:HandleExplainAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:HandleSearchAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:HandleLexiconListAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:HandleLexiconShowAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:HandleLexiconDeleteAsync:ILexiconService",
+            "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ILexiconCurationService",
+            "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ILexiconCurationService",
+            "WizardIntelligenceProvider.cs:outside-method:ILexiconService",
+        ];
+
+        Assert.Equal(expectedConsumers.Order(StringComparer.Ordinal), consumers.Order(StringComparer.Ordinal));
+
+        Assert.Equal(["MemoryEndpoints.cs:BuildStatusAsync:SELECT COUNT(*) FROM lexicon_entries"], sql);
+
+        Assert.Equal(new[]
+        {
+            "MemoryEndpoints.cs:HandleLexiconDeleteAsync:DeleteByNameAsync",
+            "MemoryEndpoints.cs:HandleLexiconDeleteAsync:FindAllLifecycleIdentityForDeletionAsync",
+            "MemoryEndpoints.cs:HandleLexiconShowAsync:ShowEffectiveAsync",
+            "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ListInspectionAsync",
+        }, calls.Order(StringComparer.Ordinal));
     }
 
     private sealed class RouteGraph : IAsyncDisposable
