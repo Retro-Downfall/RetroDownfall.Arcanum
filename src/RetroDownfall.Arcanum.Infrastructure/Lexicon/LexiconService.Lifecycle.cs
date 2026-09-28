@@ -14,14 +14,33 @@ internal sealed partial class LexiconService
 {
     public Task<Result<LexiconCurationResult>> RetireAsync(
         LexiconCurationTarget target, CovenantWriteLease? writeLease, CancellationToken cancellationToken = default) =>
-        ChangeRetirementAsync(target, writeLease, retire: true, cancellationToken);
+        ChangeLifecycleAsync(target, writeLease, LifecycleChange.Retire, cancellationToken);
 
     public Task<Result<LexiconCurationResult>> ReinstateAsync(
         LexiconCurationTarget target, CovenantWriteLease? writeLease, CancellationToken cancellationToken = default) =>
-        ChangeRetirementAsync(target, writeLease, retire: false, cancellationToken);
+        ChangeLifecycleAsync(target, writeLease, LifecycleChange.Reinstate, cancellationToken);
 
-    private async Task<Result<LexiconCurationResult>> ChangeRetirementAsync(
-        LexiconCurationTarget target, CovenantWriteLease? writeLease, bool retire, CancellationToken cancellationToken)
+    public Task<Result<LexiconCurationResult>> PinAsync(
+        LexiconCurationTarget target, CovenantWriteLease? writeLease, CancellationToken cancellationToken = default) =>
+        ChangeLifecycleAsync(target, writeLease, LifecycleChange.Pin, cancellationToken);
+
+    public Task<Result<LexiconCurationResult>> UnpinAsync(
+        LexiconCurationTarget target, CovenantWriteLease? writeLease, CancellationToken cancellationToken = default) =>
+        ChangeLifecycleAsync(target, writeLease, LifecycleChange.Unpin, cancellationToken);
+
+    private enum LifecycleChange
+    {
+        Retire,
+
+        Reinstate,
+
+        Pin,
+
+        Unpin,
+    }
+
+    private async Task<Result<LexiconCurationResult>> ChangeLifecycleAsync(
+        LexiconCurationTarget target, CovenantWriteLease? writeLease, LifecycleChange change, CancellationToken cancellationToken)
     {
         if (target is null || target.Validate().IsFailure)
         {
@@ -59,27 +78,38 @@ internal sealed partial class LexiconService
                             "A protected Lexicon lifecycle change requires an exact-scope write capability."));
                     }
 
-                    LexiconCurationOutcomeKind outcome = retire
-                        ? LexiconCurationOutcomeKind.AlreadyRetired : LexiconCurationOutcomeKind.NotRetired;
+                    bool pinChange = change is LifecycleChange.Pin or LifecycleChange.Unpin;
 
-                    if ((state.Row.Entry.RetiredAtUtc is not null) != retire)
+                    bool setTimestamp = change is LifecycleChange.Retire or LifecycleChange.Pin;
+
+                    DateTimeOffset? timestamp = pinChange ? state.Row.Entry.PinnedAtUtc : state.Row.Entry.RetiredAtUtc;
+
+                    LexiconCurationOutcomeKind outcome = change switch
+                    {
+                        LifecycleChange.Retire => LexiconCurationOutcomeKind.AlreadyRetired,
+                        LifecycleChange.Reinstate => LexiconCurationOutcomeKind.NotRetired,
+                        LifecycleChange.Pin => LexiconCurationOutcomeKind.AlreadyPinned,
+                        _ => LexiconCurationOutcomeKind.NotPinned,
+                    };
+
+                    if ((timestamp is not null) != setTimestamp)
                     {
                         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-                        if (retire)
+                        if (change == LifecycleChange.Retire)
                         {
                             await EnsureCurationBaselineAsync(connection, state, now, cancellationToken).ConfigureAwait(false);
                         }
 
                         await using (DbCommand command = connection.CreateCommand())
                         {
-                            command.CommandText = """
-                                UPDATE lexicon_entries SET RetiredAtUtc = @retired,
+                            command.CommandText = $"""
+                                UPDATE lexicon_entries SET {(pinChange ? "PinnedAtUtc" : "RetiredAtUtc")} = @timestamp,
                                     CurationGeneration = CurationGeneration + 1
                                 WHERE Id = @id AND CurationGeneration = @generation
                                 """;
 
-                            AddParameter(command, "@retired", retire ? UtcInstantText.Format(now) : DBNull.Value);
+                            AddParameter(command, "@timestamp", setTimestamp ? UtcInstantText.Format(now) : DBNull.Value);
 
                             AddParameter(command, "@id", target.EntryId.ToString("N"));
 
@@ -88,7 +118,7 @@ internal sealed partial class LexiconService
                             RequireIntegrity(await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1);
                         }
 
-                        if (retire)
+                        if (change == LifecycleChange.Retire)
                         {
                             RequireIntegrity(await AnnalsClaimWriter.AppendRetirementAsync(connection, null,
                                 AnnalSubjectStore.Lexicon, target.EntryId.ToString("N"), AnnalOrigin.OperatorStated,
@@ -96,7 +126,7 @@ internal sealed partial class LexiconService
                                 target.Scope.CampaignId?.ToString("D"), state.Label?.Sensitivity ?? ContentSensitivity.None,
                                 now, now, null, cancellationToken).ConfigureAwait(false));
                         }
-                        else
+                        else if (change == LifecycleChange.Reinstate)
                         {
                             _ = await AppendCurationContentAsync(connection, state, state.Row.Canonical,
                                 AnnalOrigin.OperatorStated, now, now, cancellationToken).ConfigureAwait(false);

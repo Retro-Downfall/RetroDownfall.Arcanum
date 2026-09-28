@@ -41,6 +41,79 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class DataRetentionCommandTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Prune_dry_run_renders_Lexicon_pin_inventory(bool json)
+    {
+        string plan = JsonSerializer.Serialize(CreatePlan(), ArcanumJsonContext.Default.DataRetentionPlan);
+
+        plan = plan[..^1] + ",\"lexiconCuration\":{\"pinnedRows\":5,\"pinnedRowsExemptFromPlan\":3}}";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"isSuccess\":true,\"data\":" + plan + "}", Encoding.UTF8, "application/json"),
+        });
+
+        CliTestResult result = RunCommand(handler, ["data", "prune", "--dry-run", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement inventory = document.RootElement.GetProperty("lexiconCuration");
+
+            Assert.Equal(5, inventory.GetProperty("pinnedRows").GetInt64());
+
+            Assert.Equal(3, inventory.GetProperty("pinnedRowsExemptFromPlan").GetInt64());
+        }
+        else
+        {
+            Assert.Contains("Lexicon pins: 5; exempt from this plan: 3", result.Output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Prune_apply_renders_exact_newly_pinned_conflict(bool json)
+    {
+        DataRetentionPlan plan = CreatePlan();
+
+        const string candidate = "lexicon:11111111111111111111111111111111";
+
+        DataRetentionApplyResult applied = CreateApplyResult(plan.PlanId) with
+        {
+            RowsDeleted = 0,
+            Conflicts = [new(ErrorCodes.Data.PinnedAfterPlanning, candidate, "The Lexicon entry was pinned after planning and was preserved.")],
+        };
+
+        RecordingHandler handler = new(request => request.Path == "/api/data/prune/plan"
+            ? SuccessResponse(plan, ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)
+            : SuccessResponse(applied, ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult));
+
+        CliTestResult result = RunCommand(handler, ["data", "prune", "--apply", "--yes", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement conflict = Assert.Single(document.RootElement.GetProperty("conflicts").EnumerateArray());
+
+            Assert.Equal("Data.PinnedAfterPlanning", conflict.GetProperty("code").GetString());
+
+            Assert.Equal(candidate, conflict.GetProperty("resourceId").GetString());
+        }
+        else
+        {
+            Assert.Contains($"Conflict {candidate}: Data.PinnedAfterPlanning", result.Output, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
 
     public void Data_help_exposes_retention_and_explicit_deletion_commands()

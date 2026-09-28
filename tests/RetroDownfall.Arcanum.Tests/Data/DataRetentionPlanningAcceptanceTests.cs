@@ -4,10 +4,70 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using System.Text.Json;
+
+using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Core.Lexicon;
+
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PlanAndApplyAsync_LexiconPins_ReportTotalAndCutoffExemptions(bool enabled)
+    {
+        RequireSqlCipher();
+
+        LexiconEntryDetail oldPin = await SeedCuratableLexiconAsync("old pin");
+
+        LexiconEntryDetail freshPin = await SeedCuratableLexiconAsync("fresh pin", aged: false);
+
+        LexiconEntryDetail unpinned = await SeedCuratableLexiconAsync("old unpinned");
+
+        LexiconService lexicon = CreateLexiconService();
+
+        Assert.True((await lexicon.PinAsync(oldPin.Target, null)).IsSuccess);
+
+        Assert.True((await lexicon.PinAsync(freshPin.Target, null)).IsSuccess);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.LexiconEntries = EnabledRule() with { Enabled = enabled };
+
+        var service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Assert.Equal(enabled ? ["lexicon:" + unpinned.Entry.Id.ToString("N")] : [], plan.CandidateIds);
+
+        JsonElement json = JsonSerializer.SerializeToElement(plan, ArcanumJsonContext.Default.DataRetentionPlan);
+
+        Assert.True(json.TryGetProperty("lexiconCuration", out JsonElement inventory), "Dry-run must explain the Lexicon pins.");
+
+        Assert.Equal(2, inventory.GetProperty("pinnedRows").GetInt64());
+
+        Assert.Equal(enabled ? 1 : 0, inventory.GetProperty("pinnedRowsExemptFromPlan").GetInt64());
+
+        var applied = await service.ApplyAsync(new(request, plan.PlanId));
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(enabled ? 1 : 0, applied.Value.RowsDeleted);
+
+        Assert.Equal(1, await CountAsync("lexicon_entries", "Id", oldPin.Entry.Id.ToString("N")));
+
+        Assert.Equal(1, await CountAsync("lexicon_entries", "Id", freshPin.Entry.Id.ToString("N")));
+
+        Assert.Equal(enabled ? 0 : 1, await CountAsync("lexicon_entries", "Id", unpinned.Entry.Id.ToString("N")));
+    }
 
     [SkippableTheory]
 

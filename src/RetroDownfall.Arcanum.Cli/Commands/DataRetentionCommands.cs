@@ -460,6 +460,13 @@ internal sealed class DataRetentionCommands(
             + $"conflicts: {FormatCount(plan.Conflicts.Length)}; "
             + $"confirmation required: {(plan.RequiresConfirmation ? "yes" : "no")}");
 
+        if (plan.LexiconCuration is { } lexicon)
+        {
+            dispatcher.WritePayload(
+                $"Lexicon pins: {FormatCount(lexicon.PinnedRows)}; "
+                + $"exempt from this plan: {FormatCount(lexicon.PinnedRowsExemptFromPlan)}");
+        }
+
         foreach (DataRetentionPlanItem item in plan.Items)
         {
 

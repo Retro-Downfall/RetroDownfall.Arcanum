@@ -50,6 +50,56 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class DataRetentionEndpointTests
 {
+    [SkippableFact]
+    public async Task Prune_routes_serialize_Lexicon_pin_inventory_and_exact_apply_conflict()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string candidate = "lexicon:11111111111111111111111111111111";
+
+        FakeDataRetentionService service = new()
+        {
+            ApplyHandler = request => new DataRetentionApplyResult(Guid.NewGuid(), request.ExpectedPlanId!,
+                0, 0, 0, 0, true, [], [new(ErrorCodes.Data.PinnedAfterPlanning, candidate,
+                    "The Lexicon entry was pinned after planning and was preserved.")]),
+        };
+
+        string planJson = JsonSerializer.Serialize(service.Plan, ArcanumJsonContext.Default.DataRetentionPlan);
+
+        service.Plan = JsonSerializer.Deserialize(planJson[..^1] +
+            ",\"lexiconCuration\":{\"pinnedRows\":5,\"pinnedRowsExemptFromPlan\":3}}",
+            ArcanumJsonContext.Default.DataRetentionPlan)!;
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage preview = await client.PostAsync("/api/data/prune/plan",
+            JsonContent(new DataRetentionRequest(DataRetentionOperation.Prune), ArcanumJsonContext.Default.DataRetentionRequest));
+
+        Assert.Equal(HttpStatusCode.OK, preview.StatusCode);
+
+        using JsonDocument plan = JsonDocument.Parse(await preview.Content.ReadAsStringAsync());
+
+        JsonElement inventory = plan.RootElement.GetProperty("data").GetProperty("lexiconCuration");
+
+        Assert.Equal(5, inventory.GetProperty("pinnedRows").GetInt64());
+
+        Assert.Equal(3, inventory.GetProperty("pinnedRowsExemptFromPlan").GetInt64());
+
+        HttpResponseMessage apply = await client.PostAsync("/api/data/prune", JsonContent(
+            new DataRetentionApplyRequest(service.Plan.Request, service.Plan.PlanId), ArcanumJsonContext.Default.DataRetentionApplyRequest));
+
+        Assert.Equal(HttpStatusCode.OK, apply.StatusCode);
+
+        using JsonDocument applied = JsonDocument.Parse(await apply.Content.ReadAsStringAsync());
+
+        JsonElement conflict = Assert.Single(applied.RootElement.GetProperty("data").GetProperty("conflicts").EnumerateArray());
+
+        Assert.Equal("Data.PinnedAfterPlanning", conflict.GetProperty("code").GetString());
+
+        Assert.Equal(candidate, conflict.GetProperty("resourceId").GetString());
+    }
 
     private readonly ArcanumWebApplicationFactory _factory;
 
@@ -1879,7 +1929,7 @@ public sealed class DataRetentionEndpointTests
             EstimatedBytes: 4_096,
             PreservedOutsideSelectedRoot: ["backups"]);
 
-        public DataRetentionPlan Plan { get; } = new(
+        public DataRetentionPlan Plan { get; set; } = new(
             "plan-test",
             new DataRetentionRequest(DataRetentionOperation.Prune),
             new DateTimeOffset(2026, 8, 2, 12, 0, 0, TimeSpan.Zero),

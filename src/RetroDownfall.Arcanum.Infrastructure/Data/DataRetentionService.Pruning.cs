@@ -402,7 +402,7 @@ internal sealed partial class DataRetentionService
             candidates,
             cancellationToken).ConfigureAwait(false);
 
-        await AddLexiconCandidatesAsync(
+        DataRetentionLexiconCurationInventory lexiconCuration = await AddLexiconCandidatesAsync(
             retention,
             limit,
             items,
@@ -470,6 +470,8 @@ internal sealed partial class DataRetentionService
         DataRetentionPlan plan = finalized with
         {
             SagaCuration = sagaCuration,
+
+            LexiconCuration = lexiconCuration,
         };
 
         IReadOnlyDictionary<string, DateTimeOffset> cutoffs =
@@ -2179,7 +2181,7 @@ internal sealed partial class DataRetentionService
             pinnedRowsExemptFromPlan);
     }
 
-    private async Task AddLexiconCandidatesAsync(
+    private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesAsync(
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
@@ -2188,18 +2190,29 @@ internal sealed partial class DataRetentionService
     {
         RetentionRuleSettings rule = retention.LexiconEntries;
 
+        long pinnedRows = await CountTableAsync(
+            "lexicon_entries",
+            "PinnedAtUtc IS NOT NULL",
+            cancellationToken).ConfigureAwait(false);
+
         if (!rule.Enabled || candidates.Count >= limit)
         {
-            return;
+            return new DataRetentionLexiconCurationInventory(pinnedRows, 0);
         }
 
         DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
+        long pinnedRowsExemptFromPlan = await CountTableAsync(
+            "lexicon_entries",
+            "PinnedAtUtc IS NOT NULL AND julianday(UpdatedAt) <= julianday(@cutoff)",
+            cancellationToken,
+            ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false);
+
         string[] ids = await ReadStringIdsAsync(
             "lexicon_entries",
             "Id",
-            "julianday(UpdatedAt) <= julianday(@cutoff)",
+            "julianday(UpdatedAt) <= julianday(@cutoff) AND PinnedAtUtc IS NULL",
             "UpdatedAt, Id",
             limit - candidates.Count,
             cancellationToken,
@@ -2235,6 +2248,8 @@ internal sealed partial class DataRetentionService
                     0,
                     derived));
         }
+
+        return new DataRetentionLexiconCurationInventory(pinnedRows, pinnedRowsExemptFromPlan);
     }
 
     private void AddLogCandidates(
@@ -3429,7 +3444,7 @@ internal sealed partial class DataRetentionService
                         "Post-delete reconciliation found retained owned data for the current candidate.");
                 }
 
-                bool preserved = deleted.Rows == 0
+                bool preserved = deleted.PinnedAfterPlanning || deleted.Rows == 0
                     && deleted.Files == 0
                     && deleted.Derived == 0
                     && await CandidateStillExistsAsync(
@@ -3453,9 +3468,11 @@ internal sealed partial class DataRetentionService
                 {
                     appliedConflicts.Add(
                         new DataRetentionConflict(
-                            ErrorCodes.Data.PlanChanged,
+                            deleted.PinnedAfterPlanning ? ErrorCodes.Data.PinnedAfterPlanning : ErrorCodes.Data.PlanChanged,
                             candidate,
-                            "The retention candidate changed or became protected after planning; it was preserved."));
+                            deleted.PinnedAfterPlanning
+                                ? "The Lexicon entry was pinned after planning and was preserved."
+                                : "The retention candidate changed or became protected after planning; it was preserved."));
 
                     earliestSkippedIndex ??= index;
                 }
@@ -5987,6 +6004,8 @@ internal sealed partial class DataRetentionService
 
         long fts;
 
+        long claims;
+
         int provenance;
 
         int rows;
@@ -6017,6 +6036,14 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", entryId)).ConfigureAwait(false);
 
+            claims = await CountInTransactionAsync(
+                connection,
+                transaction,
+                "annal_claims",
+                "SubjectStoreCode = 2 AND SubjectId = @id",
+                cancellationToken,
+                ("@id", entryId)).ConfigureAwait(false);
+
             await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
                 connection,
                 transaction,
@@ -6031,6 +6058,7 @@ internal sealed partial class DataRetentionService
                 DELETE FROM lexicon_entries
                 WHERE Id = @id
                   AND julianday(UpdatedAt) <= julianday(@cutoff)
+                  AND PinnedAtUtc IS NULL
                 """,
                 cancellationToken,
                 ("@id", entryId),
@@ -6038,9 +6066,17 @@ internal sealed partial class DataRetentionService
 
             if (rows == 0)
             {
+                bool pinned = await CountInTransactionAsync(
+                    connection,
+                    transaction,
+                    "lexicon_entries",
+                    "Id = @id AND PinnedAtUtc IS NOT NULL",
+                    cancellationToken,
+                    ("@id", entryId)).ConfigureAwait(false) > 0;
+
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-                return CandidateDeleteResult.Empty;
+                return CandidateDeleteResult.Empty with { PinnedAfterPlanning = pinned };
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -6083,7 +6119,7 @@ internal sealed partial class DataRetentionService
             rows,
             0,
             0,
-            provenance + fts,
+            provenance + fts + claims,
             reconciled);
     }
 
@@ -6478,7 +6514,8 @@ internal sealed partial class DataRetentionService
         long Files,
         long Bytes,
         long Derived,
-        bool Reconciled)
+        bool Reconciled,
+        bool PinnedAfterPlanning = false)
     {
         public static CandidateDeleteResult Empty { get; } =
             new(0, 0, 0, 0, true);
