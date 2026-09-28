@@ -55,7 +55,9 @@ internal sealed partial class LexiconService
 
         try
         {
-            if (!await HasCurationAsync(await OpenConnectionAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false))
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false))
             {
                 return CurationUnavailableError;
             }
@@ -64,8 +66,6 @@ internal sealed partial class LexiconService
 
             return await SqliteBusyRetry.ExecuteAsync(async () =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                 await ExecuteNonQueryAsync(connection, cancellationToken, "BEGIN IMMEDIATE").ConfigureAwait(false);
 
                 try
