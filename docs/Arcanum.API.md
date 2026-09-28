@@ -896,7 +896,7 @@ key, or database schema changed to deliver this.
 
 ### 8.33 Lexicon curation (`/api/memory/lexicon/`)
 
-All six static POSTs require the normal API authentication and JSON request media type. They remain mapped with prompt-time Lexicon or ordinary Annals capture disabled. Responses use `ApiResponse<T>` with source-generated camelCase fields; curation enums accept recognized string names, never numeric spellings. Existing `GET /api/memory/lexicon/{name}` remains effective active lookup and `DELETE` remains exact-scope hard erasure, including retired rows. POST `show` is exact inspection: absence in a Campaign is 404 even when Global has the same name.
+All six static POSTs require the normal API authentication and JSON request media type. They remain mapped with prompt-time Lexicon or ordinary Annals capture disabled. Responses use `ApiResponse<T>` with source-generated camelCase fields. The three Lexicon enums — `LexiconScopeKind`, `LexiconRetrievalEligibility`, and `LexiconCurationOutcomeKind` — accept recognized string names, never numeric spellings. Inherited Annals enums retain numeric JSON values: a format-2 assertion head contains `"operation":1` and `"contentHashFormat":2`, not symbolic strings such as `"Assert"` or `"LexiconStructuredSnapshot"`; those strings fail deserialization. Existing `GET /api/memory/lexicon/{name}` remains effective active lookup and `DELETE` remains exact-scope hard erasure, including retired rows. POST `show` is exact inspection: absence in a Campaign is 404 even when Global has the same name.
 
 | POST path | Request body | Successful data |
 |---|---|---|
@@ -923,14 +923,14 @@ The two evidence arms are explicit and presence-sensitive:
 
 | Target arm | `isPresent: false` | `isPresent: true` |
 |---|---|---|
-| `annalHead` | All other fields null or omitted. | Requires `claimId`, `versionId`, positive `revision`, `operation`, `contentHashFormat`, and a SHA-256 hex `contentHash` for Assert/Correct. Retire requires a null content hash. Formats are `LegacyStoreDigest` and `LexiconStructuredSnapshot`. |
+| `annalHead` | All other fields null or omitted. | Requires `claimId`, `versionId`, positive `revision`, numeric `operation` (1 = Assert, 2 = Correct, 3 = Retire), numeric `contentHashFormat` (1 = LegacyStoreDigest, 2 = LexiconStructuredSnapshot), and a SHA-256 hex `contentHash` for Assert/Correct. Retire requires a null content hash. |
 | `sensitivityLabel` | All other fields null or omitted. | Requires nonempty `labelId`, positive `artifactRevision`, SHA-256 hex `artifactContentDigest`, and complete `generationProvenance` under the existing Covenant format. |
 
-Both arm objects and their `isPresent` properties are required. Omission is not explicit false. A claimless row is valid, with `annalHead.isPresent: false`, null origin, and empty history. Malformed or contradictory nested evidence is refused before mutation. Format-2 snapshot bytes and the distinct derived-artifact label digest are specified in DESIGN §10.6.3.
+Both arm objects and their `isPresent` properties are required. Omission is not explicit false. Missing or null arm objects, incomplete present-arm values, and contradictory absent-arm values that deserialize successfully produce `Lexicon.InvalidCurationTarget`. An omitted `isPresent` property or another deserialization failure produces `Validation.InvalidBody`. A claimless row is valid, with `annalHead.isPresent: false`, null origin, and empty history. All such invalid evidence is refused before mutation. Format-2 snapshot bytes and the distinct derived-artifact label digest are specified in DESIGN §10.6.3.
 
 | Status | Typed error or meaning |
 |---|---|
-| 400 | `Lexicon.InvalidName`, `Lexicon.InvalidFact`, `Lexicon.InvalidScope`, `Lexicon.InvalidCurationTarget`, `Lexicon.InvalidReplacement`; malformed JSON/presence arms produce `Validation.InvalidBody`. |
+| 400 | `Lexicon.InvalidName`, `Lexicon.InvalidFact`, `Lexicon.InvalidScope`, `Lexicon.InvalidCurationTarget`, `Lexicon.InvalidReplacement`. Missing/null evidence arms and deserialized incomplete or contradictory evidence produce `Lexicon.InvalidCurationTarget`; omitted `isPresent`, malformed JSON, and other deserialization failures produce `Validation.InvalidBody`. |
 | 401 | Missing or invalid API authentication. |
 | 403 | `Lexicon.ProtectedMutationRefused`; existing Covenant authorization failures retain their established mapping. |
 | 404 | `Lexicon.NotFound` for the exact subject. |
