@@ -564,6 +564,67 @@ public sealed class LexiconCorrectionTests(GrimoireFixture fixture) : IAsyncLife
     }
 
     [Theory]
+    [InlineData("correct", "annal_heads", "CurrentOperationCode = 99")]
+    [InlineData("correct", "annal_versions", "OriginCode = 99")]
+    [InlineData("retire", "annal_versions", "ContentHashFormatCode = 99")]
+    [InlineData("reinstate", "annal_versions", "SensitivityCode = 99")]
+    [InlineData("pin", "annal_heads", "CurrentRevision = 1.5")]
+    [InlineData("unpin", "annal_versions", "Revision = 'corrupt'")]
+    [InlineData("correct", "annal_heads", "CurrentRevision = 2147483648")]
+    [InlineData("correct", "lexicon_annal_fact_provenance", "AttachmentVersion = 1.5")]
+    public async Task Corrupt_persisted_annal_codes_are_integrity_failures_for_every_curation_path(
+        string operation, string table, string assignment)
+    {
+        await _test.SeedAsync();
+
+        await _test.ProtectAsync(withHead: true);
+
+        LexiconEntryDetail before = await _test.ShowProtectedAsync();
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        if (operation is "reinstate" or "unpin")
+        {
+            var prepared = operation == "reinstate"
+                ? await _test.Service.RetireAsync(before.Target, lease)
+                : await _test.Service.PinAsync(before.Target, lease);
+
+            Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+            before = prepared.Value.Entry;
+        }
+
+        await _test.CorruptPersistedAnnalCodeAsync(table, assignment);
+
+        string[] snapshot = await _test.SnapshotAsync();
+
+        Result<LexiconCurationResult> result = operation switch
+        {
+            "correct" => await _test.Service.CorrectAsync(before.Target, new("Person", ["beta", "gamma"]), lease),
+            "retire" => await _test.Service.RetireAsync(before.Target, lease),
+            "reinstate" => await _test.Service.ReinstateAsync(before.Target, lease),
+            "pin" => await _test.Service.PinAsync(before.Target, lease),
+            _ => await _test.Service.UnpinAsync(before.Target, lease),
+        };
+
+        Assert.Equal(snapshot, await _test.SnapshotAsync());
+
+        Assert.Equal(operation == "reinstate" ? 0L : 1L,
+            await _test.ScalarAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'alpha'"));
+
+        Assert.Equal(0L, await _test.ScalarAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'gamma'"));
+
+        // A subsequent transaction proves the failed operation released its immediate transaction.
+        await using SqliteTransaction subsequent = _test.Connection.BeginTransaction();
+
+        await subsequent.RollbackAsync();
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, result.Error.Code);
+    }
+
+    [Theory]
     [InlineData("missing")]
     [InlineData("read")]
     [InlineData("campaign")]
@@ -705,6 +766,24 @@ internal sealed class CorrectionFixture : IAsyncDisposable
 
         return (await ArtifactSensitivityLedger.ReadLabelWithinAsync(Connection, null, SensitiveArtifactKind.Lexicon,
             before.Entry.Id, CancellationToken.None)).Value!;
+    }
+
+    internal async Task CorruptPersistedAnnalCodeAsync(string table, string assignment)
+    {
+        // Corruption fixtures deliberately bypass guards; the operation must refuse these persisted
+        // bytes without repairing or publishing anything, even when SQL CHECK constraints were bypassed.
+        await ExecuteAsync("PRAGMA foreign_keys = OFF; PRAGMA ignore_check_constraints = ON");
+
+        if (table == "annal_heads")
+        {
+            await ExecuteAsync("DROP TRIGGER annal_heads_validate_update");
+        }
+        else if (table == "annal_versions")
+        {
+            await ExecuteAsync("DROP TRIGGER annal_versions_guard_update");
+        }
+
+        await ExecuteAsync($"UPDATE {table} SET {assignment}");
     }
 
     internal async Task ExecuteAsync(string sql)

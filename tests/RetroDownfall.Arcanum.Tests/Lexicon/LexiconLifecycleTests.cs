@@ -239,6 +239,48 @@ public sealed class LexiconLifecycleTests(GrimoireFixture fixture)
     }
 
     [Theory]
+    [InlineData(false, "annal_heads", "CurrentOperationCode = 99")]
+    [InlineData(true, "annal_heads", "CurrentOperationCode = 99")]
+    [InlineData(false, "annal_heads", "CurrentRevision = 1.5")]
+    [InlineData(true, "annal_heads", "CurrentRevision = 'corrupt'")]
+    [InlineData(false, "annal_versions", "OriginCode = 99")]
+    [InlineData(true, "annal_versions", "ContentHashFormatCode = 99")]
+    [InlineData(false, "annal_versions", "Revision = 1.5")]
+    [InlineData(true, "annal_versions", "Revision = 2147483648")]
+    public async Task Scribe_corrupt_persisted_annal_codes_are_integrity_failures_without_partial_publication(
+        bool protectedEntry, string table, string assignment)
+    {
+        await using CorrectionFixture test = new(fixture, annals: !protectedEntry);
+
+        await test.SeedAsync();
+
+        if (protectedEntry)
+        {
+            await test.ProtectAsync(withHead: true);
+        }
+
+        await test.CorruptPersistedAnnalCodeAsync(table, assignment);
+
+        string[] snapshot = await test.SnapshotAsync();
+
+        // Protected active no-ops and real unprotected merges both validate their existing head.
+        var result = await test.Concrete.UpsertAsync("Entity", "general",
+            protectedEntry ? ["alpha", "beta"] : ["gamma"], LexiconScope.Global);
+
+        Assert.Equal(snapshot, await test.SnapshotAsync());
+
+        Assert.Equal(1L, await test.ScalarAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'alpha'"));
+
+        Assert.Equal(0L, await test.ScalarAsync("SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'gamma'"));
+
+        await using var subsequent = test.Connection.BeginTransaction();
+
+        await subsequent.RollbackAsync();
+
+        Assert.Equal(ErrorCodes.Lexicon.CurationIntegrityFailed, result.Error.Code);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Scribe_evidence_failure_rolls_back_row_fts_and_current_and_historical_provenance(bool merge)

@@ -236,7 +236,7 @@ internal sealed partial class LexiconService(
             return await ReadVerifiedHeadAsync(connection, row, label, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is ArgumentException or FormatException or OverflowException
-            or InvalidCastException or InvalidOperationException or JsonException)
+            or InvalidCastException or InvalidDataException or InvalidOperationException or JsonException)
         {
             throw new InspectionException(IntegrityError);
         }

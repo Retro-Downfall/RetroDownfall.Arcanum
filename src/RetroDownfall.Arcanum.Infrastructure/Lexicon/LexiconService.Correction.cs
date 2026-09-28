@@ -172,7 +172,7 @@ internal sealed partial class LexiconService
             return await ReadCurationStateCoreAsync(connection, target, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is ArgumentException or FormatException or OverflowException
-            or InvalidCastException or InvalidOperationException or System.Text.Json.JsonException)
+            or InvalidCastException or InvalidDataException or InvalidOperationException or System.Text.Json.JsonException)
         {
             // Materializers verify digest-bound label fields as well as relational evidence.
             // Malformed persisted bytes are integrity refusals, before desired-state handling.
