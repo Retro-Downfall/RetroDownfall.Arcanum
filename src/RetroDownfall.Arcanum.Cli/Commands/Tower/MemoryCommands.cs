@@ -368,6 +368,11 @@ public sealed partial class MemoryCommands(
 
             dispatcher.WritePayload($"  Retention: {match.Retention}");
 
+            if (match.Scope == MemorySearchScope.Lexicon)
+            {
+                dispatcher.WritePayload($"  {LexiconLifecycleText(match.LexiconLifecycle, match.LexiconEligibility)}");
+            }
+
         }
 
         if (result.Value.Results.Length == 0)
@@ -547,6 +552,17 @@ public sealed partial class MemoryCommands(
         dispatcher.WritePayload(
             $"{entry.Name} [{entry.Type}] {facts} (updated {entry.UpdatedAt:u})");
 
+        dispatcher.WritePayload($"  {LexiconLifecycleText(new(entry.RetiredAtUtc, entry.PinnedAtUtc), entry.Eligibility)}");
+
+    }
+
+    private static string LexiconLifecycleText(LexiconEntryLifecycle? lifecycle, LexiconRetrievalEligibility? eligibility)
+    {
+        string retired = lifecycle is null ? "unknown" : Stamp(lifecycle.RetiredAtUtc) ?? "not retired";
+
+        string pinned = lifecycle is null ? "unknown" : Stamp(lifecycle.PinnedAtUtc) ?? "not pinned";
+
+        return $"Retrieval: {eligibility?.ToString() ?? "unknown"}; retired: {retired}; pinned: {pinned}";
     }
 
     private async Task<SessionResolution> ResolveOptionalSessionAsync(

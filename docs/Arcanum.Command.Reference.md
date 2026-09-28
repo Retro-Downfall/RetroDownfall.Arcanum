@@ -622,6 +622,8 @@ Provides read-only cross-store inspection, explicit Lexicon deletion, and curati
 
 The six Lexicon curation verbs use authenticated static POSTs. Omitted `--campaign` means exact Global even when saved or active context names a Campaign. `--campaign` selects that exact Campaign and never falls back to Global. The existing effective GET API still supports Campaign-to-Global lookup; it is not the curation command's show route. List/search retain retired entries with lifecycle markers, while `memory explain` requires an eligible active row before describing Lexicon as a next-turn candidate. Legacy `lexicon delete` remains a separate hard-delete command and has no `--campaign` option in the registered tree.
 
+Human-readable exact show numbers the current facts and displays their attachment source coordinates and availability. Detailed historical fact-provenance coordinates remain available through `--json`; that historical ledger contains source metadata and fact ordinals, never superseded fact text.
+
 Correction JSON supplies the complete replacement, for example:
 
 ```json

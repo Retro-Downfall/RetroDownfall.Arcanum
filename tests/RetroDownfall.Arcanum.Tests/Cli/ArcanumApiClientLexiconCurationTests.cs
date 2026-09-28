@@ -214,6 +214,8 @@ internal static class LexiconCliFixture
 
         internal LexiconCurationOutcomeKind Outcome { get; init; } = LexiconCurationOutcomeKind.Applied;
 
+        internal LexiconEntryDetail DetailResponse { get; init; } = Detail;
+
         internal Error? Failure { get; init; }
 
         internal bool FailMutationOnly { get; init; }
@@ -248,8 +250,8 @@ internal static class LexiconCliFixture
             Error? error = !show || !FailMutationOnly ? Failure : null;
 
             byte[] bytes = show
-                ? JsonSerializer.SerializeToUtf8Bytes(new ApiResponse<LexiconEntryDetail>(error is null ? Detail : null, error is null, error), ArcanumJsonContext.Default.ApiResponseLexiconEntryDetail)
-                : JsonSerializer.SerializeToUtf8Bytes(new ApiResponse<LexiconCurationResult>(error is null ? new(Outcome, Detail) : null, error is null, error), ArcanumJsonContext.Default.ApiResponseLexiconCurationResult);
+                ? JsonSerializer.SerializeToUtf8Bytes(new ApiResponse<LexiconEntryDetail>(error is null ? DetailResponse : null, error is null, error), ArcanumJsonContext.Default.ApiResponseLexiconEntryDetail)
+                : JsonSerializer.SerializeToUtf8Bytes(new ApiResponse<LexiconCurationResult>(error is null ? new(Outcome, DetailResponse) : null, error is null, error), ArcanumJsonContext.Default.ApiResponseLexiconCurationResult);
 
             return new(error is null ? HttpStatusCode.OK : HttpStatusCode.Conflict) { Content = new ByteArrayContent(bytes) };
         }

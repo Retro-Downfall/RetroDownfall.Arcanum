@@ -1,9 +1,11 @@
 using System.CommandLine;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -13,6 +15,120 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 public sealed class MemoryLexiconCurationCommandTests
 {
     private const string Correction = "{\"type\":\"Preference\",\"facts\":[\"A corrected fact\"]}";
+
+    [Fact]
+    public async Task Exact_plain_show_maps_current_facts_to_attachment_sources_without_dumping_history()
+    {
+        LexiconEntryDetail detail = DetailWithCurrentSources();
+
+        using LexiconCliFixture.Handler handler = new() { DetailResponse = detail };
+
+        CliTestResult result = await CliTestHarness.RunAsync(LexiconCliFixture.Services(handler),
+            ["memory", "lexicon", "show", "Operator", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(["POST /api/memory/lexicon/show"], handler.Requests);
+
+        string first = Assert.Single(result.Output.Split('\n'), line => line.Contains("Fact 1 source:", StringComparison.Ordinal));
+
+        Assert.Contains("Available", first, StringComparison.Ordinal);
+
+        Assert.Contains("visible-source-one", first, StringComparison.Ordinal);
+
+        Assert.Contains("version 7", first, StringComparison.Ordinal);
+
+        string second = Assert.Single(result.Output.Split('\n'), line => line.Contains("Fact 2 source:", StringComparison.Ordinal));
+
+        Assert.Contains("Unavailable", second, StringComparison.Ordinal);
+
+        Assert.Contains("visible-source-two", second, StringComparison.Ordinal);
+
+        Assert.Contains("version 8", second, StringComparison.Ordinal);
+
+        foreach (LexiconFactProvenance provenance in detail.Entry.FactProvenance!)
+        {
+            string line = provenance.Fact == "First current fact" ? first : second;
+
+            Assert.Contains(provenance.Source.SessionId.ToString("D"), line, StringComparison.Ordinal);
+
+            Assert.Contains(provenance.Source.AttachmentId.ToString("D"), line, StringComparison.Ordinal);
+
+            Assert.Contains(provenance.Source.ContentHash, line, StringComparison.Ordinal);
+
+            Assert.Contains(provenance.Source.SourceType, line, StringComparison.Ordinal);
+
+            Assert.Contains("2026-09-22 13:14:15Z", line, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("First current fact", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Second current fact", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("history-only-source", result.Output + result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(new string('E', 64), result.Output + result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("historicalFactProvenance", result.Output, StringComparison.Ordinal);
+
+        Assert.Empty(result.Error);
+    }
+
+    [Fact]
+    public async Task Exact_json_show_retains_complete_current_and_content_free_historical_provenance()
+    {
+        LexiconEntryDetail detail = DetailWithCurrentSources();
+
+        using LexiconCliFixture.Handler handler = new() { DetailResponse = detail };
+
+        CliTestResult result = await CliTestHarness.RunAsync(LexiconCliFixture.Services(handler),
+            ["memory", "lexicon", "show", "Operator", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(JsonSerializer.Serialize(detail, ArcanumJsonContext.Default.LexiconEntryDetail), result.Output.Trim());
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        JsonElement historical = Assert.Single(document.RootElement.GetProperty("historicalFactProvenance").EnumerateArray());
+
+        Assert.Equal("history-only-source", historical.GetProperty("logicalKey").GetString());
+
+        Assert.False(historical.TryGetProperty("fact", out _));
+
+        Assert.False(historical.TryGetProperty("facts", out _));
+
+        Assert.Empty(result.Error);
+    }
+
+    private static LexiconEntryDetail DetailWithCurrentSources()
+    {
+        Guid sessionId = Guid.Parse("12345678-aaaa-4444-8888-111111111111");
+
+        Guid attachmentId = Guid.Parse("12345678-bbbb-4444-8888-222222222222");
+
+        DateTimeOffset materialized = new(2026, 9, 22, 13, 14, 15, TimeSpan.Zero);
+
+        return LexiconCliFixture.Detail with
+        {
+            Entry = LexiconCliFixture.Detail.Entry with
+            {
+                Facts = ["First current fact", "Second current fact"],
+                // Reverse the provenance rows: the displayed index must identify the fact, not this array's order.
+                FactProvenance =
+                [
+                    new("Second current fact", new(sessionId, attachmentId, "visible-source-two", 8, new string('D', 64), materialized,
+                        "AttachmentExtract", AttachmentSourceAvailability.Unavailable)),
+                    new("First current fact", new(sessionId, attachmentId, "visible-source-one", 7, new string('F', 64), materialized,
+                        "AttachmentText", AttachmentSourceAvailability.Available)),
+                ],
+            },
+            HistoricalFactProvenance =
+            [
+                new("prior-version", 0, sessionId, attachmentId, "history-only-source", 6, new string('E', 64), materialized, "AttachmentText"),
+            ],
+        };
+    }
 
     [Theory]
     [InlineData(null)]

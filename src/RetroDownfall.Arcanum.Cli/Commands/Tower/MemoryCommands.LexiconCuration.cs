@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -208,15 +209,27 @@ public sealed partial class MemoryCommands
 
         write($"  Entry: {detail.Entry.Id:D}; generation: {detail.CurationGeneration}");
 
-        write($"  Retrieval: {detail.Eligibility}; retired: {Stamp(detail.Lifecycle.RetiredAtUtc) ?? "not retired"}; pinned: {Stamp(detail.Lifecycle.PinnedAtUtc) ?? "not pinned"}");
+        write($"  {LexiconLifecycleText(detail.Lifecycle, detail.Eligibility)}");
 
         write($"  Snapshot digest: {detail.SnapshotDigest}");
 
         write($"  Origin: {detail.CurrentOrigin?.ToString() ?? "no claim"}; updated: {Stamp(detail.Entry.UpdatedAt)}");
 
-        foreach (string fact in detail.Entry.Facts)
+        ILookup<string, LexiconFactProvenance> factSources = (detail.Entry.FactProvenance ?? [])
+            .ToLookup(static provenance => provenance.Fact, StringComparer.Ordinal);
+
+        for (int index = 0; index < detail.Entry.Facts.Length; index++)
         {
-            write($"  - {fact}");
+            string fact = detail.Entry.Facts[index];
+
+            write($"  {index + 1}. {fact}");
+
+            foreach (LexiconFactProvenance provenance in factSources[fact])
+            {
+                AttachmentMemoryProvenance source = provenance.Source;
+
+                write($"    Fact {index + 1} source: {source.Availability}; session {source.SessionId:D}; attachment {source.AttachmentId:D}; logical key {source.LogicalKey}; version {source.Version}; content hash {source.ContentHash}; materialized {Stamp(source.MaterializedAt)}; type {source.SourceType}");
+            }
         }
 
         LexiconCurationAnnalHead head = detail.Target.AnnalHead;
