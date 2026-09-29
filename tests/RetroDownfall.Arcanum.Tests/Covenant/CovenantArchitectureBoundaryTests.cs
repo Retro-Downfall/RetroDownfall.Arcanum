@@ -503,6 +503,14 @@ public sealed class CovenantArchitectureBoundaryTests
 
         Assert.Equal(
             [
+                // The third declared exception, listed first because the scan orders paths ordinally,
+                // and it is not a writer at all. The file names covenant_search_documents only as one
+                // entry in the append-only effect-digest table-code registry, which gives each erasure
+                // plan target a stable byte. Core has no SQLite access, so it cannot reach the
+                // projection, and the name stays a plain literal because hiding it from this scan would
+                // hide it from the next reader too.
+                "src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureEffectFacts.cs",
+
                 // The one declared exception, and it is not a live writer. This file owns the list of
                 // Covenant family content tables for two staged-only callers: the pre-staging inventory,
                 // which counts them, and the protected-state purge of §10.19.10, which clears them out

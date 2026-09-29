@@ -748,6 +748,14 @@ public static class ErrorCodes
 
         public const string RetiredMutationRefused = "Lexicon.RetiredMutationRefused";
 
+        /// <summary>
+        /// An agent write named an entry the operator erased in this exact scope, so nothing was recorded.
+        /// </summary>
+        public const string SuppressedNameRefused = "Lexicon.SuppressedNameRefused";
+
+        /// <summary>An agent asked to delete an entry the operator pinned.</summary>
+        public const string PinnedMutationRefused = "Lexicon.PinnedMutationRefused";
+
         public const string ProtectedMutationRefused = "Lexicon.ProtectedMutationRefused";
 
         public const string CurationIntegrityFailed = "Lexicon.CurationIntegrityFailed";
@@ -936,6 +944,40 @@ public static class ErrorCodes
         public const string RequestReuse = "MemoryReview.RequestReuse";
 
         public const string IntegrityFailure = "MemoryReview.IntegrityFailure";
+    }
+
+    /// <summary>Selective hard erasure across the Saga, Lexicon, and Covenant memory stores.</summary>
+    /// <remarks>
+    /// Content-free, like every memory family: a message paired with one of these codes names a
+    /// decision, never the content, name, key, or fingerprint behind it.
+    /// </remarks>
+    public static class MemoryErasure
+    {
+        /// <summary>The schema this erasure needs has not been reached yet. Retryable.</summary>
+        public const string Unavailable = "MemoryErasure.Unavailable";
+
+        /// <summary>The erasure key could not be read from secure storage right now. Retryable.</summary>
+        public const string KeyUnavailable = "MemoryErasure.KeyUnavailable";
+
+        /// <summary>
+        /// Erasure evidence exists that the current key cannot verify, so nothing is decided against it.
+        /// </summary>
+        public const string KeyLost = "MemoryErasure.KeyLost";
+
+        /// <summary>The preflight token is missing, expired, unreadable, or bound to a different request.</summary>
+        public const string InvalidPreflight = "MemoryErasure.InvalidPreflight";
+
+        /// <summary>What the erase would remove changed after it was prepared.</summary>
+        public const string StalePlan = "MemoryErasure.StalePlan";
+
+        /// <summary>A durable receipt proves this subject was already erased.</summary>
+        public const string SubjectErased = "MemoryErasure.SubjectErased";
+
+        /// <summary>
+        /// The erase could not prove every planned row absent inside its own transaction, so it rolled
+        /// back and recorded nothing.
+        /// </summary>
+        public const string ErasureIncomplete = "MemoryErasure.ErasureIncomplete";
     }
 
     /// <summary>

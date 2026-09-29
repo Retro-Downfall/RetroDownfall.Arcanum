@@ -44,6 +44,31 @@ internal static class ArcanumErrorMapper
             ErrorCodes.MemoryReview.IntegrityFailure =>
                 StatusCodes.Status500InternalServerError,
 
+            // Selective erasure. A token that cannot be read is the request's fault. A lost key, a
+            // plan that moved, and the two Lexicon operator-management refusals are states the
+            // operator re-reads and decides on again. An erased subject is gone and a receipt proves
+            // it. A key secure storage cannot reach, or a schema not yet at this slice's version, is
+            // worth retrying. An erase that could not prove its own absence rolled back and is a
+            // server fault, which the default-bad-request mapping must never downgrade.
+            ErrorCodes.MemoryErasure.InvalidPreflight =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.MemoryErasure.KeyLost
+                or ErrorCodes.MemoryErasure.StalePlan
+                or ErrorCodes.Lexicon.SuppressedNameRefused
+                or ErrorCodes.Lexicon.PinnedMutationRefused =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.MemoryErasure.SubjectErased =>
+                StatusCodes.Status410Gone,
+
+            ErrorCodes.MemoryErasure.Unavailable
+                or ErrorCodes.MemoryErasure.KeyUnavailable =>
+                StatusCodes.Status503ServiceUnavailable,
+
+            ErrorCodes.MemoryErasure.ErasureIncomplete =>
+                StatusCodes.Status500InternalServerError,
+
             ErrorCodes.Validation.InvalidPrompt
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody
@@ -302,6 +327,7 @@ internal static class ArcanumErrorMapper
             or ErrorCodes.Workspace.DeleteFailed
             or ErrorCodes.Spell.WriteFailed
             or ErrorCodes.Saga.SearchFailed
+            or ErrorCodes.MemoryErasure.ErasureIncomplete
             or ErrorCodes.Hub.Error)
         {
             return ResolveStatusCode(errorCode);

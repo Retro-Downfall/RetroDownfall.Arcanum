@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
@@ -84,6 +85,61 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(ApiResponse<LexiconEntryDetail>))]
     [InlineData(typeof(ApiResponse<LexiconCurationResult>))]
     public void Lexicon_wire_types_have_explicit_source_generation_registrations(Type type)
+    {
+        Assert.Contains(typeof(ArcanumJsonContext).CustomAttributes, attribute => attribute.AttributeType == typeof(JsonSerializableAttribute)
+            && attribute.ConstructorArguments[0].Value is Type registered && registered == type);
+
+        Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type));
+    }
+
+    [Theory]
+    [InlineData(typeof(MemoryLocalErasureOutcome))]
+    [InlineData(typeof(MemoryErasureScrubPendingReason))]
+    [InlineData(typeof(MemoryErasureWalCheckpointAttempt))]
+    [InlineData(typeof(MemoryExternalChannel))]
+    [InlineData(typeof(MemoryExternalEvidence))]
+    [InlineData(typeof(MemoryExternalRevocation))]
+    [InlineData(typeof(MemoryRetainedLocalCopy))]
+    [InlineData(typeof(MemoryErasureNote))]
+    [InlineData(typeof(MemoryErasureReleaseOutcome))]
+    [InlineData(typeof(MemoryErasureKeyStatus))]
+    [InlineData(typeof(MemoryExternalExposureChannelDto))]
+    [InlineData(typeof(MemoryErasureExternalExposureDto))]
+    [InlineData(typeof(LexiconErasurePlanFacts))]
+    [InlineData(typeof(CovenantErasurePlanFacts))]
+    [InlineData(typeof(MemoryErasurePlanDto))]
+    [InlineData(typeof(MemoryErasurePreflightDto))]
+    [InlineData(typeof(MemoryErasureLocalResultDto))]
+    [InlineData(typeof(MemoryErasureResultDto))]
+    [InlineData(typeof(MemoryErasureReleaseResultDto))]
+    [InlineData(typeof(MemoryErasureStoreCountsDto))]
+    [InlineData(typeof(MemoryErasureStatusDto))]
+    [InlineData(typeof(MemoryErasureScrubResultDto))]
+    [InlineData(typeof(MemoryErasureKeyResetPreflightDto))]
+    [InlineData(typeof(MemoryErasureKeyResetRequest))]
+    [InlineData(typeof(MemoryErasureKeyResetResultDto))]
+    [InlineData(typeof(SagaErasePrepareRequest))]
+    [InlineData(typeof(SagaEraseRequest))]
+    [InlineData(typeof(SagaErasureReleaseRequest))]
+    [InlineData(typeof(LexiconErasePrepareRequest))]
+    [InlineData(typeof(LexiconEraseRequest))]
+    [InlineData(typeof(LexiconErasureReleaseRequest))]
+    [InlineData(typeof(MemoryErasureScrubPendingReason[]))]
+    [InlineData(typeof(MemoryExternalExposureChannelDto[]))]
+    [InlineData(typeof(MemoryRetainedLocalCopy[]))]
+    [InlineData(typeof(MemoryErasureNote[]))]
+    [InlineData(typeof(MemoryErasureStoreCountsDto[]))]
+    [InlineData(typeof(CovenantEraseHeadExpectation))]
+    [InlineData(typeof(CovenantErasePrepareRequest))]
+    [InlineData(typeof(CovenantEraseRequest))]
+    [InlineData(typeof(ApiResponse<MemoryErasurePreflightDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureResultDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureReleaseResultDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureStatusDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureScrubResultDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureKeyResetPreflightDto>))]
+    [InlineData(typeof(ApiResponse<MemoryErasureKeyResetResultDto>))]
+    public void Memory_erasure_wire_types_have_explicit_source_generation_registrations(Type type)
     {
         Assert.Contains(typeof(ArcanumJsonContext).CustomAttributes, attribute => attribute.AttributeType == typeof(JsonSerializableAttribute)
             && attribute.ConstructorArguments[0].Value is Type registered && registered == type);

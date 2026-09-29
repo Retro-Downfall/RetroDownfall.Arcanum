@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 
+using RetroDownfall.Arcanum.Core.Memory;
+
 namespace RetroDownfall.Arcanum.Core.Covenant;
 
 /// <summary>
@@ -98,6 +100,8 @@ public static class CovenantPublicContractInventory
 
     private const string SessionBinding = Namespace + nameof(ISessionCampaignBindingService);
 
+    private const string EntryErasure = "RetroDownfall.Arcanum.Core.Memory." + nameof(ICovenantEntryErasureService);
+
     /// <summary>Every service port a public Covenant shape crosses.</summary>
     public static ImmutableArray<CovenantServicePort> Ports { get; } =
     [
@@ -119,6 +123,10 @@ public static class CovenantPublicContractInventory
 
         new(SessionBinding,
             "One port for the single immutable resolution a legacy Session is allowed."),
+
+        new(EntryErasure,
+            "One port for preparing and applying a Covenant entry's hard erasure, which drains covered "
+            + "turns through its own exclusive closure and never shares a path with release."),
     ];
 
     /// <summary>
@@ -318,6 +326,13 @@ public static class CovenantPublicContractInventory
 
         new(Namespace + nameof(SessionCampaignBindingResultDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, SessionBinding,
             "The one immutable choice, and whether this call is the one that made it."),
+
+        // Entry erasure.
+        new(Namespace + nameof(CovenantErasePrepareRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, EntryErasure,
+            "Names the exact entry and both lane heads from show, so the erase binds what the operator saw and never the key's content."),
+
+        new(Namespace + nameof(CovenantEraseRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, EntryErasure,
+            "Repeats the prepared fields beside the bound token, with the mutation id as the sole replay key."),
 
         // Durable recovery payloads. These cross no port and belong to Infrastructure.
         new(InfrastructureNamespace + "CovenantIndexRebuildCheckpointV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",

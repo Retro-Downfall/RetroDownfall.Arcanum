@@ -156,6 +156,7 @@ R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantDisclosureStateAlgebra.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantEgressWardPolicy.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnvelopeContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantErasureContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantEvidenceChains.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantExportPolicyContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantExternalRetentionDisclosure.cs
@@ -345,8 +346,14 @@ R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerEvent.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerInfo.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerState.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerTransport.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureServices.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryReviewTokenCodec.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryDtos.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureDigestGrammar.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureEffectFacts.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureIdentity.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureKey.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewTokenFacts.cs
 R	src/RetroDownfall.Arcanum.Core/Operations/DurableOperationDiagnosticsContracts.cs
