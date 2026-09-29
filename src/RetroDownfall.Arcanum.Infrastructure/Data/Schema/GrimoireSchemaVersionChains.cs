@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 12 and declares eleven steps, Covenant canonical is at version 5 and declares four,
+/// Core is at version 13 and declares twelve steps, Covenant canonical is at version 5 and declares four,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -84,8 +84,21 @@ internal static class GrimoireSchemaVersionChains
     /// legacy and snapshot Annals hashes, and preserves content-free attachment coordinates by
     /// Annals version. Its atomic step replaces every Lexicon FTS trigger and rebuilds the search
     /// projection from active rows alone.</para>
+    ///
+    /// <para>Version 12 adds the Annals review queue: one review event per head change, recorded by
+    /// triggers on <c>annal_heads</c>, with decision receipts and per-scope review markers. Its bounded
+    /// sweep records an event for every head that already existed, so the queue starts with the
+    /// installation's current memories rather than only the ones written after the upgrade.</para>
+    ///
+    /// <para>Version 13 adds erasure evidence: content-free erasure fingerprints, erasure receipts with
+    /// their subject digests, and a guard that lets a receipt only clear its WAL checkpoint reason and
+    /// become Verified once no reason remains. It also indexes the disclosure subjects whose receipts
+    /// have not been folded yet, turns on FTS5 secure delete for <c>lexicon_fts</c>, and merges that
+    /// index once so tokens left by earlier deletes are gone. The step declares no sweep: every new
+    /// table starts empty, and the index, the setting and the merge all complete inside the step's own
+    /// transaction.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 12;
+    internal const int CoreSchemaVersion = 13;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -186,6 +199,13 @@ internal static class GrimoireSchemaVersionChains
 
             [(GrimoireSchemaTransactionTier.Core, 12)] =
                 "A42B44B75CC2EA1E3D8E1949A37EE82D6D4D4DB37AA3335F732A54788DC9FF0B",
+
+            // Captured from the normalized Core version-12 head before any version-13 head edit.
+            // CoreSchemaVersionTwelveFixture removes the memory_erasure_ objects, freezes the three
+            // disclosure tables whose text version 13 changes, and proves this literal still names
+            // version 12. Its frozen copies also keep the raw version-1 to version-5 pins still.
+            [(GrimoireSchemaTransactionTier.Core, 13)] =
+                "616E371CA834F78D84C484E4918C4124F8399686B17E1E8D497557303C08063B",
 
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture

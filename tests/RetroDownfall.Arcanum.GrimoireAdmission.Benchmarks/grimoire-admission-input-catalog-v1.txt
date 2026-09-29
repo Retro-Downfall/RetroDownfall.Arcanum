@@ -989,6 +989,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/lexicon_fact_attac
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/local_erasure_work_items.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/long_running_operation_request_identities.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/managed_file_write_intents.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/memory_erasure_fingerprints.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/memory_erasure_receipt_subjects.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/memory_erasure_receipts.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/owner_deletion_events.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/owner_deletion_operation_intents.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/protected_session_transfer_blobs.sql
@@ -1039,6 +1042,13 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V12/020_annal
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V12/030_annal_review_markers.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V12/040_annal_review_events_head_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V12/050_annal_review_events_head_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/010_memory_erasure_fingerprints.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/020_memory_erasure_receipts.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/030_memory_erasure_receipt_subjects.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/040_memory_erasure_receipts_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/050_disclosure_subject_state_unfolded_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/060_lexicon_fts_secure_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/070_lexicon_fts_optimize.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/010_saga_memories_scope_kind.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/020_saga_memories_campaign_id.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/030_saga_memories_scope_index.sql
@@ -1228,6 +1238,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/long_running_ope
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/managed_file_write_intents_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/managed_file_write_intents_guard_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/managed_file_write_intents_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/memory_erasure_receipts_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/owner_deletion_events_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/owner_deletion_events_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/owner_deletion_operation_intents_guard_delete.sql

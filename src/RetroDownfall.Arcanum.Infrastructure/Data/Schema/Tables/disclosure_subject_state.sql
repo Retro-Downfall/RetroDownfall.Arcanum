@@ -1,7 +1,12 @@
 -- One row per disclosure subject: a logical turn, or a durable operation such as an encrypted
 -- backup. It owns ordinal allocation, the overall counts, and the rolling chain, so exactly one
--- writer advances them and a receipt can never be counted twice or skipped. Compaction folds detail
--- into aggregates but is forbidden from touching anything here except the folded watermark.
+-- writer advances them and a receipt can never be counted twice or skipped.
+--
+-- LastFoldedOrdinal is the disclosure fold's watermark. The live journal fold advances it in each
+-- acknowledged receipt's own transaction, and restore staging advances it when it folds a staged
+-- tail. A subject whose watermark trails LastAllocatedOrdinal holds receipts written before the live
+-- fold existed; readers count that tail as a lower bound, and idx_disclosure_subject_state_unfolded
+-- below is how they find it.
 CREATE TABLE IF NOT EXISTS disclosure_subject_state (
     OriginInstallationId TEXT NOT NULL CHECK (length(OriginInstallationId) > 0),
     -- CovenantDisclosureSubjectKind: Turn = 1, Operation = 2.
@@ -41,3 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_disclosure_subject_state_lifecycle_heartbeat
 -- Compaction picks terminal subjects whose tail still has unfolded receipts.
 CREATE INDEX IF NOT EXISTS idx_disclosure_subject_state_lifecycle_folded
     ON disclosure_subject_state(LifecycleCode, LastFoldedOrdinal);
+
+-- The effective disclosure read finds every subject whose tail the fold has not reached.
+CREATE INDEX IF NOT EXISTS idx_disclosure_subject_state_unfolded
+    ON disclosure_subject_state(OriginInstallationId, SubjectKind, SubjectId)
+    WHERE LastFoldedOrdinal < LastAllocatedOrdinal;
