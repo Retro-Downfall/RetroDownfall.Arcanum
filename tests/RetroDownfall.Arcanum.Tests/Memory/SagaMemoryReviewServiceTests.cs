@@ -741,6 +741,46 @@ public sealed class SagaMemoryReviewServiceTests
     }
 
     [SkippableFact]
+    public async Task Bulk_retire_removes_the_mirror_row_while_the_accelerator_flag_is_off()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAFilledMirrorAsync(
+            harness,
+            Guid.Parse("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"),
+            MemoryReviewAction.Retire,
+            replacementContent: null).ConfigureAwait(false);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
+
+        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+    }
+
+    [SkippableFact]
+    public async Task Bulk_correct_removes_the_stale_mirror_vector_while_the_accelerator_flag_is_off()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAFilledMirrorAsync(
+            harness,
+            Guid.Parse("CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"),
+            MemoryReviewAction.Correct,
+            replacementContent: "corrected").ConfigureAwait(false);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
+
+        // The corrected vector cannot be mirrored without the accelerator, so the old one must not stay
+        // behind describing text the memory no longer holds.
+        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+    }
+
+    [SkippableFact]
     public async Task A_stale_item_refuses_the_whole_bulk_before_any_pin_changes()
     {
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
@@ -940,6 +980,53 @@ public sealed class SagaMemoryReviewServiceTests
         SagaReviewItemDto unreviewed = Assert.Single(queue.Items);
 
         Assert.Equal("concurrent", unreviewed.SubjectId);
+    }
+
+    /// <summary>
+    /// Fills the plain vector mirror through the harness store with its accelerator flag on, then
+    /// drives one bulk decision through a review service whose own flag is off.
+    /// </summary>
+    private static async Task<Result<MemoryReviewBulkResultDto>> ApplyOverAFilledMirrorAsync(
+        SagaStoreHarness harness,
+        Guid requestId,
+        MemoryReviewAction action,
+        string? replacementContent)
+    {
+        await harness.CreatePlainVectorMirrorAsync().ConfigureAwait(false);
+
+        harness.VectorAccelerator.SetAvailable(true);
+
+        await InsertAsync(
+            harness,
+            "m-1",
+            "remembered",
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture))
+            .ConfigureAwait(false);
+
+        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+
+        SagaMemoryReviewService service = CreateService(harness);
+
+        SagaReviewItemDto item = Assert.Single((await service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.Global, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false)).Value.Items);
+
+        SagaReviewBulkPrepareRequest request = new(
+            requestId,
+            SagaMemoryScopeKind.Global,
+            CampaignId: null,
+            action,
+            [new SagaReviewDecision(item.ObservationToken, replacementContent)]);
+
+        Result<MemoryReviewBulkPlanDto> prepared = await service.PrepareAsync(
+            request,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        return await service.ApplyAsync(
+            new SagaReviewBulkApplyRequest(request, prepared.Value.PreparedPlanToken),
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private static SagaMemoryReviewService CreateService(SagaStoreHarness harness) =>

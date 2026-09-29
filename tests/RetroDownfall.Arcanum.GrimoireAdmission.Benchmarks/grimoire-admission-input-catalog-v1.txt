@@ -685,6 +685,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedg
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedger.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathFullResetCleanupEvidenceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathMarkerIntentStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantArtifactPlanRunner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantAvailability.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCleanupWorker.cs
@@ -790,6 +791,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryScopeClassifier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaSuppressionKeyStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SanctumBreachRepository.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Covenant/Accelerator/FullTextSearch/covenant_fts.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Covenant/Accelerator/Tables/covenant_search_documents.sql

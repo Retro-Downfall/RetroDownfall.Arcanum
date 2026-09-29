@@ -235,24 +235,15 @@ internal sealed partial class SagaMemoryStore(
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "saga_memory_embeddings_vec" ("MemoryId", "Embedding")
-                        VALUES (@memoryId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@memoryId", id);
-
-                    AddParameter(vecCmd, "@embedding", blob);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Written only while the accelerator is live, and classified from the catalog either
+                // way, so a legacy virtual mirror this runtime cannot open is never touched.
+                _ = await SagaVectorMirror.UpsertAsync(
+                    connection,
+                    transaction,
+                    id,
+                    embedding,
+                    availability.IsVecAvailable,
+                    cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -519,18 +510,10 @@ internal sealed partial class SagaMemoryStore(
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText = """DELETE FROM "saga_memory_embeddings_vec" WHERE "MemoryId" = @id""";
-
-                    AddParameter(vecCmd, "@id", id);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Whatever the accelerator flag says: a mirror an earlier build filled still holds this
+                // memory's embedding, and a delete that skipped it would leave that content behind.
+                _ = await SagaVectorMirror.DeleteAsync(connection, transaction, id, cancellationToken)
+                    .ConfigureAwait(false);
 
                 // Deliberately ungated. A claim written while the Annals was enabled has to stay
                 // removable after it is disabled, or turning the feature off would strand records no
@@ -605,16 +588,9 @@ internal sealed partial class SagaMemoryStore(
 
                 _ = await watermarkCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText = """DELETE FROM "saga_memory_embeddings_vec" """;
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Whatever the accelerator flag says, for the same reason DeleteAsync's mirror delete is.
+                _ = await SagaVectorMirror.DeleteAllAsync(connection, transaction, cancellationToken)
+                    .ConfigureAwait(false);
 
                 // Saga's claims and no others. The Lexicon's stay exactly where they are, which is what
                 // makes a store-scoped reset mean what the operator asked for.

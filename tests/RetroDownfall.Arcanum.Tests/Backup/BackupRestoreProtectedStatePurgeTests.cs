@@ -307,6 +307,30 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_label_whose_content_row_is_already_gone_counts_no_removed_artifact()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        // A label with no artifact row behind it: the label goes, and nothing may be reported as the
+        // content that went with it.
+        await SeedLabelAsync(SummaryLabelId, SummaryArtifactId, SensitiveArtifactKind.Summary, sessionId: null);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        BackupRestoreProtectedStatePurgeReceipt purge =
+            Assert.IsType<BackupRestoreProtectedStatePurgeReceipt>(receipt.Value.ProtectedStatePurge);
+
+        Assert.Equal(1UL, purge.RemovedLabels);
+
+        Assert.Equal(0UL, purge.RemovedArtifacts);
+
+    }
+
+    [Fact]
     public async Task A_purged_Session_still_bars_a_cached_replay()
     {
 

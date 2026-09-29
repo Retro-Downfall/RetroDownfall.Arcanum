@@ -7,7 +7,6 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
-using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -190,13 +189,19 @@ internal static class BackupRestoreProtectedStatePurger
     }
 
     /// <summary>
-    /// Deletes one artifact's projections, its current pointer, its content, and redacts the mutable
-    /// column it shadowed.
+    /// Deletes one artifact's current pointer, redacts the mutable column it shadowed, then deletes its
+    /// projections and its content.
     /// </summary>
     /// <remarks>
     /// Returns whether a content row was actually removed. Five of the thirteen kinds have no storage in
     /// this build at all and four more are label-only by policy, so "the label went" and "content went"
     /// are genuinely different counts and folding them would overstate what the purge deleted.
+    ///
+    /// <para>The projections and the content run as one plan through
+    /// <see cref="CovenantArtifactPlanRunner"/>, the same runner the live kernel deletes through, so a
+    /// staged archive's mirrors are classified exactly as a live installation's are. The pointer and
+    /// redaction go first, which reorders nothing real: no plan has both projections and either of
+    /// them.</para>
     /// </remarks>
     private static async Task<bool> ApplyPlanAsync(
         SqliteConnection staged,
@@ -206,30 +211,6 @@ internal static class BackupRestoreProtectedStatePurger
         CancellationToken cancellationToken)
     {
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(rule.Kind);
-
-        foreach (CovenantArtifactPurgeTarget projection in plan.Projections)
-        {
-            if (projection.RequiredFromCoreVersion is { } requiredVersion
-                && await GrimoireCoreSchemaVersion.ReadAsync(staged, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
-            {
-                continue;
-            }
-
-            if (projection.ExistsConditionally
-                && !await BackupRestoreDatabaseWorker
-                    .TableExistsAsync(staged, projection.Table, cancellationToken, transaction)
-                    .ConfigureAwait(false))
-            {
-                continue;
-            }
-
-            _ = await ExecuteAsync(
-                staged,
-                transaction,
-                projection.DeleteBy("$artifactKey"),
-                label,
-                cancellationToken).ConfigureAwait(false);
-        }
 
         if (plan.CurrentPointerTable is { } pointer)
         {
@@ -247,13 +228,15 @@ internal static class BackupRestoreProtectedStatePurger
                 .ConfigureAwait(false);
         }
 
-        return plan.Artifact is { } artifact
-            && await ExecuteAsync(
-                staged,
-                transaction,
-                artifact.DeleteBy("$artifactKey"),
-                label,
-                cancellationToken).ConfigureAwait(false) > 0;
+        CovenantArtifactPlanTally tally = await CovenantArtifactPlanRunner.RunAsync(
+            staged,
+            transaction,
+            rule.Kind,
+            CovenantIdentitySql.Key(label.ArtifactId),
+            CovenantArtifactPlanMode.Delete,
+            cancellationToken).ConfigureAwait(false);
+
+        return tally.ArtifactRows > 0;
     }
 
     /// <summary>

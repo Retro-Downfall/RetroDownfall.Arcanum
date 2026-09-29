@@ -169,18 +169,10 @@ internal sealed partial class SagaMemoryStore
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText = """DELETE FROM "saga_memory_embeddings_vec" WHERE "MemoryId" = @id""";
-
-                    AddParameter(vecCmd, "@id", id);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Whatever the accelerator flag says: retirement promises no retrieval path can reach
+                // the memory, and a mirror an earlier build filled is one.
+                _ = await SagaVectorMirror.DeleteAsync(connection, transaction, id, cancellationToken)
+                    .ConfigureAwait(false);
 
                 byte[] suppressionKey = await SagaSuppressionKeyStore
                     .ReadOrCreateAsync(connection, transaction, retiredAt, cancellationToken).ConfigureAwait(false);
@@ -402,24 +394,16 @@ internal sealed partial class SagaMemoryStore
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "saga_memory_embeddings_vec" ("MemoryId", "Embedding")
-                        VALUES (@memoryId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@memoryId", id);
-
-                    AddParameter(vecCmd, "@embedding", blob);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Written only while the accelerator is live. Without it, any row an earlier build left
+                // for this memory goes instead: it was computed for a memory that has since been retired,
+                // and nothing this process runs can vouch for it.
+                _ = await SagaVectorMirror.UpsertAsync(
+                    connection,
+                    transaction,
+                    id,
+                    embedding,
+                    availability.IsVecAvailable,
+                    cancellationToken).ConfigureAwait(false);
 
                 // The digest is recomputed from the installation's key rather than remembered from the
                 // retirement that created it: nothing here names which retirement a memory's suppression
@@ -646,24 +630,15 @@ internal sealed partial class SagaMemoryStore
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (availability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "saga_memory_embeddings_vec" ("MemoryId", "Embedding")
-                        VALUES (@memoryId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@memoryId", id);
-
-                    AddParameter(vecCmd, "@embedding", blob);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                // Written only while the accelerator is live. Without it, the old vector goes instead:
+                // it describes text this memory no longer holds.
+                _ = await SagaVectorMirror.UpsertAsync(
+                    connection,
+                    transaction,
+                    id,
+                    embedding,
+                    availability.IsVecAvailable,
+                    cancellationToken).ConfigureAwait(false);
 
                 // The same ungated pair RetireAsync and ReinstateAsync write, and for the same reason:
                 // the record that the operator corrected this memory is evidence rather than retrieval.
