@@ -346,6 +346,7 @@ R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerEvent.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerInfo.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerState.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerTransport.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureKeyProvider.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureServices.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryReviewTokenCodec.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryDtos.cs
@@ -1653,6 +1654,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/IGrimoireDbPassphraseSource.
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/IdentityOwnedFileSystemCleanup.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ListenAnySecurityPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/MasterApiKeyUnavailableException.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/MemoryErasureKeyring.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/NoFollowPathTopology.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundUrlGuard.cs

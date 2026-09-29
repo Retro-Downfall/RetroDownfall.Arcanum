@@ -45,6 +45,7 @@ public sealed class InstallationResetCredentialCatalogTests
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             ArcanumCredentialIdentity.FileEncryptionKeyAccount,
             ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
+            ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
         };
 
         Assert.Equal("installation-reset-active-key-" + profileSuffix, keyAccount);
@@ -63,7 +64,15 @@ public sealed class InstallationResetCredentialCatalogTests
 
         Assert.True(ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(transitionAnchorAccount));
 
-        Assert.Equal(12, reservedAccounts.Count);
+        Assert.Equal(13, reservedAccounts.Count);
+
+        Assert.False(
+            ArcanumCredentialIdentity.IsInstallationResetActiveAccount(
+                ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount));
+
+        Assert.False(
+            ArcanumCredentialIdentity.IsGrimoireTransitionJournalAccount(
+                ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount));
 
         Assert.NotEqual(
             keyAccount,
@@ -164,10 +173,11 @@ public sealed class InstallationResetCredentialCatalogTests
                 settings,
                 mirrorRoot);
 
-            // The Campaign root-identity key belongs here because the documented contract says a full
-            // installation reset regenerates it, and this catalog is the only thing that can delete
-            // it: `IOsCredentialStore` has no enumeration surface, so an account nobody names here is
-            // an account nothing on this machine can ever erase.
+            // The Campaign root-identity key and the memory-erasure fingerprint key belong here
+            // because the documented contract says only a full installation reset ends either one's
+            // lifetime, and this catalog is the only thing that can delete them: `IOsCredentialStore`
+            // has no enumeration surface, so an account nobody names here is an account nothing on
+            // this machine can ever erase.
             Assert.Equal(
                 [
                     ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
@@ -175,6 +185,7 @@ public sealed class InstallationResetCredentialCatalogTests
                     "inference-provider-MY_CO-api-key",
                     "inference-provider-OPENAI-api-key",
                     ArcanumCredentialIdentity.MasterApiKeyAccount,
+                    ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
                     ArcanumCredentialIdentity.PerplexityApiKeyAccount,
                 ],
                 accounts);

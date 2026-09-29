@@ -29,6 +29,18 @@ public static class ArcanumCredentialIdentity
     public const string CampaignRootIdentityKeyAccount = "campaign-root-identity-key";
 
     /// <summary>
+    /// Installation-private key under which selective erasure records its keyed fingerprints.
+    /// </summary>
+    /// <remarks>
+    /// Fixed rather than profile-namespaced. The profile namespace hashes the physical identity of the
+    /// profile root's parent directory, so recreating that directory would lose the key and strand
+    /// every fingerprint recorded under it. Test homes that share the account are told apart by the
+    /// key identifier each fingerprint carries. Only a full installation reset removes it, and no
+    /// backup carries it.
+    /// </remarks>
+    public const string MemoryErasureFingerprintKeyAccount = "memory-erasure-fingerprint-key";
+
+    /// <summary>
     /// The dedicated slot recording that this installation once enabled unsandboxed host-process
     /// tools.
     /// </summary>

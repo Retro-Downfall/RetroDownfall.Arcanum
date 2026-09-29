@@ -299,6 +299,8 @@ public static class ServiceCollectionExtensions
 
         services.AddCampaignPathIdentity();
 
+        services.AddMemoryErasureKeyring();
+
         services.AddCovenantPersistence();
 
         services.AddDbContext<ArcanumDbContext>((sp, options) =>
@@ -654,6 +656,8 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddArcanumBackup(this IServiceCollection services)
     {
         services.AddArcanumClientMutationCoordination();
+
+        services.AddMemoryErasureKeyring();
 
         services.TryAddSingleton(BackupStatePaths.Default);
 
@@ -1032,6 +1036,13 @@ public static class ServiceCollectionExtensions
         services.AddCovenantAuthority();
 
         services.AddCampaignPathIdentity();
+
+        services.AddMemoryErasureKeyring();
+
+        // Only the host may create the erasure key: erase prepare and reset-key are its callers, and
+        // neither runs in the CLI or restore container.
+        services.TryAddSingleton<IMemoryErasureKeyCreator>(
+            static sp => sp.GetRequiredService<MemoryErasureKeyring>());
 
         services.AddCovenantPersistence();
 
@@ -1787,6 +1798,29 @@ public static class ServiceCollectionExtensions
                 CovenantSqliteConnectionInitializer.Instance,
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ICampaignRootIdentityRecoveryKeyProvider>()));
+
+        return services;
+    }
+
+    /// <summary>
+    /// The one erasure keyring and its read-only port, for every container that runs a chokepoint,
+    /// release, status, or restore.
+    /// </summary>
+    /// <remarks>
+    /// Every registration is a try-add, because the CLI stack composes both the Grimoire and backup
+    /// registrations and the host composes backup inside infrastructure: each container still holds
+    /// exactly one keyring and so one latch. The creator port is not registered here; only
+    /// <see cref="AddArcanumInfrastructure"/> adds it. Composition performs no credential I/O.
+    /// </remarks>
+    private static IServiceCollection AddMemoryErasureKeyring(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
+
+        services.TryAddSingleton(
+            static sp => new MemoryErasureKeyring(sp.GetRequiredService<IOsCredentialStore>()));
+
+        services.TryAddSingleton<IMemoryErasureKeyProvider>(
+            static sp => sp.GetRequiredService<MemoryErasureKeyring>());
 
         return services;
     }

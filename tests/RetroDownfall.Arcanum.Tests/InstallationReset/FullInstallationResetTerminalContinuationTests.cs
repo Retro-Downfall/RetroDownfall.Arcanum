@@ -176,20 +176,25 @@ public sealed class FullInstallationResetTerminalContinuationTests : IDisposable
 
     }
 
-    [Fact]
-    public void An_identity_a_full_reset_must_rotate_that_is_still_present_refuses()
+    /// <summary>
+    /// Each installation-scoped key a full reset must rotate refuses completion while it survives.
+    /// </summary>
+    /// <remarks>
+    /// The Campaign root-identity key turns a physical directory into an opaque Campaign root
+    /// identity, and the memory-erasure fingerprint key keys every erasure fingerprint. Leaving either
+    /// would hand the next installation something that still recognises the erased one.
+    /// </remarks>
+    [Theory]
+    [InlineData(ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount)]
+    [InlineData(ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount)]
+    public void An_identity_a_full_reset_must_rotate_that_is_still_present_refuses(string account)
     {
 
         Harness harness = Create();
 
         harness.SeedClosedRestore();
 
-        // The Campaign root-identity key turns a physical directory into an opaque Campaign root
-        // identity. Leaving it would hand the next installation the erased one's identities.
-        _ = _credentials.Set(
-            ArcanumCredentialIdentity.Service,
-            ArcanumCredentialIdentity.CampaignRootIdentityKeyAccount,
-            "survivor");
+        _ = _credentials.Set(ArcanumCredentialIdentity.Service, account, "survivor");
 
         Result<FullInstallationResetTerminalOutcome> completed = harness.Complete();
 
