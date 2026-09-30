@@ -118,6 +118,35 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     internal Task AddCampaignAsync(Guid campaignId, CancellationToken cancellationToken) =>
         _fixture.AddCampaignAsync(campaignId, $"Harness Campaign {campaignId:N}", cancellationToken);
 
+    /// <summary>
+    /// Writes the epoch row the version-6 step leaves for a key that already had head changes: its
+    /// binding epoch is the key epoch it carried at the upgrade.
+    /// </summary>
+    /// <remarks>
+    /// Every key row created from canonical version 6 on carries binding epoch 0, so a suite that only
+    /// ever creates keys cannot tell a read that joins the key row's binding epoch from one that
+    /// assumes zero. On an upgraded installation nonzero is the ordinary case, and this is the seam
+    /// that reaches it: the row is the one no production write can create, and everything after it
+    /// goes through the production services.
+    /// </remarks>
+    internal async Task SeedUpgradedKeyAsync(string key, long epoch, CancellationToken cancellationToken)
+    {
+
+        await using Microsoft.Data.Sqlite.SqliteCommand command = _fixture.Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc, IncarnationEpoch)
+            VALUES ($key, $epoch, '2026-01-01T00:00:00.0000000Z', $epoch);
+            """;
+
+        _ = command.Parameters.AddWithValue("$key", key);
+
+        _ = command.Parameters.AddWithValue("$epoch", epoch);
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
     /// <summary>Writes one entry through the production prepare-and-commit path.</summary>
     internal async Task SetAsync(
         CovenantScope scope,

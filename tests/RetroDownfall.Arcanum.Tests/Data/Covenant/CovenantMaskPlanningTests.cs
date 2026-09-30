@@ -150,18 +150,7 @@ public sealed class CovenantMaskPlanningTests
 
         await harness.AddCampaignAsync(CampaignOne, Token);
 
-        await using (Microsoft.Data.Sqlite.SqliteCommand seed = harness.Fixture.Connection.CreateCommand())
-        {
-
-            // The epoch row the version-6 step leaves for a key that already had three head changes.
-            seed.CommandText = $"""
-                INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc, IncarnationEpoch)
-                VALUES ('{Key}', 3, '2026-01-01T00:00:00.0000000Z', 3);
-                """;
-
-            _ = await seed.ExecuteNonQueryAsync(Token);
-
-        }
+        await harness.SeedUpgradedKeyAsync(Key, epoch: 3, Token);
 
         await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
 

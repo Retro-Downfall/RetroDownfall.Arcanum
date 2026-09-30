@@ -128,7 +128,8 @@ public sealed class CovenantCurationLifecycleTests
 
     /// <summary>
     /// The three tables are protected Covenant content, so every surface that counts protected state
-    /// counts them. The retention inventory derives its list from this one rather than restating it.
+    /// counts them. The inspector's list is the canonical content list itself, which the retention
+    /// inventory also reads directly.
     /// </summary>
     [Fact]
     public void The_protected_state_inventory_names_the_curation_tables()

@@ -161,6 +161,85 @@ public sealed class CovenantRetirementPreflightTests
     }
 
     /// <summary>
+    /// The pin is found through the key row's own binding epoch. A key that existed before the binding
+    /// epoch did carries a nonzero one, so a target read that assumed zero would stop refusing every
+    /// pin an upgraded installation already held.
+    /// </summary>
+    [Fact]
+    public async Task Resolving_a_pinned_head_of_a_key_with_a_nonzero_binding_epoch_is_still_refused()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SeedUpgradedKeyAsync(Key, epoch: 3, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from tools.", Token);
+
+        // Not pinned yet, so the target resolves: the refusal below is the pin's and nothing else's.
+        Assert.Equal(1, (await ResolveAsync(harness)).TargetLaneRevision);
+
+        Result<CovenantCurationResultDto> pinned = await harness.CurateAsync(
+            CovenantCurationKind.Pin,
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            Token);
+
+        Assert.True(pinned.IsSuccess, pinned.IsFailure ? pinned.Error.Message : string.Empty);
+
+        // The operator writes the key in the other scope, which moves the dependency epoch only.
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
+
+        Result<CovenantRetirementPreflight> refused = await TryResolveAsync(harness);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+    }
+
+    /// <summary>
+    /// The mask is found through the key row's own binding epoch too. Read under an assumed zero, a
+    /// mask an upgraded installation already held would be missed, and the target would promise a
+    /// Global fallback the mask suppresses.
+    /// </summary>
+    [Fact]
+    public async Task A_masked_Global_sibling_of_a_key_with_a_nonzero_binding_epoch_is_not_reported_as_a_fallback()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SeedUpgradedKeyAsync(Key, epoch: 3, Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from tools.", Token);
+
+        Assert.True((await ResolveAsync(harness)).GlobalFallbackApplies);
+
+        Result<CovenantCurationResultDto> masked = await harness.CurateAsync(
+            CovenantCurationKind.Mask,
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            Token);
+
+        Assert.True(masked.IsSuccess, masked.IsFailure ? masked.Error.Message : string.Empty);
+
+        Assert.False((await ResolveAsync(harness)).GlobalFallbackApplies);
+
+        // Correcting the Global entry is an ordinary write, and the mask still covers it afterwards.
+        await harness.CorrectAsync(CovenantScope.Global, null, Key, "Build from the tools directory.", Token);
+
+        Assert.False((await ResolveAsync(harness)).GlobalFallbackApplies);
+
+    }
+
+    /// <summary>
     /// The digest the staged tombstone carries as evidence is bound to the target, so two different
     /// targets cannot present the same proof of what an operator was shown.
     /// </summary>

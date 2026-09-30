@@ -268,7 +268,7 @@ public sealed class CovenantPinEnforcementTests
 
         await harness.AddCampaignAsync(CampaignOne, Token);
 
-        await SeedUpgradedKeyAsync(harness, Key, epoch: 3);
+        await harness.SeedUpgradedKeyAsync(Key, epoch: 3, Token);
 
         await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from the root.", Token);
 
@@ -412,28 +412,6 @@ public sealed class CovenantPinEnforcementTests
         Assert.True(probe.IsSuccess, probe.IsFailure ? probe.Error.Message : string.Empty);
 
         return probe.Value;
-
-    }
-
-    /// <summary>
-    /// Writes the epoch row the version-6 step leaves for a key that already had head changes: its
-    /// binding epoch is the key epoch it carried at the upgrade.
-    /// </summary>
-    private static async Task SeedUpgradedKeyAsync(CovenantServiceHarness harness, string key, long epoch)
-    {
-
-        await using SqliteCommand command = harness.Fixture.Connection.CreateCommand();
-
-        command.CommandText = """
-            INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc, IncarnationEpoch)
-            VALUES ($key, $epoch, '2026-01-01T00:00:00.0000000Z', $epoch);
-            """;
-
-        _ = command.Parameters.AddWithValue("$key", key);
-
-        _ = command.Parameters.AddWithValue("$epoch", epoch);
-
-        _ = await command.ExecuteNonQueryAsync(Token);
 
     }
 
