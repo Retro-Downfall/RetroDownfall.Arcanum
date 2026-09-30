@@ -129,12 +129,14 @@ internal sealed partial class LexiconService(
                             // The erasure chokepoint, inside the write lock and whether or not a row still
                             // holds the name: an erased name is refused in exactly the scope it was erased
                             // in. The identity is always the incoming name under the current rule, never a
-                            // stored normalized spelling. The raw BEGIN leaves no transaction object to pass.
+                            // stored normalized spelling, and is derived only when the store holds evidence,
+                            // so a scribe on an installation that has erased nothing is never failed by it.
+                            // The raw BEGIN leaves no transaction object to pass.
                             MemoryErasureGuardVerdict erasure = await MemoryErasureGuard.CheckAsync(
                                 (SqliteConnection)connection,
                                 null,
                                 guard,
-                                MemoryErasureIdentity.ForLexicon(scope.CampaignId, trimmedName),
+                                () => MemoryErasureIdentity.ForLexicon(scope.CampaignId, trimmedName),
                                 cancellationToken).ConfigureAwait(false);
 
                             switch (erasure)
@@ -398,8 +400,9 @@ internal sealed partial class LexiconService(
                     {
                         // An agent may remove only an active, unpinned entry. Decided here, under the write
                         // lock, whatever the tool read before it: a retired or pinned entry is curated state
-                        // the operator owns. The operator's own delete never asks.
-                        if (origin == LexiconDeletionOrigin.Agent)
+                        // the operator owns. Only an explicit operator origin skips the check, so an
+                        // undefined origin fails closed as an agent's.
+                        if (origin != LexiconDeletionOrigin.Operator)
                         {
                             bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
 

@@ -3792,6 +3792,87 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.Equal(snapshot, await owner.SnapshotAsync());
     }
 
+    /// <summary>
+    /// The operator curates the entry after the tool's advisory pre-check has read it active and
+    /// unpinned: the agent-origin delete reads it again inside its own transaction and refuses, so the
+    /// pre-check is never the only thing between an agent and an entry the operator has just claimed.
+    /// </summary>
+    /// <remarks>
+    /// No purger is composed, so the delete is the ordinary one. A labelled entry is also protected by
+    /// the label guard, which runs after the agent check and answers with its own text, so the refusal
+    /// text is what shows which check answered.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("pinned", false)]
+    [InlineData("retired", false)]
+    [InlineData("pinned", true)]
+    [InlineData("retired", true)]
+    public async Task ToolsCall_delete_lexicon_refuses_an_entry_curated_after_its_pre_check(string state, bool labeled)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        // Either way the entry has an Annals claim: ordinary capture opens it for the unlabelled entry,
+        // and the protected entry's label is written with its own head.
+        await using CorrectionFixture owner = new(grimoire, annals: !labeled);
+
+        LexiconEntryDetail before = await owner.SeedAsync();
+
+        if (labeled)
+        {
+            await owner.ProtectAsync(withHead: true);
+
+            before = await owner.ShowProtectedAsync();
+        }
+
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        await using ArcanumDbContext db = grimoire.CreateContext(owner.Path);
+
+        LexiconService inner = new(db, NullLogger<LexiconService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(owner.Settings), MemoryErasureTestKeys.Isolated(), FixtureLabeledArtifactGuard.For(db));
+
+        string[]? curated = null;
+
+        CurateAfterPreCheckLexicon lexicon = new(inner, async () =>
+        {
+            var result = state == "pinned"
+                ? await owner.Service.PinAsync(before.Target, lease)
+                : await owner.Service.RetireAsync(before.Target, lease);
+
+            Assert.True(result.IsSuccess, result.Error.Message);
+
+            curated = await owner.SnapshotAsync();
+        });
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableLexiconSystem = true },
+            lexiconService: lexicon);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("delete_lexicon",
+            JsonSerializer.SerializeToElement(new DeleteLexiconParams("Entity"), McpJsonSerializerContext.Default.DeleteLexiconParams));
+
+        Assert.Equal(1, lexicon.PreChecks);
+
+        Assert.True(result.IsError);
+
+        Assert.Equal(state == "pinned" ? LexiconAgentRefusals.OperatorManaged : LexiconAgentRefusals.RetiredDeletion, result.Content![0].Text);
+
+        // The entry, its Annals claim and history, and any label are exactly as the operator left them.
+        Assert.NotNull(curated);
+
+        Assert.Equal(curated, await owner.SnapshotAsync());
+
+        Assert.Equal(1L, await owner.ScalarAsync("SELECT count(*) FROM lexicon_entries"));
+
+        Assert.Equal(1L, await owner.ScalarAsync("SELECT count(*) FROM annal_claims"));
+
+        Assert.Equal(labeled ? 1L : 0L, await owner.ScalarAsync("SELECT count(*) FROM artifact_sensitivity"));
+    }
+
     [SkippableFact]
     public async Task ToolsCall_scribe_lexicon_of_an_erased_name_returns_the_operator_managed_message()
     {
@@ -4416,6 +4497,67 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", parameters: null);
 
         Assert.Null(response.Error);
+    }
+
+    /// <summary>
+    /// Forwards every call to a real Lexicon service, except that between the tool's advisory pre-check
+    /// and its delete it lets the operator curate the entry, then answers the pre-check with what it
+    /// read before the curation.
+    /// </summary>
+    private sealed class CurateAfterPreCheckLexicon(ILexiconService inner, Func<Task> curate) : ILexiconService
+    {
+        internal int PreChecks { get; private set; }
+
+        public async Task<Result<LexiconAgentDeletionTarget?>> FindAgentDeletionTargetAsync(
+            string name, LexiconScope scope, CancellationToken cancellationToken = default)
+        {
+            Result<LexiconAgentDeletionTarget?> read = await inner.FindAgentDeletionTargetAsync(name, scope, cancellationToken);
+
+            Assert.True(read.IsSuccess, read.Error.Message);
+
+            LexiconAgentDeletionTarget stale = Assert.IsType<LexiconAgentDeletionTarget>(read.Value);
+
+            Assert.False(stale.IsRetired);
+
+            Assert.False(stale.IsPinned);
+
+            PreChecks++;
+
+            await curate();
+
+            return read;
+        }
+
+        public Task<Result<LexiconEntryDto>> UpsertAsync(
+            string name, string? type, IReadOnlyList<string> facts, LexiconScope scope, CancellationToken cancellationToken = default) =>
+            inner.UpsertAsync(name, type, facts, scope, cancellationToken);
+
+        public Task<Result<LexiconEntryDto>> UpsertAsync(
+            string name, string? type, IReadOnlyList<string> facts, AttachmentMemoryProvenance provenance, LexiconScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.UpsertAsync(name, type, facts, provenance, scope, cancellationToken);
+
+        public Task<Result<bool>> DeleteByNameAsync(string name, LexiconScope scope, CancellationToken cancellationToken = default) =>
+            inner.DeleteByNameAsync(name, scope, cancellationToken);
+
+        public Task<Result<bool>> DeleteByNameAsync(
+            string name, LexiconScope scope, LexiconDeletionOrigin origin, CancellationToken cancellationToken = default) =>
+            inner.DeleteByNameAsync(name, scope, origin, cancellationToken);
+
+        public Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+            string name, LexiconScope scope, CancellationToken cancellationToken = default) =>
+            inner.FindAllLifecycleIdentityForDeletionAsync(name, scope, cancellationToken);
+
+        public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
+            IReadOnlyList<string> entities, int limit, LexiconScope scope, CancellationToken cancellationToken = default) =>
+            inner.MatchEntitiesAsync(entities, limit, scope, cancellationToken);
+
+        public Task<Result<LexiconEntryDto?>> GetByNameAsync(string name, LexiconScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetByNameAsync(name, scope, cancellationToken);
+
+        public Task<Result<LexiconEntryDto?>> GetByNameInScopeAsync(
+            string name, LexiconScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetByNameInScopeAsync(name, scope, cancellationToken);
     }
 
     private async Task<TestMcpSession> CreateSessionAsync(

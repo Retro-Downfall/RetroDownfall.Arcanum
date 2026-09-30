@@ -201,6 +201,53 @@ public sealed class LexiconErasureSuppressionTests(GrimoireFixture fixture)
         Assert.True(otherName.IsSuccess, otherName.Error.Message);
     }
 
+    /// <summary>
+    /// A scope no fingerprint can name. While the store holds no evidence the chokepoint never derives
+    /// an identity, so the scribe behaves exactly as it did before erasure existed; once it holds
+    /// evidence, deriving one fails the scribe closed and nothing is recorded.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_unnameable_scope_is_identified_only_when_the_store_holds_evidence(bool evidence)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        LexiconScope unnameable = LexiconScope.ForCampaign(Guid.Empty);
+
+        // No factory can name it: an empty Campaign is refused by the identity itself, not earlier.
+        Assert.Throws<ArgumentException>(() => MemoryErasureIdentity.ForLexicon(unnameable.CampaignId, "Entity"));
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using CorrectionFixture owner = new(fixture, erasureKeys: keys);
+
+        if (evidence)
+        {
+            await MemoryErasureTestKeys.SeedFingerprintAsync(
+                owner.Connection, key, MemoryErasureIdentity.ForLexicon(null, "Something the operator erased"), Token);
+        }
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        Result<LexiconEntryDto> scribed = await owner.Concrete.UpsertAsync("Entity", "Person", ["alpha"], unnameable);
+
+        if (evidence)
+        {
+            Assert.Equal(ErrorCodes.Lexicon.WriteFailed, scribed.Error.Code);
+
+            Assert.Equal(snapshot, await owner.SnapshotAsync());
+        }
+        else
+        {
+            Assert.True(scribed.IsSuccess, scribed.Error.Message);
+        }
+    }
+
     [SkippableFact]
     public async Task No_fingerprints_means_no_keychain_io()
     {

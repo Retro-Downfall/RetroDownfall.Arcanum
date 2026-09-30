@@ -59,7 +59,8 @@ public interface ILexiconService
     /// <remarks>
     /// An <see cref="LexiconDeletionOrigin.Agent"/> delete re-reads the exact-scope entry inside its
     /// transaction and refuses a retired entry with <c>Lexicon.RetiredMutationRefused</c> and a pinned
-    /// one with <c>Lexicon.PinnedMutationRefused</c>, leaving it unchanged. The operator's delete is
+    /// one with <c>Lexicon.PinnedMutationRefused</c>, leaving it unchanged. Any origin other than
+    /// <see cref="LexiconDeletionOrigin.Operator"/> is treated as an agent's. The operator's delete is
     /// unchanged. An implementation that cannot tell the two apart refuses every delete.
     /// </remarks>
     Task<Result<bool>> DeleteByNameAsync(

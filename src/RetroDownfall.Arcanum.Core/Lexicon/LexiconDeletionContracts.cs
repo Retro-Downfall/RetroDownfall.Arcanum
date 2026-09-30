@@ -4,7 +4,8 @@ namespace RetroDownfall.Arcanum.Core.Lexicon;
 /// <remarks>
 /// The operator may delete any entry. An agent may delete only an active, unpinned one: a retired or
 /// pinned entry is curated state the operator owns, and the delete re-checks that inside its own
-/// transaction rather than trusting any earlier read.
+/// transaction rather than trusting any earlier read. A value that is not explicitly
+/// <see cref="Operator"/> is treated as <see cref="Agent"/>.
 /// </remarks>
 public enum LexiconDeletionOrigin
 {

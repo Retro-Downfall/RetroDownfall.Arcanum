@@ -209,6 +209,12 @@ internal sealed partial class ArcanumInternalToolServer
                 }
             }
 
+            // A purged identity skips the agent-origin delete and its in-transaction lifecycle check, so on
+            // this branch the pre-check above is the only lifecycle guard. An agent cannot reach it: a tool
+            // call's scope never carries the sensitivity-purge authority the HTTP endpoint filter
+            // publishes, so the purger refuses a labelled target as Covenant.ForbiddenAuthority and hands
+            // an unlabelled one back to the ordinary delete below. Granting agents purge authority would
+            // need the lifecycle check moved into the purge's own transaction.
             Result<bool> result = purgedIdentity ? Result<bool>.Success(true) : await lexicon
                 .DeleteByNameAsync(
                     name,

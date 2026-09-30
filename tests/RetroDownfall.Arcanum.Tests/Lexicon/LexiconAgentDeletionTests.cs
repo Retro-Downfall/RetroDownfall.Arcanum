@@ -34,6 +34,30 @@ public sealed class LexiconAgentDeletionTests(GrimoireFixture fixture)
         Assert.Equal(snapshot, await owner.SnapshotAsync());
     }
 
+    /// <summary>
+    /// Only an explicit operator origin takes the unchecked delete: a zero-initialised or cast origin is
+    /// treated as an agent's and refused.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_undefined_origin_is_refused_as_an_agent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CorrectionFixture owner = new(fixture, annals: true);
+
+        await CurateAsync(owner, "pinned");
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        Result<bool> deleted = await owner.Concrete.DeleteByNameAsync("Entity", LexiconScope.Global, (LexiconDeletionOrigin)0);
+
+        Assert.Equal(ErrorCodes.Lexicon.PinnedMutationRefused, deleted.Error.Code);
+
+        Assert.Equal(LexiconAgentRefusals.OperatorManaged, deleted.Error.Message);
+
+        Assert.Equal(snapshot, await owner.SnapshotAsync());
+    }
+
     [SkippableTheory]
     [InlineData("retired")]
     [InlineData("pinned")]
