@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Tower;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 /// <summary>
@@ -39,7 +41,9 @@ internal sealed class CovenantTurnHeadProbe(
     /// <remarks>
     /// A pinned head is refused here rather than at the write authority, because the write authority
     /// runs after the operator has already approved. Asking somebody to authorize a change that cannot
-    /// be applied is asking them to authorize nothing.
+    /// be applied is asking them to authorize nothing. An erased key is refused here for the same
+    /// reason, with the pin's own answer, and so is every target while the store holds Covenant
+    /// evidence the latched key cannot verify.
     /// </remarks>
     public async ValueTask<Result<CovenantRetirementPreflight>> ResolveRetirementPreflightAsync(
         CovenantLane lane,
@@ -63,7 +67,14 @@ internal sealed class CovenantTurnHeadProbe(
 
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
-                "This Covenant entry is pinned, so the agent may not retire it.");
+                CovenantAgentErasureGate.OperatorManagedRefusal);
+
+        }
+
+        if (CovenantAgentErasureGate.RefusalFor(target.Value.AgentErasure) is { } withheld)
+        {
+
+            return withheld;
 
         }
 

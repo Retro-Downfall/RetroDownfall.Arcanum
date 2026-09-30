@@ -31,7 +31,12 @@ public sealed class CovenantMutationKernelTests
         Assert.Equal(nameof(CovenantMutationKernel.ApplyBatchAsync), only.Name);
 
         Assert.Equal(
-            [typeof(CovenantMutationBatch), typeof(CovenantMutationTransaction), typeof(CancellationToken)],
+            [
+                typeof(CovenantMutationBatch),
+                typeof(CovenantMutationTransaction),
+                typeof(CovenantAgentErasureGate),
+                typeof(CancellationToken),
+            ],
             only.GetParameters().Select(static parameter => parameter.ParameterType));
 
     }

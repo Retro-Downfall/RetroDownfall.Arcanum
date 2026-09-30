@@ -515,6 +515,51 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
         }
     }
 
+    /// <summary>
+    /// A catalog with no fingerprint table holds no evidence, and answers so before it reads Core
+    /// metadata, which a Covenant-only scratch catalog does not carry either.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_absent_table_answers_no_evidence_without_reading_core_metadata()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CovenantSchemaScratchDatabase scratch = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        Assert.False(await scratch.ObjectExistsAsync("grimoire_feature_schemas", "table", Token));
+
+        Assert.False(await scratch.ObjectExistsAsync("memory_erasure_fingerprints", "table", Token));
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(scratch.Connection, null, Token));
+
+        Assert.False(await MemoryErasureEvidence.AnyAsync(scratch.Connection, null, MemoryReviewStore.Covenant, Token));
+    }
+
+    /// <summary>
+    /// A fingerprint table whose catalog cannot say what Core version it is fails closed: missing
+    /// metadata, or a metadata table with no Core row, throws rather than reading as no evidence.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_present_table_without_core_metadata_fails_closed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using CovenantSchemaScratchDatabase scratch = await CovenantSchemaScratchDatabase.CreateAsync(Token);
+
+        await scratch.InstallCoreObjectsAsync(["memory_erasure_fingerprints"], Token);
+
+        _ = await Assert.ThrowsAsync<SqliteException>(() =>
+            MemoryErasureEvidence.IsInstalledAsync(scratch.Connection, null, Token));
+
+        _ = await Assert.ThrowsAsync<SqliteException>(() =>
+            MemoryErasureEvidence.AnyAsync(scratch.Connection, null, MemoryReviewStore.Covenant, Token));
+
+        await scratch.InstallCoreObjectsAsync(["grimoire_feature_schemas"], Token);
+
+        _ = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            MemoryErasureEvidence.IsInstalledAsync(scratch.Connection, null, Token));
+    }
+
     private static MemoryErasureIdentity Saga(string content) =>
         MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, content);
 

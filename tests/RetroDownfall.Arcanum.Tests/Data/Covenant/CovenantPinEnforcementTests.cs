@@ -27,6 +27,11 @@ public sealed class CovenantPinEnforcementTests
 
     private const string Key = "preference.builds";
 
+    /// <summary>
+    /// The pin refusal's text, shared with the erasure refusal so an agent cannot tell the two apart.
+    /// </summary>
+    private const string OperatorManaged = "This Covenant key is managed by the operator in this scope.";
+
     private static readonly Guid CampaignOne = CovenantOperationGateFixture.CampaignOne;
 
     [Fact]
@@ -58,6 +63,8 @@ public sealed class CovenantPinEnforcementTests
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
+        Assert.Equal(OperatorManaged, refused.Error.Message);
+
     }
 
     [Fact]
@@ -86,6 +93,8 @@ public sealed class CovenantPinEnforcementTests
         Assert.True(refused.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        Assert.Equal(OperatorManaged, refused.Error.Message);
 
     }
 
@@ -346,6 +355,8 @@ public sealed class CovenantPinEnforcementTests
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
+        Assert.Equal(OperatorManaged, refused.Error.Message);
+
     }
 
     private static async Task PinAsync(
@@ -373,10 +384,14 @@ public sealed class CovenantPinEnforcementTests
         CovenantMutationIntent intent)
     {
 
+        CovenantMutationKernel kernel = new(new CovenantQuotaGuard(), harness.Fixture.ErasureKeys);
+
+        using CovenantAgentErasureGate erasureGate = kernel.CaptureErasureGate();
+
         await using SqliteTransaction transaction = (SqliteTransaction)await harness.Fixture.Connection
             .BeginTransactionAsync(IsolationLevel.Serializable, Token);
 
-        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await new CovenantMutationKernel()
+        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await kernel
             .ApplyBatchAsync(
                 new CovenantMutationBatch(
                     await harness.Fixture.ReadDatasetGenerationAsync(Token),
@@ -385,6 +400,7 @@ public sealed class CovenantPinEnforcementTests
                     CovenantMutationFixture.CommitTime,
                     [intent]),
                 new CovenantMutationTransaction(harness.Fixture.Connection, transaction),
+                erasureGate,
                 Token);
 
         await transaction.RollbackAsync(Token);

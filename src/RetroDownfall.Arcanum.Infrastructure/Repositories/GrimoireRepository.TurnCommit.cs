@@ -83,6 +83,12 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
         connection = lease.Connection;
 
+        // Read from the latch before BEGIN and disposed only after the transaction ends. A latch read is
+        // never credential I/O, so taking it under the turn's lease reads no keychain there either.
+        using CovenantAgentErasureGate erasureGate = request.Mutations.IsEmpty || _covenantKernel is null
+            ? CovenantAgentErasureGate.None
+            : _covenantKernel.CaptureErasureGate();
+
         await using SqliteTransaction sqliteTransaction = connection.BeginTransaction(deferred: false);
 
         await using IDbContextTransaction efTransaction =
@@ -141,6 +147,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                     request,
                     connection,
                     sqliteTransaction,
+                    erasureGate,
                     cancellationToken).ConfigureAwait(false);
 
                 if (published.IsFailure)
@@ -400,6 +407,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         TurnCommitRequest request,
         SqliteConnection connection,
         SqliteTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CancellationToken cancellationToken)
     {
         if (_covenantKernel is null)
@@ -422,6 +430,7 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
             .ApplyBatchAsync(
                 batch,
                 new CovenantMutationTransaction(connection, transaction),
+                erasureGate,
                 cancellationToken).ConfigureAwait(false);
 
         return published.IsFailure

@@ -499,6 +499,10 @@ internal sealed class CovenantMemoryReviewService(
             return InvalidToken;
         }
 
+        // Read from the latch before BEGIN, never inside it, and disposed only after the transaction
+        // ends. Review decisions are operator intents, which the kernel never refuses through it.
+        using CovenantAgentErasureGate erasureGate = mutationKernel.CaptureErasureGate();
+
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
         ReplayLookup racedReplay = await ReadReplayAsync(
@@ -580,6 +584,7 @@ internal sealed class CovenantMemoryReviewService(
         {
             Result<AppliedDecision> decision = await ApplyDecisionAsync(
                 kernelTransaction,
+                erasureGate,
                 state,
                 writeLease.Snapshot,
                 preparedRequest,
@@ -1317,6 +1322,7 @@ internal sealed class CovenantMemoryReviewService(
 
     private async ValueTask<Result<AppliedDecision>> ApplyDecisionAsync(
         CovenantMutationTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CanonicalState state,
         CovenantOperationLeaseSnapshot lease,
         CovenantReviewBulkPrepareRequest request,
@@ -1350,6 +1356,7 @@ internal sealed class CovenantMemoryReviewService(
 
                 Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
                     transaction,
+                    erasureGate,
                     state,
                     lease,
                     request,
@@ -1391,6 +1398,7 @@ internal sealed class CovenantMemoryReviewService(
             {
                 Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
                     transaction,
+                    erasureGate,
                     state,
                     lease,
                     request,
@@ -1453,6 +1461,7 @@ internal sealed class CovenantMemoryReviewService(
 
     private async ValueTask<Result<CovenantMutationReceipt>> ApplyMutationAsync(
         CovenantMutationTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CanonicalState state,
         CovenantOperationLeaseSnapshot lease,
         CovenantReviewBulkPrepareRequest request,
@@ -1512,7 +1521,7 @@ internal sealed class CovenantMemoryReviewService(
             ImmutableArray.Create(intent.Value));
 
         Result<IReadOnlyList<CovenantMutationReceipt>> applied = await mutationKernel
-            .ApplyBatchAsync(batch, transaction, cancellationToken)
+            .ApplyBatchAsync(batch, transaction, erasureGate, cancellationToken)
             .ConfigureAwait(false);
 
         if (applied.IsFailure)

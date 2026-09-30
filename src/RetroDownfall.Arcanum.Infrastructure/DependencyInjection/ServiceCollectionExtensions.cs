@@ -1935,7 +1935,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()));
 
         services.AddScoped<ICovenantStore>(
-            static sp => new CovenantStore(sp.GetRequiredService<ICovenantConnectionSource>()));
+            static sp => new CovenantStore(
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<IMemoryErasureKeyProvider>()));
 
         // Registered unconditionally, because the policy itself is what decides whether this
         // installation has a Covenant arm at all. A conditional registration would make "the feature
@@ -2098,7 +2100,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
 
         services.AddScoped(
-            static sp => new CovenantMutationKernel(sp.GetRequiredService<CovenantQuotaGuard>()));
+            static sp => new CovenantMutationKernel(
+                sp.GetRequiredService<CovenantQuotaGuard>(),
+                sp.GetRequiredService<IMemoryErasureKeyProvider>()));
 
         // No quota guard: a curation change appends no compiled content and joins no Section, so there
         // is no capacity for it to consume and nothing for a guard to measure.

@@ -1146,12 +1146,12 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             new CovenantCompiler(),
             _codec,
             new FixedCovenantConnectionSource(Connection()),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             _authority,
             TimeProvider.System);
 
-    private CovenantStore Store() => new(new FixedCovenantConnectionSource(Connection()));
+    private CovenantStore Store() => new(new FixedCovenantConnectionSource(Connection()), MemoryErasureTestKeys.Isolated());
 
     private CovenantOperationGate OperationGate()
     {
@@ -1209,7 +1209,7 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 

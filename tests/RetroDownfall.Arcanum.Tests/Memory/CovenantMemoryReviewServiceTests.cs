@@ -1365,7 +1365,7 @@ public sealed class CovenantMemoryReviewServiceTests
                 new FixedCovenantConnectionSource(fixture.Connection),
                 new CovenantCompiler(),
                 codec,
-                new CovenantMutationKernel(),
+                new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
                 new CovenantCurationKernel(),
                 time);
 

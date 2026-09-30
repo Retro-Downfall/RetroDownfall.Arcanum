@@ -686,6 +686,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedg
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedger.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathFullResetCleanupEvidenceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathMarkerIntentStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantAgentErasureGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantArtifactPlanRunner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantAvailability.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalContentTables.cs

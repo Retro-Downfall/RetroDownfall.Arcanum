@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -309,8 +310,13 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
         await using SqliteTransaction transaction = (SqliteTransaction)await connection
             .BeginTransactionAsync(IsolationLevel.Serializable, CancellationToken.None);
 
-        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await new CovenantMutationKernel()
-            .ApplyBatchAsync(batch, new CovenantMutationTransaction(connection, transaction), CancellationToken.None);
+        Result<IReadOnlyList<CovenantMutationReceipt>> applied =
+            await new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated())
+                .ApplyBatchAsync(
+                    batch,
+                    new CovenantMutationTransaction(connection, transaction),
+                    CovenantAgentErasureGate.None,
+                    CancellationToken.None);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 

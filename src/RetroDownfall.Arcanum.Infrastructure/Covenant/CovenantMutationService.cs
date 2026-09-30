@@ -509,6 +509,10 @@ internal sealed partial class CovenantMutationService(
         CancellationToken cancellationToken)
     {
 
+        // Every batch carries the gate its caller read from the latch before BEGIN, this operator path
+        // included. Operator intents never consult it, so an operator write is never refused by it.
+        using CovenantAgentErasureGate erasureGate = kernel.CaptureErasureGate();
+
         SqliteConnection connection = await connections
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -528,6 +532,7 @@ internal sealed partial class CovenantMutationService(
             .ApplyBatchAsync(
                 batch,
                 new CovenantMutationTransaction(connection, transaction),
+                erasureGate,
                 cancellationToken)
             .ConfigureAwait(false);
 

@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -339,7 +341,7 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new StubEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
             clock);
@@ -390,7 +392,7 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new CovenantEnvelopeCodec(keys, clock),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
             clock);
@@ -600,7 +602,7 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new CovenantEnvelopeCodec(keys, clock),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
             clock);
@@ -781,7 +783,7 @@ public sealed class CovenantMutationServiceTests
             new CovenantCompiler(),
             new StubEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
             TimeProvider.System);

@@ -54,8 +54,8 @@ internal sealed record MemoryErasureEvidenceCounts(
 /// without the fingerprint table, holds no evidence: every read answers empty and every delete removes
 /// nothing, which is what keeps writes flowing during a live upgrade while an earlier sweep drains.
 /// The two inserts refuse instead, since recording evidence a catalog cannot hold would be a lie about
-/// what it suppresses. Missing or malformed version metadata throws, so a catalog that cannot say
-/// what it is fails closed.</para>
+/// what it suppresses. A catalog that has the fingerprint table but missing or malformed version
+/// metadata throws, so a catalog that could hold evidence but cannot say what it is fails closed.</para>
 ///
 /// <para>These are the only statements in the product that delete, update, or insert evidence rows,
 /// and an architecture test pins that: a later operation that needs a new evidence write adds a member
@@ -78,6 +78,11 @@ internal static class MemoryErasureEvidence
         [MemoryReviewStore.Covenant, MemoryReviewStore.Saga, MemoryReviewStore.Lexicon];
 
     /// <summary>Whether this catalog can hold evidence: Core 13 or later, with the fingerprint table.</summary>
+    /// <remarks>
+    /// The table is asked for first. A catalog without it holds no evidence whatever its metadata says,
+    /// and a Covenant-only catalog carries no Core metadata to read at all. Only a catalog that has the
+    /// table must say which Core version it is, and missing or malformed metadata there still throws.
+    /// </remarks>
     internal static async Task<bool> IsInstalledAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
@@ -85,18 +90,19 @@ internal static class MemoryErasureEvidence
     {
         ArgumentNullException.ThrowIfNull(connection);
 
-        if (await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false)
-            < CoreSchemaVersion)
-        {
-            return false;
-        }
-
-        await using SqliteCommand command = Command(
+        await using (SqliteCommand command = Command(
             connection,
             transaction,
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_erasure_fingerprints');");
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_erasure_fingerprints');"))
+        {
+            if (!await ExistsAsync(command, cancellationToken).ConfigureAwait(false))
+            {
+                return false;
+            }
+        }
 
-        return await ExistsAsync(command, cancellationToken).ConfigureAwait(false);
+        return await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false)
+            >= CoreSchemaVersion;
     }
 
     /// <summary>Whether <paramref name="store"/> holds any fingerprint at all, under any key.</summary>

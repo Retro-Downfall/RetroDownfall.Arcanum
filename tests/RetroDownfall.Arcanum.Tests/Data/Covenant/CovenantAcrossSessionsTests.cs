@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -66,7 +68,7 @@ public sealed class CovenantAcrossSessionsTests
         // would let a mutation that never committed still be visible to the read that has to find it.
         await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
 
-        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection), MemoryErasureTestKeys.Isolated());
 
         await WriteGlobalAsync(fixture, gate);
 
@@ -183,7 +185,7 @@ public sealed class CovenantAcrossSessionsTests
         // would let a mutation that never committed still be visible to the read that has to find it.
         await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
 
-        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection), MemoryErasureTestKeys.Isolated());
 
         await WriteCampaignAsync(fixture, gate, SessionACampaign);
 
@@ -219,7 +221,7 @@ public sealed class CovenantAcrossSessionsTests
         // would let a mutation that never committed still be visible to the read that has to find it.
         await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
 
-        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection), MemoryErasureTestKeys.Isolated());
 
         await WriteGlobalAsync(fixture, gate);
 
@@ -255,7 +257,7 @@ public sealed class CovenantAcrossSessionsTests
         // would let a mutation that never committed still be visible to the read that has to find it.
         await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
 
-        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection), MemoryErasureTestKeys.Isolated());
 
         await WriteGlobalAsync(fixture, gate);
 
@@ -299,7 +301,7 @@ public sealed class CovenantAcrossSessionsTests
         // would let a mutation that never committed still be visible to the read that has to find it.
         await using SqliteConnection readerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
 
-        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection));
+        CovenantStore reader = new(new FixedCovenantConnectionSource(readerConnection), MemoryErasureTestKeys.Isolated());
 
         await WriteGlobalAsync(fixture, gate);
 
@@ -656,7 +658,7 @@ public sealed class CovenantAcrossSessionsTests
             new CovenantCompiler(),
             new PassthroughEnvelopeCodec(),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new FixedAuthority(),
             TimeProvider.System);

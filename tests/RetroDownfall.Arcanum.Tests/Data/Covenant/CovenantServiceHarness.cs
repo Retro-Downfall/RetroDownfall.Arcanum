@@ -1,9 +1,13 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -56,9 +60,14 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// Composes the service over a canonical tier that also carries the core objects owner cleanup
     /// needs, so a suite can drive a Campaign deletion through the same worker the host runs.
     /// </summary>
+    /// <param name="withErasureEvidence">
+    /// Gives the catalog the erasure fingerprint table and a head Core version, so fingerprints can be
+    /// seeded and every chokepoint reads them the way an installed Grimoire's are read.
+    /// </param>
     internal static async Task<CovenantServiceHarness> StartAsync(
         CancellationToken cancellationToken,
-        bool withOwnerCleanup = false)
+        bool withOwnerCleanup = false,
+        bool withErasureEvidence = false)
     {
 
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
@@ -75,7 +84,8 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                     "owner_deletion_events_guard_delete",
                     "owner_deletion_events_guard_update",
                 ]
-                : null);
+                : null,
+            withErasureEvidence: withErasureEvidence);
 
         if (withOwnerCleanup)
         {
@@ -99,7 +109,7 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             new CovenantCompiler(),
             new HarnessEnvelopeCodec(clock),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantMutationKernel(),
+            new CovenantMutationKernel(new CovenantQuotaGuard(), fixture.ErasureKeys),
             new CovenantCurationKernel(),
             new HarnessAuthority(),
             clock);
@@ -144,6 +154,113 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$epoch", epoch);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Records the erasure fingerprint of one Covenant identity, creating the erasure key on first use.
+    /// </summary>
+    /// <remarks>
+    /// The key is opened the way erase prepare opens it: created only on a proven absence with no
+    /// evidence, and published as Present into the fixture's own latch before any fingerprint is
+    /// written. The fingerprint is then recorded through the evidence store's own insert. The Covenant
+    /// erase route is what writes it in production; until that route exists this is the seam.
+    /// </remarks>
+    internal async Task SeedCovenantFingerprintAsync(
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        CancellationToken cancellationToken)
+    {
+
+        MemoryErasureKeyOpenResult opened = _fixture.ErasureKeys.OpenOrCreate(evidenceRowsExist: false);
+
+        Assert.Equal(MemoryErasureKeyState.Present, opened.State);
+
+        using MemoryErasureKey erasureKey = opened.Key!;
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            _fixture.Connection,
+            erasureKey,
+            MemoryErasureIdentity.ForCovenant(scope, campaignId, key),
+            cancellationToken);
+
+    }
+
+    /// <summary>
+    /// A fresh keyring over the fixture's own credential store, its latch driven into
+    /// <paramref name="state"/> the way a real probe of that store would leave it.
+    /// </summary>
+    /// <remarks>
+    /// <para>Unresolved is left unprobed. Present re-probes a stored key, so it needs one: seed a
+    /// fingerprint first. Absent deletes the stored key and re-probes. Unavailable makes the store fail
+    /// for the one probe and then answer again. Malformed stores text that is not a key and
+    /// re-probes.</para>
+    ///
+    /// <para>Every probe happens here, so a caller that measures credential calls afterwards measures
+    /// only what it did with the keyring. The caller owns the keyring and disposes it.</para>
+    /// </remarks>
+    internal MemoryErasureKeyring KeyringInState(MemoryErasureKeyState state)
+    {
+
+        MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(_fixture.Credentials);
+
+        switch (state)
+        {
+
+            case MemoryErasureKeyState.Unresolved:
+
+                break;
+
+            case MemoryErasureKeyState.Present:
+
+                break;
+
+            case MemoryErasureKeyState.Absent:
+
+                _ = _fixture.Credentials.Delete(
+                    ArcanumCredentialIdentity.Service,
+                    ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+
+                break;
+
+            case MemoryErasureKeyState.Unavailable:
+
+                _fixture.Credentials.FailWith = OsCredentialStoreStatus.Unavailable;
+
+                break;
+
+            case MemoryErasureKeyState.Malformed:
+
+                _ = _fixture.Credentials.Set(
+                    ArcanumCredentialIdentity.Service,
+                    ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount,
+                    "not-base64url");
+
+                break;
+
+            default:
+
+                throw new ArgumentOutOfRangeException(nameof(state), state, "A recognized key state is required.");
+
+        }
+
+        if (state is not MemoryErasureKeyState.Unresolved)
+        {
+
+            MemoryErasureKeyOpenResult probed = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+            probed.Key?.Dispose();
+
+            _fixture.Credentials.FailWith = null;
+
+            Assert.Equal(state, probed.State);
+
+        }
+
+        Assert.Equal(state, keyring.Latch.State);
+
+        return keyring;
 
     }
 

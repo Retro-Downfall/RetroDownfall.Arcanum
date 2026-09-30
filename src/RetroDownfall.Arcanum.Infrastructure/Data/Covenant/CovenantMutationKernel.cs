@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -22,25 +23,36 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <para>The kernel never opens, commits, rolls back, or retries a transaction. A failure returns a
 /// typed error and leaves the caller's transaction to be rolled back as a whole, which is what makes
 /// "a failed batch writes nothing" true rather than merely intended.</para>
+///
+/// <para>It is also the authoritative Covenant erasure chokepoint. Every batch carries the erasure gate
+/// its caller captured through <see cref="CaptureErasureGate"/> before <c>BEGIN</c>, whatever the batch's
+/// origin; agent intents are classified against it inside the transaction, and operator intents never
+/// consult it. The key provider is a required dependency: a kernel composed without it could not tell
+/// an installation holding erasure evidence from one without, and would have to write either way.</para>
 /// </remarks>
-internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
+internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryErasureKeyProvider erasureKeys)
 {
     /// <summary>
-    /// A kernel over the process-wide connection initializer, for callers with no guard of their own.
+    /// Reads the erasure gate a batch carries into its transaction: the one capture for agent and
+    /// operator paths alike.
     /// </summary>
-    internal CovenantMutationKernel()
-        : this(new CovenantQuotaGuard())
-    {
-    }
+    /// <remarks>
+    /// A latch read and never credential I/O, so it may be taken while a write lease or a turn lease is
+    /// held. Callers take it before <c>BEGIN</c> and dispose it once the transaction has ended.
+    /// </remarks>
+    internal CovenantAgentErasureGate CaptureErasureGate() => CovenantAgentErasureGate.FromLatch(erasureKeys);
 
     public async ValueTask<Result<IReadOnlyList<CovenantMutationReceipt>>> ApplyBatchAsync(
         CovenantMutationBatch batch,
         CovenantMutationTransaction transaction,
+        CovenantAgentErasureGate erasureGate,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(batch);
 
         ArgumentNullException.ThrowIfNull(transaction);
+
+        ArgumentNullException.ThrowIfNull(erasureGate);
 
         Result<CanonicalState> state = await ReadStateAsync(transaction, cancellationToken).ConfigureAwait(false);
 
@@ -137,6 +149,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
                     transaction,
                     batch,
                     intent,
+                    erasureGate,
                     searchSequence,
                     changedHeads,
                     cancellationToken)
@@ -248,6 +261,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         CovenantMutationTransaction transaction,
         CovenantMutationBatch batch,
         CovenantMutationIntent intent,
+        CovenantAgentErasureGate erasureGate,
         long searchSequence,
         int ordinal,
         CancellationToken cancellationToken)
@@ -279,9 +293,28 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved
             && await IsPinnedAsync(transaction, intent, cancellationToken).ConfigureAwait(false))
         {
-            return new Error(
-                ErrorCodes.Covenant.ForbiddenAuthority,
-                "This Covenant entry is pinned, so the agent may not write over it or retire it.");
+            return new Error(ErrorCodes.Covenant.ForbiddenAuthority, CovenantAgentErasureGate.OperatorManagedRefusal);
+        }
+
+        // An erased identity is refused to the same agent origins, with the pin's own answer, so a
+        // tool result cannot tell an erased key from a pinned one. A store whose evidence the gate's key
+        // cannot verify refuses every agent write. Operator origins never consult the gate.
+        if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved)
+        {
+            CovenantAgentErasureState erasure = await erasureGate
+                .ClassifyAsync(
+                    transaction.Connection,
+                    transaction.Transaction,
+                    intent.Target.Scope.Kind,
+                    intent.Target.Scope.CampaignId,
+                    intent.Target.NormalizedKey.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (CovenantAgentErasureGate.RefusalFor(erasure) is { } withheld)
+            {
+                return withheld;
+            }
         }
 
         bool retired = head is { OperationCode: (int)CovenantOperation.Retire };

@@ -4207,6 +4207,7 @@ public sealed class CovenantErasureSameProcessTests
                     .ApplyBatchAsync(
                         batch,
                         new CovenantMutationTransaction(connection, transaction),
+                        CovenantAgentErasureGate.None,
                         CancellationToken.None);
 
                 Assert.True(applied.IsSuccess, applied.Error.Message);

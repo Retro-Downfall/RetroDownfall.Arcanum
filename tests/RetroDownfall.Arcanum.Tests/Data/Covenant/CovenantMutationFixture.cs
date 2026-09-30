@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -254,7 +255,8 @@ internal static class CovenantMutationFixture
         CovenantMutationTransaction owned = new(fixture.Connection, transaction);
 
         Result<IReadOnlyList<CovenantMutationReceipt>> receipts =
-            await new CovenantMutationKernel().ApplyBatchAsync(batch, owned, cancellationToken);
+            await new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated())
+                .ApplyBatchAsync(batch, owned, CovenantAgentErasureGate.None, cancellationToken);
 
         if (receipts.IsSuccess && commit)
         {

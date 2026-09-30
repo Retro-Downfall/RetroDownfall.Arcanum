@@ -639,7 +639,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
-    private static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
+    internal static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
     {
 
         string id = Guid.NewGuid().ToString();
@@ -660,7 +660,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     }
 
-    private static SagaMemoryStore CreateStore(ArcanumDbContext db, IMemoryErasureKeyProvider? erasureKeys = null) =>
+    internal static SagaMemoryStore CreateStore(ArcanumDbContext db, IMemoryErasureKeyProvider? erasureKeys = null) =>
         new(
             db,
             new WeaveIndexAvailability(),
