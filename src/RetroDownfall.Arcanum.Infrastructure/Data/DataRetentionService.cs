@@ -7187,13 +7187,15 @@ internal sealed partial class DataRetentionService(
     /// kind is running the Annals erasure plan for the store in the same transaction, which is where
     /// the requirement is written down and what a removal added later has to adopt.</para>
     ///
-    /// <para><b>The protected-artifact purge is a known exception, wherever its plan table is read.</b>
-    /// It deletes a Saga memory or a Lexicon entry by that plan and takes no claim, and it runs only
-    /// against a labelled artifact - so it cannot reach these rows while nothing produces a label of
-    /// either kind, which is pinned rather than assumed here. This is what is known rather than a
-    /// closed account of what can exist: a removal composed from a table name held elsewhere is
-    /// invisible to a search for the statement that would name it, and the account above has been
-    /// incomplete that way before.</para>
+    /// <para><b>The protected-artifact purge is the first kind too, wherever its plan table is read.</b>
+    /// The Saga and Lexicon purge plans carry the store's Annals erasure steps ahead of the row, so the
+    /// live erasure kernel and the staged restore purge both take the claim in the transaction that
+    /// takes the row. That is pinned on the plan itself by
+    /// <c>CovenantDerivedOutputInventoryTests.Every_annals_store_plan_takes_its_claim_in_annals_order_before_the_subject_row</c>,
+    /// and <c>AnnalsOrphanAssertions</c> closes every erasure-path test by asking the database whether
+    /// any claim outlived its row. This is what is known rather than a closed account of what can
+    /// exist: a removal composed from a table name held elsewhere is invisible to a search for the
+    /// statement that would name it, and the account above has been incomplete that way before.</para>
     /// </remarks>
     internal static string[] MemoryResetResidueTables(MemoryResetScope scope) =>
         scope switch

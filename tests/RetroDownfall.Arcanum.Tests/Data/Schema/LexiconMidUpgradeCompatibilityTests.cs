@@ -503,6 +503,8 @@ public sealed class LexiconMidUpgradeCompatibilityTests
                 await transaction.CommitAsync();
 
                 Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM lexicon_entries;"));
+
+                await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(connection);
             }
 
             return;
@@ -544,6 +546,8 @@ public sealed class LexiconMidUpgradeCompatibilityTests
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM annal_claims;"));
 
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM artifact_sensitivity;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(connection);
     }
 
     [Fact]

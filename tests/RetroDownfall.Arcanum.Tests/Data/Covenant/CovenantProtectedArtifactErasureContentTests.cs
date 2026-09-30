@@ -68,6 +68,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         await harness.LabelAsync(SensitiveArtifactKind.Saga, memoryId, sessionId: null, "The operator prefers dark mode.");
 
+        // The precondition the last count is about. Extraction opens a claim while the Annals is on, and
+        // a claim that was never written would satisfy the zero below whether or not the purge took it.
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
         CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Saga, memoryId);
 
         Assert.Equal(1UL, progress.ErasedCount);
@@ -81,6 +85,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
 
     }
 
@@ -177,6 +183,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
 
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
+
     }
 
     /// <summary>
@@ -253,7 +261,7 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         internal WeaveIndexAvailability VectorAccelerator { get; } = new();
 
-        private DbConnection Connection => _db.Database.GetDbConnection();
+        internal DbConnection Connection => _db.Database.GetDbConnection();
 
         internal static ErasureHarness Create()
         {
