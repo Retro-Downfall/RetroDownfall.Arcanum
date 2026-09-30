@@ -1471,9 +1471,8 @@ public sealed class CovenantCanonicalSchemaTests
     }
 
     /// <summary>
-    /// Every authorization the general entry point can grant, and no grant at all, except the ones
-    /// named. Restore-staging sanitization is never granted through that entry point, so it is not a
-    /// state a connection reaching these guards can be in.
+    /// Every authorization kind, and no grant at all, except the ones named. The set is read from the
+    /// enum, so a kind added later is refused here until a guard is deliberately widened to admit it.
     /// </summary>
     private static TheoryData<string> AuthorizationsExcept(params CovenantSqliteAuthorizationKind[] admitted)
     {
@@ -1483,8 +1482,7 @@ public sealed class CovenantCanonicalSchemaTests
         foreach (CovenantSqliteAuthorizationKind kind in Enum.GetValues<CovenantSqliteAuthorizationKind>())
         {
 
-            if (kind != CovenantSqliteAuthorizationKind.RestoreStagingManagedAuthoritySanitization
-                && !admitted.Contains(kind))
+            if (!admitted.Contains(kind))
             {
 
                 data.Add(kind.ToString());
@@ -1497,12 +1495,20 @@ public sealed class CovenantCanonicalSchemaTests
 
     }
 
+    /// <summary>
+    /// Grants the named kind through the core both entry points end at.
+    /// </summary>
+    /// <remarks>
+    /// The general entry point refuses restore-staging sanitization, but the sealed restore-staging
+    /// capability grants it through this same core on a staged Grimoire that carries the canonical tier.
+    /// Going through the core is what lets the refusal theories cover that kind too.
+    /// </remarks>
     private static CovenantSqliteAuthorizationScope? AuthorizeUnlessNone(
         CovenantSchemaScratchDatabase database,
         string kind) =>
         kind == NoAuthorization
             ? null
-            : CovenantSqliteConnectionInitializer.Instance.Authorize(
+            : CovenantSqliteConnectionInitializer.Instance.AuthorizeCore(
                 database.Connection,
                 Enum.Parse<CovenantSqliteAuthorizationKind>(kind));
 

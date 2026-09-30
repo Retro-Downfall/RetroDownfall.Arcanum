@@ -1,7 +1,13 @@
+using System.Data;
+
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
@@ -153,6 +159,37 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
     }
 
     /// <summary>
+    /// A key the upgrade bound keeps that binding epoch while writes move its dependency epoch, so its
+    /// live pin stays bound. Both writes go through the mutation kernel: the first head for the key
+    /// reaches the insert trigger's conflict branch, and the second the update trigger's.
+    /// </summary>
+    [Fact]
+    public async Task An_upgraded_key_keeps_its_binding_epoch_across_head_writes()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await EvolveSeededAsync(file);
+
+        Assert.Equal((3L, 3L), await KeyEpochPairAsync(connection, "live.key"));
+
+        CovenantMutationReceipt created = await ApplyOperatorSetAsync(
+            connection, "live.key", "First text.", expectedRevision: 0, expectedKeyEpoch: 3);
+
+        Assert.Equal(1L, created.ResultingLaneRevision);
+
+        Assert.Equal((4L, 3L), await KeyEpochPairAsync(connection, "live.key"));
+
+        CovenantMutationReceipt advanced = await ApplyOperatorSetAsync(
+            connection, "live.key", "Second text.", expectedRevision: 1, expectedKeyEpoch: 4);
+
+        Assert.Equal(2L, advanced.ResultingLaneRevision);
+
+        Assert.Equal((5L, 3L), await KeyEpochPairAsync(connection, "live.key"));
+
+        Assert.Contains("live.key", await ReadStringsAsync(connection, BoundPinsSql));
+    }
+
+    /// <summary>
     /// Before version 6 a family reset deleted key rows and left their curation behind. A nonzero epoch
     /// with no key row can only be such a leftover, because every nonzero epoch was read from a key row
     /// that existed when the curation was written; the upgrade removes it so it cannot bind to a key
@@ -207,6 +244,44 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Commits one operator set of a Global Confirmed key through the kernel, bound to the dataset,
+    /// key-reclamation and Campaign-registry epochs the evolved database carries.
+    /// </summary>
+    private static async Task<CovenantMutationReceipt> ApplyOperatorSetAsync(
+        SqliteConnection connection,
+        string key,
+        string authored,
+        long expectedRevision,
+        long expectedKeyEpoch)
+    {
+        CovenantMutationBatch batch = new(
+            new Guid((byte[])(await ScalarAsync(connection, "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;"))!),
+            (long)(await ScalarAsync(connection, "SELECT KeyReclamationEpoch FROM covenant_state WHERE StateKey = 1;"))!,
+            (long)(await ScalarAsync(connection, "SELECT RegistryEpoch FROM campaign_registry_state WHERE StateKey = 1;"))!,
+            CovenantMutationFixture.CommitTime,
+            [
+                CovenantMutationFixture.OperatorSet(
+                    CovenantOperationScope.Global, key, authored, expectedRevision, expectedKeyEpoch),
+            ]);
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection
+            .BeginTransactionAsync(IsolationLevel.Serializable, CancellationToken.None);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await new CovenantMutationKernel()
+            .ApplyBatchAsync(batch, new CovenantMutationTransaction(connection, transaction), CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        CovenantMutationReceipt receipt = Assert.Single(applied.Value);
+
+        Assert.Equal(CovenantMutationOutcome.Applied, receipt.Outcome);
+
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return receipt;
     }
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
@@ -343,6 +418,15 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
         _ = command.Parameters.AddWithValue("$key", key);
 
         return (long)(await command.ExecuteScalarAsync())!;
+    }
+
+    private static async Task<object?> ScalarAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return await command.ExecuteScalarAsync();
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)

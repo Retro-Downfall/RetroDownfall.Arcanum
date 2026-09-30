@@ -171,11 +171,11 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     {
         await using SqliteCommand command = transaction.CreateCommand();
 
-        // The receipt table carries no EntryId column, so the committed entry has to be recovered
-        // through what the row does record. An Applied outcome names a resulting version, and every
-        // version belongs to exactly one entry. A NoChange outcome has a NULL version by the table's
-        // own CHECK, so it resolves through the scoped key instead, which the partial unique indexes
-        // on covenant_entries make a single row.
+        // Receipts written before canonical version 6 carry no EntryId, so the committed entry is
+        // recovered through what every receipt records, which resolves old and new receipts alike. An
+        // Applied outcome names a resulting version, and every version belongs to exactly one entry. A
+        // NoChange outcome has a NULL version by the table's own CHECK, so it resolves through the
+        // scoped key instead, which the partial unique indexes on covenant_entries make a single row.
         command.CommandText = """
             SELECT r.RequestIdempotencyDigest, r.FinalMutationDigest, r.ResponseReceiptDigest, r.MutationKindCode,
                    r.ScopeCode, r.CampaignId, r.LaneCode, r.OutcomeCode, r.ResultingVersionId, r.ResultingLaneRevision,
