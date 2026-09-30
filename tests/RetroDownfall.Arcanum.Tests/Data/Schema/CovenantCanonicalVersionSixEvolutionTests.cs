@@ -4,9 +4,11 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -159,9 +161,12 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
     }
 
     /// <summary>
-    /// A key the upgrade bound keeps that binding epoch while writes move its dependency epoch, so its
-    /// live pin stays bound. Both writes go through the mutation kernel: the first head for the key
-    /// reaches the insert trigger's conflict branch, and the second the update trigger's.
+    /// A key the upgrade bound keeps that binding epoch while head changes move its dependency epoch, so
+    /// its live pin stays bound. Every change goes through a production writer and reaches one of the
+    /// three key-epoch triggers' conflict branches: the kernel's first head for the key reaches the
+    /// insert trigger's, its second write the update trigger's, and owner cleanup removing a deleted
+    /// Campaign's head for the same key the delete trigger's. Each change advances the dependency epoch
+    /// by exactly one.
     /// </summary>
     [Fact]
     public async Task An_upgraded_key_keeps_its_binding_epoch_across_head_writes()
@@ -173,18 +178,52 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
         Assert.Equal((3L, 3L), await KeyEpochPairAsync(connection, "live.key"));
 
         CovenantMutationReceipt created = await ApplyOperatorSetAsync(
-            connection, "live.key", "First text.", expectedRevision: 0, expectedKeyEpoch: 3);
+            connection, CovenantOperationScope.Global, "live.key", "First text.", expectedRevision: 0, expectedKeyEpoch: 3);
 
         Assert.Equal(1L, created.ResultingLaneRevision);
 
         Assert.Equal((4L, 3L), await KeyEpochPairAsync(connection, "live.key"));
 
         CovenantMutationReceipt advanced = await ApplyOperatorSetAsync(
-            connection, "live.key", "Second text.", expectedRevision: 1, expectedKeyEpoch: 4);
+            connection, CovenantOperationScope.Global, "live.key", "Second text.", expectedRevision: 1, expectedKeyEpoch: 4);
 
         Assert.Equal(2L, advanced.ResultingLaneRevision);
 
         Assert.Equal((5L, 3L), await KeyEpochPairAsync(connection, "live.key"));
+
+        Guid campaignId = CovenantOperationGateFixture.CampaignOne;
+
+        await AddCampaignAsync(connection, campaignId);
+
+        CovenantMutationReceipt scoped = await ApplyOperatorSetAsync(
+            connection,
+            CovenantOperationScope.ForCampaign(campaignId),
+            "live.key",
+            "Campaign text.",
+            expectedRevision: 0,
+            expectedKeyEpoch: 5);
+
+        Assert.Equal(1L, scoped.ResultingLaneRevision);
+
+        Assert.Equal((6L, 3L), await KeyEpochPairAsync(connection, "live.key"));
+
+        await DeleteCampaignAsync(connection, campaignId);
+
+        CovenantCleanupOutcome cleaned = await RunOwnerCleanupAsync(connection);
+
+        Assert.Equal(1, cleaned.CampaignsCleaned);
+
+        Assert.Equal(1, cleaned.HeadsRemoved);
+
+        Assert.Equal(
+            1L,
+            await CountRowsAsync(connection, "SELECT count(*) FROM covenant_heads WHERE NormalizedKey = 'live.key';"));
+
+        Assert.Equal(
+            0L,
+            await CountRowsAsync(connection, "SELECT count(*) FROM covenant_heads WHERE CampaignId IS NOT NULL;"));
+
+        Assert.Equal((7L, 3L), await KeyEpochPairAsync(connection, "live.key"));
 
         Assert.Contains("live.key", await ReadStringsAsync(connection, BoundPinsSql));
     }
@@ -247,11 +286,12 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
     }
 
     /// <summary>
-    /// Commits one operator set of a Global Confirmed key through the kernel, bound to the dataset,
+    /// Commits one operator set of a Confirmed key through the kernel, bound to the dataset,
     /// key-reclamation and Campaign-registry epochs the evolved database carries.
     /// </summary>
     private static async Task<CovenantMutationReceipt> ApplyOperatorSetAsync(
         SqliteConnection connection,
+        CovenantOperationScope scope,
         string key,
         string authored,
         long expectedRevision,
@@ -263,8 +303,7 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
             (long)(await ScalarAsync(connection, "SELECT RegistryEpoch FROM campaign_registry_state WHERE StateKey = 1;"))!,
             CovenantMutationFixture.CommitTime,
             [
-                CovenantMutationFixture.OperatorSet(
-                    CovenantOperationScope.Global, key, authored, expectedRevision, expectedKeyEpoch),
+                CovenantMutationFixture.OperatorSet(scope, key, authored, expectedRevision, expectedKeyEpoch),
             ]);
 
         await using SqliteTransaction transaction = (SqliteTransaction)await connection
@@ -282,6 +321,73 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
         await transaction.CommitAsync(CancellationToken.None);
 
         return receipt;
+    }
+
+    /// <summary>
+    /// Registers a Campaign in Core and advances the registry epoch, as registering one does.
+    /// </summary>
+    private static async Task AddCampaignAsync(SqliteConnection connection, Guid campaignId)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES ($id, 'erasure', 'erasure', '/tmp/erasure', 1, '{}', $at, $at);
+            UPDATE campaign_registry_state SET RegistryEpoch = RegistryEpoch + 1 WHERE StateKey = 1;
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", campaignId);
+
+        _ = command.Parameters.AddWithValue("$at", Timestamp);
+
+        _ = await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Deletes the Campaign from Core, which journals the owner deletion owner cleanup catches up on.
+    /// </summary>
+    private static async Task DeleteCampaignAsync(SqliteConnection connection, Guid campaignId)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """DELETE FROM "Campaigns" WHERE "Id" = $id;""";
+
+        _ = command.Parameters.AddWithValue("$id", campaignId);
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
+
+    /// <summary>
+    /// Runs one owner-cleanup batch the way the maintenance host does, under a cleanup lease bound to
+    /// the evolved database's dataset generation.
+    /// </summary>
+    private static async Task<CovenantCleanupOutcome> RunOwnerCleanupAsync(SqliteConnection connection)
+    {
+        Guid generation = new((byte[])(await ScalarAsync(connection, "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;"))!);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(current => current with { DatasetGeneration = generation });
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
+
+        await using CovenantCleanupLease lease =
+            (await gate.AcquireCleanupAsync(CovenantOperationScope.Global, CancellationToken.None)).Value;
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection
+            .BeginTransactionAsync(IsolationLevel.Serializable, CancellationToken.None);
+
+        Result<CovenantCleanupOutcome> outcome = await new CovenantCleanupWorker().RunBatchAsync(
+            lease,
+            new CovenantMutationTransaction(connection, transaction),
+            CancellationToken.None,
+            CovenantCleanupWorker.DefaultBatchSize);
+
+        Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : string.Empty);
+
+        await transaction.CommitAsync(CancellationToken.None);
+
+        return outcome.Value;
     }
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
@@ -419,6 +525,9 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
 
         return (long)(await command.ExecuteScalarAsync())!;
     }
+
+    private static async Task<long> CountRowsAsync(SqliteConnection connection, string sql) =>
+        (long)(await ScalarAsync(connection, sql))!;
 
     private static async Task<object?> ScalarAsync(SqliteConnection connection, string sql)
     {

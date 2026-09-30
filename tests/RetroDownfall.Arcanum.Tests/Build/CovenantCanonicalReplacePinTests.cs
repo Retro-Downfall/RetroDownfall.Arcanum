@@ -10,22 +10,35 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// No source replaces a row in a Covenant canonical table.
 /// </summary>
 /// <remarks>
-/// <para>A replace resolves its conflict by deleting the old row, and SQLite fires delete triggers for
-/// that deletion only when <c>recursive_triggers</c> is on, which Arcanum never sets. It is also an
-/// insert, so no update guard fires. <c>INSERT OR REPLACE</c> and <c>REPLACE INTO</c> would therefore
-/// walk past every canonical guard at once: a key-epoch row could be re-keyed to a new binding epoch
-/// with none of its curation purged, and a ledger row could be rewritten in place.</para>
+/// <para>A replace resolves its conflict by deleting the other row, and SQLite fires delete triggers
+/// for that deletion only when <c>recursive_triggers</c> is on, which Arcanum never sets.
+/// <c>INSERT OR REPLACE</c> and <c>REPLACE INTO</c> are inserts, so no update guard fires either, and
+/// <c>UPDATE OR REPLACE</c> silently deletes the row its new key collides with. Each would walk past
+/// the canonical delete guards: a key-epoch row could be re-keyed to a new binding epoch with none of
+/// its curation purged, and a colliding key's row could vanish with its binding epoch.</para>
 ///
 /// <para>So the rule is carried here, as a scan of every comment-free <c>src/**/*.cs</c> file and
 /// every <c>src/**/*.sql</c> file. The table set is read from the canonical <c>Tables</c> folder, so a
-/// canonical table added later is covered without touching this file.</para>
+/// canonical table added later is covered without touching this file. A table-level
+/// <c>ON CONFLICT REPLACE</c> clause would turn every plain insert or update into a replace, so the
+/// canonical schema files are scanned for that too.</para>
 /// </remarks>
 public sealed class CovenantCanonicalReplacePinTests
 {
-    private const string CanonicalTablesFolder =
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Covenant/Canonical/Tables";
+    private const string CanonicalFolder =
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Covenant/Canonical";
+
+    private const string CanonicalTablesFolder = CanonicalFolder + "/Tables";
 
     private static readonly Lazy<Regex> CanonicalReplace = new(BuildPattern);
+
+    /// <summary>
+    /// A constraint's conflict clause choosing REPLACE. The upsert clause, <c>ON CONFLICT (…) DO …</c>,
+    /// is a different construct that fires the update guards, and does not match.
+    /// </summary>
+    private static readonly Regex ConflictReplace = new(
+        @"\bON\s+CONFLICT\s+REPLACE\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     [Fact]
     public void The_table_set_is_every_canonical_table_the_catalog_installs()
@@ -68,6 +81,12 @@ public sealed class CovenantCanonicalReplacePinTests
         AssertCaught($"REPLACE INTO {table} (NormalizedKey) VALUES ($k);", name);
 
         AssertCaught($"INSERT\n    OR REPLACE\n    INTO {table}\n    (NormalizedKey) VALUES ($k);", name);
+
+        AssertCaught($"UPDATE OR REPLACE {table} SET NormalizedKey = $to WHERE NormalizedKey = $from;", name);
+
+        AssertCaught($"update or replace {table} SET NormalizedKey = $to WHERE NormalizedKey = $from;", name);
+
+        AssertCaught($"UPDATE\n    OR REPLACE {table}\n    SET NormalizedKey = $to;", name);
     }
 
     /// <summary>
@@ -79,12 +98,42 @@ public sealed class CovenantCanonicalReplacePinTests
     [InlineData("INSERT OR REPLACE INTO covenant_search_documents (EntryId) VALUES ($e);")]
     [InlineData("INSERT OR REPLACE INTO covenant_key_epochs_archive (NormalizedKey) VALUES ($k);")]
     [InlineData("INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc) VALUES ($k, 1, $t);")]
+    [InlineData("UPDATE covenant_key_epochs SET KeyEpoch = KeyEpoch + 1 WHERE NormalizedKey = $k;")]
+    [InlineData("UPDATE OR IGNORE covenant_curation_heads SET IsPinned = 0 WHERE NormalizedKey = $k;")]
+    [InlineData("UPDATE OR REPLACE saga_memory_embeddings SET Dim = 3 WHERE MemoryId = $m;")]
     public void Statements_outside_the_canonical_tier_are_not_caught(string statement) =>
         Assert.DoesNotMatch(CanonicalReplace.Value, statement);
 
     [Fact]
     public void No_source_replaces_a_covenant_canonical_row() =>
         Assert.Empty(FilesMatching(CanonicalReplace.Value));
+
+    [Fact]
+    public void No_canonical_schema_file_declares_a_replace_conflict_clause()
+    {
+        // The scan is only as good as its pattern, so it is shown to catch the clause in the places a
+        // table definition can carry it, and to leave the upsert clause alone.
+        Assert.Matches(ConflictReplace, "NormalizedKey TEXT NOT NULL PRIMARY KEY ON CONFLICT REPLACE,");
+
+        Assert.Matches(ConflictReplace, "UNIQUE (CampaignId, NormalizedKey)\n    on conflict replace");
+
+        Assert.DoesNotMatch(ConflictReplace, "ON CONFLICT(NormalizedKey) DO UPDATE SET KeyEpoch = KeyEpoch + 1");
+
+        ProductionSource[] schema = [.. CanonicalSchemaSources()];
+
+        // Every table definition is among the files scanned, not only the transitions and triggers.
+        Assert.Equal(
+            CanonicalTables(),
+            schema
+                .Where(static source => source.RelativePath.StartsWith(CanonicalTablesFolder + "/", StringComparison.Ordinal))
+                .Select(static source => Path.GetFileNameWithoutExtension(source.RelativePath))
+                .Order(StringComparer.Ordinal));
+
+        Assert.Empty(
+            schema
+                .Where(static source => ConflictReplace.IsMatch(source.Text))
+                .Select(static source => source.RelativePath));
+    }
 
     private static void AssertCaught(string statement, string name)
     {
@@ -96,7 +145,8 @@ public sealed class CovenantCanonicalReplacePinTests
     }
 
     /// <summary>
-    /// One canonical table as SQLite accepts it: optionally schema-qualified (<c>main.</c>,
+    /// A replace, <c>INSERT OR REPLACE INTO</c>, <c>REPLACE INTO</c> or <c>UPDATE OR REPLACE</c>, of one
+    /// canonical table as SQLite accepts it: optionally schema-qualified (<c>main.</c>,
     /// <c>"main".</c>, <c>[main].</c>, <c>`main`.</c>, <c>'main'.</c>), and bare or quoted with double
     /// quotes, brackets, backticks or single quotes. Group 1 is the table's name.
     /// </summary>
@@ -105,7 +155,7 @@ public sealed class CovenantCanonicalReplacePinTests
         string tables = string.Join('|', CanonicalTables().Select(Regex.Escape));
 
         return new Regex(
-            @"\b(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\s+"
+            @"\b(?:(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO|UPDATE\s+OR\s+REPLACE)\s+"
                 + @"(?:(?:""\w+""|\[\w+\]|`\w+`|'\w+'|\w+)\s*\.\s*)?[""\[`']?"
                 + $@"({tables})\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -129,6 +179,12 @@ public sealed class CovenantCanonicalReplacePinTests
 
         return tables;
     }
+
+    /// <summary>
+    /// Every <c>.sql</c> file under the canonical folder: tables, triggers, views and transitions.
+    /// </summary>
+    private static IEnumerable<ProductionSource> CanonicalSchemaSources() =>
+        SqlSources().Where(static source => source.RelativePath.StartsWith(CanonicalFolder + "/", StringComparison.Ordinal));
 
     private static string[] FilesMatching(Regex pattern) =>
     [
