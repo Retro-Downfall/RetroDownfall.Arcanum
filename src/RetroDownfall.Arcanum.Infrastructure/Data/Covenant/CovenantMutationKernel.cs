@@ -943,11 +943,11 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
             INSERT INTO covenant_mutation_receipts (
                 MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
                 ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
-                ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc)
+                ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc, EntryId)
             VALUES (
                 $mutation, $requestDigest, $authorizationDigest, $finalDigest, $kind,
                 $scope, $campaign, $target, $lane, $outcome, $version,
-                $revision, $responseDigest, $turn, $committed);
+                $revision, $responseDigest, $turn, $committed, $entry);
             """;
 
         Bind(command, "$mutation", intent.MutationId.ToString("D"));
@@ -985,6 +985,10 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$turn", intent.SourceTurnId is { } turnId ? turnId.ToString("D") : DBNull.Value);
 
         Bind(command, "$committed", Iso(batch.CommittedAtUtc));
+
+        // Both outcomes name the entry they resolved, so an erasure finds a NoChange receipt as surely
+        // as an Applied one.
+        Bind(command, "$entry", receipt.EntryId.ToString("D"));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }

@@ -2,12 +2,12 @@
 -- resolves to, so each one moves the key's dependency epoch exactly as an insert does. A validator
 -- holding an earlier epoch must fail its comparison rather than trust a resolution taken before the
 -- head moved. The insert branch covers the case where the epoch row was reclaimed while heads for
--- the key still exist.
+-- the key still exist, and starts the binding epoch at 0 as the insert trigger does.
 CREATE TRIGGER IF NOT EXISTS covenant_heads_key_epoch_update
 AFTER UPDATE ON covenant_heads
 BEGIN
-    INSERT INTO covenant_key_epochs(NormalizedKey, KeyEpoch, UpdatedAtUtc)
-    VALUES (NEW.NormalizedKey, 1, NEW.UpdatedAtUtc)
+    INSERT INTO covenant_key_epochs(NormalizedKey, KeyEpoch, UpdatedAtUtc, IncarnationEpoch)
+    VALUES (NEW.NormalizedKey, 1, NEW.UpdatedAtUtc, 0)
     ON CONFLICT(NormalizedKey) DO UPDATE SET
         KeyEpoch = KeyEpoch + 1,
         UpdatedAtUtc = excluded.UpdatedAtUtc;

@@ -215,6 +215,42 @@ public sealed class CovenantMutationKernelTests
 
     }
 
+    /// <summary>
+    /// A receipt names the entry it resolved whether or not it appended, so an erasure can find every
+    /// receipt for an entry by that column instead of guessing from scope and time.
+    /// </summary>
+    [Fact]
+    public async Task Both_receipt_outcomes_record_the_entry_they_resolved()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        Guid generation = await fixture.ReadDatasetGenerationAsync(Token);
+
+        _ = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.style", "Same.", 0, 0)),
+            Token);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> repeated = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            CovenantMutationFixture.Batch(
+                generation,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "global.style", "Same.", 1, 1)),
+            Token);
+
+        Assert.Equal(CovenantMutationOutcome.NoChange, Assert.Single(repeated.Value).Outcome);
+
+        Assert.Equal(
+            2,
+            await ScalarAsync(
+                fixture,
+                "SELECT COUNT(*) FROM covenant_mutation_receipts WHERE EntryId = (SELECT EntryId FROM covenant_entries);"));
+
+    }
+
     [Fact]
     public async Task A_retirement_tombstones_the_lane_and_repeating_it_is_no_change()
     {

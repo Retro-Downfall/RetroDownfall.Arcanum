@@ -282,6 +282,10 @@ public sealed class CovenantUngatedRetirementEvolutionTests
 
         Assert.Contains("origin of its current version", headUpdateDenied.Message, StringComparison.Ordinal);
 
+        // The kernel writes the shipped head's columns, so it publishes where production runs it: after
+        // the same database has evolved on to the head version and drained the sweeps on the way.
+        await ReviewSchemaEvolutionHarness.UpgradeAsync(connection);
+
         (CovenantMutationIntent intent, CovenantMutationReceipt receipt) =
             await PublishReceiptFreeRetirementThroughKernelAsync(connection);
 

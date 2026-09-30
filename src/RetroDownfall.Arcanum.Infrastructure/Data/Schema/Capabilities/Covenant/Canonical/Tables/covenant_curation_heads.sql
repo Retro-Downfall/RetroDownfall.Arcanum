@@ -2,9 +2,12 @@
 -- deliberately does not require a row in covenant_heads: masking a Global key inside a Campaign is
 -- exactly the case where that Campaign holds no entry, no head, and no version for the key.
 --
--- KeyEpoch is part of the subject rather than a recorded detail. A key that is retired, reclaimed,
--- and later re-created is a different key wearing an old name, and a pin recorded against the earlier
--- epoch must be inert rather than silently applying to content the operator never saw.
+-- KeyEpoch is part of the subject rather than a recorded detail, and it holds the key's binding epoch:
+-- covenant_key_epochs.IncarnationEpoch, or 0 while the key has no epoch row. The binding epoch is fixed
+-- for the life of a key row, so a later write to the key leaves an existing pin applying to it, while a
+-- key that is reclaimed and later re-created is a different key wearing an old name. Every deleter of a
+-- key row deletes that key's curation in the same transaction, so a pin recorded against the earlier
+-- incarnation can never bind to content the operator never saw.
 --
 -- NOTE: this file is the head definition and its statements are copied character for character into
 -- the version-2 transition files.

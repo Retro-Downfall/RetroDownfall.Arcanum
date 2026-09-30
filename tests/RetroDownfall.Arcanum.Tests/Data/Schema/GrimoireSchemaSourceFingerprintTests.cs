@@ -38,6 +38,39 @@ public sealed class GrimoireSchemaSourceFingerprintTests
         Assert.Null(step.Backfill);
     }
 
+    /// <summary>
+    /// The version-6 step pins the raw fingerprint the canonical version-5 head published, and the
+    /// reconstruction that freezes every object version 6 edits still hashes to it.
+    /// </summary>
+    [Fact]
+    public void Covenant_version_five_reconstruction_matches_the_pinned_fingerprint()
+    {
+        Assert.Equal(
+            "E4C4284B895BBBE50515D18FAC6066348D73C3A7D166F434B96BA675697DA925",
+            CovenantCanonicalSchemaVersionFiveFixture.Fingerprint);
+
+        Assert.Equal(
+            CovenantCanonicalSchemaVersionFiveFixture.PublishedFingerprint,
+            CovenantCanonicalSchemaVersionFiveFixture.Fingerprint);
+
+        GrimoireSchemaVersionChain canonical =
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical);
+
+        // Steps are keyed by the version they leave.
+        Assert.True(canonical.TryGetStep(5, out GrimoireSchemaVersionStep step));
+
+        Assert.Equal(6, step.ToVersion);
+
+        Assert.Null(step.Backfill);
+
+        Assert.Equal(CovenantCanonicalSchemaVersionFiveFixture.Fingerprint, canonical.SourceDefinitionFingerprintFor(5));
+
+        // A reconstruction that froze nothing would compare the head tree with itself.
+        Assert.NotEqual(
+            GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
+            CovenantCanonicalSchemaVersionFiveFixture.Fingerprint);
+    }
+
     [Fact]
     public void Current_pre_review_trees_match_their_published_fingerprints()
     {
