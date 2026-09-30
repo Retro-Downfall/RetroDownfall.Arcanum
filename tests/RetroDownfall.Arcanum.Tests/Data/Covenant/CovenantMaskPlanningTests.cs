@@ -107,6 +107,84 @@ public sealed class CovenantMaskPlanningTests
     }
 
     /// <summary>
+    /// A mask is policy about the key, not about one version of it. Correcting the Global entry is an
+    /// ordinary write, so the mask an operator applied beforehand still applies afterwards.
+    /// </summary>
+    [Fact]
+    public async Task A_mask_still_suppresses_the_Global_key_after_the_Global_entry_is_corrected()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
+
+        Result<CovenantCurationResultDto> masked = await harness.CurateAsync(
+            CovenantCurationKind.Mask,
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            Token);
+
+        Assert.True(masked.IsSuccess, masked.IsFailure ? masked.Error.Message : string.Empty);
+
+        await harness.CorrectAsync(CovenantScope.Global, null, Key, "Build from the tools directory.", Token);
+
+        Assert.DoesNotContain(Key, await EligibleKeysAsync(harness, CampaignOne));
+
+        Assert.Contains(Key, (await SnapshotAsync(harness, CampaignOne)).MaskedGlobalKeys);
+
+    }
+
+    /// <summary>
+    /// A key that existed before the binding epoch did carries a nonzero one, and a mask of it is
+    /// recorded under that value. The turn's mask read joins on the key row's own binding epoch, so
+    /// the mask an upgraded installation already held keeps suppressing the Global entry.
+    /// </summary>
+    [Fact]
+    public async Task A_mask_of_a_key_with_a_nonzero_binding_epoch_still_suppresses_it_after_a_later_write()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await using (Microsoft.Data.Sqlite.SqliteCommand seed = harness.Fixture.Connection.CreateCommand())
+        {
+
+            // The epoch row the version-6 step leaves for a key that already had three head changes.
+            seed.CommandText = $"""
+                INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc, IncarnationEpoch)
+                VALUES ('{Key}', 3, '2026-01-01T00:00:00.0000000Z', 3);
+                """;
+
+            _ = await seed.ExecuteNonQueryAsync(Token);
+
+        }
+
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Build from the root.", Token);
+
+        Result<CovenantCurationResultDto> masked = await harness.CurateAsync(
+            CovenantCurationKind.Mask,
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            Token);
+
+        Assert.True(masked.IsSuccess, masked.IsFailure ? masked.Error.Message : string.Empty);
+
+        Assert.DoesNotContain(Key, await EligibleKeysAsync(harness, CampaignOne));
+
+        await harness.CorrectAsync(CovenantScope.Global, null, Key, "Build from the tools directory.", Token);
+
+        Assert.DoesNotContain(Key, await EligibleKeysAsync(harness, CampaignOne));
+
+        Assert.Contains(Key, (await SnapshotAsync(harness, CampaignOne)).MaskedGlobalKeys);
+
+    }
+
+    /// <summary>
     /// A shadow names the entry that replaced it. A mask names nothing, so folding the two together
     /// would tell an operator their Global preference had been superseded by content that does not
     /// exist.

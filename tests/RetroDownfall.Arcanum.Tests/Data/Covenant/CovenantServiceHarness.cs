@@ -17,9 +17,10 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// a world neither of them read.
 ///
 /// <para>Two seams are substituted and they are the only two. The envelope codec keeps the exact token
-/// shape — purpose, timestamps, payload — and skips the cryptography, which has its own vectors and its
-/// own suite; the authority snapshot states an operator authority epoch, because a test process has no
-/// runtime generation to derive one from. Neither decides, measures, or stores anything.</para>
+/// shape — purpose, timestamps, payload — and the production expiry rule, and skips the cryptography,
+/// which has its own vectors and its own suite; the authority snapshot states an operator authority
+/// epoch, because a test process has no runtime generation to derive one from. Neither decides,
+/// measures, or stores anything.</para>
 /// </remarks>
 internal sealed class CovenantServiceHarness : IAsyncDisposable
 {
@@ -96,7 +97,7 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         CovenantMutationService service = new(
             fixture.Store,
             new CovenantCompiler(),
-            new HarnessEnvelopeCodec(),
+            new HarnessEnvelopeCodec(clock),
             new FixedCovenantConnectionSource(fixture.Connection),
             new CovenantMutationKernel(),
             new CovenantCurationKernel(),
@@ -246,6 +247,87 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     }
 
+    /// <summary>Corrects the live Confirmed head of one key through the production path.</summary>
+    /// <remarks>
+    /// The target is read off canonical storage the way an operator reads it off <c>show</c> before
+    /// naming it, so a suite that needs "the operator wrote this key again" states only that.
+    /// </remarks>
+    internal async Task CorrectAsync(
+        CovenantScope scope,
+        Guid? campaignId,
+        string key,
+        string content,
+        CancellationToken cancellationToken)
+    {
+
+        Guid targetVersionId;
+
+        long revision;
+
+        string renderedHash;
+
+        await using (Microsoft.Data.Sqlite.SqliteCommand command = _fixture.Connection.CreateCommand())
+        {
+
+            command.CommandText = """
+                SELECT h.CurrentVersionId, h.CurrentLaneRevision, v.RenderedHash
+                FROM covenant_heads h
+                JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+                WHERE h.CampaignId IS $campaign AND h.NormalizedKey = $key AND h.LaneCode = 1;
+                """;
+
+            _ = command.Parameters.AddWithValue(
+                "$campaign",
+                campaignId is { } owner ? owner.ToString("D") : DBNull.Value);
+
+            _ = command.Parameters.AddWithValue("$key", key);
+
+            await using Microsoft.Data.Sqlite.SqliteDataReader reader =
+                await command.ExecuteReaderAsync(cancellationToken);
+
+            Assert.True(await reader.ReadAsync(cancellationToken), "No Confirmed head exists for that key.");
+
+            targetVersionId = Guid.Parse(reader.GetString(0), System.Globalization.CultureInfo.InvariantCulture);
+
+            revision = reader.GetInt64(1);
+
+            renderedHash = Convert.ToHexStringLower((byte[])reader.GetValue(2));
+
+        }
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        Result<CovenantMutationPreflightDto> prepared = await PrepareCorrectAsync(
+            scope,
+            campaignId,
+            key,
+            content,
+            targetVersionId,
+            renderedHash,
+            revision,
+            cancellationToken,
+            mutationId);
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        Result<CovenantMutationResultDto> committed = await CommitCorrectAsync(
+            new CovenantCorrectRequest(
+                scope,
+                campaignId,
+                key,
+                content,
+                targetVersionId,
+                CovenantLane.Confirmed,
+                revision,
+                renderedHash,
+                mutationId,
+                prepared.Value.PreflightToken),
+            cancellationToken);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+    }
+
     internal async Task<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
         CovenantCurationKind kind,
         CovenantScope scope,
@@ -385,7 +467,7 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     }
 
-    private sealed class HarnessEnvelopeCodec : ICovenantEnvelopeCodec
+    private sealed class HarnessEnvelopeCodec(HarnessClock clock) : ICovenantEnvelopeCodec
     {
 
         private readonly Dictionary<string, CovenantEnvelopeBody> _issued = new(StringComparer.Ordinal);
@@ -419,13 +501,34 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
         }
 
-        public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
-            token is not null && _issued.TryGetValue(token, out CovenantEnvelopeBody? body)
-                && body.Purpose == expectedPurpose
-                ? Result<CovenantEnvelopeBody>.Success(body)
-                : Result<CovenantEnvelopeBody>.Failure(new Error(
+        public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token)
+        {
+
+            if (token is null
+                || !_issued.TryGetValue(token, out CovenantEnvelopeBody? body)
+                || body.Purpose != expectedPurpose)
+            {
+
+                return Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
+
+            }
+
+            // The production codec's rule, stated on the harness clock. A stand-in that decoded an
+            // expired token would let a suite call something a replay when the service had simply
+            // accepted a token the real codec refuses.
+            if (clock.GetUtcNow() >= body.ExpiresAtUtc)
+            {
+
+                return Result<CovenantEnvelopeBody>.Failure(
+                    CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Expired));
+
+            }
+
+            return Result<CovenantEnvelopeBody>.Success(body);
+
+        }
 
     }
 

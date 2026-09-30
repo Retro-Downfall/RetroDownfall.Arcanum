@@ -277,7 +277,7 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         // at staging: the staging probe is an early courtesy so a refused proposal does not cost the
         // turn its answer, and this transaction is the one place a mutation cannot get past.
         if (intent.Origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved
-            && await IsPinnedAsync(transaction, intent, keyEpoch, cancellationToken).ConfigureAwait(false))
+            && await IsPinnedAsync(transaction, intent, cancellationToken).ConfigureAwait(false))
         {
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
@@ -396,13 +396,16 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
     /// Whether the operator has pinned the scoped lane this intent targets.
     /// </summary>
     /// <remarks>
-    /// Bound to the key epoch the intent already proved current, so a pin recorded against a key that
-    /// was retired and reclaimed cannot refuse a write to the key that re-created the name.
+    /// Joined on the key's binding epoch, read in the same statement. The dependency epoch the intent
+    /// proved current moves on every head change for the key, in any scope or lane, so a pin looked up
+    /// by it would lapse the moment the operator wrote the other lane. The binding epoch moves only
+    /// when the key's epoch row is deleted and recreated, and every deleter removes the key's curation
+    /// with it, so a pin recorded against a reclaimed key cannot refuse a write to the key that
+    /// re-created the name.
     /// </remarks>
     private static async ValueTask<bool> IsPinnedAsync(
         CovenantMutationTransaction transaction,
         CovenantMutationIntent intent,
-        long keyEpoch,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = transaction.CreateCommand();
@@ -410,7 +413,8 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         command.CommandText = """
             SELECT COALESCE(MAX(IsPinned), 0)
             FROM covenant_curation_heads
-            WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane AND KeyEpoch = $epoch;
+            WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane
+              AND KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0);
             """;
 
         Bind(
@@ -421,8 +425,6 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas)
         Bind(command, "$key", intent.Target.NormalizedKey.Value);
 
         Bind(command, "$lane", (int)intent.Target.Lane);
-
-        Bind(command, "$epoch", keyEpoch);
 
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 

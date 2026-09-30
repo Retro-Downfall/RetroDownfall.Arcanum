@@ -106,39 +106,14 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
     /// Every canonical table the erasure empties, children before parents.
     /// </summary>
     /// <remarks>
-    /// The order is a foreign-key order, not a preference. Provenance references versions, heads
-    /// reference versions and entries by a composite key, and versions reference entries and
-    /// themselves — so a different order trips a constraint the canonical tier deliberately relies on.
-    /// The two receipt tables and the outbox come first only because nothing references them and
-    /// putting them last would read as if something did.
+    /// <see cref="CovenantCanonicalContentTables.InDeletionOrder"/> itself, not a copy of it. The
+    /// erasure, the storage-health proof that re-reads the family once the erasure claims it is empty,
+    /// the restore inspector and purger, and the reset inventory all read that one list, so a table
+    /// this transaction stopped naming cannot also be a table the proof stopped counting. The three
+    /// curation tables are on it: a pin or a mask is recorded against a key's epoch row, and this
+    /// erasure deletes that row, so the curation leaves in the same transaction.
     /// </remarks>
-    private static readonly string[] FamilyTablesInDeletionOrder =
-    [
-        "covenant_review_decision_receipts",
-        "covenant_review_markers",
-        "covenant_review_events",
-        "covenant_turn_receipts",
-        "covenant_turn_receipt_aggregate",
-        "covenant_mutation_receipts",
-        "covenant_search_outbox",
-        "covenant_version_attachment_provenance",
-        "covenant_heads",
-        "covenant_versions",
-        "covenant_entries",
-        "covenant_key_epochs",
-    ];
-
-    /// <summary>
-    /// The same canonical tables, for the proof that re-reads them once the erasure claims they are
-    /// empty.
-    /// </summary>
-    /// <remarks>
-    /// One list rather than two. A second copy could only ever differ in the case that matters: a
-    /// table this transaction stopped naming would also be a table the storage-health proof stopped
-    /// counting, and the erasure would report a family it had not finished emptying.
-    /// </remarks>
-    internal static IReadOnlyList<string> FamilyTables { get; } =
-        Array.AsReadOnly(FamilyTablesInDeletionOrder);
+    internal static IReadOnlyList<string> FamilyTables => CovenantCanonicalContentTables.InDeletionOrder;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
 
@@ -308,7 +283,7 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
                 cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (string table in FamilyTablesInDeletionOrder)
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
             _ = await ExecuteAsync(
                 connection,

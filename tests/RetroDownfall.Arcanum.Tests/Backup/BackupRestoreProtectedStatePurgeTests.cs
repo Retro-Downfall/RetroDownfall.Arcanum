@@ -231,6 +231,51 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A pin or a mask is recorded against a key's epoch row, and the purge deletes that row. The
+    /// curation leaves in the same transaction, so nothing is left bound to epoch 0 for the restored
+    /// installation's next key of that name to inherit.
+    /// </summary>
+    [Fact]
+    public async Task A_purge_removes_a_keys_curation_together_with_its_epoch_row()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedCanonicalFamilyAsync();
+
+        await SeedCurationAsync();
+
+        Assert.Equal(1, await CountAsync("covenant_key_epochs"));
+
+        Assert.Equal(1, await CountAsync("covenant_curation_heads"));
+
+        Assert.Equal(1, await CountAsync("covenant_curation_versions"));
+
+        Assert.Equal(1, await CountAsync("covenant_curation_receipts"));
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        // The production list, whole. It is the list the purge deleted through, so a canonical table
+        // added later is covered here without this file naming it.
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
+        {
+
+            Assert.Equal(0, await CountAsync(table));
+
+        }
+
+        BackupRestoreProtectedStatePurgeReceipt purge =
+            Assert.IsType<BackupRestoreProtectedStatePurgeReceipt>(receipt.Value.ProtectedStatePurge);
+
+        // The three rows the family seed writes, and the pin's version, head and receipt.
+        Assert.Equal(6UL, purge.CanonicalRows);
+
+    }
+
     [Fact]
     public async Task A_purge_empties_a_referenced_entry_graph_child_first()
     {
@@ -737,6 +782,42 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             SELECT 1, 'entry-1', 1, 'version-1', 1, NULL, 1, 'key', 'authored', 'compiled',
                    DatasetGeneration, 1
             FROM covenant_state;
+            """,
+            CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// Seeds one pin of the seeded key: its version, the head that points at it, and its receipt.
+    /// </summary>
+    /// <remarks>
+    /// The head and version carry the key's binding epoch, which is 0 for the epoch row the family seed
+    /// writes, and the receipt carries the dependency epoch that row holds.
+    /// </remarks>
+    private async Task SeedCurationAsync()
+    {
+
+        await _staged.ExecuteAsync(
+            """
+            INSERT INTO covenant_curation_versions (
+                CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                CurationKindCode, Revision, PredecessorVersionId, MutationId,
+                RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, CreatedAtUtc)
+            VALUES ('curation-1', 1, NULL, 'project/goal', 1, 0, 1, 1, NULL, 'curation-mutation-1',
+                    zeroblob(32), zeroblob(32), zeroblob(32), '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_heads (
+                ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                IsPinned, IsMasked, CurrentVersionId, CurrentRevision, UpdatedAtUtc)
+            VALUES (1, NULL, 'project/goal', 1, 0, 1, 0, 'curation-1', 1, '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO covenant_curation_receipts (
+                MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest,
+                CurationKindCode, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch,
+                OutcomeCode, ResultingVersionId, ResultingRevision, ResponseReceiptDigest, CommittedAtUtc)
+            VALUES ('curation-mutation-1', zeroblob(32), zeroblob(32), zeroblob(32),
+                    1, 1, NULL, 'project/goal', 1, 3, 1, 'curation-1', 1, zeroblob(32),
+                    '2026-01-01T00:00:00.0000000Z');
             """,
             CancellationToken.None);
 

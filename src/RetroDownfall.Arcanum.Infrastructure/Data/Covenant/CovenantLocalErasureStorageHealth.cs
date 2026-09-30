@@ -1377,14 +1377,15 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
     /// <remarks>
     /// The same list the transaction deleted through, rather than a second one. Two lists could only
     /// ever differ in the case that matters: a table the erasure stopped naming would also be a table
-    /// the proof stopped counting.
+    /// the proof stopped counting. It includes the curation tables, so a candidate that still held a
+    /// pin or a mask for a key whose epoch row is gone is refused here rather than reopened.
     /// </remarks>
     private static async Task<Result> RequireFamilyEmptyAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
 
-        foreach (string table in CovenantCanonicalErasureTransaction.FamilyTables)
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
 
             if (!await ObjectExistsAsync(connection, table, cancellationToken).ConfigureAwait(false))

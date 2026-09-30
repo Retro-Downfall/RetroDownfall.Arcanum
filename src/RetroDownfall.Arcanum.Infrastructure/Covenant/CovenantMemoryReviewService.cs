@@ -1463,7 +1463,7 @@ internal sealed class CovenantMemoryReviewService(
         DateTimeOffset committedAt,
         CancellationToken cancellationToken)
     {
-        long keyEpoch = await ReadKeyEpochAsync(transaction, target.Key, cancellationToken)
+        CovenantKeyEpochPair epochs = await CovenantKeyEpochs.ReadAsync(transaction, target.Key, cancellationToken)
             .ConfigureAwait(false);
 
         long? registryEpoch = target.Scope == CovenantScope.Global
@@ -1473,7 +1473,7 @@ internal sealed class CovenantMemoryReviewService(
         CovenantOperatorMutationBinding binding = new(
             state.DatasetGeneration,
             checked((ulong)lease.AuthorityEpoch),
-            keyEpoch,
+            epochs.Dependency,
             registryEpoch);
 
         Guid mutationId = DerivedMutationId(request.RequestId, ordinal, "mutation");
@@ -1534,14 +1534,18 @@ internal sealed class CovenantMemoryReviewService(
         DateTimeOffset committedAt,
         CancellationToken cancellationToken)
     {
-        long keyEpoch = await ReadKeyEpochAsync(transaction, target.Key, cancellationToken)
+        // Both epochs are read inside the write transaction and both are stated. The kernel compares
+        // the dependency epoch and checks the binding epoch it reads against the one asserted here, so
+        // the curation head this pin is measured against below is the one the kernel then writes.
+        CovenantKeyEpochPair epochs = await CovenantKeyEpochs.ReadAsync(transaction, target.Key, cancellationToken)
             .ConfigureAwait(false);
 
         CovenantCurationSubject subject = new(
             OperationScope(target.Scope, target.CampaignId),
             new CovenantKey(target.Key),
             target.Lane,
-            keyEpoch);
+            epochs.Dependency,
+            epochs.Binding);
 
         long revision = await ReadCurationRevisionAsync(transaction, subject, cancellationToken)
             .ConfigureAwait(false);
@@ -1576,19 +1580,6 @@ internal sealed class CovenantMemoryReviewService(
         return await curationKernel.ApplyAsync(commit, transaction, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask<long> ReadKeyEpochAsync(
-        CovenantMutationTransaction transaction,
-        string normalizedKey,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = transaction.CreateCommand();
-        command.CommandText =
-            "SELECT COALESCE(MAX(KeyEpoch), 0) FROM covenant_key_epochs WHERE NormalizedKey = $key;";
-        Bind(command, "$key", normalizedKey);
-        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
     private static async ValueTask<long> ReadCampaignRegistryEpochAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
@@ -1599,6 +1590,14 @@ internal sealed class CovenantMemoryReviewService(
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// The revision of the subject's current curation head, or zero when it has none.
+    /// </summary>
+    /// <remarks>
+    /// Looked up by the binding epoch, which is the epoch a curation head is recorded under. The
+    /// dependency epoch moves on every write to the key, so a head sought by it would be missed after
+    /// the first such write, and the pin or unpin would then be refused as a revision conflict.
+    /// </remarks>
     private static async ValueTask<long> ReadCurationRevisionAsync(
         CovenantMutationTransaction transaction,
         CovenantCurationSubject subject,
@@ -1616,7 +1615,11 @@ internal sealed class CovenantMemoryReviewService(
         Bind(command, "$campaign", CanonicalCampaign(subject.Scope.CampaignId));
         Bind(command, "$key", subject.NormalizedKey.Value);
         Bind(command, "$lane", (int)subject.Lane);
-        Bind(command, "$epoch", subject.KeyEpoch);
+        Bind(
+            command,
+            "$epoch",
+            subject.KeyBindingEpoch
+                ?? throw new InvalidOperationException("A curation revision is read under a resolved binding epoch."));
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }

@@ -35,7 +35,7 @@ internal static class CovenantCurationFixture
             subject.Scope.CampaignId,
             subject.NormalizedKey,
             subject.Lane,
-            checked((ulong)subject.KeyEpoch),
+            checked((ulong)subject.KeyDependencyEpoch),
             checked((ulong)expectedRevision)));
 
         CovenantDigest authorization = CovenantDigests.Authorization(new AuthorizationDigestInput(
@@ -62,14 +62,19 @@ internal static class CovenantCurationFixture
 
     }
 
+    /// <remarks>
+    /// <paramref name="keyEpoch"/> is the dependency epoch the change was prepared against. The binding
+    /// epoch is left for the kernel to resolve unless a test asserts one.
+    /// </remarks>
     internal static CovenantCurationIntent Pin(
         CovenantOperationScope scope,
         string key,
         long expectedRevision,
         Guid? mutationId = null,
         long keyEpoch = 0,
-        CovenantLane lane = CovenantLane.Confirmed) =>
-        Build(CovenantCurationKind.Pin, scope, key, lane, expectedRevision, mutationId, keyEpoch);
+        CovenantLane lane = CovenantLane.Confirmed,
+        long? keyBindingEpoch = null) =>
+        Build(CovenantCurationKind.Pin, scope, key, lane, expectedRevision, mutationId, keyEpoch, keyBindingEpoch);
 
     internal static CovenantCurationIntent Unpin(
         CovenantOperationScope scope,
@@ -149,10 +154,11 @@ internal static class CovenantCurationFixture
         CovenantLane lane,
         long expectedRevision,
         Guid? mutationId,
-        long keyEpoch)
+        long keyEpoch,
+        long? keyBindingEpoch = null)
     {
 
-        CovenantCurationSubject subject = new(scope, new CovenantKey(key), lane, keyEpoch);
+        CovenantCurationSubject subject = new(scope, new CovenantKey(key), lane, keyEpoch, keyBindingEpoch);
 
         Guid identity = mutationId ?? Guid.CreateVersion7();
 

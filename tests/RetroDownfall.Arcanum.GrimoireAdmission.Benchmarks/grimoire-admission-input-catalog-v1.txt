@@ -688,6 +688,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathFullResetCl
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathMarkerIntentStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantArtifactPlanRunner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantAvailability.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalContentTables.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCleanupWorker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantClosedPeriodAuthority.cs
@@ -707,6 +708,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantFileWitness.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantIdentitySql.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantIndexRebuilder.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantKeyEpochs.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStartupRecovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantLocalErasureStorageHealth.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantManagedFileErasureKernel.FullInstallationReset.cs

@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -28,37 +29,17 @@ internal static class BackupRestoreProtectedStateInspector
     /// The canonical family's content tables, which is every canonical object except the singleton.
     /// </summary>
     /// <remarks>
-    /// <c>covenant_state</c> is deliberately absent. The schema installer seeds it on every
-    /// Covenant-enabled installation, so counting it would make an archive from an installation that
-    /// merely has the tier installed read as carrying protected state — and the default would then
-    /// refuse a restore that has nothing to refuse.
+    /// <see cref="CovenantCanonicalContentTables.InDeletionOrder"/> itself, not a copy of it, so what
+    /// this inspector counts is exactly what <see cref="BackupRestoreProtectedStatePurger"/> and the
+    /// live family erasure then empty. <c>covenant_state</c> is deliberately absent from it: the schema
+    /// installer seeds that row on every Covenant-enabled installation, so counting it would make an
+    /// archive from an installation that merely has the tier installed read as carrying protected
+    /// state, and the default would then refuse a restore that has nothing to refuse.
     ///
-    /// <para>The order is a **delete-safe topological order**, not an alphabetical one, because
-    /// <see cref="BackupRestoreProtectedStatePurger"/> empties these tables in exactly this sequence and
-    /// foreign keys are enforced. <c>covenant_heads</c> references both <c>covenant_versions</c> and
-    /// <c>covenant_entries</c>, provenance references versions, and versions reference entries, so every
-    /// child precedes its parent. <c>covenant_key_epochs</c> comes last of the independent tables for a
-    /// second reason: deleting a head fires <c>covenant_heads_key_epoch_delete</c>, which writes an epoch
-    /// row, so clearing epochs any earlier would leave the rows that trigger then created.</para>
+    /// <para>The order is a delete-safe topological order, because the purger empties these tables in
+    /// exactly this sequence with foreign keys enforced. The list's own remarks give the reasons.</para>
     /// </remarks>
-    internal static readonly string[] CanonicalContentTables =
-    [
-        "covenant_review_decision_receipts",
-        "covenant_review_markers",
-        "covenant_review_events",
-        "covenant_search_outbox",
-        "covenant_curation_receipts",
-        "covenant_curation_heads",
-        "covenant_curation_versions",
-        "covenant_heads",
-        "covenant_version_attachment_provenance",
-        "covenant_versions",
-        "covenant_entries",
-        "covenant_mutation_receipts",
-        "covenant_turn_receipts",
-        "covenant_turn_receipt_aggregate",
-        "covenant_key_epochs",
-    ];
+    internal static IReadOnlyList<string> CanonicalContentTables => CovenantCanonicalContentTables.InDeletionOrder;
 
     /// <summary>The accelerator's own projection of the canonical rows above.</summary>
     internal static readonly string[] AcceleratorContentTables = ["covenant_search_documents"];

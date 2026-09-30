@@ -74,23 +74,40 @@ internal sealed class CovenantCurationKernel
                 "The Covenant key-reclamation epoch changed before this curation change could commit.");
         }
 
-        // The subject binds the key's own epoch, and it is read here rather than trusted from the
-        // request. A key that was retired, reclaimed, and re-created is a different key wearing an old
-        // name, and a pin recorded against the earlier epoch must not reach it.
-        long keyEpoch = await ReadKeyEpochAsync(
+        // Both of the key's epochs are read here, under the write lock, rather than trusted from the
+        // request. The dependency epoch is compared with the one the change was prepared against, so a
+        // change measured before some other write to the key is refused rather than applied to a key
+        // that has moved on.
+        CovenantKeyEpochPair epochs = await CovenantKeyEpochs.ReadAsync(
                 transaction,
                 intent.Subject.NormalizedKey.Value,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (keyEpoch != intent.Subject.KeyEpoch)
+        if (epochs.Dependency != intent.Subject.KeyDependencyEpoch)
+        {
+            return new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "This Covenant key changed after the curation change was prepared.");
+        }
+
+        // A caller that read the binding epoch itself states it, and a disagreement means the key's
+        // epoch row was replaced between that read and this one. A key that was reclaimed and
+        // re-created is a different key wearing an old name, and a pin meant for the earlier one must
+        // not reach it.
+        if (intent.Subject.KeyBindingEpoch is { } asserted && asserted != epochs.Binding)
         {
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "This Covenant key was reclaimed before the curation change could commit.");
         }
 
-        HeadRow? head = await ReadHeadAsync(transaction, intent.Subject, cancellationToken).ConfigureAwait(false);
+        // From here on the subject carries the binding epoch this transaction read. The head and its
+        // version are recorded under it, and the receipt returns it.
+        CovenantCurationSubject subject = intent.Subject with { KeyBindingEpoch = epochs.Binding };
+
+        HeadRow? head = await ReadHeadAsync(transaction, subject, epochs.Binding, cancellationToken)
+            .ConfigureAwait(false);
 
         long currentRevision = head?.Revision ?? 0;
 
@@ -125,7 +142,7 @@ internal sealed class CovenantCurationKernel
                 intent.MutationId,
                 CovenantMutationOutcome.NoChange,
                 intent.Kind,
-                intent.Subject,
+                subject,
                 current with { Revision = currentRevision },
                 null,
                 null,
@@ -139,10 +156,25 @@ internal sealed class CovenantCurationKernel
 
         long revision = currentRevision + 1;
 
-        await InsertVersionAsync(transaction, commit, versionId, revision, head?.VersionId, cancellationToken)
+        await InsertVersionAsync(
+                transaction,
+                commit,
+                epochs.Binding,
+                versionId,
+                revision,
+                head?.VersionId,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        await UpsertHeadAsync(transaction, commit, versionId, revision, projected, head is not null, cancellationToken)
+        await UpsertHeadAsync(
+                transaction,
+                commit,
+                epochs.Binding,
+                versionId,
+                revision,
+                projected,
+                head is not null,
+                cancellationToken)
             .ConfigureAwait(false);
 
         await InsertReceiptAsync(
@@ -158,7 +190,7 @@ internal sealed class CovenantCurationKernel
             intent.MutationId,
             CovenantMutationOutcome.Applied,
             intent.Kind,
-            intent.Subject,
+            subject,
             projected with { Revision = revision },
             versionId,
             revision,
@@ -175,32 +207,27 @@ internal sealed class CovenantCurationKernel
     {
         await using SqliteCommand command = transaction.CreateCommand();
 
+        // The subject's current state is joined on the key's current binding epoch, not on the epoch
+        // the receipt stored. The receipt keeps the dependency epoch its request digest bound, which
+        // has usually moved by the time a replay arrives, and a head is never recorded under it.
         command.CommandText = """
-            SELECT RequestIdempotencyDigest, FinalMutationDigest, ResponseReceiptDigest, CurationKindCode,
-                   OutcomeCode, ResultingVersionId, ResultingRevision,
-                   COALESCE(
-                       (SELECT h.IsPinned FROM covenant_curation_heads h
-                        WHERE h.NormalizedKey = covenant_curation_receipts.NormalizedKey
-                          AND h.LaneCode = covenant_curation_receipts.LaneCode
-                          AND h.KeyEpoch = covenant_curation_receipts.KeyEpoch
-                          AND h.CampaignId IS covenant_curation_receipts.CampaignId),
-                       0),
-                   COALESCE(
-                       (SELECT h.IsMasked FROM covenant_curation_heads h
-                        WHERE h.NormalizedKey = covenant_curation_receipts.NormalizedKey
-                          AND h.LaneCode = covenant_curation_receipts.LaneCode
-                          AND h.KeyEpoch = covenant_curation_receipts.KeyEpoch
-                          AND h.CampaignId IS covenant_curation_receipts.CampaignId),
-                       0),
-                   COALESCE(
-                       (SELECT h.CurrentRevision FROM covenant_curation_heads h
-                        WHERE h.NormalizedKey = covenant_curation_receipts.NormalizedKey
-                          AND h.LaneCode = covenant_curation_receipts.LaneCode
-                          AND h.KeyEpoch = covenant_curation_receipts.KeyEpoch
-                          AND h.CampaignId IS covenant_curation_receipts.CampaignId),
-                       0)
-            FROM covenant_curation_receipts
-            WHERE MutationId = $mutation;
+            WITH receipt AS (
+                SELECT r.RequestIdempotencyDigest, r.FinalMutationDigest, r.ResponseReceiptDigest,
+                       r.CurationKindCode, r.OutcomeCode, r.ResultingVersionId, r.ResultingRevision,
+                       r.CampaignId, r.NormalizedKey, r.LaneCode,
+                       COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = r.NormalizedKey), 0) AS BindingEpoch
+                FROM covenant_curation_receipts r
+                WHERE r.MutationId = $mutation
+            )
+            SELECT receipt.RequestIdempotencyDigest, receipt.FinalMutationDigest, receipt.ResponseReceiptDigest,
+                   receipt.CurationKindCode, receipt.OutcomeCode, receipt.ResultingVersionId,
+                   receipt.ResultingRevision,
+                   COALESCE(h.IsPinned, 0), COALESCE(h.IsMasked, 0), COALESCE(h.CurrentRevision, 0),
+                   receipt.BindingEpoch
+            FROM receipt
+            LEFT JOIN covenant_curation_heads h
+                ON h.CampaignId IS receipt.CampaignId AND h.NormalizedKey = receipt.NormalizedKey
+                   AND h.LaneCode = receipt.LaneCode AND h.KeyEpoch = receipt.BindingEpoch;
             """;
 
         Bind(command, "$mutation", intent.MutationId.ToString("D"));
@@ -230,7 +257,7 @@ internal sealed class CovenantCurationKernel
                 intent.MutationId,
                 (CovenantMutationOutcome)reader.GetInt32(4),
                 (CovenantCurationKind)reader.GetInt32(3),
-                intent.Subject,
+                intent.Subject with { KeyBindingEpoch = reader.GetInt64(10) },
                 new CovenantCurationState(
                     reader.GetInt32(7) == 1,
                     reader.GetInt32(8) == 1,
@@ -266,26 +293,10 @@ internal sealed class CovenantCurationKernel
             new CanonicalGeneration(new Guid((byte[])reader.GetValue(0)), reader.GetInt64(1)));
     }
 
-    private static async ValueTask<long> ReadKeyEpochAsync(
-        CovenantMutationTransaction transaction,
-        string normalizedKey,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = transaction.CreateCommand();
-
-        command.CommandText =
-            "SELECT COALESCE(MAX(KeyEpoch), 0) FROM covenant_key_epochs WHERE NormalizedKey = $key;";
-
-        Bind(command, "$key", normalizedKey);
-
-        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-
-        return value is null or DBNull ? 0 : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-    }
-
     private static async ValueTask<HeadRow?> ReadHeadAsync(
         CovenantMutationTransaction transaction,
         CovenantCurationSubject subject,
+        long bindingEpoch,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = transaction.CreateCommand();
@@ -296,7 +307,7 @@ internal sealed class CovenantCurationKernel
             WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane AND KeyEpoch = $epoch;
             """;
 
-        BindSubject(command, subject);
+        BindSubject(command, subject, bindingEpoch);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -313,6 +324,7 @@ internal sealed class CovenantCurationKernel
     private static async ValueTask InsertVersionAsync(
         CovenantMutationTransaction transaction,
         CovenantCurationCommit commit,
+        long bindingEpoch,
         Guid versionId,
         long revision,
         Guid? predecessorVersionId,
@@ -335,7 +347,7 @@ internal sealed class CovenantCurationKernel
 
         Bind(command, "$version", versionId.ToString("D"));
 
-        BindSubject(command, intent.Subject);
+        BindSubject(command, intent.Subject, bindingEpoch);
 
         Bind(command, "$scope", (int)intent.Subject.Scope.Kind);
 
@@ -364,6 +376,7 @@ internal sealed class CovenantCurationKernel
     private static async ValueTask UpsertHeadAsync(
         CovenantMutationTransaction transaction,
         CovenantCurationCommit commit,
+        long bindingEpoch,
         Guid versionId,
         long revision,
         CovenantCurationState projected,
@@ -394,7 +407,7 @@ internal sealed class CovenantCurationKernel
                 VALUES ($scope, $campaign, $key, $lane, $epoch, $pinned, $masked, $version, $revision, $updated);
                 """;
 
-        BindSubject(command, intent.Subject);
+        BindSubject(command, intent.Subject, bindingEpoch);
 
         Bind(command, "$scope", (int)intent.Subject.Scope.Kind);
 
@@ -446,7 +459,10 @@ internal sealed class CovenantCurationKernel
 
         Bind(command, "$scope", (int)intent.Subject.Scope.Kind);
 
-        BindSubject(command, intent.Subject);
+        // The receipt keeps the dependency epoch, not the binding epoch its head and version carry.
+        // The request digest bound the dependency epoch, and a replay recomputes that digest from this
+        // column without a token to read it from.
+        BindSubject(command, intent.Subject, intent.Subject.KeyDependencyEpoch);
 
         Bind(command, "$outcome", (int)outcome);
 
@@ -464,7 +480,15 @@ internal sealed class CovenantCurationKernel
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static void BindSubject(SqliteCommand command, CovenantCurationSubject subject)
+    /// <summary>
+    /// Binds the subject's scoped key and lane, and the epoch the statement's table records.
+    /// </summary>
+    /// <remarks>
+    /// The epoch is a parameter rather than read off the subject, because the tables disagree about
+    /// which one they hold: a head and a version record the binding epoch, a receipt the dependency
+    /// epoch. Each caller states which, so neither can be bound by default.
+    /// </remarks>
+    private static void BindSubject(SqliteCommand command, CovenantCurationSubject subject, long epoch)
     {
         Bind(
             command,
@@ -475,7 +499,7 @@ internal sealed class CovenantCurationKernel
 
         Bind(command, "$lane", (int)subject.Lane);
 
-        Bind(command, "$epoch", subject.KeyEpoch);
+        Bind(command, "$epoch", epoch);
     }
 
     private static void Bind(SqliteCommand command, string name, object value) =>

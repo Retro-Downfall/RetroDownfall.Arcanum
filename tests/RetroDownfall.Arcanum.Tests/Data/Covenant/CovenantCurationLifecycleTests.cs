@@ -2,7 +2,9 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -91,15 +93,36 @@ public sealed class CovenantCurationLifecycleTests
 
         _ = await harness.CurateAsync(CovenantCurationKind.Pin, CovenantScope.Global, null, Key, Token);
 
+        // The Campaign holds its own head for the same key, so its cleanup removes a head and the
+        // key's dependency epoch moves. A pin bound to that epoch would still be a row and no longer
+        // be a pin.
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from tools.", Token);
+
         await ExecuteAsync(harness, $"DELETE FROM \"Campaigns\" WHERE \"Id\" = '{CampaignOne:D}';");
 
-        await harness.RunCleanupAsync(Token);
+        CovenantCleanupOutcome cleaned = await harness.RunCleanupAsync(Token);
+
+        Assert.Equal(1L, cleaned.HeadsRemoved);
 
         Assert.Equal(
             1,
             await ScalarAsync(
                 harness,
                 "SELECT COUNT(*) FROM covenant_curation_heads WHERE CampaignId IS NULL AND IsPinned = 1;"));
+
+        await using ICovenantSnapshotReadLease read =
+            (await harness.Gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantLaneHeadProbe> probe = await harness.Fixture.Store.ProbeLaneHeadAsync(
+            CanonicalCampaignContext.GlobalOnly,
+            CovenantLane.Confirmed,
+            Key,
+            read,
+            Token);
+
+        Assert.True(probe.IsSuccess, probe.IsFailure ? probe.Error.Message : string.Empty);
+
+        Assert.True(probe.Value.IsPinned);
 
     }
 

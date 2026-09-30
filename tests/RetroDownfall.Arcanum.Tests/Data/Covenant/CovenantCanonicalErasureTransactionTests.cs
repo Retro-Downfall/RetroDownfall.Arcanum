@@ -31,6 +31,9 @@ public sealed class CovenantCanonicalErasureTransactionTests
         "covenant_turn_receipts",
         "covenant_turn_receipt_aggregate",
         "covenant_mutation_receipts",
+        "covenant_curation_receipts",
+        "covenant_curation_heads",
+        "covenant_curation_versions",
         "covenant_version_attachment_provenance",
         "covenant_heads",
         "covenant_versions",
@@ -87,10 +90,123 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         }
 
+        // The production list is asserted whole as well as the local one, so a canonical table the
+        // suite does not seed is still proven empty and a table added to the family later is covered
+        // here without this file naming it.
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
+        {
+
+            Assert.Equal(0, await fixture.CountAsync(table, Token));
+
+        }
+
         // The projection's tokens leave with it. An external-content FTS5 index keeps its own pages,
         // so a delete that skipped the after-delete trigger would leave every indexed word behind a
         // row that no longer exists.
         Assert.Equal(0, await fixture.ScalarLongAsync(IndexedTokenQuery, Token));
+
+    }
+
+    /// <summary>
+    /// Factory erasure runs the same delete loop as a reset, and removes a key's curation with its
+    /// epoch row for the same reason.
+    /// </summary>
+    [Fact]
+    public async Task A_healthy_catalog_factory_erasure_deletes_every_canonical_content_table()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        Assert.Equal(1, await fixture.CountAsync("covenant_curation_heads", Token));
+
+        Assert.Equal(1, await fixture.CountAsync("covenant_key_epochs", Token));
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure,
+                preselected,
+                authority,
+                Token));
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        await fixture.ReopenAsync(Token);
+
+        foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
+        {
+
+            Assert.Equal(0, await fixture.CountAsync(table, Token));
+
+        }
+
+    }
+
+    /// <summary>
+    /// The reason curation leaves with a reset. Every key row created from canonical version 6 on
+    /// carries binding epoch 0, so a pin that outlived the key's epoch row would bind the next key to
+    /// take that name, and refuse the agent over content the operator never pinned.
+    /// </summary>
+    [Fact]
+    public async Task A_pin_does_not_outlive_a_reset_to_bind_the_key_that_recreates_its_name()
+    {
+
+        await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
+
+        await fixture.SeedAsync(Token);
+
+        Assert.True(await IsPinnedAsync(fixture, "tone"));
+
+        CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
+
+        Result<Guid> applied = await fixture.InClosedPeriodAsync(
+            authority => CreateService().ApplyAsync(
+                CovenantExclusiveOperation.CovenantReset,
+                preselected,
+                authority,
+                Token));
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+
+        await fixture.ReopenAsync(Token);
+
+        // The key comes back. Its epoch row is a new one, and its binding epoch is 0 again: the same
+        // value the erased pin was recorded under.
+        await fixture.SeedFamilyAsync(Token);
+
+        Assert.Equal(
+            0,
+            await fixture.ScalarLongAsync(
+                "SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = 'tone';",
+                Token));
+
+        Assert.False(await IsPinnedAsync(fixture, "tone"));
+
+    }
+
+    /// <summary>Asks the production staging probe whether the Global Confirmed head of a key is pinned.</summary>
+    private static async Task<bool> IsPinnedAsync(CovenantCanonicalErasureFixture fixture, string key)
+    {
+
+        await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+        command.CommandText = CovenantStoreSql.LaneHeadProbe(campaignScoped: false);
+
+        _ = command.Parameters.AddWithValue("$key", key);
+
+        _ = command.Parameters.AddWithValue("$lane", (int)CovenantLane.Confirmed);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(Token);
+
+        Assert.True(await reader.ReadAsync(Token));
+
+        // The head itself has to be there, so "not pinned" is never the answer for a missing key.
+        Assert.False(await reader.IsDBNullAsync(1, Token));
+
+        return reader.GetInt32(7) == 1;
 
     }
 

@@ -260,4 +260,55 @@ public sealed class CovenantCurationServiceTests
 
     }
 
+    /// <summary>
+    /// The other half of receipt-first: only a committed change outlives its token. A request that
+    /// never committed and arrives after the lifetime is refused by the codec, and writes nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_first_commit_after_the_token_expired_is_refused_and_writes_nothing()
+    {
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, "preference.builds", "Build from the root.", Token);
+
+        Result<CovenantCurationPreflightDto> prepared = await harness.PrepareCurationAsync(
+            CovenantCurationKind.Pin,
+            CovenantScope.Global,
+            null,
+            "preference.builds",
+            Token);
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        harness.Advance(TimeSpan.FromHours(1));
+
+        Result<CovenantCurationResultDto> refused = await harness.CommitCurationAsync(
+            new CovenantCurationRequest(
+                CovenantCurationKind.Pin,
+                CovenantScope.Global,
+                null,
+                "preference.builds",
+                CovenantLane.Confirmed,
+                ExpectedRevision: 0,
+                prepared.Value.MutationId,
+                prepared.Value.PreflightToken),
+            Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
+
+        await using Microsoft.Data.Sqlite.SqliteCommand command = harness.Fixture.Connection.CreateCommand();
+
+        command.CommandText = "SELECT COUNT(*) FROM covenant_curation_receipts;";
+
+        Assert.Equal(
+            0L,
+            Convert.ToInt64(
+                await command.ExecuteScalarAsync(Token),
+                System.Globalization.CultureInfo.InvariantCulture));
+
+    }
+
 }

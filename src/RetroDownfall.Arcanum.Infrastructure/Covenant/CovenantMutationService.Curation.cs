@@ -162,6 +162,35 @@ internal sealed partial class CovenantMutationService
 
         }
 
+        CovenantOperationScope scope = Scope(request.Scope, request.CampaignId);
+
+        string normalizedKey = new CovenantKey(request.Key).Value;
+
+        // Receipt first, before the token is decoded at all. The codec refuses an expired token, so a
+        // client that lost its response and retried after the five-minute lifetime would otherwise be
+        // told its committed change was stale. The receipt is found by the mutation identity alone and
+        // checked against the request's own fields, so a replay needs nothing the token carries.
+        Result<CovenantCurationResultDto?> replayed = await TryReplayCurationAsync(
+                request,
+                scope,
+                normalizedKey,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (replayed.IsFailure)
+        {
+
+            return replayed.Error;
+
+        }
+
+        if (replayed.Value is { } committed)
+        {
+
+            return committed;
+
+        }
+
         Result<ulong> authorityEpoch = ResolveAuthorityEpoch();
 
         if (authorityEpoch.IsFailure)
@@ -170,10 +199,6 @@ internal sealed partial class CovenantMutationService
             return authorityEpoch.Error;
 
         }
-
-        CovenantOperationScope scope = Scope(request.Scope, request.CampaignId);
-
-        string normalizedKey = new CovenantKey(request.Key).Value;
 
         Result<CovenantEnvelopeBody> envelope =
             codec.Decode(CovenantEnvelopePurpose.OperatorPreflight, request.PreflightToken);
@@ -195,8 +220,9 @@ internal sealed partial class CovenantMutationService
 
         }
 
-        // The subject's key epoch is the token's, never the request's. A commit that could assert its
-        // own epoch would authorize itself against a world the preflight never read.
+        // The subject's dependency epoch is the token's, never the request's. A commit that could
+        // assert its own epoch would authorize itself against a world the preflight never read. The
+        // binding epoch is left for the kernel, which reads it under the write lock.
         CovenantCurationSubject subject = new(
             scope,
             new CovenantKey(normalizedKey),
@@ -218,30 +244,8 @@ internal sealed partial class CovenantMutationService
 
         }
 
-        // Receipt first, before the token's own life is judged, so a client that lost its response and
-        // retried after the five-minute lifetime receives its committed answer rather than a
-        // stale-token refusal for work that already happened.
-        Result<CovenantCurationResultDto?> replayed = await TryReplayCurationAsync(
-                request,
-                subject,
-                committedRequestDigest,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (replayed.IsFailure)
-        {
-
-            return replayed.Error;
-
-        }
-
-        if (replayed.Value is { } committed)
-        {
-
-            return committed;
-
-        }
-
+        // The token's own lifetime is not judged here. The codec already refused an expired token when
+        // it decoded this one, so what is left to check is that the body and its envelope agree.
         if (body.Value.IssuedAt != envelope.Value.IssuedAtUtc.ToUnixTimeMilliseconds()
             || body.Value.ExpiresAt != envelope.Value.ExpiresAtUtc.ToUnixTimeMilliseconds())
         {
@@ -249,15 +253,6 @@ internal sealed partial class CovenantMutationService
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token is internally inconsistent.");
-
-        }
-
-        if (timeProvider.GetUtcNow() > envelope.Value.ExpiresAtUtc)
-        {
-
-            return new Error(
-                ErrorCodes.Covenant.StaleSnapshot,
-                "This Covenant preflight token expired before the change was committed.");
 
         }
 
@@ -335,11 +330,22 @@ internal sealed partial class CovenantMutationService
     /// Runs in a read transaction of its own, so a replay costs no write and no exclusive acquisition.
     /// The kernel resolves the same replay inside its own transaction; this is the cheaper path that
     /// keeps a lost-response retry from opening one at all.
+    ///
+    /// <para>It takes no token and no digest computed from one. The request digest binds the key's
+    /// dependency epoch, which the request itself does not carry: a first commit takes it from the
+    /// authenticated token, and a replay takes it from the receipt that commit wrote. Recomputing the
+    /// digest from the request's fields and the stored epoch is what lets an exact retry be answered
+    /// after its token expired, while the same identity carrying any changed field still disagrees
+    /// with the stored digest and is refused as a conflict.</para>
+    ///
+    /// <para>The state it reports is the subject's current one, joined on the key's current binding
+    /// epoch. The stored dependency epoch is only a digest input; no head is ever recorded under it.
+    /// </para>
     /// </remarks>
     private async ValueTask<Result<CovenantCurationResultDto?>> TryReplayCurationAsync(
         CovenantCurationRequest request,
-        CovenantCurationSubject subject,
-        CovenantDigest requestDigest,
+        CovenantOperationScope scope,
+        string normalizedKey,
         CancellationToken cancellationToken)
     {
 
@@ -352,11 +358,13 @@ internal sealed partial class CovenantMutationService
         command.CommandText = """
             SELECT r.RequestIdempotencyDigest, r.ResponseReceiptDigest, r.OutcomeCode,
                    r.ResultingVersionId, r.ResultingRevision,
-                   COALESCE(h.IsPinned, 0), COALESCE(h.IsMasked, 0)
+                   COALESCE(h.IsPinned, 0), COALESCE(h.IsMasked, 0),
+                   r.KeyEpoch
             FROM covenant_curation_receipts r
             LEFT JOIN covenant_curation_heads h
                 ON h.CampaignId IS r.CampaignId AND h.NormalizedKey = r.NormalizedKey
-                   AND h.LaneCode = r.LaneCode AND h.KeyEpoch = r.KeyEpoch
+                   AND h.LaneCode = r.LaneCode
+                   AND h.KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = r.NormalizedKey), 0)
             WHERE r.MutationId = $mutation;
             """;
 
@@ -374,6 +382,12 @@ internal sealed partial class CovenantMutationService
 
         CovenantDigest storedRequest = new((byte[])reader.GetValue(0));
 
+        CovenantDigest requestDigest = CovenantOperatorCurationFactory.RequestDigest(
+            request.MutationId,
+            request.Kind,
+            new CovenantCurationSubject(scope, new CovenantKey(normalizedKey), request.Lane, reader.GetInt64(7)),
+            request.ExpectedRevision);
+
         if (storedRequest != requestDigest)
         {
 
@@ -387,10 +401,10 @@ internal sealed partial class CovenantMutationService
             request.MutationId,
             (CovenantMutationOutcome)reader.GetInt32(2),
             request.Kind,
-            subject.Scope.CampaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
-            subject.Scope.CampaignId,
-            subject.NormalizedKey.Value,
-            subject.Lane,
+            scope.CampaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
+            scope.CampaignId,
+            normalizedKey,
+            request.Lane,
             reader.GetInt32(5) == 1,
             reader.GetInt32(6) == 1,
             reader.IsDBNull(3)
@@ -445,7 +459,7 @@ internal sealed partial class CovenantMutationService
             subject.Scope.CampaignId,
             subject.NormalizedKey,
             subject.Lane,
-            checked((ulong)subject.KeyEpoch),
+            checked((ulong)subject.KeyDependencyEpoch),
             effect.GlobalConfirmedHeadExists,
             effect.ScopedConfirmedHeadExists));
 

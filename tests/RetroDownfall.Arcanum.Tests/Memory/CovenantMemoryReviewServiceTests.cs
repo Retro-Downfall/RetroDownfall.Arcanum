@@ -1012,6 +1012,156 @@ public sealed class CovenantMemoryReviewServiceTests
         }
     }
 
+    /// <summary>
+    /// A pin applied from the review queue is the same pin the curation verbs apply: its head records
+    /// the key's binding epoch, which a later write to the key leaves alone, and its receipt records
+    /// the dependency epoch the change was committed against.
+    /// </summary>
+    [Fact]
+    public async Task A_review_pin_binds_the_key_binding_epoch()
+    {
+        const string Key = "pin.binding";
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        SeededHead first = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "stable",
+            Token);
+
+        SeededHead second = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "stable, and said twice",
+            Token,
+            entryId: first.EntryId,
+            laneRevision: 2,
+            predecessorVersionId: first.VersionId);
+
+        long bindingEpoch = await ScalarAsync(
+            runtime.Fixture.Connection,
+            $"SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';");
+
+        Assert.Equal(0L, bindingEpoch);
+
+        Assert.Equal(2L, await DependencyEpochAsync(runtime, Key));
+
+        MemoryReviewBulkResultDto pinned = await ApplyLifecycleAsync(runtime, MemoryReviewAction.Pin);
+
+        Assert.Equal("Pinned", Assert.Single(pinned.Items).Outcome);
+
+        Assert.Equal(bindingEpoch, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_heads;"));
+
+        Assert.Equal(bindingEpoch, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_versions;"));
+
+        Assert.Equal(2L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_receipts;"));
+
+        // A third write moves the dependency epoch and queues a fresh review event. The unpin that
+        // follows has to find the pin it is lifting, which it can only do through the binding epoch.
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            Key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "stable, and said a third time",
+            Token,
+            entryId: first.EntryId,
+            laneRevision: 3,
+            predecessorVersionId: second.VersionId);
+
+        Assert.Equal(3L, await DependencyEpochAsync(runtime, Key));
+
+        MemoryReviewBulkResultDto unpinned = await ApplyLifecycleAsync(runtime, MemoryReviewAction.Unpin);
+
+        Assert.Equal("Unpinned", Assert.Single(unpinned.Items).Outcome);
+
+        Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_curation_heads;"));
+
+        Assert.Equal(0L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT IsPinned FROM covenant_curation_heads;"));
+
+        Assert.Equal(2L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT CurrentRevision FROM covenant_curation_heads;"));
+
+        Assert.Equal(3L, await ScalarAsync(
+            runtime.Fixture.Connection,
+            "SELECT KeyEpoch FROM covenant_curation_receipts WHERE ResultingRevision = 2;"));
+    }
+
+    private static Task<long> DependencyEpochAsync(ReviewRuntime runtime, string key) =>
+        ScalarAsync(
+            runtime.Fixture.Connection,
+            $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{key}';");
+
+    /// <summary>Observes the one queued Confirmed item, then prepares and applies one lifecycle action.</summary>
+    private static async Task<MemoryReviewBulkResultDto> ApplyLifecycleAsync(
+        ReviewRuntime runtime,
+        MemoryReviewAction action)
+    {
+        CovenantReviewItemDto observed;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            observed = Assert.Single((await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value.Items);
+        }
+
+        CovenantReviewBulkPrepareRequest request = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            action,
+            [new CovenantReviewDecision(observed.ObservationToken, null)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            Result<MemoryReviewBulkPlanDto> prepared = await runtime.Service.PrepareAsync(request, prepareLease, Token);
+
+            Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+            plan = prepared.Value;
+        }
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(request, plan.PreparedPlanToken),
+            writeLease,
+            Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        return applied.Value;
+    }
+
     [Theory]
     [InlineData("store", ErrorCodes.MemoryReview.InvalidToken)]
     [InlineData("dataset", ErrorCodes.MemoryReview.StaleObservation)]
