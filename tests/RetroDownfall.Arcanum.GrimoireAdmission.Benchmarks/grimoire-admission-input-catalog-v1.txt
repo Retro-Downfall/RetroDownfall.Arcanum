@@ -782,6 +782,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/ISqliteNativeRuntime.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyClaimStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureGuard.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureKeyWarmup.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryScopeResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.Designer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.cs

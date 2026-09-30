@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -314,6 +315,20 @@ public static class GrimoireDatabaseBootstrapper
             heldInstallationLock,
             grimoireDirectory,
             cancellationToken).ConfigureAwait(false);
+
+        // After the schema and restore authority are settled, with no transaction open on the install
+        // handle and before any exclusive owner is adopted into the Covenant gate: a keychain read here
+        // runs outside every transaction, lease, and closure. It reads only when fingerprints exist, so
+        // Covenant agent writes are not withheld after a restart until an operator call resolves the
+        // key. A composition without the provider has no chokepoint to warm it for.
+        await using (AsyncServiceScope erasureScope = scopeFactory.CreateAsyncScope())
+        {
+            if (erasureScope.ServiceProvider.GetService<IMemoryErasureKeyProvider>() is { } erasureKeys)
+            {
+                await MemoryErasureKeyWarmup.RunAsync(installConnection, erasureKeys, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
 
         ProtectedMaintenanceRecovery protectedRecovery = await RecoverProtectedMaintenanceAsync(
             installConnection,

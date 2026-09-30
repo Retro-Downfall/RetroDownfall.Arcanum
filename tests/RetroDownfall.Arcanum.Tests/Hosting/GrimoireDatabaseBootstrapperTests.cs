@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -643,6 +644,89 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         Assert.True(beforeSize > 0, "WAL was not populated before the checkpoint; the test would be trivial.");
 
         Assert.True(afterSize == 0, $"WAL was not truncated by the checkpoint: before={beforeSize}, after={afterSize}.");
+    }
+
+    /// <summary>
+    /// When erasure fingerprints exist, the key is resolved once, before readiness, so an agent write
+    /// that arrives after a restart is not withheld only because nothing has asked for the key yet.
+    /// </summary>
+    /// <remarks>
+    /// A Covenant-only fingerprint is the case that matters: Covenant agent writes read the latch and
+    /// never probe, so without the warm-up they would stay withheld until an operator call. An
+    /// installation with no fingerprints reads nothing, because on macOS a keychain read can prompt.
+    /// Only the keyring sees the counting store, so its count is the keyring's own I/O.
+    /// </remarks>
+    [Theory]
+    [InlineData("no-fingerprints", MemoryErasureKeyState.Unresolved, 0)]
+    [InlineData("present", MemoryErasureKeyState.Present, 1)]
+    [InlineData("deleted", MemoryErasureKeyState.Absent, 1)]
+    [InlineData("unreadable", MemoryErasureKeyState.Unavailable, 1)]
+    public async Task Startup_resolves_the_erasure_key_once_before_readiness_when_fingerprints_exist(
+        string key,
+        MemoryErasureKeyState atReadiness,
+        int credentialCalls)
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        if (key is not "no-fingerprints")
+        {
+            using MemoryErasureKey erasureKey = MemoryErasureTestKeys.CreateKey(_credentialStore);
+
+            await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = _dbPath,
+                Password = _passphraseSource.Passphrase,
+                Pooling = false,
+            }.ToString());
+
+            await connection.OpenAsync();
+
+            await MemoryErasureTestKeys.SeedFingerprintAsync(
+                connection,
+                erasureKey,
+                MemoryErasureIdentity.ForCovenant(CovenantScope.Global, null, "TONE"),
+                CancellationToken.None);
+        }
+
+        if (key is "deleted")
+        {
+            _ = _credentialStore.Delete(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+        }
+
+        CountingOsCredentialStore counting = new(_credentialStore);
+
+        if (key is "unreadable")
+        {
+            counting.FailWith = OsCredentialStoreStatus.Unavailable;
+        }
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(counting);
+
+        LatchRecordingReadiness recorder = new(keyring);
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            CreateScopeFactory(_credentialStore, erasureKeys: keyring, readiness: recorder),
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        Assert.True(recorder.IsReady);
+
+        Assert.Equal<MemoryErasureKeyState?>(atReadiness, recorder.LatchAtReady);
+
+        Assert.Equal(credentialCalls, counting.Calls);
     }
 
     // W3.4 Group D #9: the hosted service's StopAsync is the real shutdown entry point and
@@ -3095,14 +3179,28 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         IOsCredentialStore credentials,
         bool includeHostProcessTools = false,
         bool escapeHatchOptIn = false,
-        HostProcessToolsMarkerReadStatus? markerReadStatusOverride = null)
+        HostProcessToolsMarkerReadStatus? markerReadStatusOverride = null,
+        IMemoryErasureKeyProvider? erasureKeys = null,
+        IGrimoireDbReadiness? readiness = null)
     {
         ServiceCollection services = new();
 
         services.AddSingleton<GrimoireDbReadiness>();
 
-        services.AddSingleton<IGrimoireDbReadiness>(
-            static sp => sp.GetRequiredService<GrimoireDbReadiness>());
+        if (readiness is null)
+        {
+            services.AddSingleton<IGrimoireDbReadiness>(
+                static sp => sp.GetRequiredService<GrimoireDbReadiness>());
+        }
+        else
+        {
+            services.AddSingleton(readiness);
+        }
+
+        if (erasureKeys is not null)
+        {
+            services.AddSingleton(erasureKeys);
+        }
 
         services.AddSingleton<IOsCredentialStore>(credentials);
 
@@ -3670,6 +3768,31 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     AdoptionRefusedAtMarkReady = true;
                 }
             }
+
+            IsReady = true;
+        }
+
+        public Task WaitUntilReadyAsync(CancellationToken cancellationToken = default) =>
+            IsReady ? Task.CompletedTask : Task.Delay(Timeout.Infinite, cancellationToken);
+
+        public void MarkFailed(Exception exception)
+        {
+            Failure = exception;
+        }
+    }
+
+    /// <summary>Records what the erasure latch holds at the moment readiness is published.</summary>
+    private sealed class LatchRecordingReadiness(IMemoryErasureKeyProvider keys) : IGrimoireDbReadiness
+    {
+        public bool IsReady { get; private set; }
+
+        public MemoryErasureKeyState? LatchAtReady { get; private set; }
+
+        public Exception? Failure { get; private set; }
+
+        public void MarkReady()
+        {
+            LatchAtReady = keys.Latch.State;
 
             IsReady = true;
         }

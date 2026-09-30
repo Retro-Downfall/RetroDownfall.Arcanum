@@ -1,0 +1,372 @@
+using System.Security.Cryptography;
+
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Secrets.Security;
+
+namespace RetroDownfall.Arcanum.Tests.Data;
+
+/// <summary>
+/// The erasure evidence store: fingerprints, receipts and their subjects, read and written only
+/// through <see cref="MemoryErasureEvidence"/>.
+/// </summary>
+/// <remarks>
+/// Every case runs on a copy of the head catalog through the context's own connection, the way the
+/// chokepoints and erase services reach it. The receipt table's own checks and its update guard stay
+/// in force here, so a write this store makes that the schema would refuse fails the case.
+/// </remarks>
+public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>, IAsyncLifetime
+{
+    private static readonly MemoryErasureIdentity Identity =
+        MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "The operator prefers dark mode.");
+
+    private readonly GrimoireFixture _fixture;
+
+    private string _dbPath = string.Empty;
+
+    private ArcanumDbContext? _db;
+
+    public MemoryErasureEvidenceTests(GrimoireFixture fixture)
+    {
+        _fixture = fixture;
+    }
+
+    private static CancellationToken Token => CancellationToken.None;
+
+    private SqliteConnection Connection => (SqliteConnection)_db!.Database.GetDbConnection();
+
+    public Task InitializeAsync()
+    {
+        _dbPath = _fixture.CopyDatabase();
+
+        _db = _fixture.CreateContext(_dbPath);
+
+        return Task.CompletedTask;
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (_db is not null)
+        {
+            await _db.DisposeAsync();
+        }
+
+        if (File.Exists(_dbPath))
+        {
+            File.Delete(_dbPath);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Fingerprint_rows_round_trip_by_primary_key_and_store()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        byte[] fingerprint = key.Fingerprint(Identity);
+
+        byte[] own = key.KeyId.ToArray();
+
+        byte[] other = [.. Enumerable.Repeat((byte)0x5A, 16)];
+
+        Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+
+        Assert.True(await MemoryErasureEvidence.InsertFingerprintAsync(Connection, null, fingerprint, MemoryReviewStore.Saga, own, Token));
+
+        // The fingerprint is the primary key, so a second record of the same erasure is a no-op.
+        Assert.False(await MemoryErasureEvidence.InsertFingerprintAsync(Connection, null, fingerprint, MemoryReviewStore.Saga, own, Token));
+
+        Assert.True(await MemoryErasureEvidence.AnyAsync(Connection, null, MemoryReviewStore.Saga, Token));
+
+        Assert.False(await MemoryErasureEvidence.AnyAsync(Connection, null, MemoryReviewStore.Lexicon, Token));
+
+        Assert.True(await MemoryErasureEvidence.ContainsAsync(Connection, null, fingerprint, Token));
+
+        Assert.False(await MemoryErasureEvidence.AnyForeignAsync(Connection, null, MemoryReviewStore.Saga, own, Token));
+
+        Assert.True(await MemoryErasureEvidence.AnyForeignAsync(Connection, null, MemoryReviewStore.Saga, other, Token));
+
+        Assert.Equal(1, await MemoryErasureEvidence.DeleteFingerprintAsync(Connection, null, fingerprint, Token));
+
+        Assert.Equal(0, await MemoryErasureEvidence.DeleteFingerprintAsync(Connection, null, fingerprint, Token));
+
+        Assert.False(await MemoryErasureEvidence.ContainsAsync(Connection, null, fingerprint, Token));
+
+        Assert.False(await MemoryErasureEvidence.AnyAsync(Connection, null, MemoryReviewStore.Saga, Token));
+    }
+
+    [SkippableFact]
+    public async Task A_receipt_and_its_subjects_round_trip_and_answer_by_subject_digest()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        Guid mutationId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+
+        byte[] requestDigest = [.. Enumerable.Range(0, 32).Select(static value => (byte)value)];
+
+        byte[] effectDigest = [.. Enumerable.Range(0, 32).Select(static value => (byte)(0xF0 ^ value))];
+
+        MemoryErasureReceiptRow row = new(
+            mutationId,
+            MemoryReviewStore.Lexicon,
+            key.KeyId.ToArray(),
+            requestDigest,
+            effectDigest,
+            ErasedItemCount: 1,
+            RemovedRowCount: 7,
+            RemovedLabelCount: 2,
+            RemovedRetirementSuppressionCount: 1,
+            Authorship: MemoryExternalEvidence.Known,
+            Context: MemoryExternalEvidence.ReceiptWindow,
+            Embedding: MemoryExternalEvidence.NotRecorded,
+            Backup: MemoryExternalEvidence.NotApplicable,
+            OtherExternal: MemoryExternalEvidence.Known,
+            RetainedCopiesMask: 0b1011,
+            ScrubStateCode: 1,
+            ScrubPendingReasonMask: 3);
+
+        byte[][] subjects =
+        [
+            key.Subject(MemoryReviewStore.Lexicon, "6F9619FF-8B86-D011-B42D-00C04FC964FF"),
+            key.Subject(MemoryReviewStore.Lexicon, "7C9E6679-7425-40DE-944B-E07FC1F90AE7"),
+        ];
+
+        await MemoryErasureEvidence.InsertReceiptAsync(Connection, null, row, subjects, Token);
+
+        MemoryErasureReceiptRow? read = await MemoryErasureEvidence.ReadReceiptAsync(Connection, null, mutationId, Token);
+
+        Assert.NotNull(read);
+
+        Assert.Equal(mutationId, read.MutationId);
+
+        Assert.Equal(MemoryReviewStore.Lexicon, read.Store);
+
+        Assert.Equal<byte>(key.KeyId.ToArray(), read.KeyId);
+
+        Assert.Equal<byte>(requestDigest, read.RequestDigest);
+
+        Assert.Equal<byte>(effectDigest, read.EffectDigest);
+
+        Assert.Equal(1, read.ErasedItemCount);
+
+        Assert.Equal(7L, read.RemovedRowCount);
+
+        Assert.Equal(2, read.RemovedLabelCount);
+
+        Assert.Equal(1, read.RemovedRetirementSuppressionCount);
+
+        Assert.Equal(MemoryExternalEvidence.Known, read.Authorship);
+
+        Assert.Equal(MemoryExternalEvidence.ReceiptWindow, read.Context);
+
+        Assert.Equal(MemoryExternalEvidence.NotRecorded, read.Embedding);
+
+        Assert.Equal(MemoryExternalEvidence.NotApplicable, read.Backup);
+
+        Assert.Equal(MemoryExternalEvidence.Known, read.OtherExternal);
+
+        Assert.Equal(0b1011, read.RetainedCopiesMask);
+
+        Assert.Equal(1, read.ScrubStateCode);
+
+        Assert.Equal(3, read.ScrubPendingReasonMask);
+
+        Assert.Equal(
+            "0F8FAD5B-D9CB-469F-A165-70867728950E",
+            await ScalarAsync("SELECT MutationId FROM memory_erasure_receipts;"));
+
+        foreach (byte[] subject in subjects)
+        {
+            Assert.True(await MemoryErasureEvidence.SubjectErasedAsync(Connection, null, subject, Token));
+        }
+
+        Assert.False(await MemoryErasureEvidence.SubjectErasedAsync(
+            Connection,
+            null,
+            key.Subject(MemoryReviewStore.Lexicon, "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11"),
+            Token));
+
+        Assert.Null(await MemoryErasureEvidence.ReadReceiptAsync(Connection, null, Guid.NewGuid(), Token));
+    }
+
+    [SkippableFact]
+    public async Task Clearing_the_wal_reason_verifies_only_receipts_that_had_no_other_reason()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        Guid walOnly = Guid.NewGuid();
+
+        Guid walAndFullText = Guid.NewGuid();
+
+        await InsertPendingReceiptAsync(key, walOnly, MemoryReviewStore.Saga, key.KeyId.ToArray(), mask: 1);
+
+        await InsertPendingReceiptAsync(key, walAndFullText, MemoryReviewStore.Saga, key.KeyId.ToArray(), mask: 1 | 2);
+
+        Assert.Equal(0L, await MemoryErasureEvidence.ClearWalPendingAsync(Connection, null, Guid.NewGuid(), Token));
+
+        Assert.Equal(1L, await MemoryErasureEvidence.ClearWalPendingAsync(Connection, null, null, Token));
+
+        Assert.Equal((2, 0), await ScrubAsync(walOnly));
+
+        // Full-text residue is not upgradable, so this receipt stays pending for that reason alone.
+        Assert.Equal((1, 2), await ScrubAsync(walAndFullText));
+
+        long writesBefore = await TotalChangesAsync();
+
+        Assert.Equal(0L, await MemoryErasureEvidence.ClearWalPendingAsync(Connection, null, null, Token));
+
+        // No receipt without the WAL reason is rewritten, so a scrub retry writes nothing it need not.
+        Assert.Equal(writesBefore, await TotalChangesAsync());
+    }
+
+    [SkippableFact]
+    public async Task Counts_and_unverifiable_deletion_split_rows_by_key_id()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey current = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        using MemoryErasureKey previous = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        byte[] currentKeyId = current.KeyId.ToArray();
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(Connection, current, Saga("first"), Token);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(Connection, current, Saga("second"), Token);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(Connection, previous, Saga("third"), Token);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            Connection,
+            previous,
+            MemoryErasureIdentity.ForLexicon(null, "Entity"),
+            Token);
+
+        Guid sagaReceipt = Guid.NewGuid();
+
+        Guid lexiconReceipt = Guid.NewGuid();
+
+        byte[] sagaSubject = await InsertPendingReceiptAsync(current, sagaReceipt, MemoryReviewStore.Saga, currentKeyId, mask: 1);
+
+        byte[] lexiconSubject = await InsertPendingReceiptAsync(
+            previous,
+            lexiconReceipt,
+            MemoryReviewStore.Lexicon,
+            previous.KeyId.ToArray(),
+            mask: 1);
+
+        MemoryErasureEvidenceCounts counts = await MemoryErasureEvidence.CountAsync(Connection, null, currentKeyId, Token);
+
+        Assert.Equal<MemoryErasureStoreCountsDto>(
+            [
+                new(MemoryReviewStore.Covenant, 0, 0, 0),
+                new(MemoryReviewStore.Saga, 3, 1, 1),
+                new(MemoryReviewStore.Lexicon, 1, 1, 1),
+            ],
+            counts.Stores);
+
+        Assert.Equal(1L, counts.UnverifiableReceipts);
+
+        Assert.Equal(2L, counts.PendingScrubReceipts);
+
+        // With no key, nothing can be verified.
+        MemoryErasureEvidenceCounts keyless = await MemoryErasureEvidence.CountAsync(Connection, null, null, Token);
+
+        Assert.Equal(3L, keyless.Stores[1].Unverifiable);
+
+        Assert.Equal(1L, keyless.Stores[2].Unverifiable);
+
+        Assert.Equal(2L, keyless.UnverifiableReceipts);
+
+        Assert.Equal((2L, 1L), await MemoryErasureEvidence.DeleteUnverifiableAsync(Connection, null, currentKeyId, Token));
+
+        // The discarded receipt's subjects went with it, and the kept receipt's stayed.
+        Assert.False(await MemoryErasureEvidence.SubjectErasedAsync(Connection, null, lexiconSubject, Token));
+
+        Assert.Equal(0L, await ScalarAsync(
+            $"SELECT count(*) FROM memory_erasure_receipt_subjects WHERE MutationId = '{lexiconReceipt.ToString("D").ToUpperInvariant()}';"));
+
+        Assert.True(await MemoryErasureEvidence.SubjectErasedAsync(Connection, null, sagaSubject, Token));
+
+        MemoryErasureEvidenceCounts after = await MemoryErasureEvidence.CountAsync(Connection, null, currentKeyId, Token);
+
+        Assert.Equal(new MemoryErasureStoreCountsDto(MemoryReviewStore.Saga, 2, 0, 1), after.Stores[1]);
+
+        Assert.Equal(new MemoryErasureStoreCountsDto(MemoryReviewStore.Lexicon, 0, 0, 0), after.Stores[2]);
+
+        Assert.Equal(0L, after.UnverifiableReceipts);
+    }
+
+    private static MemoryErasureIdentity Saga(string content) =>
+        MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, content);
+
+    /// <summary>Inserts a pending receipt with one subject, and returns that subject's digest.</summary>
+    private async Task<byte[]> InsertPendingReceiptAsync(
+        MemoryErasureKey key,
+        Guid mutationId,
+        MemoryReviewStore store,
+        byte[] keyId,
+        int mask)
+    {
+        byte[] subject = key.Subject(store, mutationId.ToString("D"));
+
+        await MemoryErasureEvidence.InsertReceiptAsync(
+            Connection,
+            null,
+            new MemoryErasureReceiptRow(
+                mutationId,
+                store,
+                keyId,
+                RandomNumberGenerator.GetBytes(32),
+                RandomNumberGenerator.GetBytes(32),
+                ErasedItemCount: 1,
+                RemovedRowCount: 1,
+                RemovedLabelCount: 0,
+                RemovedRetirementSuppressionCount: 0,
+                Authorship: MemoryExternalEvidence.NotApplicable,
+                Context: MemoryExternalEvidence.NotApplicable,
+                Embedding: MemoryExternalEvidence.NotApplicable,
+                Backup: MemoryExternalEvidence.NotApplicable,
+                OtherExternal: MemoryExternalEvidence.NotApplicable,
+                RetainedCopiesMask: 0,
+                ScrubStateCode: 1,
+                ScrubPendingReasonMask: mask),
+            [subject],
+            Token);
+
+        return subject;
+    }
+
+    private async Task<(int State, int Mask)> ScrubAsync(Guid mutationId)
+    {
+        MemoryErasureReceiptRow? receipt = await MemoryErasureEvidence.ReadReceiptAsync(Connection, null, mutationId, Token);
+
+        Assert.NotNull(receipt);
+
+        return (receipt.ScrubStateCode, receipt.ScrubPendingReasonMask);
+    }
+
+    /// <summary>Every row this connection has inserted, updated or deleted, including unchanged rewrites.</summary>
+    private async Task<long> TotalChangesAsync() => (long)(await ScalarAsync("SELECT total_changes();"))!;
+
+    private async Task<object?> ScalarAsync(string sql)
+    {
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return await command.ExecuteScalarAsync(Token);
+    }
+}
