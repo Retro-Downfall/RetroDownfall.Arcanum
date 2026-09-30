@@ -53,6 +53,24 @@ public interface ILexiconService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Removes an entity as <see cref="DeleteByNameAsync(string, LexiconScope, CancellationToken)"/>
+    /// does, on behalf of <paramref name="origin"/>.
+    /// </summary>
+    /// <remarks>
+    /// An <see cref="LexiconDeletionOrigin.Agent"/> delete re-reads the exact-scope entry inside its
+    /// transaction and refuses a retired entry with <c>Lexicon.RetiredMutationRefused</c> and a pinned
+    /// one with <c>Lexicon.PinnedMutationRefused</c>, leaving it unchanged. The operator's delete is
+    /// unchanged. An implementation that cannot tell the two apart refuses every delete.
+    /// </remarks>
+    Task<Result<bool>> DeleteByNameAsync(
+        string name,
+        LexiconScope scope,
+        LexiconDeletionOrigin origin,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<bool>.Failure(new Error(ErrorCodes.Lexicon.WriteFailed,
+            "Origin-aware Lexicon deletion is unavailable.")));
+
+    /// <summary>
     /// Resolves only an identity, including retired rows, in exactly the requested scope.
     /// For conditional purge and deletion only; exposes no protected content and never falls back to Global.
     /// </summary>
@@ -62,6 +80,21 @@ public interface ILexiconService
         CancellationToken cancellationToken = default) =>
         Task.FromResult(Result<Guid?>.Failure(new Error(ErrorCodes.Lexicon.SearchFailed,
             "All-lifecycle Lexicon deletion lookup is unavailable.")));
+
+    /// <summary>
+    /// Reads the content-free facts an agent's delete is decided on, for the entry in exactly the
+    /// requested scope, including a retired one; null when that scope holds no such entry.
+    /// </summary>
+    /// <remarks>
+    /// Advisory: it lets a tool refuse before any purge runs. The agent-origin delete decides again
+    /// inside its own transaction.
+    /// </remarks>
+    Task<Result<LexiconAgentDeletionTarget?>> FindAgentDeletionTargetAsync(
+        string name,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<LexiconAgentDeletionTarget?>.Failure(new Error(ErrorCodes.Lexicon.SearchFailed,
+            "Agent Lexicon deletion lookup is unavailable.")));
 
     /// <summary>
     /// Eligible active rows only: exact <c>NameNormalized</c> matches first, then column-weighted FTS5

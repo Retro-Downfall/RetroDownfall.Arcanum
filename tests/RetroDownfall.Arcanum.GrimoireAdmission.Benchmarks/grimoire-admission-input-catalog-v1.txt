@@ -330,6 +330,7 @@ R	src/RetroDownfall.Arcanum.Core/Intelligence/WebResearch/WebResearchContracts.c
 R	src/RetroDownfall.Arcanum.Core/Lexicon/ILexiconCurationService.cs
 R	src/RetroDownfall.Arcanum.Core/Lexicon/ILexiconService.cs
 R	src/RetroDownfall.Arcanum.Core/Lexicon/LexiconCurationContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Lexicon/LexiconDeletionContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Lexicon/LexiconEntryDto.cs
 R	src/RetroDownfall.Arcanum.Core/Lexicon/LexiconLimits.cs
 R	src/RetroDownfall.Arcanum.Core/Lexicon/LexiconScope.cs

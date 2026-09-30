@@ -78,6 +78,15 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         return Task.FromResult(Result<Guid?>.Success(entry?.Id));
     }
 
+    /// <summary>This fake never retires or pins, so every entry it holds is one an agent may delete.</summary>
+    public Task<Result<LexiconAgentDeletionTarget?>> FindAgentDeletionTargetAsync(
+        string name, LexiconScope scope, CancellationToken cancellationToken = default)
+    {
+        _ = _entries.TryGetValue((scope.Key, name.Trim().ToUpperInvariant()), out LexiconEntryDto? entry);
+
+        return Task.FromResult(Result<LexiconAgentDeletionTarget?>.Success(entry is null ? null : new(entry.Id, false, false)));
+    }
+
     public Task<Result<bool>> DeleteByNameAsync(
         string name,
         LexiconScope scope,
@@ -90,6 +99,13 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
 
         return Task.FromResult(Result<bool>.Success(removed));
     }
+
+    public Task<Result<bool>> DeleteByNameAsync(
+        string name,
+        LexiconScope scope,
+        LexiconDeletionOrigin origin,
+        CancellationToken cancellationToken = default) =>
+        DeleteByNameAsync(name, scope, cancellationToken);
 
     public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
         IReadOnlyList<string> entities,

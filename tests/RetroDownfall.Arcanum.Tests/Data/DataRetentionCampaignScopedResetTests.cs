@@ -69,7 +69,7 @@ public sealed partial class DataRetentionServiceTests
     }
 
     private LexiconService CreateLifecycleLexiconService() => new(_db!,
-        new TestCapturingLogger<LexiconService>(), new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        new TestCapturingLogger<LexiconService>(), new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), MemoryErasureTestKeys.Isolated());
 
     private async Task<LexiconEntryDetail> SeedLifecycleLexiconAsync(string name, Guid? campaign)
     {

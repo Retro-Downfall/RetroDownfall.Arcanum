@@ -235,7 +235,8 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
             _db!,
             NullLogger<LexiconService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }));
+                new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }),
+            MemoryErasureTestKeys.Isolated());
 
     private Task<int> CountClaimsAsync(int subjectStoreCode, string subjectId) =>
         CountAsync(

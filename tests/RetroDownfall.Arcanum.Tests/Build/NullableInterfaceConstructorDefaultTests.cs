@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -342,7 +344,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// <remarks>
     /// Closed on purpose: a later chokepoint owner joins this list in the change that makes it one.
     /// </remarks>
-    public static TheoryData<Type> ErasureChokepointOwners => new() { typeof(SagaMemoryStore), typeof(SagaErasureWriteGate) };
+    public static TheoryData<Type> ErasureChokepointOwners => new() { typeof(SagaMemoryStore), typeof(SagaErasureWriteGate), typeof(LexiconService) };
 
     /// <summary>
     /// Every constructor of an erasure chokepoint owner takes the key provider, and none lets a caller

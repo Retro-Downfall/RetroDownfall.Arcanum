@@ -44,7 +44,8 @@ public sealed class LexiconCurationInspectionTests(GrimoireFixture fixture) : IA
         _db = fixture.CreateContext(_path);
 
         _service = new LexiconService(_db, NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { Annals = false } }));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { Annals = false } }),
+            MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
     }
@@ -329,7 +330,7 @@ public sealed class LexiconCurationInspectionTests(GrimoireFixture fixture) : IA
         await ExecuteAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-02T00:00:00.0000000Z';");
 
         LexiconService guarded = new(_db, NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), FixtureLabeledArtifactGuard.For(_db));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), MemoryErasureTestKeys.Isolated(), FixtureLabeledArtifactGuard.For(_db));
 
         var deleted = await guarded.DeleteByNameAsync("Entity", LexiconScope.Global);
 

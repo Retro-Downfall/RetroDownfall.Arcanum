@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -29,6 +30,8 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Lexicon;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -3695,7 +3698,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await using ArcanumDbContext db = grimoire.CreateContext(owner.Path);
 
         LexiconService lexicon = new(db, NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(new()), FixtureLabeledArtifactGuard.For(db));
+            new TestOptionsMonitor<ArcanumSettings>(new()), MemoryErasureTestKeys.Isolated(), FixtureLabeledArtifactGuard.For(db));
 
         await using ArcanumDbContext purgeDb = grimoire.CreateContext(owner.Path);
 
@@ -3707,9 +3710,16 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         McpToolsCallResultWire result = await session.CallToolAsync("delete_lexicon",
             JsonSerializer.SerializeToElement(new DeleteLexiconParams("Entity"), McpJsonSerializerContext.Default.DeleteLexiconParams));
 
-        bool refused = labeled && disposition != "purged";
+        // A retired entry is the operator's to manage, so the agent's delete is refused before any
+        // purge runs, whatever the purger would have done.
+        bool refused = retired || (labeled && disposition != "purged");
 
         Assert.Equal(refused, result.IsError);
+
+        if (retired)
+        {
+            Assert.Equal(LexiconAgentRefusals.RetiredDeletion, result.Content![0].Text);
+        }
 
         if (refused)
         {
@@ -3723,6 +3733,102 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
             Assert.Equal(0L, await owner.ScalarAsync("SELECT count(*) FROM annal_versions"));
         }
+    }
+
+    /// <summary>
+    /// A pinned entry is the operator's to manage: the agent's delete is refused before the purger can
+    /// erase it, and the refusal reads the same as a scribe of an erased name.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ToolsCall_delete_lexicon_refuses_a_pinned_entry_before_any_purge(bool labeled)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        await using CorrectionFixture owner = new(grimoire);
+
+        LexiconEntryDetail before = await owner.SeedAsync();
+
+        if (labeled)
+        {
+            await owner.ProtectAsync();
+
+            before = await owner.ShowProtectedAsync();
+        }
+
+        // A protected entry's lifecycle changes only under its exact-scope write lease.
+        using LeaseRegistration registration = new(CovenantLeaseKind.Write);
+
+        await using CovenantWriteLease lease = new(registration);
+
+        var pinned = await owner.Service.PinAsync(before.Target, lease);
+
+        Assert.True(pinned.IsSuccess, pinned.Error.Message);
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        await using ArcanumDbContext db = grimoire.CreateContext(owner.Path);
+
+        LexiconService lexicon = new(db, NullLogger<LexiconService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new()), MemoryErasureTestKeys.Isolated(), FixtureLabeledArtifactGuard.For(db));
+
+        await using ArcanumDbContext purgeDb = grimoire.CreateContext(owner.Path);
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableLexiconSystem = true },
+            lexiconService: lexicon,
+            sensitivePurger: new LifecyclePurger(owner, purgeDb, "purged"));
+
+        McpToolsCallResultWire result = await session.CallToolAsync("delete_lexicon",
+            JsonSerializer.SerializeToElement(new DeleteLexiconParams("Entity"), McpJsonSerializerContext.Default.DeleteLexiconParams));
+
+        Assert.True(result.IsError);
+
+        Assert.Equal(LexiconAgentRefusals.OperatorManaged, result.Content![0].Text);
+
+        Assert.Equal(snapshot, await owner.SnapshotAsync());
+    }
+
+    [SkippableFact]
+    public async Task ToolsCall_scribe_lexicon_of_an_erased_name_returns_the_operator_managed_message()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using GrimoireFixture grimoire = new();
+
+        InMemoryOsCredentialStore credentials = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using CorrectionFixture owner = new(grimoire, annals: true, erasureKeys: keys);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            owner.Connection, key, MemoryErasureIdentity.ForLexicon(null, "Entity"), CancellationToken.None);
+
+        await using ArcanumDbContext db = grimoire.CreateContext(owner.Path);
+
+        LexiconService lexicon = new(db, NullLogger<LexiconService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(owner.Settings), keys);
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableLexiconSystem = true },
+            lexiconService: lexicon);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("scribe_lexicon",
+            JsonSerializer.SerializeToElement(
+                new ScribeLexiconParams("Entity", "Person", ["Prefers concise answers."]),
+                McpJsonSerializerContext.Default.ScribeLexiconParams));
+
+        Assert.True(result.IsError);
+
+        Assert.Equal(LexiconAgentRefusals.OperatorManaged, result.Content![0].Text);
+
+        Assert.Empty(await owner.SnapshotAsync());
     }
 
     /// <summary>

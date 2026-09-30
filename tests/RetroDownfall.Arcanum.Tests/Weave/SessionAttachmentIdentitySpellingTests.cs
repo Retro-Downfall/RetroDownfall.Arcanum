@@ -507,7 +507,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         LexiconService lexicon = new(
             _db!,
             NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<ArcanumSettings>(_settings));
+            new TestOptionsMonitor<ArcanumSettings>(_settings),
+            MemoryErasureTestKeys.Isolated());
 
         Result<LexiconEntryDto> written = await lexicon.UpsertAsync(
             "Alpha",

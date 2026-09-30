@@ -45,6 +45,7 @@ public sealed class LexiconCurationArchitectureTests
         { Service, "ReadActiveByNormalizedAsync", 0, EntryColumns },
         { Service, "ReadByNormalizedAsync", 0, EntryColumns },
         { Service, "ReadAllLifecycleIdentityForDeletionAsync", 0, "Id" },
+        { Service, "ReadAgentDeletionTargetAsync", 0, "Id,RetiredAtUtc,PinnedAtUtc" },
         { Service, "ReadFactProvenanceCoreAsync", 0, "EntryId,Fact,SessionId,AttachmentId,LogicalKey,Version,ContentHash,MaterializedAt,SourceType,SourceAvailable" },
         { Review, "ReadOrCreateReviewMarkerAsync", 0, "MarkerGeneration,ReviewedThroughSequence,Revision" },
         { Review, "ReadReviewUpperFrontierAsync", 0, "UpperSequence" },
@@ -89,6 +90,7 @@ public sealed class LexiconCurationArchitectureTests
     public static TheoryData<string, string, string> Readers => new()
     {
         { Service, "ReadEntry", "GetString:0,GetString:1,GetString:2,GetString:3,GetString:4,GetString:5,GetString:6,GetString:7,ReadPositiveInteger:8" },
+        { Service, "ReadAgentDeletionTargetAsync", "GetString:0" },
         { Service, "ReadFactProvenanceCoreAsync", "GetString:2,GetString:3,GetString:4,ReadCode:5,GetString:6,GetString:7,GetString:8,GetInt32:9,GetString:0,GetString:1" },
         { Review, "ReadOrCreateReviewMarkerAsync", "GetValue:0,GetInt64:1,GetInt64:2,GetInt64:1,GetInt64:2" },
         { Review, "ReadReviewEvent", "GetString:2,GetInt64:0,GetString:1,GetInt64:3,GetInt64:4,GetInt64:5,GetString:6,GetValue:7,GetInt64:8" },
@@ -134,7 +136,7 @@ public sealed class LexiconCurationArchitectureTests
         Assert.Equal(new[]
         {
             "AdvanceReviewMarkerAsync", "FillExactMatchesAsync", "FillFtsMatchesViaLikeAsync", "FillFtsMatchesViaMatchAsync",
-            "ReadCorrectionOutputAsync",
+            "ReadAgentDeletionTargetAsync", "ReadCorrectionOutputAsync",
             "ReadFactProvenanceCoreAsync", "ReadHistoricalSourcesAsync", "ReadInspectionHistoryAsync",
             "ReadInspectionIdentitiesAsync", "ReadInspectionRowAsync", "ReadNamedEntryAsync", "ReadOrCreateReviewMarkerAsync",
             "ReadReviewEventAsync", "ReadReviewEventsAsync", "ReadStoredReceiptsAsync", "ReadStoredReviewEventAsync",
@@ -273,7 +275,7 @@ public sealed class LexiconCurationArchitectureTests
         {
             ["RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs"] = ["MatchEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs"] = ["GetByNameAsync"],
-            ["RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs"] = ["DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "UpsertAsync", "UpsertAsync"],
+            ["RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs"] = ["DeleteByNameAsync", "FindAgentDeletionTargetAsync", "FindAllLifecycleIdentityForDeletionAsync", "UpsertAsync", "UpsertAsync"],
             ["RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs"] = ["CountInspectionAsync", "DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "ListInspectionAsync", "SearchInspectionAsync", "ShowEffectiveAsync"],
             ["RetroDownfall.Arcanum.Api/Tower/LexiconCurationEndpoints.cs"] = ["CorrectAsync", "PinAsync", "ReinstateAsync", "RetireAsync", "ShowExactAsync", "UnpinAsync"],
         };

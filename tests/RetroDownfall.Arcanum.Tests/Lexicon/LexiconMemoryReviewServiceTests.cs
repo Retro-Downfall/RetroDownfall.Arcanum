@@ -585,7 +585,8 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         LexiconService secondService = new(
             secondDb,
             NullLogger<LexiconService>.Instance,
-            new TestOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>(first.Settings));
+            new TestOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>(first.Settings),
+            MemoryErasureTestKeys.Isolated());
 
         ILexiconMemoryReviewService secondReview = secondService;
 

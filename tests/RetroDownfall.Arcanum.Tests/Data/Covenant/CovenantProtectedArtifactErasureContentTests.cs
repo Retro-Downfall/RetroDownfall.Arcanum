@@ -415,7 +415,8 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             LexiconService lexicon = new(
                 _db,
                 NullLogger<LexiconService>.Instance,
-                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+                MemoryErasureTestKeys.Isolated());
 
             Result<LexiconEntryDto> written = await lexicon.UpsertAsync(
                 name,

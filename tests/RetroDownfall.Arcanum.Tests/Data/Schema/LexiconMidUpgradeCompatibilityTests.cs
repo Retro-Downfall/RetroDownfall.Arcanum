@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -16,9 +17,11 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -240,12 +243,60 @@ public sealed class LexiconMidUpgradeCompatibilityTests
         Assert.True(retried.IsSuccess, retried.Error.Message);
     }
 
-    internal static LexiconService CreateService(ArcanumDbContext db, bool capture = true)
+    internal static LexiconService CreateService(ArcanumDbContext db, bool capture = true, IMemoryErasureKeyProvider? erasureKeys = null)
     {
         CovenantSqliteConnectionInitializer.Instance.EnsureAuthorizationFunctions((SqliteConnection)db.Database.GetDbConnection());
 
         return new(db, NullLogger<LexiconService>.Instance, new TestOptionsMonitor<ArcanumSettings>(
-            new ArcanumSettings { Features = new FeatureSettings { Annals = capture } }));
+            new ArcanumSettings { Features = new FeatureSettings { Annals = capture } }), erasureKeys ?? MemoryErasureTestKeys.Isolated());
+    }
+
+    /// <summary>
+    /// A scribe while version 12's sweep is still pending needs no erasure key: the recorded Core
+    /// version is below 13, so the store holds no evidence to guard against.
+    /// </summary>
+    /// <remarks>
+    /// Built the way an upgrade produces it: install version 11, then hand the installer the shipped
+    /// chain once. Version 12 declares a backfill, so that one call commits its DDL and stops with 11
+    /// recorded, and the evidence table does not exist yet. The case asserts that state before it
+    /// writes, and then proves the write never asked the credential store.
+    /// </remarks>
+    [Fact]
+    public async Task A_scribe_while_the_version_twelve_sweep_is_pending_needs_no_erasure_key()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, CancellationToken.None);
+
+        Assert.Equal(11, installed.Core.SchemaVersion);
+
+        // One call, which leaves version 12's DDL committed and its sweep still pending.
+        GrimoireSchemaInstallResult upgraded = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+
+        Assert.Equal(11, upgraded.Core.SchemaVersion);
+
+        Assert.Equal(11, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM sqlite_master WHERE name = 'memory_erasure_fingerprints';"));
+
+        CountingOsCredentialStore credentials = new(new InMemoryOsCredentialStore());
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(credentials);
+
+        await using ArcanumDbContext db = SagaMemoryMidUpgradeWriteTests.CreateContext(file);
+
+        Result<LexiconEntryDto> scribed = await CreateService(db, erasureKeys: keyring).UpsertAsync(
+            "Entity", "Concept", ["a fact recorded while version twelve drains"], LexiconScope.Global);
+
+        Assert.True(scribed.IsSuccess, scribed.Error.Message);
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM lexicon_entries;"));
+
+        Assert.Equal(0, credentials.Calls);
     }
 
     [Fact]

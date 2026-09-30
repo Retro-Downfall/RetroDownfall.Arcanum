@@ -1010,7 +1010,7 @@ internal sealed partial class ArcanumInternalToolServer
                 new McpToolDefinitionWire
                 {
                     Name = "delete_lexicon",
-                    Description = "Removes a Lexicon entity by name when a memory is obsolete or the operator asks to forget it.",
+                    Description = "Removes an active, unpinned Lexicon entity by name when a memory is obsolete; retired and pinned entities are managed by the operator.",
                     InputSchema = _deleteLexiconSchema,
                 });
         }

@@ -154,6 +154,26 @@ internal sealed partial class ArcanumInternalToolServer
             // Campaign can never take the installation's entity of the same name with it.
             LexiconScope lexiconScope = await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false);
 
+            // Retired and pinned entries are the operator's to manage, so they are refused before any
+            // purge can erase one. The agent-origin delete below decides again inside its transaction.
+            Result<LexiconAgentDeletionTarget?> target = await lexicon.FindAgentDeletionTargetAsync(
+                name, lexiconScope, cancellationToken).ConfigureAwait(false);
+
+            if (target.IsFailure)
+            {
+                return ToolError(target.Error.Message);
+            }
+
+            if (target.Value is { IsRetired: true })
+            {
+                return ToolError(LexiconAgentRefusals.RetiredDeletion);
+            }
+
+            if (target.Value is { IsPinned: true })
+            {
+                return ToolError(LexiconAgentRefusals.OperatorManaged);
+            }
+
             bool purgedIdentity = false;
 
             if (scope.ServiceProvider.GetService<ICovenantSensitiveArtifactPurger>() is { } purger)
@@ -193,6 +213,7 @@ internal sealed partial class ArcanumInternalToolServer
                 .DeleteByNameAsync(
                     name,
                     lexiconScope,
+                    LexiconDeletionOrigin.Agent,
                     cancellationToken)
                 .ConfigureAwait(false);
 

@@ -157,7 +157,8 @@ public sealed class LexiconLifecycleConcurrencyTests(GrimoireFixture fixture)
     }
 
     private static LexiconService Create(ArcanumDbContext db) => new(db, NullLogger<LexiconService>.Instance,
-        new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { Annals = false } }));
+        new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { Annals = false } }),
+        MemoryErasureTestKeys.Isolated());
 
     private sealed class BarrierRegistration : ICovenantLeaseRegistration
     {

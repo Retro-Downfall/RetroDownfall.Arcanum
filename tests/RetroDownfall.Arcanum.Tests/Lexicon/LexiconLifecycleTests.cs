@@ -61,6 +61,17 @@ public sealed class LexiconLifecycleTests(GrimoireFixture fixture)
         Assert.Equal(ErrorCodes.Lexicon.SearchFailed, (await legacy.FindAllLifecycleIdentityForDeletionAsync("entity", LexiconScope.Global)).Error.Code);
     }
 
+    [Fact]
+    public async Task Agent_deletion_defaults_fail_closed()
+    {
+        ILexiconService legacy = new LegacyDeletionLexicon();
+
+        Assert.Equal(ErrorCodes.Lexicon.SearchFailed, (await legacy.FindAgentDeletionTargetAsync("entity", LexiconScope.Global)).Error.Code);
+
+        Assert.Equal(ErrorCodes.Lexicon.WriteFailed,
+            (await legacy.DeleteByNameAsync("entity", LexiconScope.Global, LexiconDeletionOrigin.Agent)).Error.Code);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
