@@ -3,14 +3,19 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Lexicon;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
@@ -26,7 +31,12 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantArtifactPlanRunnerTests
 {
+    private const string GatedTablesPresent =
+        "SELECT count(*) FROM sqlite_master WHERE name IN ('annal_review_events', 'annal_review_decision_receipts');";
+
     private static readonly DateTimeOffset CreatedAt = new(2026, 9, 28, 12, 0, 0, TimeSpan.Zero);
+
+    static CovenantArtifactPlanRunnerTests() => SqliteNativeRuntime.Instance.Initialize();
 
     private static CancellationToken Token => CancellationToken.None;
 
@@ -159,7 +169,16 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         Assert.Equal(SagaVectorMirrorKind.LegacyVirtualTable, deleted.VectorMirror);
 
-        Assert.Contains(new MemoryErasureTableCount("saga_memory_embeddings_vec", 0), deleted.Targets);
+        // The whole ordered tally, so a skipped mirror that was duplicated or moved would show.
+        IReadOnlyList<MemoryErasureTableCount> expected =
+        [
+            new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
+            new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
+            new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
+            new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
+        ];
+
+        Assert.Equal(expected, deleted.Targets);
 
         Assert.Equal(1L, deleted.ArtifactRows);
 
@@ -167,6 +186,73 @@ public sealed class CovenantArtifactPlanRunnerTests
         Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1"));
 
         Assert.Equal(0, await harness.CountAsync("saga_memories", "1 = 1"));
+    }
+
+    /// <summary>
+    /// A target whose table arrives after the committed Core version is listed at zero in its plan
+    /// position, and no statement is issued against it.
+    /// </summary>
+    /// <remarks>
+    /// A genuine Core 11 database, built by the version-11 chain, so the two review tables version 12
+    /// adds are absent rather than emptied. A statement against either would fail on the missing table,
+    /// which is what proves the gate issued none, and the tally still names both, because a plan's
+    /// target list has one shape whatever version it runs against.
+    /// </remarks>
+    [Fact]
+    public async Task A_target_gated_above_the_committed_Core_version_is_listed_at_zero_and_never_touched()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(Token);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionElevenFixture.ChainSet(), 64, Token);
+
+        Assert.Equal(11, await GrimoireCoreSchemaVersion.ReadAsync(connection, Token));
+
+        Assert.Equal(0L, await ScalarAsync(connection, GatedTablesPresent));
+
+        await using ArcanumDbContext db = SagaMemoryMidUpgradeWriteTests.CreateContext(file);
+
+        SagaMemoryStore store = new(
+            db,
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Features = new FeatureSettings { Annals = true },
+                    Integrations = new IntegrationSettings
+                    {
+                        Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 },
+                    },
+                }));
+
+        Guid target = Guid.NewGuid();
+
+        foreach ((Guid id, string content) in new[] { (target, "the target memory"), (Guid.NewGuid(), "an unrelated memory") })
+        {
+            Assert.Equal(
+                SagaMemoryWriteOutcome.Written,
+                await store.InsertAsync(id.ToString(), content, CreatedAt, null, null, "saga-extraction", new float[64], Token));
+        }
+
+        IReadOnlyList<MemoryErasureTableCount> expected =
+        [
+            new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
+            new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
+            new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
+            new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
+        ];
+
+        Assert.Equal(expected, (await RunAsync(connection, SensitiveArtifactKind.Saga, target, CovenantArtifactPlanMode.Count)).Targets);
+
+        Assert.Equal(expected, (await RunAsync(connection, SensitiveArtifactKind.Saga, target, CovenantArtifactPlanMode.Delete)).Targets);
+
+        // The gated tables are still absent, and the unrelated memory and its claim survive.
+        Assert.Equal(0L, await ScalarAsync(connection, GatedTablesPresent));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM saga_memories;"));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM annal_claims;"));
     }
 
     [Fact]
@@ -213,6 +299,15 @@ public sealed class CovenantArtifactPlanRunnerTests
             Token);
 
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
+    }
+
+    private static async Task<long> ScalarAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return (long)(await command.ExecuteScalarAsync(Token))!;
     }
 
     private static async Task<CovenantArtifactPlanTally> RunAsync(

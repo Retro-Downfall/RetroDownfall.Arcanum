@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -434,6 +435,19 @@ public sealed class EmbeddingsResetService(
         string table,
         CancellationToken cancellationToken)
     {
+
+        // The Saga mirror follows the rule every other Saga write follows, read from the catalog rather
+        // than the process flag: a plain mirror an earlier build filled is emptied whatever the flag
+        // says, because its rows hold the embeddings of the memories this reset removes, and a legacy
+        // vec0 mirror this runtime cannot open is skipped. The other scopes' mirrors keep the gate below.
+        if (string.Equals(table, SagaStorageKeys.VectorTable, StringComparison.Ordinal))
+        {
+
+            return checked((int)await SagaVectorMirror
+                .DeleteAllAsync(connection, transaction, cancellationToken)
+                .ConfigureAwait(false));
+
+        }
 
         if (table.EndsWith("_vec", StringComparison.Ordinal)
             && !availability.IsVecAvailable)

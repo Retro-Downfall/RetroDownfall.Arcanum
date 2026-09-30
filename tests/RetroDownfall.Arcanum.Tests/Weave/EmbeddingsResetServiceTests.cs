@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -35,6 +36,9 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
     private EmbeddingsResetService? _resetService;
 
+    /// <summary>The accelerator flag the Saga store and the reset service share.</summary>
+    private readonly WeaveIndexAvailability _vectorAccelerator = new();
+
     public EmbeddingsResetServiceTests(GrimoireFixture fixture)
     {
 
@@ -49,7 +53,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         _db = _fixture.CreateContext(_dbPath);
 
-        WeaveIndexAvailability availability = new();
+        WeaveIndexAvailability availability = _vectorAccelerator;
 
         _sagaStore = new SagaMemoryStore(
             _db,
@@ -355,6 +359,24 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
     }
 
+    private async Task ExecuteAsync(string sql)
+    {
+
+        if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+        {
+
+            await _db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
     private static float[] Vec(params float[] leading)
     {
 
@@ -397,6 +419,52 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_memory_embeddings"));
 
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_extraction_watermarks"));
+
+    }
+
+    /// <summary>
+    /// A Saga-scope reset empties a plain vector mirror whatever the accelerator flag says.
+    /// </summary>
+    /// <remarks>
+    /// The mirror is filled through the store's own insert while the flag is on, then the flag goes off
+    /// before the reset, which is how a build without the accelerator meets a mirror an earlier build
+    /// filled. Leaving those rows would keep the embeddings of memories the reset just removed.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ResetAsync_SagaScope_EmptiesAPlainVectorMirrorWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // The plain table a test stands in for the accelerator's mirror: no schema file installs it.
+        await ExecuteAsync(
+            """
+            CREATE TABLE "saga_memory_embeddings_vec" ("MemoryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)
+            """);
+
+        _vectorAccelerator.SetAvailable(true);
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Written,
+            await _sagaStore!.InsertAsync(
+                "mem-vec",
+                "c",
+                DateTimeOffset.UtcNow,
+                Guid.NewGuid(),
+                null,
+                "extraction",
+                Vec(3f),
+                CancellationToken.None));
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
+
+        _vectorAccelerator.SetAvailable(false);
+
+        EmbeddingsResetResult result = await _resetService!.ResetAsync(EmbeddingsResetScope.Saga, CancellationToken.None);
+
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
+
+        Assert.Equal(1, result.DeletedRowCounts["saga_memory_embeddings_vec"]);
 
     }
 

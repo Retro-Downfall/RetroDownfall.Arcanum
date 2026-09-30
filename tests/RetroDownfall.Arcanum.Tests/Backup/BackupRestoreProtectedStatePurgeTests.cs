@@ -331,6 +331,43 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_label_whose_identity_normalises_to_nothing_is_refused_before_anything_is_deleted()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedProtectedSummaryAsync();
+
+        // An identity with no characters left once normalised. A predicate keyed by it could match any
+        // blank-keyed content row, so the purge must refuse rather than delete under it.
+        await SeedLabelAsync(
+            "dddddddd-4444-4444-8444-dddddddddddd",
+            string.Empty,
+            SensitiveArtifactKind.Summary,
+            LedgerSessionId);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, receipt.Error.Code);
+
+        Assert.Equal(2, await CountAsync("artifact_sensitivity"));
+
+        Assert.Equal(1, await CountAsync("session_summary_artifacts"));
+
+        Assert.Equal(1, await CountAsync("session_summary_state"));
+
+        Assert.Equal(
+            1,
+            await _staged.ScalarLongAsync(
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Summary\" IS NOT NULL;",
+                CancellationToken.None));
+
+    }
+
+    [Fact]
     public async Task A_purged_Session_still_bars_a_cached_replay()
     {
 

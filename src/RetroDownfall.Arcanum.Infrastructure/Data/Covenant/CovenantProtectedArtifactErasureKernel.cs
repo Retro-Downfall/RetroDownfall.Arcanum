@@ -160,8 +160,11 @@ internal static class CovenantArtifactPurgePlans
     /// creates them where it is present — so <see cref="CovenantArtifactPlanRunner"/> classifies the
     /// table inside the caller's transaction before it counts or deletes: a plain table is purged
     /// whatever the process's accelerator flag says, and a legacy <c>vec0</c> virtual table, which this
-    /// runtime cannot open, is skipped and reported as unreachable residue rather than failing the
-    /// purge. A plan carries at most one such mirror, because a tally reports one classification.
+    /// runtime cannot open, is skipped rather than failing the operation. The tally reports the skip,
+    /// and only an erase records it, on its receipt as <c>VectorIndexScrubUnverified</c>; this kernel's
+    /// retention purge and the staged restore purge skip it without failing the item and keep no
+    /// record of it. A plan carries at most one such mirror, because a tally reports one
+    /// classification.
     /// </remarks>
     private static CovenantArtifactPurgeTarget VectorMirror(string table, string keyColumn) =>
         new(table, keyColumn, ExistsConditionally: true);

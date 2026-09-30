@@ -159,6 +159,17 @@ internal static class BackupRestoreProtectedStatePurger
                     + "protected-artifact purge policy for, so its protected state cannot be removed.");
             }
 
+            if (CovenantIdentitySql.Key(label.ArtifactId).Length == 0)
+            {
+                // Fail closed, before any of this label's statements run. Every content, pointer, and
+                // projection delete compares a normalised column against this key, and an empty key would
+                // match any blank-keyed row in those tables rather than the one artifact the label names.
+                return new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "The staged archive carries a sensitivity label whose artifact identity is empty, so "
+                    + "the content it protects cannot be identified and its protected state cannot be removed.");
+            }
+
             if (await ApplyPlanAsync(staged, transaction, label, rule, cancellationToken)
                     .ConfigureAwait(false))
             {
