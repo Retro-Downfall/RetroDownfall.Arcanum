@@ -32,20 +32,28 @@ public sealed class MemoryErasureEvidenceDeleterTests
     /// </summary>
     internal static readonly string[] AllowedCallers = [];
 
+    /// <summary>
+    /// One evidence table as SQLite accepts it: optionally schema-qualified (<c>main.</c>,
+    /// <c>"main".</c>, <c>[main].</c>, <c>temp.</c>), and bare or quoted with double quotes, brackets or
+    /// backticks. Group 1 is the table's suffix.
+    /// </summary>
+    private const string EvidenceTable =
+        @"(?:(?:""\w+""|\[\w+\]|`\w+`|\w+)\s*\.\s*)?[""\[`]?memory_erasure_(fingerprints|receipts|receipt_subjects)\b";
+
     private static readonly Regex EvidenceDelete = new(
-        @"DELETE\s+FROM\s+""?memory_erasure_(fingerprints|receipts|receipt_subjects)\b",
+        @"DELETE\s+FROM\s+" + EvidenceTable,
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EvidenceReplace = new(
-        @"\b(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\s+""?memory_erasure_(fingerprints|receipts|receipt_subjects)\b",
+        @"\b(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\s+" + EvidenceTable,
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EvidenceUpdate = new(
-        @"\bUPDATE\s+(?:OR\s+\w+\s+)?""?memory_erasure_(fingerprints|receipts|receipt_subjects)\b",
+        @"\bUPDATE\s+(?:OR\s+\w+\s+)?" + EvidenceTable,
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EvidenceUpsert = new(
-        @"INSERT[^;]*?INTO\s+""?memory_erasure_(fingerprints|receipts|receipt_subjects)\b[^;]*?ON\s+CONFLICT[^;]*?DO\s+UPDATE",
+        @"INSERT[^;]*?INTO\s+" + EvidenceTable + @"[^;]*?ON\s+CONFLICT[^;]*?DO\s+UPDATE",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline);
 
     [Fact]
@@ -98,6 +106,38 @@ public sealed class MemoryErasureEvidenceDeleterTests
         Assert.Empty(FilesMatching(EvidenceUpsert));
     }
 
+    /// <summary>
+    /// SQLite accepts a table name schema-qualified and quoted several ways, and a pin that knew only
+    /// the bare spelling could be walked around by writing the same statement another way.
+    /// </summary>
+    [Theory]
+    [InlineData("memory_erasure_fingerprints", "fingerprints")]
+    [InlineData("\"memory_erasure_receipts\"", "receipts")]
+    [InlineData("[memory_erasure_receipt_subjects]", "receipt_subjects")]
+    [InlineData("`memory_erasure_fingerprints`", "fingerprints")]
+    [InlineData("main.memory_erasure_receipts", "receipts")]
+    [InlineData("\"main\".memory_erasure_receipts", "receipts")]
+    [InlineData("[main].[memory_erasure_fingerprints]", "fingerprints")]
+    [InlineData("temp.\"memory_erasure_receipt_subjects\"", "receipt_subjects")]
+    [InlineData("`main`.`memory_erasure_receipts`", "receipts")]
+    public void Every_pin_recognizes_every_legal_spelling_of_an_evidence_table(string table, string suffix)
+    {
+        AssertCaught(EvidenceDelete, $"DELETE FROM {table} WHERE 0;", suffix);
+
+        AssertCaught(EvidenceReplace, $"INSERT OR REPLACE INTO {table} (KeyId) VALUES ($k);", suffix);
+
+        AssertCaught(EvidenceReplace, $"REPLACE INTO {table} (KeyId) VALUES ($k);", suffix);
+
+        AssertCaught(EvidenceUpdate, $"UPDATE {table} SET KeyId = KeyId WHERE 0;", suffix);
+
+        AssertCaught(EvidenceUpdate, $"UPDATE OR IGNORE {table} SET KeyId = KeyId WHERE 0;", suffix);
+
+        AssertCaught(
+            EvidenceUpsert,
+            $"INSERT INTO {table} (KeyId) VALUES ($k) ON CONFLICT (KeyId) DO UPDATE SET KeyId = excluded.KeyId;",
+            suffix);
+    }
+
     [Fact]
     public void Only_the_evidence_store_updates_receipts_and_nothing_updates_fingerprints_or_subjects()
     {
@@ -106,11 +146,22 @@ public sealed class MemoryErasureEvidenceDeleterTests
         // The receipt guard's own trigger names the table after ON, and must never read as an update.
         Assert.DoesNotMatch(EvidenceUpdate, "BEFORE UPDATE ON memory_erasure_receipts");
 
+        Assert.DoesNotMatch(EvidenceUpdate, "BEFORE UPDATE ON main.memory_erasure_receipts");
+
         string[] owner = [Owner];
 
         Assert.Equal(owner, FilesMatching(EvidenceUpdate));
 
         Assert.All(EvidenceUpdate.Matches(OwnerText()), static match => Assert.Equal("receipts", match.Groups[1].Value));
+    }
+
+    private static void AssertCaught(Regex pattern, string statement, string suffix)
+    {
+        Match match = pattern.Match(statement);
+
+        Assert.True(match.Success, $"The pin missed: {statement}");
+
+        Assert.Equal(suffix, match.Groups[1].Value);
     }
 
     private static string OwnerText() =>

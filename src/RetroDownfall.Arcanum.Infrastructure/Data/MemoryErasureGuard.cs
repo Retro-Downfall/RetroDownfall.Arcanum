@@ -119,7 +119,13 @@ internal static class MemoryErasureGuard
     /// <summary>
     /// Phase one: probes the store for evidence and, only when there is some, resolves the key.
     /// </summary>
+    /// <remarks>
+    /// Resolving the key can read the OS credential store, which never happens inside a SQLite
+    /// transaction, so this refuses a connection that is inside one. The check reads the connection's
+    /// own autocommit state, which a raw <c>BEGIN</c> changes as surely as a transaction object does.
+    /// </remarks>
     /// <returns>The context to carry into the transaction, or the refusal when the store cannot be guarded.</returns>
+    /// <exception cref="InvalidOperationException">The connection is inside a transaction.</exception>
     internal static async Task<Result<MemoryErasureGuardContext>> PrepareAsync(
         SqliteConnection connection,
         MemoryReviewStore store,
@@ -129,6 +135,13 @@ internal static class MemoryErasureGuard
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(keys);
+
+        if (connection.State == System.Data.ConnectionState.Open
+            && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) == 0)
+        {
+            throw new InvalidOperationException(
+                "Erasure guard preparation can read the OS credential store, which is never read inside a SQLite transaction; prepare before the write's transaction begins.");
+        }
 
         if (!await MemoryErasureEvidence.AnyAsync(connection, null, store, cancellationToken).ConfigureAwait(false))
         {

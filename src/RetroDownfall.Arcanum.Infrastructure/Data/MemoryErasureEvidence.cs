@@ -244,10 +244,16 @@ internal static class MemoryErasureEvidence
 
     /// <summary>Records one receipt and one subject row per erased subject.</summary>
     /// <remarks>
-    /// The mutation id is stored in its governed spelling, upper-case and dashed. A receipt that already
-    /// exists is a primary-key failure, not a silent no-op: the erase protocol probes by mutation id
-    /// first, so reaching this with a duplicate means two applies raced.
+    /// <para>The mutation id is stored in its governed spelling, upper-case and dashed. A receipt that
+    /// already exists is a primary-key failure, not a silent no-op: the erase protocol probes by
+    /// mutation id first, so reaching this with a duplicate means two applies raced.</para>
+    ///
+    /// <para>A receipt and its subjects are one record, so they are written only inside the caller's
+    /// transaction. Written apart, a failure between them would leave a receipt that cannot answer for
+    /// every subject it names. A null <paramref name="transaction"/> is accepted only while the caller
+    /// holds a raw <c>BEGIN</c> on the connection, as every Lexicon write does.</para>
     /// </remarks>
+    /// <exception cref="ArgumentNullException">No transaction is passed and none is open on the connection.</exception>
     /// <exception cref="InvalidOperationException">The catalog cannot hold evidence.</exception>
     internal static async Task InsertReceiptAsync(
         SqliteConnection connection,
@@ -256,9 +262,20 @@ internal static class MemoryErasureEvidence
         IReadOnlyList<byte[]> subjectDigests,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(connection);
+
         ArgumentNullException.ThrowIfNull(row);
 
         ArgumentNullException.ThrowIfNull(subjectDigests);
+
+        if (transaction is null
+            && (connection.State != System.Data.ConnectionState.Open
+                || SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) != 0))
+        {
+            throw new ArgumentNullException(
+                nameof(transaction),
+                "A receipt and its subjects are written in one transaction: pass the caller's transaction, or hold a raw BEGIN on the connection.");
+        }
 
         RequireStore(row.Store);
 

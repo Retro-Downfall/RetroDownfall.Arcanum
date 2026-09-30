@@ -95,6 +95,109 @@ public sealed class MemoryErasureGuardTests : IClassFixture<GrimoireFixture>, IA
         Assert.Equal(0, credentials.Calls);
     }
 
+    /// <summary>
+    /// A key an earlier call already resolved rides along from an empty probe, so the first fingerprint
+    /// committing between the phases is checked at once, with no retry and no keychain read.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_latched_key_is_carried_from_an_empty_probe_so_a_first_fingerprint_needs_no_retry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(inner);
+
+        CountingOsCredentialStore credentials = new(inner);
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(credentials);
+
+        // An earlier call in this process, an erase prepare say, already resolved the key.
+        keys.OpenExisting(MemoryErasureKeyProbe.UseLatched).Key?.Dispose();
+
+        Assert.Equal(MemoryErasureKeyState.Present, keys.Latch.State);
+
+        int readsBefore = credentials.Calls;
+
+        using MemoryErasureGuardContext context = await PrepareAsync(Connection, MemoryReviewStore.Saga, keys);
+
+        Assert.False(context.EvidencePresent);
+
+        Assert.NotNull(context.Key);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(Connection, key, Identity, Token);
+
+        await using SqliteTransaction transaction = Connection.BeginTransaction(deferred: false);
+
+        Assert.Equal(
+            MemoryErasureGuardVerdict.Withheld,
+            await MemoryErasureGuard.CheckAsync(Connection, transaction, context, Identity, Token));
+
+        Assert.Equal(readsBefore, credentials.Calls);
+    }
+
+    /// <summary>
+    /// Phase one may read the credential store, which never happens inside a SQLite transaction, so
+    /// it refuses to run inside one: a pending transaction object or a raw <c>BEGIN</c> alike.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("sqlite-transaction")]
+    [InlineData("raw-begin-immediate")]
+    public async Task Phase_one_refuses_to_run_inside_a_transaction(string transactionKind)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        using (MemoryErasureKey created = MemoryErasureTestKeys.CreateKey(inner))
+        {
+            await MemoryErasureTestKeys.SeedFingerprintAsync(Connection, created, Identity, Token);
+        }
+
+        CountingOsCredentialStore credentials = new(inner);
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(credentials);
+
+        SqliteTransaction? transaction = null;
+
+        if (transactionKind is "sqlite-transaction")
+        {
+            transaction = Connection.BeginTransaction(deferred: false);
+        }
+        else
+        {
+            Assert.Equal("raw-begin-immediate", transactionKind);
+
+            await ExecuteAsync(Connection, "BEGIN IMMEDIATE;");
+        }
+
+        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MemoryErasureGuard.PrepareAsync(Connection, MemoryReviewStore.Saga, keys, Token));
+
+        Assert.Contains("credential store", refused.Message, StringComparison.Ordinal);
+
+        // Refused before the evidence probe could send it to the credential store.
+        Assert.Equal(0, credentials.Calls);
+
+        if (transaction is not null)
+        {
+            await transaction.RollbackAsync(Token);
+
+            await transaction.DisposeAsync();
+        }
+        else
+        {
+            await ExecuteAsync(Connection, "ROLLBACK;");
+        }
+
+        // Outside a transaction the same preparation runs, and resolves the key once.
+        using MemoryErasureGuardContext context = await PrepareAsync(Connection, MemoryReviewStore.Saga, keys);
+
+        Assert.True(context.EvidencePresent);
+
+        Assert.Equal(1, credentials.Calls);
+    }
+
     [SkippableFact]
     public async Task Evidence_that_appears_after_the_probe_asks_for_one_retry_with_the_key()
     {
@@ -546,6 +649,15 @@ public sealed class MemoryErasureGuardTests : IClassFixture<GrimoireFixture>, IA
 
     private static MemoryErasureIdentity Saga(string content) =>
         MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, content);
+
+    private static async Task ExecuteAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(Token);
+    }
 
     private static async Task<MemoryErasureGuardContext> PrepareAsync(
         SqliteConnection connection,
