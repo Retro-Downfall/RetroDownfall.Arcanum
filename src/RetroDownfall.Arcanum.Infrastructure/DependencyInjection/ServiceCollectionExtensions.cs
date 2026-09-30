@@ -1399,8 +1399,23 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(TimeProvider.System);
 
-        services.AddSingleton<IMemoryReviewTokenCodec>(static provider =>
+        // One codec behind both token families, over the host clock: the erasure preflight times it
+        // reports are stamped by the same clock that bounds the token.
+        services.AddSingleton(static provider =>
             new MemoryReviewTokenCodec(provider.GetRequiredService<TimeProvider>()));
+
+        services.AddSingleton<IMemoryReviewTokenCodec>(static provider =>
+            provider.GetRequiredService<MemoryReviewTokenCodec>());
+
+        services.AddSingleton<IMemoryErasureTokenCodec>(static provider =>
+            provider.GetRequiredService<MemoryReviewTokenCodec>());
+
+        // The post-commit erasure scrub opens its own unpooled read-write connection per attempt, so
+        // one instance serves every erase.
+        services.AddSingleton(static provider =>
+            new MemoryErasureScrubber(
+                provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                provider.GetRequiredService<ILogger<MemoryErasureScrubber>>()));
 
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
         // internal, so the composed constructor cannot be reached by a reflective activator.

@@ -32,6 +32,12 @@ internal readonly record struct CovenantWalCheckpointOutcome(
 {
 
     /// <summary>
+    /// Whether the checkpoint was neither refused as busy nor left a frame behind: the one condition
+    /// under which the log is proven empty.
+    /// </summary>
+    internal bool IsTruncated => Busy == 0 && RemainingFrames <= 0;
+
+    /// <summary>
     /// Projects the pragma's one row positionally.
     /// </summary>
     /// <remarks>
@@ -57,6 +63,13 @@ internal readonly record struct CovenantWalCheckpointOutcome(
     internal Result RequireTruncated()
     {
 
+        if (IsTruncated)
+        {
+
+            return Result.Success();
+
+        }
+
         if (Busy != 0)
         {
 
@@ -67,18 +80,11 @@ internal readonly record struct CovenantWalCheckpointOutcome(
 
         }
 
-        if (RemainingFrames > 0)
-        {
-
-            return new Error(
-                ErrorCodes.Covenant.ErasureIncomplete,
-                $"A Covenant write-ahead-log checkpoint moved {CheckpointedFrames.ToString(CultureInfo.InvariantCulture)} "
-                + $"frames and left {RemainingFrames.ToString(CultureInfo.InvariantCulture)} in the log, "
-                + "so local erasure is incomplete.");
-
-        }
-
-        return Result.Success();
+        return new Error(
+            ErrorCodes.Covenant.ErasureIncomplete,
+            $"A Covenant write-ahead-log checkpoint moved {CheckpointedFrames.ToString(CultureInfo.InvariantCulture)} "
+            + $"frames and left {RemainingFrames.ToString(CultureInfo.InvariantCulture)} in the log, "
+            + "so local erasure is incomplete.");
 
     }
 
@@ -396,7 +402,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             {
 
                 Result<CovenantWalCheckpointOutcome> outcome =
-                    await CheckpointAsync(connection, token).ConfigureAwait(false);
+                    await GrimoireWalCheckpoint.TruncateAsync(connection, token).ConfigureAwait(false);
 
                 return outcome.IsFailure ? Result.Failure(outcome.Error) : Result.Success();
 
@@ -415,7 +421,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
             {
 
                 Result<CovenantWalCheckpointOutcome> outcome =
-                    await CheckpointAsync(connection, token).ConfigureAwait(false);
+                    await GrimoireWalCheckpoint.TruncateAsync(connection, token).ConfigureAwait(false);
 
                 return outcome.IsFailure ? Result.Failure(outcome.Error) : outcome.Value.RequireTruncated();
 
@@ -1130,7 +1136,7 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 }
 
                 Result<CovenantWalCheckpointOutcome> outcome =
-                    await CheckpointAsync(connection, token).ConfigureAwait(false);
+                    await GrimoireWalCheckpoint.TruncateAsync(connection, token).ConfigureAwait(false);
 
                 if (outcome.IsFailure)
                 {
@@ -1786,33 +1792,6 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
                 recoveryEnvelopeEpoch,
                 hostToolsState,
                 transitionId));
-
-    }
-
-    private static async Task<Result<CovenantWalCheckpointOutcome>> CheckpointAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-
-        await using SqliteDataReader reader =
-            await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.FieldCount != 3)
-        {
-
-            return Result<CovenantWalCheckpointOutcome>.Failure(
-                new Error(
-                    ErrorCodes.Covenant.ErasureIncomplete,
-                    "A Covenant write-ahead-log checkpoint reported nothing, so it cannot be taken as "
-                    + "proof that no frame remains."));
-
-        }
-
-        return Result<CovenantWalCheckpointOutcome>.Success(CovenantWalCheckpointOutcome.Project(reader));
 
     }
 

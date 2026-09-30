@@ -1,6 +1,14 @@
+using System.Buffers.Text;
+
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Memory;
@@ -193,6 +201,228 @@ public sealed class MemoryReviewTokenCodecTests
 
         Assert.True(codec.IssueCursor(invalidKeyset).IsFailure);
     }
+
+    [Fact]
+    public void An_erasure_plan_round_trip_binds_store_digests_binding_and_generation()
+    {
+        FakeTimeProvider time = FrozenTime();
+
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(time);
+
+        Guid generation = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        MemoryErasureIssuedToken issued = codec.IssueErasurePlan(
+            new(MemoryReviewStore.Saga, Bytes(0x11), Bytes(0x22), Bytes(0x33), generation)).Value;
+
+        // 18 header + 115 payload + 32 tag bytes, as unpadded base64url.
+        Assert.Equal(220, issued.Token.Length);
+
+        Assert.Equal(4, Base64Url.DecodeFromChars(issued.Token)[1]);
+
+        Assert.Equal(time.GetUtcNow(), issued.IssuedAtUtc);
+
+        Assert.Equal(issued.IssuedAtUtc + MemoryReviewLimits.TokenLifetime, issued.ExpiresAtUtc);
+
+        MemoryErasurePlanTokenFacts read = codec.ReadErasurePlan(issued.Token).Value;
+
+        Assert.Equal((MemoryReviewStore.Saga, (Guid?)generation), (read.Store, read.DatasetGeneration));
+
+        Assert.Equal(Bytes(0x11), read.RequestDigest);
+
+        Assert.Equal(Bytes(0x22), read.EffectDigest);
+
+        Assert.Equal(Bytes(0x33), read.ContentBinding);
+    }
+
+    [Fact]
+    public void A_lexicon_erasure_plan_without_label_round_trips_absent_binding_and_generation()
+    {
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(FrozenTime());
+
+        MemoryErasureIssuedToken issued = codec.IssueErasurePlan(
+            new(MemoryReviewStore.Lexicon, Bytes(0x44), Bytes(0x55), null, null)).Value;
+
+        Assert.Equal(220, issued.Token.Length);
+
+        MemoryErasurePlanTokenFacts read = codec.ReadErasurePlan(issued.Token).Value;
+
+        Assert.Equal(MemoryReviewStore.Lexicon, read.Store);
+
+        Assert.Equal(Bytes(0x44), read.RequestDigest);
+
+        Assert.Equal(Bytes(0x55), read.EffectDigest);
+
+        Assert.Null(read.ContentBinding);
+
+        Assert.Null(read.DatasetGeneration);
+    }
+
+    [Fact]
+    public void A_key_reset_round_trip_binds_status_and_counts()
+    {
+        FakeTimeProvider time = FrozenTime();
+
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(time);
+
+        MemoryErasureIssuedToken issued = codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Lost, 7, 3)).Value;
+
+        // 18 header + 17 payload + 32 tag bytes.
+        Assert.Equal(90, issued.Token.Length);
+
+        Assert.Equal(5, Base64Url.DecodeFromChars(issued.Token)[1]);
+
+        Assert.Equal(time.GetUtcNow(), issued.IssuedAtUtc);
+
+        Assert.Equal(issued.IssuedAtUtc + MemoryReviewLimits.TokenLifetime, issued.ExpiresAtUtc);
+
+        Assert.Equal(new MemoryErasureKeyResetTokenFacts(MemoryErasureKeyStatus.Lost, 7, 3), codec.ReadErasureKeyReset(issued.Token).Value);
+    }
+
+    [Fact]
+    public void Erasure_tokens_and_review_tokens_refuse_each_others_purposes()
+    {
+        MemoryReviewTokenCodec codec = new(FrozenTime());
+
+        string plan = codec.IssueErasurePlan(new(MemoryReviewStore.Saga, Bytes(0x11), Bytes(0x22), Bytes(0x33), null)).Value.Token;
+
+        string reset = codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Present, 0, 0)).Value.Token;
+
+        string cursor = codec.IssueCursor(Cursor()).Value;
+
+        string observation = codec.IssueObservation(Observation()).Value;
+
+        string prepared = codec.IssuePreparedPlan(PreparedPlan()).Value;
+
+        // Every purpose has its own header byte, so no token can be read as another even where two
+        // payloads happened to share a length.
+        byte[] purposes = [.. new[] { cursor, observation, prepared, plan, reset }.Select(static token => Base64Url.DecodeFromChars(token)[1])];
+
+        Assert.Equal(purposes.Length, purposes.Distinct().Count());
+
+        Assert.True(codec.ReadCursor(plan).IsFailure);
+
+        Assert.True(codec.ReadObservation(plan).IsFailure);
+
+        Assert.True(codec.ReadPreparedPlan(plan).IsFailure);
+
+        Result<MemoryErasureKeyResetTokenFacts> planAsReset = codec.ReadErasureKeyReset(plan);
+
+        Result<MemoryErasurePlanTokenFacts> cursorAsPlan = codec.ReadErasurePlan(cursor);
+
+        Result<MemoryErasurePlanTokenFacts> resetAsPlan = codec.ReadErasurePlan(reset);
+
+        Result<MemoryErasureKeyResetTokenFacts> preparedAsReset = codec.ReadErasureKeyReset(prepared);
+
+        foreach (Error error in (Error[])[planAsReset.Error, cursorAsPlan.Error, resetAsPlan.Error, preparedAsReset.Error])
+        {
+            Assert.Equal(ErrorCodes.MemoryErasure.InvalidPreflight, error.Code);
+        }
+
+        Assert.True(codec.ReadCursor(reset).IsFailure);
+    }
+
+    [Fact]
+    public void An_erasure_plan_token_is_refused_at_its_expiry_boundary()
+    {
+        FakeTimeProvider time = FrozenTime();
+
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(time);
+
+        string token = codec.IssueErasurePlan(new(MemoryReviewStore.Lexicon, Bytes(0x44), Bytes(0x55), null, null)).Value.Token;
+
+        time.Advance(MemoryReviewLimits.TokenLifetime - TimeSpan.FromSeconds(1));
+
+        Assert.True(codec.ReadErasurePlan(token).IsSuccess);
+
+        time.Advance(TimeSpan.FromSeconds(1));
+
+        Result<MemoryErasurePlanTokenFacts> expired = codec.ReadErasurePlan(token);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.InvalidPreflight, expired.Error.Code);
+    }
+
+    [Fact]
+    public void A_tampered_or_malformed_erasure_token_is_an_invalid_preflight()
+    {
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(FrozenTime());
+
+        string token = codec.IssueErasurePlan(new(MemoryReviewStore.Saga, Bytes(0x11), Bytes(0x22), null, null)).Value.Token;
+
+        string tampered = token[..^1] + (token[^1] == 'A' ? 'B' : 'A');
+
+        foreach (string candidate in (string[])[tampered, string.Empty, "not-base64url!", "AA"])
+        {
+            Assert.Equal(ErrorCodes.MemoryErasure.InvalidPreflight, codec.ReadErasurePlan(candidate).Error.Code);
+
+            Assert.Equal(ErrorCodes.MemoryErasure.InvalidPreflight, codec.ReadErasureKeyReset(candidate).Error.Code);
+        }
+    }
+
+    [Fact]
+    public void Erasure_plan_facts_are_validated_before_issue()
+    {
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(FrozenTime());
+
+        MemoryErasurePlanTokenFacts valid = new(MemoryReviewStore.Saga, Bytes(0x11), Bytes(0x22), Bytes(0x33), Guid.NewGuid());
+
+        Assert.True(codec.IssueErasurePlan(valid).IsSuccess);
+
+        MemoryErasurePlanTokenFacts[] invalid =
+        [
+            valid with { Store = MemoryReviewStore.Covenant },
+            valid with { RequestDigest = new byte[31] },
+            valid with { EffectDigest = new byte[33] },
+            valid with { ContentBinding = new byte[31] },
+            valid with { Store = MemoryReviewStore.Lexicon },
+            valid with { DatasetGeneration = Guid.Empty },
+        ];
+
+        foreach (MemoryErasurePlanTokenFacts facts in invalid)
+        {
+            Assert.Equal(ErrorCodes.MemoryReview.InvalidTokenFacts, codec.IssueErasurePlan(facts).Error.Code);
+        }
+
+        Assert.Equal(ErrorCodes.MemoryReview.InvalidTokenFacts, codec.IssueErasurePlan(null!).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.MemoryReview.InvalidTokenFacts,
+            codec.IssueErasureKeyReset(new((MemoryErasureKeyStatus)9, 0, 0)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.MemoryReview.InvalidTokenFacts,
+            codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Lost, -1, 0)).Error.Code);
+    }
+
+    /// <summary>
+    /// One codec serves both token families, over the host's clock, so a review token and an erasure
+    /// token are issued and bounded by the same instance.
+    /// </summary>
+    [Fact]
+    public async Task Host_composition_registers_one_codec_behind_both_token_ports()
+    {
+        HostApplicationBuilder builder = Host.CreateApplicationBuilder();
+
+        builder.Services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+        builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        foreach (Type service in (Type[])[typeof(MemoryReviewTokenCodec), typeof(IMemoryReviewTokenCodec), typeof(IMemoryErasureTokenCodec)])
+        {
+            ServiceDescriptor descriptor = Assert.Single(builder.Services, candidate => candidate.ServiceType == service);
+
+            Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+        }
+
+        await using ServiceProvider provider = builder.Services.BuildServiceProvider();
+
+        MemoryReviewTokenCodec codec = provider.GetRequiredService<MemoryReviewTokenCodec>();
+
+        Assert.Same(codec, provider.GetRequiredService<IMemoryReviewTokenCodec>());
+
+        Assert.Same(codec, provider.GetRequiredService<IMemoryErasureTokenCodec>());
+    }
+
+    private static byte[] Bytes(byte value) => [.. Enumerable.Repeat(value, 32)];
 
     private static MemoryReviewCursorTokenFacts Cursor() => new(
         MemoryReviewStore.Covenant,

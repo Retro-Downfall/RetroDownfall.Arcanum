@@ -64,27 +64,36 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// Gives the catalog the erasure fingerprint table and a head Core version, so fingerprints can be
     /// seeded and every chokepoint reads them the way an installed Grimoire's are read.
     /// </param>
+    /// <param name="coreObjects">
+    /// Further named core objects a suite depends on, installed after the ones the other switches
+    /// imply, such as the disclosure journal an exposure read measures.
+    /// </param>
     internal static async Task<CovenantServiceHarness> StartAsync(
         CancellationToken cancellationToken,
         bool withOwnerCleanup = false,
-        bool withErasureEvidence = false)
+        bool withErasureEvidence = false,
+        IReadOnlyList<string>? coreObjects = null)
     {
 
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             cancellationToken,
-            coreObjects: withOwnerCleanup
-                ?
-                [
-                    .. CovenantCapacityFixture.CoreObjects,
-                    "capability_cleanup_state",
-                    "owner_deletion_events",
-                    "owner_deletion_operation_intents",
-                    "Campaigns_owner_deletion_event",
-                    "Sessions_owner_deletion_event",
-                    "owner_deletion_events_guard_delete",
-                    "owner_deletion_events_guard_update",
-                ]
-                : null,
+            coreObjects:
+            [
+                .. withOwnerCleanup
+                    ?
+                    [
+                        .. CovenantCapacityFixture.CoreObjects,
+                        "capability_cleanup_state",
+                        "owner_deletion_events",
+                        "owner_deletion_operation_intents",
+                        "Campaigns_owner_deletion_event",
+                        "Sessions_owner_deletion_event",
+                        "owner_deletion_events_guard_delete",
+                        "owner_deletion_events_guard_update",
+                    ]
+                    : (IReadOnlyList<string>)[],
+                .. coreObjects ?? [],
+            ],
             withErasureEvidence: withErasureEvidence);
 
         if (withOwnerCleanup)

@@ -280,7 +280,7 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
     /// honors the documented default (<c>~/.config/arcanum/audit.jsonl</c>) while implementing
     /// date-based rotation rather than one ever-growing file.
     /// </summary>
-    private static (string Directory, string Stem) ResolvePathParts(string configuredPath)
+    internal static (string Directory, string Stem) ResolvePathParts(string configuredPath)
     {
 
         string? directory = Path.GetDirectoryName(configuredPath);

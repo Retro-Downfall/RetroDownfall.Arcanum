@@ -781,6 +781,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactor
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionLifecycle.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireRequestAdmissionScope.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireSqlCommandFactory.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireWalCheckpoint.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IAuthenticatedCovenantErasureRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/ISqliteNativeRuntime.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyClaimStore.cs
@@ -1599,6 +1600,10 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/SdkMcpClientWrapper.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/SessionAttachmentAmbientSend.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/TrustedMcpWorkspaceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/TrustedStructuredToolResult.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureExposure.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureProtocol.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureTokens.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewTokenCodec.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ApprenticeRecoveryHandler.cs

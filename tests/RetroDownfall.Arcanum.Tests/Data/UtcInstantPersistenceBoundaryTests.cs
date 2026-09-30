@@ -546,6 +546,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Lifecycle.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.MemoryReview.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureExposure.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnBegin.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.TurnCommit.cs",
