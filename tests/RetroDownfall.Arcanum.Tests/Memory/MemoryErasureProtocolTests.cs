@@ -1,11 +1,13 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -372,6 +374,162 @@ public sealed class MemoryErasureProtocolTests(GrimoireFixture fixture) : IAsync
         Assert.Empty(factory.Kinds);
     }
 
+    /// <summary>
+    /// A reader holding a snapshot older than the erase's commit keeps the log from truncating: the
+    /// result says Busy, and the receipt stays pending for the log, to be finished by a replay or the
+    /// scrub route.
+    /// </summary>
+    [SkippableFact]
+    public async Task Finish_leaves_a_busy_wal_scrub_pending()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        FixtureOrdinaryConnectionFactory factory = FixtureOrdinaryConnectionFactory.For(_db!);
+
+        Result<IGrimoireOrdinaryConnectionLease> reader = await factory.OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind.ReadOnly,
+            Token);
+
+        await using IGrimoireOrdinaryConnectionLease lease = reader.Value;
+
+        await using (SqliteCommand snapshot = lease.Connection.CreateCommand())
+        {
+            snapshot.CommandText = "BEGIN; SELECT count(*) FROM grimoire_feature_schemas;";
+
+            _ = await snapshot.ExecuteScalarAsync(Token);
+        }
+
+        // The erase's commit lands after the reader's snapshot.
+        MemoryErasureReceiptRow row = Receipt(key, MemoryReviewStore.Saga, scrubState: 1, mask: 1);
+
+        await InsertAsync(row, key);
+
+        MemoryErasureResultDto result = await MemoryErasureProtocol.FinishAsync(
+            Connection, new MemoryErasureScrubber(factory), row, replayed: false, [], CancellationToken.None);
+
+        Assert.Equal(MemoryErasureWalCheckpointAttempt.Busy, result.Local.WalCheckpointAttempt);
+
+        await AssertStillPendingForTheLogAsync(row, result);
+    }
+
+    [SkippableFact]
+    public async Task Finish_leaves_an_unavailable_wal_scrub_pending()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        MemoryErasureReceiptRow row = Receipt(key, MemoryReviewStore.Saga, scrubState: 1, mask: 1);
+
+        await InsertAsync(row, key);
+
+        ThrowingOrRefusingFactory factory = new(null);
+
+        MemoryErasureResultDto result = await MemoryErasureProtocol.FinishAsync(
+            Connection, new MemoryErasureScrubber(factory), row, replayed: false, [], CancellationToken.None);
+
+        Assert.Equal(MemoryErasureWalCheckpointAttempt.Unavailable, result.Local.WalCheckpointAttempt);
+
+        Assert.Equal(1, factory.Opens);
+
+        await AssertStillPendingForTheLogAsync(row, result);
+    }
+
+    /// <summary>
+    /// Once an erase has committed, nothing the scrub throws escapes as an error for it: the result is
+    /// the receipt as it stands, pending, and one content-free warning says the scrub was abandoned.
+    /// </summary>
+    [SkippableFact]
+    public async Task Finish_reports_a_committed_erase_pending_when_the_scrub_throws()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        MemoryErasureReceiptRow row = Receipt(key, MemoryReviewStore.Saga, scrubState: 1, mask: 1);
+
+        await InsertAsync(row, key);
+
+        TestCapturingLogger<MemoryErasureScrubber> logger = new();
+
+        MemoryErasureResultDto result = await MemoryErasureProtocol.FinishAsync(
+            Connection,
+            new MemoryErasureScrubber(new ThrowingOrRefusingFactory(new NotSupportedException("The factory broke.")), logger),
+            row,
+            replayed: false,
+            [],
+            CancellationToken.None);
+
+        Assert.Equal(MemoryErasureWalCheckpointAttempt.Unavailable, result.Local.WalCheckpointAttempt);
+
+        await AssertStillPendingForTheLogAsync(row, result);
+
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains(nameof(NotSupportedException), warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("The factory broke", warning.Message, StringComparison.Ordinal);
+
+        Assert.Null(warning.Exception);
+    }
+
+    /// <summary>
+    /// The log truncated, but the receipt could not be upgraded: the connection the erase committed on
+    /// was closed under it. The result still reports the committed erase, from the receipt passed in.
+    /// </summary>
+    [SkippableFact]
+    public async Task Finish_reports_a_committed_erase_pending_when_the_receipt_upgrade_throws()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        MemoryErasureReceiptRow row = Receipt(key, MemoryReviewStore.Saga, scrubState: 1, mask: 1);
+
+        await InsertAsync(row, key);
+
+        FixtureOrdinaryConnectionFactory factory = FixtureOrdinaryConnectionFactory.For(_db!);
+
+        TestCapturingLogger<MemoryErasureScrubber> logger = new();
+
+        await Connection.CloseAsync();
+
+        MemoryErasureResultDto result = await MemoryErasureProtocol.FinishAsync(
+            Connection, new MemoryErasureScrubber(factory, logger), row, replayed: false, [], CancellationToken.None);
+
+        Assert.Equal(MemoryErasureWalCheckpointAttempt.Truncated, result.Local.WalCheckpointAttempt);
+
+        await Connection.OpenAsync(Token);
+
+        await AssertStillPendingForTheLogAsync(row, result);
+
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains(nameof(InvalidOperationException), warning.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Finish_lets_cancellation_propagate()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        MemoryErasureReceiptRow row = Receipt(key, MemoryReviewStore.Saga, scrubState: 1, mask: 1);
+
+        await InsertAsync(row, key);
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => MemoryErasureProtocol.FinishAsync(
+            Connection,
+            new MemoryErasureScrubber(new ThrowingOrRefusingFactory(new OperationCanceledException())),
+            row,
+            replayed: false,
+            [],
+            CancellationToken.None));
+    }
+
     [SkippableFact]
     public async Task Finish_refuses_to_run_inside_a_transaction()
     {
@@ -714,6 +872,23 @@ public sealed class MemoryErasureProtocolTests(GrimoireFixture fixture) : IAsync
         await transaction.CommitAsync(Token);
     }
 
+    /// <summary>
+    /// The result reports the scrub still pending for the log, and the stored receipt is unchanged:
+    /// pending, with only the WAL reason set.
+    /// </summary>
+    private async Task AssertStillPendingForTheLogAsync(MemoryErasureReceiptRow row, MemoryErasureResultDto result)
+    {
+        Assert.Equal(MemoryLocalErasureOutcome.RowsRemovedScrubPending, result.Local.Outcome);
+
+        Assert.Equal([MemoryErasureScrubPendingReason.WalCheckpointPending], result.Local.PendingReasons);
+
+        Assert.Equal(row.MutationId, result.MutationId);
+
+        MemoryErasureReceiptRow stored = (await MemoryErasureEvidence.ReadReceiptAsync(Connection, null, row.MutationId, Token))!;
+
+        Assert.Equal((1, 1), (stored.ScrubStateCode, stored.ScrubPendingReasonMask));
+    }
+
     /// <summary>A fingerprint recorded under a key identifier no key in this test holds.</summary>
     private async Task ForeignFingerprintAsync(MemoryReviewStore store) =>
         _ = await MemoryErasureEvidence.InsertFingerprintAsync(
@@ -731,6 +906,30 @@ public sealed class MemoryErasureProtocolTests(GrimoireFixture fixture) : IAsync
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(Token);
+    }
+
+    /// <summary>An ordinary connection factory that refuses every fresh open, or throws from it.</summary>
+    private sealed class ThrowingOrRefusingFactory(Exception? failure) : IGrimoireOrdinaryConnectionFactory
+    {
+        internal int Opens { get; private set; }
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection,
+            CovenantSqliteConnectionMode mode,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The scrubber never borrows a scoped connection.");
+
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind,
+            CancellationToken cancellationToken)
+        {
+            Opens++;
+
+            return failure is null
+                ? Task.FromResult(Result<IGrimoireOrdinaryConnectionLease>.Failure(
+                    new Error(ErrorCodes.Grimoire.MaintenanceUnavailable, "Admission is closed.")))
+                : throw failure;
+        }
     }
 
     /// <summary>An in-memory credential store that counts the writes made into it.</summary>

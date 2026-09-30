@@ -53,9 +53,26 @@ public sealed class MemoryErasureStructuralTests
 
     private const string SagaExtraction = "src/RetroDownfall.Arcanum.Infrastructure/Hosting/SagaExtractionService.cs";
 
+    /// <summary>
+    /// An insert or replace into <c>saga_memories</c> as SQLite accepts it: optionally schema-qualified
+    /// (<c>main.</c>, <c>temp.</c>, quoted or bracketed), and bare or quoted with double quotes,
+    /// brackets, backticks or single quotes.
+    /// </summary>
     private static readonly Regex SagaInsert = new(
-        @"INSERT\s+(OR\s+\w+\s+)?INTO\s+""?saga_memories""?\b",
+        @"\b(?:INSERT\s+(?:OR\s+\w+\s+)?|REPLACE\s+)INTO\s+(?:(?:""\w+""|\[\w+\]|`\w+`|'\w+'|\w+)\s*\.\s*)?[""\[`']?saga_memories\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Serilog's level methods, called statically on <c>Log</c> or on a logger instance.</summary>
+    private static readonly HashSet<string> SerilogLevels = new(StringComparer.Ordinal)
+    {
+        "Verbose",
+        "Debug",
+        "Information",
+        "Warning",
+        "Error",
+        "Fatal",
+        "Write",
+    };
 
     private static readonly HashSet<string> ForbiddenPlaceholders = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -74,13 +91,6 @@ public sealed class MemoryErasureStructuralTests
     [Fact]
     public void Extraction_is_the_only_saga_writer()
     {
-        // The pattern is shown to catch every shape it names before its silence is trusted.
-        Assert.Matches(SagaInsert, "INSERT INTO saga_memories (Id) VALUES ($id)");
-
-        Assert.Matches(SagaInsert, "insert or ignore into \"saga_memories\" (Id) VALUES ($id)");
-
-        Assert.DoesNotMatch(SagaInsert, "INSERT INTO saga_memories_archive (Id) VALUES ($id)");
-
         (string Path, int Matches)[] inserts =
         [
             .. Sources("*.cs")
@@ -95,7 +105,7 @@ public sealed class MemoryErasureStructuralTests
         (string Path, int Calls)[] callers =
         [
             .. Sources("*.cs")
-                .Where(static source => source.Text.Contains("ISagaMemoryStore", StringComparison.Ordinal))
+                .Where(static source => NamesSagaStore(source.Text))
                 .Select(static source => (source.Path, InsertAsyncCalls(source.Text)))
                 .Where(static source => source.Item2 > 0)
                 .OrderBy(static source => source.Path, StringComparer.Ordinal),
@@ -104,7 +114,83 @@ public sealed class MemoryErasureStructuralTests
         Assert.Equal([(SagaExtraction, 2)], callers);
     }
 
+    /// <summary>
+    /// The writer pin is only as good as its pattern, so each spelling SQLite accepts is shown to be
+    /// caught before the pin's silence is trusted.
+    /// </summary>
+    [Theory]
+    [InlineData("INSERT INTO saga_memories (Id) VALUES ($id)")]
+    [InlineData("insert or ignore into \"saga_memories\" (Id) VALUES ($id)")]
+    [InlineData("INSERT OR REPLACE INTO saga_memories (Id) VALUES ($id)")]
+    [InlineData("REPLACE INTO saga_memories (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO main.saga_memories (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO temp.saga_memories (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO \"main\".\"saga_memories\" (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO [saga_memories] (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO [main].[saga_memories] (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO `saga_memories` (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO `main` . `saga_memories` (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO 'saga_memories' (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO 'main'.'saga_memories' (Id) VALUES ($id)")]
+    public void The_saga_writer_pin_recognizes_every_spelling_of_an_insert(string statement)
+    {
+        Assert.Single(SagaInsert.Matches(statement));
+    }
+
+    [Theory]
+    [InlineData("INSERT INTO saga_memories_archive (Id) VALUES ($id)")]
+    [InlineData("INSERT INTO saga_memory_embeddings (MemoryId) VALUES ($id)")]
+    [InlineData("INSERT INTO main.saga_memories_v2 (Id) VALUES ($id)")]
+    [InlineData("UPDATE saga_memories SET Content = $content")]
+    public void The_saga_writer_pin_ignores_other_tables_and_statements(string statement)
+    {
+        Assert.DoesNotMatch(SagaInsert, statement);
+    }
+
+    /// <summary>
+    /// A caller holding the concrete store is a caller too, so the scan reads every file that names
+    /// either the port or the store.
+    /// </summary>
     [Fact]
+    public void The_saga_caller_scan_counts_the_concrete_store_and_the_port()
+    {
+        const string concrete = """
+            internal sealed class Fixture(SagaMemoryStore store)
+            {
+                internal Task Write(string id) => store.InsertAsync(id, "x", default, null, null, null, [], default);
+            }
+            """;
+
+        const string port = """
+            internal sealed class Fixture(ISagaMemoryStore memories)
+            {
+                internal async Task Write(string id)
+                {
+                    _ = await memories.InsertAsync(id, "x", default, null, null, null, [], default);
+                    _ = await this.memories.InsertAsync(id, "y", default, null, null, null, [], default);
+                }
+            }
+            """;
+
+        const string unrelated = """
+            internal sealed class Fixture(ITapestryStore tapestry)
+            {
+                internal Task Write() => tapestry.InsertAsync(default);
+            }
+            """;
+
+        Assert.True(NamesSagaStore(concrete));
+
+        Assert.Equal(1, InsertAsyncCalls(concrete));
+
+        Assert.True(NamesSagaStore(port));
+
+        Assert.Equal(2, InsertAsyncCalls(port));
+
+        Assert.False(NamesSagaStore(unrelated));
+    }
+
+        [Fact]
     public void New_erasure_log_templates_are_content_free()
     {
         string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), InfrastructureRoot);
@@ -164,6 +250,43 @@ public sealed class MemoryErasureStructuralTests
     }
 
     /// <summary>
+    /// Every logging call shape the listed files use, or could, is scanned: Serilog's static and
+    /// instance API as well as <c>ILogger</c>, message definitions, scopes, and interpolated
+    /// templates, which carry whatever they interpolate into the log whatever the placeholder is named.
+    /// </summary>
+    [Theory]
+    [InlineData("Log.Warning(\"Erased {Name}.\", name);", 1)]
+    [InlineData("Serilog.Log.Error(\"Released {Content}.\", name);", 1)]
+    [InlineData("global::Serilog.Log.Information(\"Erased {Key}.\", name);", 1)]
+    [InlineData("Log.ForContext<Fixture>().Debug(\"Erased {Facts}.\", name);", 1)]
+    [InlineData("_log.Verbose(\"Erased {NormalizedKey}.\", name);", 1)]
+    [InlineData("Log.Write(LogEventLevel.Warning, \"Erased {Fact}.\", name);", 1)]
+    [InlineData("Log.Fatal(\"Erased {name}.\", name);", 1)]
+    [InlineData("logger.LogWarning(\"Erased {Name}.\", name);", 1)]
+    [InlineData("logger.Log(LogLevel.Warning, \"Erased {Name}.\", name);", 1)]
+    [InlineData("_ = logger.BeginScope(\"Erasing {Name}.\", name);", 1)]
+    [InlineData("_ = LoggerMessage.Define<string>(LogLevel.Information, new EventId(1), \"Erased {Key}.\");", 1)]
+    [InlineData("Log.Information($\"Erased {name}.\");", 1)]
+    [InlineData("logger.LogInformation($\"Erased {name}.\");", 1)]
+    [InlineData("Log.Warning(\"The erasure key is {KeyState}.\", name);", 0)]
+    [InlineData("logger.LogInformation(\"Checkpoint attempt: {WalCheckpointAttempt}.\", name);", 0)]
+    [InlineData("_ = string.Format(\"Erased {Name}.\", name);", 0)]
+    public void The_log_template_scan_reads_every_logging_call_shape(string call, int expected)
+    {
+        string source = $$"""
+            internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger, Serilog.ILogger _log)
+            {
+                internal void Erase(string name)
+                {
+                    {{call}}
+                }
+            }
+            """;
+
+        Assert.Equal(expected, LogTemplateViolations(source).Count);
+    }
+
+    /// <summary>
     /// Every placeholder the scan forbids in a template passed to a <c>Log…</c> invocation or declared
     /// on a <c>[LoggerMessage]</c> attribute.
     /// </summary>
@@ -173,17 +296,20 @@ public sealed class MemoryErasureStructuralTests
             .ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
             .GetCompilationUnitRoot();
 
-        IEnumerable<SyntaxNode> templates = root.DescendantNodes()
-            .OfType<InvocationExpressionSyntax>()
-            .Where(static invocation => InvokedName(invocation).StartsWith("Log", StringComparison.Ordinal))
-            .Select(static invocation => (SyntaxNode)invocation.ArgumentList)
-            .Concat(root.DescendantNodes()
+        List<SyntaxNode> templates =
+        [
+            .. root.DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Where(static invocation => IsLogCall(invocation))
+                .Select(static invocation => (SyntaxNode)invocation.ArgumentList),
+            .. root.DescendantNodes()
                 .OfType<AttributeSyntax>()
                 .Where(static attribute => attribute.Name.ToString() is "LoggerMessage" or "LoggerMessageAttribute"
                     || attribute.Name.ToString().EndsWith(".LoggerMessage", StringComparison.Ordinal)
                     || attribute.Name.ToString().EndsWith(".LoggerMessageAttribute", StringComparison.Ordinal))
                 .Where(static attribute => attribute.ArgumentList is not null)
-                .Select(static attribute => (SyntaxNode)attribute.ArgumentList!));
+                .Select(static attribute => (SyntaxNode)attribute.ArgumentList!),
+        ];
 
         List<string> violations = [];
 
@@ -201,9 +327,45 @@ public sealed class MemoryErasureStructuralTests
                     }
                 }
             }
+
+            foreach (InterpolatedStringExpressionSyntax interpolated in arguments.DescendantNodes()
+                .OfType<InterpolatedStringExpressionSyntax>())
+            {
+                violations.Add($"an interpolated string in a log call: {interpolated}");
+            }
         }
 
         return violations;
+    }
+
+    /// <summary>
+    /// Whether an invocation writes a log line or declares a log template.
+    /// </summary>
+    /// <remarks>
+    /// <c>ILogger</c>'s extension methods (<c>LogWarning</c>, <c>Log</c>, …), Serilog's level methods
+    /// on the static <c>Log</c> or on any receiver named for a logger, <c>LoggerMessage.Define…</c>, and
+    /// <c>BeginScope</c>. Syntax alone cannot resolve a receiver's type, so a receiver is a logger when
+    /// its text names one: reading too many calls as logging is the safe direction to be wrong in.
+    /// </remarks>
+    private static bool IsLogCall(InvocationExpressionSyntax invocation)
+    {
+        string name = InvokedName(invocation);
+
+        if (name.StartsWith("Log", StringComparison.Ordinal) || name == "BeginScope")
+        {
+            return true;
+        }
+
+        if (invocation.Expression is not MemberAccessExpressionSyntax member)
+        {
+            return false;
+        }
+
+        string receiver = member.Expression.ToString();
+
+        return (SerilogLevels.Contains(name) && receiver.Contains("log", StringComparison.OrdinalIgnoreCase))
+            || (name.StartsWith("Define", StringComparison.Ordinal)
+                && (receiver == "LoggerMessage" || receiver.EndsWith(".LoggerMessage", StringComparison.Ordinal)));
     }
 
     private static string InvokedName(InvocationExpressionSyntax invocation) => invocation.Expression switch
@@ -213,6 +375,10 @@ public sealed class MemoryErasureStructuralTests
         GenericNameSyntax generic => generic.Identifier.ValueText,
         _ => string.Empty,
     };
+
+    /// <summary>Whether a file names the Saga store, as the port or as the concrete class.</summary>
+    private static bool NamesSagaStore(string source) =>
+        source.Contains("SagaMemoryStore", StringComparison.Ordinal);
 
     private static int InsertAsyncCalls(string source) =>
         CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))

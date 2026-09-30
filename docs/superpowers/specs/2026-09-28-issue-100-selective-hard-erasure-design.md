@@ -710,12 +710,14 @@ Counts are never bound or returned.
 | Lexicon | `InferenceProviderAuthorship` | `Known` if any claim version's origin is `AgentAsserted` or `AgentExtracted`. Otherwise `NotRecorded`. |
 | Lexicon | `InferenceProviderContext` | `NotRecorded` |
 | Lexicon | `EmbeddingProvider` | `NotApplicable` |
-| Lexicon | `EncryptedBackup` | As Saga, windowed from the claim's creation. Unbounded when there is no claim. |
+| Lexicon | `EncryptedBackup` | Unbounded: `ReceiptWindow` if any backup operation's latest receipt exists, otherwise `NotRecorded`. A Lexicon entry records no creation time, and its Annals claim can open after the entry exists, so no window start is safe. |
 | Covenant | `InferenceProviderAuthorship` | `Known` if any version's origin is agent. |
 | Covenant | `InferenceProviderContext` | `ReceiptWindow` if any nonrevocable, Covenant-derived provider-dispatch receipt is at or after the entry's `CreatedAtUtc`. The window is time only, with no generation predicate. Otherwise `NotRecorded`. |
 | Covenant | `EmbeddingProvider` | `NotApplicable` |
 | Covenant | `EncryptedBackup` | As Saga, windowed from the entry's creation. |
 | All | `OtherExternal` | `NotRecorded` |
+
+**Amendment (Task 12 review).** The Lexicon `EncryptedBackup` row once windowed from the claim's creation. That window could under-report, because a claim opened after the entry (a scribe with the Annals off, then an operator correction) excluded backups taken in between, so the row is now unbounded.
 
 **CLI rendering order.** All of this goes before the confirmation prompt, on the diagnostics stream, in every mode:
 1. `CovenantExternalRetentionDisclosure.DestructiveOperationText`. It is amended once to name "selective erasure", and remains the one golden copy.

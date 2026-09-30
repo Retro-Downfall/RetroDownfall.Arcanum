@@ -25,13 +25,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 /// <para><b>Replay is by receipt.</b> A receipt whose store and request digest match answers the
 /// apply; one that differs is an idempotency conflict. The comparison is constant-time.</para>
 ///
-/// <para><b>The result is the receipt's.</b> After the erase commits, a receipt still pending only
-/// for the write-ahead log is scrubbed once and, when the log truncates, moved to Verified. The result
-/// is then built from the receipt alone, so a replay and the original apply report the same erase.
-/// Every caller finishes with <see cref="CancellationToken.None"/> after its commit, and nothing here
-/// lets a storage fault escape once the erase has committed.</para>
+/// <para><b>The result is the receipt's.</b> After the erase commits, a receipt still pending for the
+/// write-ahead log is scrubbed once and, when the log truncates, moved to Verified. The result is then
+/// built from the receipt alone, so a replay and the original apply report the same erase. Every
+/// caller finishes with <see cref="CancellationToken.None"/> after its commit, and nothing but
+/// cancellation escapes once the erase has committed: a scrub or upgrade that fails reports the
+/// receipt it was given, pending and never Verified, and the scrubber logs one content-free
+/// warning.</para>
 ///
-/// <para>Nothing here logs.</para>
+/// <para>Nothing here logs directly.</para>
 /// </remarks>
 internal static class MemoryErasureProtocol
 {
@@ -200,11 +202,11 @@ internal static class MemoryErasureProtocol
 
         if (receipt.ScrubStateCode == ScrubPending && (receipt.ScrubPendingReasonMask & WalCheckpointPendingBit) != 0)
         {
-            attempt = await scrubber.CheckpointAsync(cancellationToken).ConfigureAwait(false);
-
-            if (attempt is MemoryErasureWalCheckpointAttempt.Truncated)
+            try
             {
-                try
+                attempt = await scrubber.CheckpointAsync(cancellationToken).ConfigureAwait(false);
+
+                if (attempt is MemoryErasureWalCheckpointAttempt.Truncated)
                 {
                     _ = await MemoryErasureEvidence
                         .ClearWalPendingAsync(connection, null, receipt.MutationId, cancellationToken)
@@ -214,11 +216,21 @@ internal static class MemoryErasureProtocol
                         .ReadReceiptAsync(connection, null, receipt.MutationId, cancellationToken)
                         .ConfigureAwait(false) ?? receipt;
                 }
-                catch (SqliteException)
+            }
+            catch (Exception failure) when (failure is not OperationCanceledException)
+            {
+                // The erase has committed, so nothing here may fail it. The result is the receipt as
+                // it was passed in, pending for the log, whatever the upgrade may have written before
+                // it failed; a replay or the scrub route finishes it. A checkpoint that never answered
+                // is reported as unavailable.
+                if (attempt is MemoryErasureWalCheckpointAttempt.NotAttempted)
                 {
-                    // The erase committed and the log is truncated; only the receipt's upgrade failed.
-                    // It stays pending for the log, and a replay or the scrub route finishes it.
+                    attempt = MemoryErasureWalCheckpointAttempt.Unavailable;
                 }
+
+                current = receipt;
+
+                scrubber.ReportAbandoned(failure);
             }
         }
 

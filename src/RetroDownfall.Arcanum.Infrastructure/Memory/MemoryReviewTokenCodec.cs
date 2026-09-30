@@ -33,8 +33,11 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
     /// </summary>
     private const int ErasurePlanPayloadBytes = 1 + ErasureDigestBytes + ErasureDigestBytes + 1 + ErasureDigestBytes + 1 + 16;
 
-    /// <summary><c>u8 status ‖ u64be fingerprints ‖ u64be receipts</c>.</summary>
-    private const int ErasureKeyResetPayloadBytes = 1 + sizeof(ulong) + sizeof(ulong);
+    /// <summary>
+    /// <c>u8 status ‖ 3 × u64be unverifiable fingerprints ‖ 3 × u64be unverifiable receipts</c>, each
+    /// triple in store-code order: Covenant, Saga, Lexicon. Its length is unique among the purposes.
+    /// </summary>
+    private const int ErasureKeyResetPayloadBytes = 1 + (6 * sizeof(ulong));
 
     // One unexported key for this process lifetime. A process restart deliberately invalidates every
     // token, while independently constructed codec instances in the same process - a host restarted in
@@ -319,12 +322,13 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
     public Result<MemoryErasureIssuedToken> IssueErasureKeyReset(MemoryErasureKeyResetTokenFacts facts)
     {
         if (facts is null
-            || facts.KeyStatus is not (MemoryErasureKeyStatus.Absent
-                or MemoryErasureKeyStatus.Present
-                or MemoryErasureKeyStatus.Unavailable
-                or MemoryErasureKeyStatus.Lost)
-            || facts.UnverifiableFingerprints < 0
-            || facts.UnverifiableReceipts < 0)
+            || !ValidKeyStatus(facts.KeyStatus)
+            || facts.UnverifiableCovenantFingerprints < 0
+            || facts.UnverifiableSagaFingerprints < 0
+            || facts.UnverifiableLexiconFingerprints < 0
+            || facts.UnverifiableCovenantReceipts < 0
+            || facts.UnverifiableSagaReceipts < 0
+            || facts.UnverifiableLexiconReceipts < 0)
         {
             return InvalidFacts;
         }
@@ -335,9 +339,18 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
 
             payload[offset++] = (byte)facts.KeyStatus;
 
-            WriteUInt64(payload, ref offset, (ulong)facts.UnverifiableFingerprints);
-
-            WriteUInt64(payload, ref offset, (ulong)facts.UnverifiableReceipts);
+            foreach (long count in (long[])
+                [
+                    facts.UnverifiableCovenantFingerprints,
+                    facts.UnverifiableSagaFingerprints,
+                    facts.UnverifiableLexiconFingerprints,
+                    facts.UnverifiableCovenantReceipts,
+                    facts.UnverifiableSagaReceipts,
+                    facts.UnverifiableLexiconReceipts,
+                ])
+            {
+                WriteUInt64(payload, ref offset, (ulong)count);
+            }
         });
     }
 
@@ -356,19 +369,30 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
 
         MemoryErasureKeyStatus status = (MemoryErasureKeyStatus)payload[offset++];
 
-        ulong fingerprints = ReadUInt64(payload, ref offset);
+        long[] counts = new long[6];
 
-        ulong receipts = ReadUInt64(payload, ref offset);
+        for (int index = 0; index < counts.Length; index++)
+        {
+            ulong count = ReadUInt64(payload, ref offset);
 
-        return status is MemoryErasureKeyStatus.Absent
-                or MemoryErasureKeyStatus.Present
-                or MemoryErasureKeyStatus.Unavailable
-                or MemoryErasureKeyStatus.Lost
-            && fingerprints <= long.MaxValue
-            && receipts <= long.MaxValue
-            ? new MemoryErasureKeyResetTokenFacts(status, (long)fingerprints, (long)receipts)
+            if (count > long.MaxValue)
+            {
+                return InvalidPreflight;
+            }
+
+            counts[index] = (long)count;
+        }
+
+        return ValidKeyStatus(status)
+            ? new MemoryErasureKeyResetTokenFacts(status, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5])
             : InvalidPreflight;
     }
+
+    private static bool ValidKeyStatus(MemoryErasureKeyStatus status) =>
+        status is MemoryErasureKeyStatus.Absent
+            or MemoryErasureKeyStatus.Present
+            or MemoryErasureKeyStatus.Unavailable
+            or MemoryErasureKeyStatus.Lost;
 
     /// <summary>
     /// Issues an erasure token and the wall-clock times that describe it, both from this codec's clock.

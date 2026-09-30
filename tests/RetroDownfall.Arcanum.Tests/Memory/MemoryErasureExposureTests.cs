@@ -95,8 +95,9 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
     [SkippableTheory]
     [InlineData("saga")]
     [InlineData("lexicon-agent")]
-    [InlineData("lexicon-operator")]
-    [InlineData("covenant-agent")]
+    [InlineData("lexicon-backfilled-then-corrected")]
+    [InlineData("covenant-agent-proposed")]
+    [InlineData("covenant-agent-approved")]
     [InlineData("covenant-operator")]
     public async Task Each_store_reports_its_fixed_channel_rules(string row)
     {
@@ -112,15 +113,17 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
         {
             "saga" => await ReadSagaAsync([await InsertSagaAsync("The operator prefers dark mode.", T0)]),
             "lexicon-agent" => await ReadLexiconAsync(await ScribeAsync("Mill Warden", annals: true)),
-            "lexicon-operator" => await ReadLexiconAsync(await OperatorOnlyLexiconAsync("Mill Warden")),
-            "covenant-agent" => await ReadCovenantAsync(agentProposes: true),
-            _ => await ReadCovenantAsync(agentProposes: false),
+            "lexicon-backfilled-then-corrected" => await ReadLexiconAsync(await BackfilledThenCorrectedLexiconAsync("Mill Warden")),
+            "covenant-agent-proposed" => await ReadCovenantAsync(CovenantOrigin.AgentProposed),
+            "covenant-agent-approved" => await ReadCovenantAsync(CovenantOrigin.AgentApproved),
+            _ => await ReadCovenantAsync(CovenantOrigin.Operator),
         };
 
         MemoryExternalEvidence[] expected = row switch
         {
             "saga" => [Known, NotRecorded, Known, NotRecorded, NotRecorded],
-            "lexicon-agent" or "covenant-agent" => [Known, NotRecorded, NotApplicable, NotRecorded, NotRecorded],
+            "lexicon-agent" or "covenant-agent-proposed" or "covenant-agent-approved" =>
+                [Known, NotRecorded, NotApplicable, NotRecorded, NotRecorded],
             _ => [NotRecorded, NotRecorded, NotApplicable, NotRecorded, NotRecorded],
         };
 
@@ -198,20 +201,67 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
         Assert.Equal(MemoryExternalEvidence.ReceiptWindow, Backup(await ReadLexiconAsync(entry)));
     }
 
-    [SkippableFact]
-    public async Task A_lexicon_backup_window_starts_at_its_claim()
+    /// <summary>
+    /// A Lexicon entry records no creation time, and its Annals claim can open long after the entry
+    /// exists: here a scribe with the Annals switched off, a backup, then an operator correction that
+    /// opens the claim. A window measured from the claim would miss that backup, so every backup counts.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_lexicon_backup_window_is_unbounded_even_when_its_claim_opens_after_the_entry(bool backedUp)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        LexiconEntryDto entry = await ScribeAsync("Mill Warden", annals: true);
+        LexiconEntryDto entry = await ScribeAsync("Mill Warden", annals: false);
 
-        await BackupReceiptAsync(Connection, Guid.NewGuid(), 1, DateTimeOffset.UnixEpoch.AddDays(1));
+        DateTimeOffset backupAt = DateTimeOffset.UtcNow;
 
-        Assert.Equal(MemoryExternalEvidence.NotRecorded, Backup(await ReadLexiconAsync(entry)));
+        if (backedUp)
+        {
+            await BackupReceiptAsync(Connection, Guid.NewGuid(), 1, backupAt);
+        }
 
-        await BackupReceiptAsync(Connection, Guid.NewGuid(), 2, DateTimeOffset.UtcNow.AddDays(1));
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
 
-        Assert.Equal(MemoryExternalEvidence.ReceiptWindow, Backup(await ReadLexiconAsync(entry)));
+        await CorrectLexiconAsync(entry.Name);
+
+        DateTimeOffset claimOpened = UtcInstantText.Parse(await TextAsync(
+            Connection,
+            "SELECT CreatedAtUtc FROM annal_claims WHERE SubjectStoreCode = 2;"));
+
+        Assert.True(claimOpened > backupAt.AddMilliseconds(10), "The claim did not open after the backup.");
+
+        Assert.Equal(
+            backedUp ? MemoryExternalEvidence.ReceiptWindow : MemoryExternalEvidence.NotRecorded,
+            Backup(await ReadLexiconAsync(entry)));
+    }
+
+    /// <summary>
+    /// The journal records receipts to the millisecond while creation instants keep every tick, so a
+    /// window starts at its creation's millisecond: a receipt taken later in that same millisecond counts.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_receipt_in_the_same_millisecond_as_the_window_start_counts()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset created = T0.AddTicks(1_234_567);
+
+        string id = await InsertSagaAsync("The operator prefers dark mode.", created);
+
+        await BackupReceiptAsync(Connection, Guid.NewGuid(), 1, created.AddMilliseconds(-1));
+
+        Assert.Equal(MemoryExternalEvidence.NotRecorded, Backup(await ReadSagaAsync([id])));
+
+        // Half a millisecond after creation, stored truncated to the creation's own millisecond.
+        await BackupReceiptAsync(Connection, Guid.NewGuid(), 2, created.AddTicks(5_000));
+
+        Assert.Equal(
+            "2026-06-01T00:00:00.1230000Z",
+            await TextAsync(Connection, "SELECT max(DisclosedAtUtc) FROM external_disclosure_receipts;"));
+
+        Assert.Equal(MemoryExternalEvidence.ReceiptWindow, Backup(await ReadSagaAsync([id])));
     }
 
     [Fact]
@@ -366,15 +416,16 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
     }
 
     /// <summary>
-    /// An entry whose every recorded version is the operator's or an upgrade's: written before the
-    /// Annals existed, claimed by the upgrade's backfill, then corrected by the operator.
+    /// A legacy entry, written through the agent scribe path before the Annals recorded it, claimed by
+    /// the upgrade's backfill, then corrected by the operator.
     /// </summary>
     /// <remarks>
-    /// Lexicon has no operator create path, and a correction of an entry with no claim records the
-    /// content it replaces as the agent's (which is what it was), so a scribe followed by a correction
-    /// is always agent-authored. The entry an operator alone can answer for is the legacy one.
+    /// Its claim records only <c>SystemBackfilled</c> and <c>OperatorStated</c> versions, so authorship
+    /// reads <c>NotRecorded</c>: no agent version is recorded, although the entry was an agent's scribe.
+    /// "Not recorded" is not "not disclosed". A scribe followed only by a correction reads <c>Known</c>,
+    /// because the correction records the content it replaces as the agent's.
     /// </remarks>
-    private async Task<LexiconEntryDto> OperatorOnlyLexiconAsync(string name)
+    private async Task<LexiconEntryDto> BackfilledThenCorrectedLexiconAsync(string name)
     {
         LexiconEntryDto scribed = await ScribeAsync(name, annals: false);
 
@@ -389,6 +440,20 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
             await transaction.CommitAsync(Token);
         }
 
+        await CorrectLexiconAsync(name);
+
+        Assert.Equal(0L, await ScalarAsync(
+            Connection,
+            "SELECT count(*) FROM annal_versions WHERE OriginCode IN (2, 3);"));
+
+        Assert.True(await ScalarAsync(Connection, "SELECT count(*) FROM annal_versions WHERE OriginCode = 1;") >= 1);
+
+        return scribed;
+    }
+
+    /// <summary>Corrects an entry the way an operator does: show its exact target, then correct it.</summary>
+    private async Task CorrectLexiconAsync(string name)
+    {
         LexiconService lexicon = Lexicon(annals: false);
 
         Result<LexiconInspectionResult<LexiconEntryDetail>> shown =
@@ -405,17 +470,13 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
         Assert.True(corrected.IsSuccess, corrected.IsFailure ? corrected.Error.Message : string.Empty);
 
         Assert.Equal(LexiconCurationOutcomeKind.Applied, corrected.Value.Outcome);
-
-        Assert.Equal(0L, await ScalarAsync(
-            Connection,
-            "SELECT count(*) FROM annal_versions WHERE OriginCode IN (2, 3);"));
-
-        Assert.True(await ScalarAsync(Connection, "SELECT count(*) FROM annal_versions WHERE OriginCode = 1;") >= 1);
-
-        return scribed;
     }
 
-    private static async Task<MemoryErasureExternalExposureDto> ReadCovenantAsync(bool agentProposes)
+    /// <summary>
+    /// An operator-set Campaign entry, plus, for an agent origin, one agent version applied through the
+    /// production kernel: a proposal on the Proposed lane, or an approved retirement of the Confirmed head.
+    /// </summary>
+    private static async Task<MemoryErasureExternalExposureDto> ReadCovenantAsync(CovenantOrigin agentOrigin)
     {
         await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
 
@@ -425,23 +486,39 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
 
         await harness.SetAsync(CovenantScope.Campaign, campaign, CovenantKey, "Build from the repository root.", Token);
 
-        if (agentProposes)
+        if (agentOrigin is not CovenantOrigin.Operator)
         {
+            SqliteConnection connection = harness.Fixture.Connection;
+
             long keyEpoch = await ScalarAsync(
-                harness.Fixture.Connection,
+                connection,
                 $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{CovenantKey}';");
 
-            CovenantMutationBatch batch = await CovenantMutationFixture.LiveBatchAsync(
-                harness.Fixture,
-                Token,
-                CovenantMutationFixture.AgentPropose(campaign, CovenantKey, "The model suggests building from tools.", 0, keyEpoch));
+            long confirmedRevision = await ScalarAsync(
+                connection,
+                $"SELECT CurrentLaneRevision FROM covenant_heads WHERE NormalizedKey = '{CovenantKey}' AND LaneCode = 1;");
+
+            CovenantMutationIntent intent = agentOrigin is CovenantOrigin.AgentProposed
+                ? CovenantMutationFixture.AgentPropose(campaign, CovenantKey, "The model suggests building from tools.", 0, keyEpoch)
+                : CovenantMutationFixture.AgentRetire(
+                    CovenantOperationScope.ForCampaign(campaign),
+                    CovenantKey,
+                    CovenantLane.Confirmed,
+                    confirmedRevision,
+                    keyEpoch);
+
+            CovenantMutationBatch batch = await CovenantMutationFixture.LiveBatchAsync(harness.Fixture, Token, intent);
 
             Result<IReadOnlyList<CovenantMutationReceipt>> applied =
                 await CovenantMutationFixture.ApplyAsync(harness.Fixture, batch, Token);
 
             Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
-            Assert.Equal(1L, await ScalarAsync(harness.Fixture.Connection, "SELECT count(*) FROM covenant_versions WHERE OriginCode = 2;"));
+            // The entry's only agent version is the one this row names.
+            Assert.Equal(
+                (1L, 0L),
+                (await ScalarAsync(connection, $"SELECT count(*) FROM covenant_versions WHERE OriginCode = {(int)agentOrigin};"),
+                    await ScalarAsync(connection, $"SELECT count(*) FROM covenant_versions WHERE OriginCode IN (2, 3) AND OriginCode <> {(int)agentOrigin};")));
         }
 
         return await MemoryErasureExposure.ReadCovenantAsync(

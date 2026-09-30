@@ -17,11 +17,23 @@ internal sealed record MemoryErasurePlanTokenFacts(
     byte[]? ContentBinding,
     Guid? DatasetGeneration);
 
-/// <summary>What a <c>reset-key</c> preflight token binds: the key state and the counts it measured.</summary>
+/// <summary>
+/// What a <c>reset-key</c> preflight token binds: the key state, and the unverifiable fingerprints and
+/// receipts it measured in each store.
+/// </summary>
+/// <remarks>
+/// Per store rather than in total (spec §5.7): a reset discards what the preview showed, store by
+/// store, so a row that moves from one store to another between prepare and apply is a stale plan
+/// even when every total is unchanged.
+/// </remarks>
 internal sealed record MemoryErasureKeyResetTokenFacts(
     MemoryErasureKeyStatus KeyStatus,
-    long UnverifiableFingerprints,
-    long UnverifiableReceipts);
+    long UnverifiableCovenantFingerprints,
+    long UnverifiableSagaFingerprints,
+    long UnverifiableLexiconFingerprints,
+    long UnverifiableCovenantReceipts,
+    long UnverifiableSagaReceipts,
+    long UnverifiableLexiconReceipts);
 
 /// <summary>One issued erasure token and the wall-clock times that describe it.</summary>
 /// <remarks>

@@ -24,10 +24,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 /// records any other channel.</para>
 ///
 /// <para><b>Windows.</b> A backup operation counts once its latest receipt is at or after the item's
-/// window start: the earliest creation across a Saga twin class, a Lexicon entry's claim, or a Covenant
-/// entry's creation. A Lexicon entry without a claim has no knowable start, so every backup counts. A
-/// Covenant provider window is time only, with no generation predicate, because a generation names
-/// the dataset a turn read and not which entry it carried.</para>
+/// window start: the earliest creation across a Saga twin class, or a Covenant entry's creation. A
+/// Lexicon entry records no creation time, and its Annals claim can open after the entry exists, so
+/// its window is unbounded and every backup counts: over-reporting is the safe direction. A Covenant
+/// provider window is time only, with no generation predicate, because a generation names the dataset
+/// a turn read and not which entry it carried. The journal records receipts to the millisecond, so
+/// every window starts at the millisecond of its creation, and a receipt taken later in that same
+/// millisecond counts.</para>
 ///
 /// <para>A catalog without the disclosure journal has no receipts. Every identity predicate compares the
 /// normalized spelling, so a row stored in any spelling of its identity matches.</para>
@@ -76,8 +79,9 @@ internal static class MemoryErasureExposure
     }
 
     /// <remarks>
-    /// The claim is found by the entry's identity. <paramref name="normalizedName"/> and
-    /// <paramref name="campaignId"/> describe the same entry and no rule reads them.
+    /// Authorship is read from the entry's claim, found by the entry's identity. The backup window is
+    /// unbounded. <paramref name="normalizedName"/> and <paramref name="campaignId"/> describe the same
+    /// entry and no rule reads them.
     /// </remarks>
     internal static async Task<MemoryErasureExternalExposureDto> ReadLexiconAsync(
         SqliteConnection connection,
@@ -115,28 +119,14 @@ internal static class MemoryErasureExposure
             agentAuthored = await ExistsAsync(authorship, cancellationToken).ConfigureAwait(false);
         }
 
-        DateTimeOffset? windowStart;
-
-        await using (SqliteCommand claim = Command(
-            connection,
-            transaction,
-            $"""
-            SELECT claim.CreatedAtUtc
-            FROM annal_claims AS claim
-            WHERE claim.SubjectStoreCode = 2
-              AND {CovenantIdentitySql.Keyed("claim.SubjectId", "$entry")};
-            """))
-        {
-            _ = claim.Parameters.AddWithValue("$entry", entry);
-
-            windowStart = await EarliestAsync(claim, cancellationToken).ConfigureAwait(false);
-        }
-
+        // Unbounded: a Lexicon entry records no creation time, and its claim can open long after the
+        // entry exists (a scribe with the Annals off, then an operator correction), so no window start
+        // is safe. Every backup counts.
         return Exposure(
             agentAuthored ? MemoryExternalEvidence.Known : MemoryExternalEvidence.NotRecorded,
             MemoryExternalEvidence.NotRecorded,
             MemoryExternalEvidence.NotApplicable,
-            await BackupAsync(connection, transaction, windowStart, cancellationToken).ConfigureAwait(false));
+            await BackupAsync(connection, transaction, windowStart: null, cancellationToken).ConfigureAwait(false));
     }
 
     internal static async Task<MemoryErasureExternalExposureDto> ReadCovenantAsync(
@@ -316,10 +306,17 @@ internal static class MemoryErasureExposure
     /// Binds the window start in the journal's own instant spelling, which orders as text exactly as it
     /// orders in time; null means unbounded.
     /// </summary>
+    /// <remarks>
+    /// The start is floored to its millisecond first. Receipts are stamped from Unix milliseconds while
+    /// creation instants keep every tick, so an unfloored start would put a receipt from later in the
+    /// creation's own millisecond before it, and under-report.
+    /// </remarks>
     private static void BindWindowStart(SqliteCommand command, DateTimeOffset? windowStart) =>
         _ = command.Parameters.AddWithValue(
             "$windowStartUtc",
-            windowStart is { } start ? UtcInstantText.Format(start) : DBNull.Value);
+            windowStart is { } start
+                ? UtcInstantText.Format(start.AddTicks(-(start.UtcTicks % TimeSpan.TicksPerMillisecond)))
+                : DBNull.Value);
 
     private static async Task<bool> HasJournalAsync(
         SqliteConnection connection,

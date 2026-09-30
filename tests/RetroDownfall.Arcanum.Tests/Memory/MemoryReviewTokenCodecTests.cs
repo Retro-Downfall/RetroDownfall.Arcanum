@@ -258,16 +258,18 @@ public sealed class MemoryReviewTokenCodecTests
     }
 
     [Fact]
-    public void A_key_reset_round_trip_binds_status_and_counts()
+    public void A_key_reset_round_trip_binds_status_and_per_store_counts()
     {
         FakeTimeProvider time = FrozenTime();
 
         IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(time);
 
-        MemoryErasureIssuedToken issued = codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Lost, 7, 3)).Value;
+        MemoryErasureKeyResetTokenFacts facts = new(MemoryErasureKeyStatus.Lost, 7, 3, 5, 2, 4, 6);
 
-        // 18 header + 17 payload + 32 tag bytes.
-        Assert.Equal(90, issued.Token.Length);
+        MemoryErasureIssuedToken issued = codec.IssueErasureKeyReset(facts).Value;
+
+        // 18 header + 49 payload (u8 status and six u64be counts) + 32 tag bytes.
+        Assert.Equal(132, issued.Token.Length);
 
         Assert.Equal(5, Base64Url.DecodeFromChars(issued.Token)[1]);
 
@@ -275,17 +277,46 @@ public sealed class MemoryReviewTokenCodecTests
 
         Assert.Equal(issued.IssuedAtUtc + MemoryReviewLimits.TokenLifetime, issued.ExpiresAtUtc);
 
-        Assert.Equal(new MemoryErasureKeyResetTokenFacts(MemoryErasureKeyStatus.Lost, 7, 3), codec.ReadErasureKeyReset(issued.Token).Value);
+        Assert.Equal(facts, codec.ReadErasureKeyReset(issued.Token).Value);
     }
 
+    /// <summary>
+    /// The reset binds what it will discard store by store (spec §5.7), so moving an unverifiable row
+    /// from one store to another is a different preview even when every total is unchanged.
+    /// </summary>
     [Fact]
+    public void A_same_total_shift_between_stores_is_a_different_key_reset()
+    {
+        IMemoryErasureTokenCodec codec = new MemoryReviewTokenCodec(FrozenTime());
+
+        MemoryErasureKeyResetTokenFacts[] shifted =
+        [
+            new(MemoryErasureKeyStatus.Lost, 1, 0, 0, 0, 0, 0),
+            new(MemoryErasureKeyStatus.Lost, 0, 1, 0, 0, 0, 0),
+            new(MemoryErasureKeyStatus.Lost, 0, 0, 1, 0, 0, 0),
+            new(MemoryErasureKeyStatus.Lost, 0, 0, 0, 1, 0, 0),
+            new(MemoryErasureKeyStatus.Lost, 0, 0, 0, 0, 1, 0),
+            new(MemoryErasureKeyStatus.Lost, 0, 0, 0, 0, 0, 1),
+        ];
+
+        MemoryErasureKeyResetTokenFacts[] read =
+        [
+            .. shifted.Select(facts => codec.ReadErasureKeyReset(codec.IssueErasureKeyReset(facts).Value.Token).Value),
+        ];
+
+        Assert.Equal(shifted, read);
+
+        Assert.Equal(read.Length, read.Distinct().Count());
+    }
+
+        [Fact]
     public void Erasure_tokens_and_review_tokens_refuse_each_others_purposes()
     {
         MemoryReviewTokenCodec codec = new(FrozenTime());
 
         string plan = codec.IssueErasurePlan(new(MemoryReviewStore.Saga, Bytes(0x11), Bytes(0x22), Bytes(0x33), null)).Value.Token;
 
-        string reset = codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Present, 0, 0)).Value.Token;
+        string reset = codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Present, 0, 0, 0, 0, 0, 0)).Value.Token;
 
         string cursor = codec.IssueCursor(Cursor()).Value;
 
@@ -298,6 +329,17 @@ public sealed class MemoryReviewTokenCodecTests
         byte[] purposes = [.. new[] { cursor, observation, prepared, plan, reset }.Select(static token => Base64Url.DecodeFromChars(token)[1])];
 
         Assert.Equal(purposes.Length, purposes.Distinct().Count());
+
+        // And every purpose has its own payload length, which the reader checks before the tag.
+        int[] lengths = [.. new[] { cursor, observation, prepared, plan, reset }.Select(static token => Base64Url.DecodeFromChars(token).Length)];
+
+        Assert.Equal(lengths.Length - 1, lengths.Distinct().Count());
+
+        Assert.Equal(lengths[0], lengths[1]);
+
+        Assert.DoesNotContain(lengths[3], lengths[..3]);
+
+        Assert.DoesNotContain(lengths[4], lengths[..4]);
 
         Assert.True(codec.ReadCursor(plan).IsFailure);
 
@@ -384,13 +426,25 @@ public sealed class MemoryReviewTokenCodecTests
 
         Assert.Equal(ErrorCodes.MemoryReview.InvalidTokenFacts, codec.IssueErasurePlan(null!).Error.Code);
 
-        Assert.Equal(
-            ErrorCodes.MemoryReview.InvalidTokenFacts,
-            codec.IssueErasureKeyReset(new((MemoryErasureKeyStatus)9, 0, 0)).Error.Code);
+        MemoryErasureKeyResetTokenFacts reset = new(MemoryErasureKeyStatus.Lost, 0, 0, 0, 0, 0, 0);
 
-        Assert.Equal(
-            ErrorCodes.MemoryReview.InvalidTokenFacts,
-            codec.IssueErasureKeyReset(new(MemoryErasureKeyStatus.Lost, -1, 0)).Error.Code);
+        Assert.True(codec.IssueErasureKeyReset(reset).IsSuccess);
+
+        MemoryErasureKeyResetTokenFacts[] invalidResets =
+        [
+            reset with { KeyStatus = (MemoryErasureKeyStatus)9 },
+            reset with { UnverifiableCovenantFingerprints = -1 },
+            reset with { UnverifiableSagaFingerprints = -1 },
+            reset with { UnverifiableLexiconFingerprints = -1 },
+            reset with { UnverifiableCovenantReceipts = -1 },
+            reset with { UnverifiableSagaReceipts = -1 },
+            reset with { UnverifiableLexiconReceipts = -1 },
+        ];
+
+        foreach (MemoryErasureKeyResetTokenFacts facts in invalidResets)
+        {
+            Assert.Equal(ErrorCodes.MemoryReview.InvalidTokenFacts, codec.IssueErasureKeyReset(facts).Error.Code);
+        }
     }
 
     /// <summary>

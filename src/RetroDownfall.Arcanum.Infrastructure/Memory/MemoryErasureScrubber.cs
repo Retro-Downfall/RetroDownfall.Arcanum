@@ -24,7 +24,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 /// checkpoint that could not be read, is <see cref="MemoryErasureWalCheckpointAttempt.Unavailable"/>,
 /// because a committed erase must always be able to report its result.</para>
 ///
-/// <para>Its one log line carries the attempt and nothing else.</para>
+/// <para>Its two log lines are content-free: the attempt, and, when the erase protocol abandons a
+/// committed erase's scrub or receipt upgrade, the failure's type. Neither names content, a
+/// fingerprint, a key, or an exception message.</para>
 /// </remarks>
 internal sealed class MemoryErasureScrubber(
     IGrimoireOrdinaryConnectionFactory connections,
@@ -68,6 +70,19 @@ internal sealed class MemoryErasureScrubber(
         _logger.LogInformation("Erasure write-ahead-log checkpoint attempt: {WalCheckpointAttempt}.", attempt);
 
         return attempt;
+    }
+
+    /// <summary>
+    /// Records that a committed erase's post-commit scrub or receipt upgrade was abandoned, by the
+    /// failure's type alone.
+    /// </summary>
+    internal void ReportAbandoned(Exception failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+
+        _logger.LogWarning(
+            "An erase committed, but its post-commit scrub or receipt upgrade failed ({FailureType}); the receipt stays pending until a replay or the scrub route finishes it.",
+            failure.GetType().Name);
     }
 
     /// <summary>Runs the checked checkpoint with the scrub's short wait on the connection opened for it.</summary>
