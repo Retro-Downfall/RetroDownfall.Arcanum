@@ -463,7 +463,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         SagaMemoryStore memories = new(
             _db!,
             new WeaveIndexAvailability(),
-            new TestOptionsMonitor<ArcanumSettings>(_settings));
+            new TestOptionsMonitor<ArcanumSettings>(_settings),
+            MemoryErasureTestKeys.Isolated());
 
         _ = await memories.InsertAsync(
             Guid.NewGuid().ToString(),

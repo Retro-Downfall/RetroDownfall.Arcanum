@@ -489,7 +489,8 @@ public sealed partial class DataRetentionServiceTests
 
                     },
 
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     /// <summary>A deterministic vector of the length the store is configured to accept.</summary>
     private static float[] SagaEmbedding()

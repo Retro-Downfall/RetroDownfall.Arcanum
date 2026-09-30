@@ -257,7 +257,8 @@ public sealed class AnnalsStoreTests : IAsyncLifetime
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
     private ILexiconService CreateLexiconService() =>
         new LexiconService(

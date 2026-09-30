@@ -68,7 +68,8 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                             Dimensions = TestDimensions,
                         },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
         ServiceCollection services = new();
 
@@ -306,7 +307,8 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                             Dimensions = TestDimensions,
                         },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
         _ = await claiming.InsertAsync(
             "mem-claimed-1", "a", DateTimeOffset.UtcNow, Guid.NewGuid(), null, "extraction",

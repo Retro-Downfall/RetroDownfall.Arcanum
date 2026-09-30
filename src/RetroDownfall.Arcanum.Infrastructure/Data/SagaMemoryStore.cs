@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Annals;
@@ -9,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
@@ -28,6 +30,7 @@ internal sealed partial class SagaMemoryStore(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
+    IMemoryErasureKeyProvider erasureKeys,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ISagaMemoryStore
 {
     public Task<SagaMemoryWriteOutcome> InsertAsync(
@@ -75,7 +78,7 @@ internal sealed partial class SagaMemoryStore(
             cancellationToken);
     }
 
-    private Task<SagaMemoryWriteOutcome> InsertCoreAsync(
+    private async Task<SagaMemoryWriteOutcome> InsertCoreAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -95,161 +98,193 @@ internal sealed partial class SagaMemoryStore(
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting insert to avoid corrupting the vec0 index.""");
         }
 
-        return SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        // Opened before the erasure guard's first phase, which must see the connection outside any
+        // transaction: resolving the erasure key can read the OS credential store, and that never happens
+        // under a SQLite lock.
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                // Transaction and commands are created fresh on every invocation of this delegate: if
-                // SqliteBusyRetry retries after a SQLITE_BUSY failure, the prior transaction has already
-                // been rolled back/disposed by the `await using` blocks below, so the retry starts a
-                // brand-new transaction rather than reusing a stale one or leaving a partial insert split
-                // across saga_memories/saga_memory_embeddings/saga_memory_embeddings_vec.
-                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-
-                // Derived here, from the owning Session's canonical binding, rather than accepted from
-                // the caller. A memory's scope is a statement about authority, and a writer that could
-                // name its own Campaign could fabricate one for a Session that never carried it.
-                (SagaMemoryScopeKind scopeKind, string? scopeCampaignId) =
-                    await SagaMemoryScopeClassifier
-                        .ResolveForSessionAsync(connection, transaction, sessionId, cancellationToken)
-                        .ConfigureAwait(false);
-
-                // The one chokepoint every Saga write goes through, so extraction cannot re-add what an
-                // operator just retired and no future writer can reach around the check by calling
-                // something else. A null key means nothing has ever been retired.
-                byte[]? suppressionKey = await SagaSuppressionKeyStore
-                    .ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-
-                if (suppressionKey is not null)
+        return await MemoryErasureGuard.RunWithRetryAsync(
+            (SqliteConnection)connection,
+            MemoryReviewStore.Saga,
+            erasureKeys,
+            guard => SqliteBusyRetry.ExecuteAsync(
+                async () =>
                 {
-                    (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
-                        SuppressionDigests(suppressionKey, scopeKind, scopeCampaignId, content);
+                    // Transaction and commands are created fresh on every invocation of this delegate: if
+                    // SqliteBusyRetry retries after a SQLITE_BUSY failure, the prior transaction has already
+                    // been rolled back/disposed by the `await using` blocks below, so the retry starts a
+                    // brand-new transaction rather than reusing a stale one or leaving a partial insert split
+                    // across saga_memories/saga_memory_embeddings/saga_memory_embeddings_vec.
+                    await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-                    await using DbCommand suppressionCheckCmd = connection.CreateCommand();
+                    // Derived here, from the owning Session's canonical binding, rather than accepted from
+                    // the caller. A memory's scope is a statement about authority, and a writer that could
+                    // name its own Campaign could fabricate one for a Session that never carried it.
+                    (SagaMemoryScopeKind scopeKind, string? scopeCampaignId) =
+                        await SagaMemoryScopeClassifier
+                            .ResolveForSessionAsync(connection, transaction, sessionId, cancellationToken)
+                            .ConfigureAwait(false);
 
-                    suppressionCheckCmd.Transaction = transaction;
+                    // The one chokepoint every Saga write goes through, so extraction cannot re-add what an
+                    // operator just retired and no future writer can reach around the check by calling
+                    // something else. A null key means nothing has ever been retired.
+                    byte[]? suppressionKey = await SagaSuppressionKeyStore
+                        .ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
 
-                    suppressionCheckCmd.CommandText =
-                        "SELECT 1 FROM saga_retirement_suppressions"
-                        + " WHERE SuppressionDigest IN (@digest, @legacyDigest)";
+                    if (suppressionKey is not null)
+                    {
+                        (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
+                            SuppressionDigests(suppressionKey, scopeKind, scopeCampaignId, content);
 
-                    AddParameter(suppressionCheckCmd, "@digest", suppressionDigest);
+                        await using DbCommand suppressionCheckCmd = connection.CreateCommand();
 
-                    AddParameter(suppressionCheckCmd, "@legacyDigest", legacySuppressionDigest);
+                        suppressionCheckCmd.Transaction = transaction;
 
-                    object? hit = await suppressionCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                        suppressionCheckCmd.CommandText =
+                            "SELECT 1 FROM saga_retirement_suppressions"
+                            + " WHERE SuppressionDigest IN (@digest, @legacyDigest)";
 
-                    if (hit is not null)
+                        AddParameter(suppressionCheckCmd, "@digest", suppressionDigest);
+
+                        AddParameter(suppressionCheckCmd, "@legacyDigest", legacySuppressionDigest);
+
+                        object? hit = await suppressionCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+                        if (hit is not null)
+                        {
+                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                            return SagaMemoryWriteOutcome.Suppressed;
+                        }
+                    }
+
+                    // The erasure chokepoint, in the same transaction and over the same derived scope. The
+                    // identity is a factory so an installation that has erased nothing never parses the bound
+                    // Campaign, and its insert behaves exactly as it did before erasure existed. A Campaign
+                    // the factory cannot name throws, which rolls this transaction back and fails the write
+                    // closed.
+                    MemoryErasureGuardVerdict erasure = await MemoryErasureGuard.CheckAsync(
+                        (SqliteConnection)connection,
+                        (SqliteTransaction)transaction,
+                        guard,
+                        () => SagaErasureWriteGate.SagaIdentity(scopeKind, scopeCampaignId, content),
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (erasure != MemoryErasureGuardVerdict.Allowed)
                     {
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-                        return SagaMemoryWriteOutcome.Suppressed;
+                        return erasure switch
+                        {
+                            MemoryErasureGuardVerdict.Withheld => SagaMemoryWriteOutcome.Suppressed,
+                            MemoryErasureGuardVerdict.RetryWithKey => throw new MemoryErasureRetryException(),
+                            _ => throw new MemoryErasureGuardException(MemoryErasureGuard.KeyLostError),
+                        };
                     }
-                }
 
-                await using DbCommand memoryCmd = connection.CreateCommand();
+                    await using DbCommand memoryCmd = connection.CreateCommand();
 
-                memoryCmd.Transaction = transaction;
+                    memoryCmd.Transaction = transaction;
 
-                memoryCmd.CommandText =
-                    """
-                    INSERT INTO "saga_memories" (
-                        "Id", "Content", "CreatedAt", "SessionId", "Tags", "Source", ScopeKindCode, CampaignId)
-                    VALUES (@id, @content, @createdAt, @sessionId, @tags, @source, @scopeKindCode, @scopeCampaignId)
-                    """;
+                    memoryCmd.CommandText =
+                        """
+                        INSERT INTO "saga_memories" (
+                            "Id", "Content", "CreatedAt", "SessionId", "Tags", "Source", ScopeKindCode, CampaignId)
+                        VALUES (@id, @content, @createdAt, @sessionId, @tags, @source, @scopeKindCode, @scopeCampaignId)
+                        """;
 
-                AddParameter(memoryCmd, "@scopeKindCode", (int)scopeKind);
+                    AddParameter(memoryCmd, "@scopeKindCode", (int)scopeKind);
 
-                AddParameter(memoryCmd, "@scopeCampaignId", (object?)scopeCampaignId ?? DBNull.Value);
+                    AddParameter(memoryCmd, "@scopeCampaignId", (object?)scopeCampaignId ?? DBNull.Value);
 
-                AddParameter(memoryCmd, "@id", id);
+                    AddParameter(memoryCmd, "@id", id);
 
-                AddParameter(memoryCmd, "@content", content);
+                    AddParameter(memoryCmd, "@content", content);
 
-                AddParameter(memoryCmd, "@createdAt", UtcInstantText.Format(createdAt));
+                    AddParameter(memoryCmd, "@createdAt", UtcInstantText.Format(createdAt));
 
-                AddParameter(memoryCmd, "@sessionId", sessionId is null ? DBNull.Value : sessionId.Value.ToString());
+                    AddParameter(memoryCmd, "@sessionId", sessionId is null ? DBNull.Value : sessionId.Value.ToString());
 
-                AddParameter(memoryCmd, "@tags", (object?)tags ?? DBNull.Value);
+                    AddParameter(memoryCmd, "@tags", (object?)tags ?? DBNull.Value);
 
-                AddParameter(memoryCmd, "@source", (object?)source ?? DBNull.Value);
+                    AddParameter(memoryCmd, "@source", (object?)source ?? DBNull.Value);
 
-                _ = await memoryCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    _ = await memoryCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                if (provenance is not null)
-                {
-                    await InsertProvenanceAsync(
+                    if (provenance is not null)
+                    {
+                        await InsertProvenanceAsync(
+                            connection,
+                            transaction,
+                            id,
+                            provenance,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (options.CurrentValue.Features.Annals)
+                    {
+                        // Inside the memory's own transaction, and reusing the scope the classifier just
+                        // derived rather than deriving a second one. Two derivations of one authority
+                        // eventually disagree, and the disagreement would land on what a turn may recall.
+                        //
+                        // AgentExtracted is the only honest origin here: no scribe tool writes to Saga and no
+                        // operator writes a memory into it, so a row arriving on this path is a headless
+                        // extraction's inference from a finished transcript rather than something anyone chose
+                        // to state. The operator's curation verbs append their own OperatorStated versions over
+                        // a memory this path already wrote; they never open a claim as an assertion of their
+                        // own, which is why this origin stays the only one an insert can record.
+                        _ = await AnnalsClaimWriter.AppendAssertAsync(
+                            connection,
+                            transaction,
+                            AnnalSubjectStore.Saga,
+                            id,
+                            AnnalOrigin.AgentExtracted,
+                            scopeKind,
+                            scopeCampaignId,
+                            ContentSensitivity.None,
+                            AnnalContentDigest.ForSagaMemory(content),
+                            createdAt,
+                            createdAt,
+                            sessionId,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    byte[] blob = EmbeddingBlobCodec.Encode(embedding);
+
+                    await using DbCommand embeddingCmd = connection.CreateCommand();
+
+                    embeddingCmd.Transaction = transaction;
+
+                    embeddingCmd.CommandText =
+                        """
+                        INSERT INTO "saga_memory_embeddings" ("MemoryId", "Embedding", "Dim")
+                        VALUES (@memoryId, @embedding, @dim)
+                        """;
+
+                    AddParameter(embeddingCmd, "@memoryId", id);
+
+                    AddParameter(embeddingCmd, "@embedding", blob);
+
+                    AddParameter(embeddingCmd, "@dim", embedding.Length);
+
+                    _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    // Written only while the accelerator is live, and classified from the catalog either
+                    // way, so a legacy virtual mirror this runtime cannot open is never touched.
+                    _ = await SagaVectorMirror.UpsertAsync(
                         connection,
                         transaction,
                         id,
-                        provenance,
+                        embedding,
+                        availability.IsVecAvailable,
                         cancellationToken).ConfigureAwait(false);
-                }
 
-                if (options.CurrentValue.Features.Annals)
-                {
-                    // Inside the memory's own transaction, and reusing the scope the classifier just
-                    // derived rather than deriving a second one. Two derivations of one authority
-                    // eventually disagree, and the disagreement would land on what a turn may recall.
-                    //
-                    // AgentExtracted is the only honest origin here: no scribe tool writes to Saga and no
-                    // operator writes a memory into it, so a row arriving on this path is a headless
-                    // extraction's inference from a finished transcript rather than something anyone chose
-                    // to state. The operator's curation verbs append their own OperatorStated versions over
-                    // a memory this path already wrote; they never open a claim as an assertion of their
-                    // own, which is why this origin stays the only one an insert can record.
-                    _ = await AnnalsClaimWriter.AppendAssertAsync(
-                        connection,
-                        transaction,
-                        AnnalSubjectStore.Saga,
-                        id,
-                        AnnalOrigin.AgentExtracted,
-                        scopeKind,
-                        scopeCampaignId,
-                        ContentSensitivity.None,
-                        AnnalContentDigest.ForSagaMemory(content),
-                        createdAt,
-                        createdAt,
-                        sessionId,
-                        cancellationToken).ConfigureAwait(false);
-                }
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                byte[] blob = EmbeddingBlobCodec.Encode(embedding);
-
-                await using DbCommand embeddingCmd = connection.CreateCommand();
-
-                embeddingCmd.Transaction = transaction;
-
-                embeddingCmd.CommandText =
-                    """
-                    INSERT INTO "saga_memory_embeddings" ("MemoryId", "Embedding", "Dim")
-                    VALUES (@memoryId, @embedding, @dim)
-                    """;
-
-                AddParameter(embeddingCmd, "@memoryId", id);
-
-                AddParameter(embeddingCmd, "@embedding", blob);
-
-                AddParameter(embeddingCmd, "@dim", embedding.Length);
-
-                _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                // Written only while the accelerator is live, and classified from the catalog either
-                // way, so a legacy virtual mirror this runtime cannot open is never touched.
-                _ = await SagaVectorMirror.UpsertAsync(
-                    connection,
-                    transaction,
-                    id,
-                    embedding,
-                    availability.IsVecAvailable,
-                    cancellationToken).ConfigureAwait(false);
-
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-                return SagaMemoryWriteOutcome.Written;
-            },
-            cancellationToken);
+                    return SagaMemoryWriteOutcome.Written;
+                },
+                cancellationToken),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> CountAsync(CancellationToken cancellationToken)

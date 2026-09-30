@@ -72,7 +72,8 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = TestDimensions },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
 

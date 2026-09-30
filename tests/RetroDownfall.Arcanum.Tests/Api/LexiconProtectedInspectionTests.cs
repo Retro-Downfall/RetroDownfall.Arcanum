@@ -353,6 +353,8 @@ public sealed class LexiconProtectedInspectionTests
 
             services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+            services.AddSingleton<IMemoryErasureKeyProvider>(MemoryErasureTestKeys.Isolated());
+
             services.AddSingleton<WeaveIndexAvailability>();
 
             services.AddSingleton<ICovenantSensitiveArtifactPurger>(_ => throw new NotSupportedException());

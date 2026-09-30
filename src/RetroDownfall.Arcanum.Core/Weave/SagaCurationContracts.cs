@@ -131,14 +131,17 @@ public sealed record SagaCurationOutcome(SagaCurationOutcomeKind Kind, SagaMemor
 /// </remarks>
 public sealed record SagaCurationResult(SagaCurationOutcomeKind Outcome, SagaMemoryDetail Detail);
 
-/// <summary>Whether a write actually landed, or was refused by retirement suppression.</summary>
+/// <summary>Whether a write actually landed, or was refused because the operator retired or erased it.</summary>
 public enum SagaMemoryWriteOutcome
 {
 
     /// <summary>The row was written.</summary>
     Written = 1,
 
-    /// <summary>Retirement suppression refused the write; nothing was stored.</summary>
+    /// <summary>
+    /// The operator already retired or erased this content in this scope, so the write was refused and
+    /// nothing was stored.
+    /// </summary>
     Suppressed = 2,
 
 }

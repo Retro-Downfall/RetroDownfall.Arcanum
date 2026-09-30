@@ -789,6 +789,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryScopeResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.Designer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/ArcanumDbContextModelSnapshot.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaErasureWriteGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaExtractionCursorResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryScopeClassifier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs

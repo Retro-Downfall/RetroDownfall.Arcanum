@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -105,7 +106,11 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// Builds a fresh temporary Grimoire with <c>Arcanum:Features:Annals</c> set to
     /// <paramref name="annalsEnabled"/>, skipping the calling test when SQLCipher is unavailable.
     /// </summary>
-    public static Task<SagaStoreHarness> CreateAsync(bool annalsEnabled)
+    /// <param name="erasureKeys">
+    /// The erasure key provider the store guards its inserts with. Left out, the store gets its own
+    /// isolated keyring over an empty in-memory credential store, which never reaches the real keychain.
+    /// </param>
+    public static Task<SagaStoreHarness> CreateAsync(bool annalsEnabled, IMemoryErasureKeyProvider? erasureKeys = null)
     {
 
         // Must run before the fixture is constructed: GrimoireFixture's constructor silently no-ops
@@ -133,7 +138,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
                             Dimensions = Dimensions,
                         },
                     },
-                }));
+                }),
+            erasureKeys ?? MemoryErasureTestKeys.Isolated());
 
         return Task.FromResult(new SagaStoreHarness(fixture, db, store, vectorAccelerator, new AnnalsStore(db)));
 

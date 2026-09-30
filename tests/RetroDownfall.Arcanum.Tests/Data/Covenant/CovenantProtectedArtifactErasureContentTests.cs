@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -344,6 +345,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                 new FixedConclusionIntelligenceProvider($$"""{ "memories": [{ "content": "{{conclusion}}", "attachmentId": null }] }"""));
 
             _ = services.AddSingleton<ISagaMemoryStore, SagaMemoryStore>();
+
+            _ = services.AddSingleton<IMemoryErasureKeyProvider>(MemoryErasureTestKeys.Isolated());
+
+            _ = services.AddScoped<SagaErasureWriteGate>();
 
             _ = services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
                 new TestOptionsMonitor<ArcanumSettings>(settings));

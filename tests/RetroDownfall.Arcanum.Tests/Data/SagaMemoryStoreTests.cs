@@ -57,7 +57,8 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
                             Dimensions = TestDimensions,
                         },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
 

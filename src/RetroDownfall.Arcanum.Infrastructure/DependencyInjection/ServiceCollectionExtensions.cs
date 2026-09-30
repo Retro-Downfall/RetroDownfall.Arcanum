@@ -1370,6 +1370,10 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        // Same lifetime and DbContext as the store: extraction's page gate and pre-embed check ask
+        // the store's own connection what the insert chokepoint will later decide.
+        services.AddScoped<SagaErasureWriteGate>();
+
         // Same lifetime as ISagaMemoryStore: this wraps that store's DbContext-backed calls directly,
         // and a service scoped any looser would hold that DbContext across a boundary the store itself
         // does not.

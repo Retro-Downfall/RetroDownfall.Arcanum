@@ -26,10 +26,15 @@ public interface ISagaMemoryStore
     /// plain <c>saga_memory_embeddings_vec</c>.
     /// </summary>
     /// <remarks>
-    /// Returns <see cref="SagaMemoryWriteOutcome.Suppressed"/>, writing nothing, when an operator has
-    /// already retired an equivalent conclusion in this scope. The check runs inside the insert
-    /// transaction, after scope is derived and before any row lands, so no writer — extraction included
-    /// — can reach around it.
+    /// <para>Returns <see cref="SagaMemoryWriteOutcome.Suppressed"/>, writing nothing, when an operator
+    /// has already retired an equivalent conclusion in this scope, or erased this exact content in this
+    /// exact scope. Both checks run inside the insert transaction, after scope is derived and before any
+    /// row lands, so no writer — extraction included — can reach around them. This is the authoritative
+    /// erasure chokepoint; extraction's earlier checks only save it a model or embedding call.</para>
+    ///
+    /// <para>When the store holds erasure fingerprints that the erasure key cannot verify, because the
+    /// key is lost, unreadable, or not the key that recorded them, the insert fails closed and throws
+    /// rather than writing anything.</para>
     /// </remarks>
     Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,

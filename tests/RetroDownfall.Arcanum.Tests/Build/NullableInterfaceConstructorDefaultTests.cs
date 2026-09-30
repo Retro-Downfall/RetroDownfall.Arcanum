@@ -6,6 +6,8 @@ using System.Text.RegularExpressions;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
+using RetroDownfall.Arcanum.Core.Memory;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -333,6 +335,33 @@ public sealed class NullableInterfaceConstructorDefaultTests
                 .Select(static parameter => $"{parameter.Name} is optional")
                 .ToArray());
     }
+
+    /// <summary>
+    /// The types that decide whether an automatic write may record a memory an operator erased.
+    /// </summary>
+    /// <remarks>
+    /// Closed on purpose: a later chokepoint owner joins this list in the change that makes it one.
+    /// </remarks>
+    public static TheoryData<Type> ErasureChokepointOwners => new() { typeof(SagaMemoryStore), typeof(SagaErasureWriteGate) };
+
+    /// <summary>
+    /// Every constructor of an erasure chokepoint owner takes the key provider, and none lets a caller
+    /// leave it out.
+    /// </summary>
+    /// <remarks>
+    /// The source inventory above would catch a nullable default spelled the usual way. This reads the
+    /// compiled constructors, so a second constructor without the provider, or a default spelled any
+    /// other way, is caught too: an owner composed without the provider could not tell an installation
+    /// with evidence from one without, and would have to write either way.
+    /// </remarks>
+    [Theory]
+    [MemberData(nameof(ErasureChokepointOwners))]
+    public void Every_erasure_chokepoint_owner_requires_the_key_provider(Type owner) =>
+        Assert.All(
+            owner.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            constructor => Assert.Contains(
+                constructor.GetParameters(),
+                parameter => parameter.ParameterType == typeof(IMemoryErasureKeyProvider) && !parameter.HasDefaultValue));
 }
 
 /// <summary>

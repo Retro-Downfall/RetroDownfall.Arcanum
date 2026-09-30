@@ -224,7 +224,8 @@ public sealed class CovenantArtifactPlanRunnerTests
                     {
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 },
                     },
-                }));
+                }),
+            MemoryErasureTestKeys.Isolated());
 
         Guid target = Guid.NewGuid();
 
