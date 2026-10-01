@@ -445,6 +445,99 @@ public sealed class CovenantErasureSuppressionTests
     }
 
     /// <summary>
+    /// A commit that meets its own mutation's receipt inside its transaction is a replay, and a replay
+    /// releases nothing: here the same mutation committed between this commit's receipt probe and its
+    /// <c>BEGIN</c>, while no key was latched, so it could not check and left the fingerprint; the key was
+    /// latched before this commit's capture, and the commit must still not lift that fingerprint.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_that_meets_its_own_receipt_inside_the_transaction_releases_nothing()
+    {
+
+        int raced = 0;
+
+        CovenantServiceHarness? self = null;
+
+        CovenantSetRequest? request = null;
+
+        CovenantWriteLease? write = null;
+
+        CovenantMutationResultDto? racing = null;
+
+        await using CovenantServiceHarness harness = await StartAsync(async cancellationToken =>
+        {
+
+            if (Interlocked.Exchange(ref raced, 1) != 0)
+            {
+
+                return;
+
+            }
+
+            Result<CovenantMutationResultDto> committed = await self!.Service.SetAsync(request!, write!, cancellationToken);
+
+            Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+            racing = committed.Value;
+
+            self.Fixture.ErasureKeys.OpenExisting(MemoryErasureKeyProbe.Reprobe).Key?.Dispose();
+
+        });
+
+        self = harness;
+
+        await SeedFingerprintWithoutLatchingAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        CovenantOperationScope scope = CovenantOperationScope.ForCampaign(CampaignOne);
+
+        CovenantSetPrepareRequest prepare = new(CovenantScope.Campaign, CampaignOne, Key, "Build from the root.", 0, Guid.CreateVersion7(), false);
+
+        Result<CovenantMutationPreflightDto> prepared;
+
+        await using (ICovenantSnapshotReadLease read = (await harness.Gate.AcquireReadAsync(scope, Token)).Value)
+        {
+
+            prepared = await harness.Service.PrepareSetAsync(prepare, read, Token);
+
+        }
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        request = new CovenantSetRequest(
+            prepare.Scope,
+            prepare.CampaignId,
+            prepare.Key,
+            prepare.Content,
+            prepare.ExpectedRevision,
+            prepare.MutationId,
+            prepare.Reactivate,
+            prepared.Value.PreflightToken);
+
+        await using CovenantWriteLease lease = (await harness.Gate.AcquireWriteAsync(scope, Token)).Value;
+
+        write = lease;
+
+        Result<CovenantMutationResultDto> replayed = await harness.Service.SetAsync(request, lease, Token);
+
+        Assert.NotNull(racing);
+
+        Assert.False(racing!.Replayed);
+
+        Assert.Null(racing.ReleasedErasureFingerprint);
+
+        Assert.Equal(MemoryErasureKeyState.Present, harness.Fixture.ErasureKeys.Latch.State);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : string.Empty);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.False(replayed.Value.ReleasedErasureFingerprint);
+
+        Assert.Equal(1, await ScalarAsync(harness, "SELECT COUNT(*) FROM memory_erasure_fingerprints;"));
+
+    }
+
+    /// <summary>
     /// The staging probe classifies with the kernel's own mapping, inside its own read transaction, and
     /// reads only the latch: it never touches the credential store, because the turn lease is held.
     /// </summary>
@@ -585,10 +678,13 @@ public sealed class CovenantErasureSuppressionTests
 
     }
 
-    private static async Task<CovenantServiceHarness> StartAsync()
+    private static async Task<CovenantServiceHarness> StartAsync(Func<CancellationToken, Task>? afterReplayProbe = null)
     {
 
-        CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token, withErasureEvidence: true);
+        CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(
+            Token,
+            withErasureEvidence: true,
+            afterReplayProbeForTesting: afterReplayProbe);
 
         try
         {

@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -257,6 +258,7 @@ public sealed class SagaAnnalsProtectedErasureTests
                     },
                 }),
             MemoryErasureTestKeys.Isolated(),
+            new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
             time);
 
         Result<SagaReviewPageDto> page = await review.ListAsync(

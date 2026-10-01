@@ -31,7 +31,8 @@ internal sealed partial class SagaMemoryStore(
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
-    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null) : ISagaMemoryStore
+    ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
+    IOperatorAuthorityContextIssuer? releaseAuthority = null) : ISagaMemoryStore
 {
     public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,

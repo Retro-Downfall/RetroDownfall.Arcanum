@@ -4,16 +4,19 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -144,6 +147,47 @@ public sealed class MemoryErasureOperatorRecreationTests
     }
 
     /// <summary>
+    /// A write that released a fingerprint, retried after the key was erased again, never lifts the new
+    /// fingerprint: the erase removed the write's receipt and moved the key's epochs, so the retry is a
+    /// stale write the kernel refuses, and the new erasure stands.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_set_retried_after_a_new_erase_releases_nothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials, covenant: true);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        Guid campaign = await RegisterCampaignAsync(factory, "c");
+
+        await EraseCovenantKeyAsync(driver, CovenantScope.Campaign, campaign, Key);
+
+        CovenantSetPrepareRequest prepare = new(CovenantScope.Campaign, campaign, Key, Content, 0, Guid.NewGuid(), Reactivate: false);
+
+        CovenantMutationPreflightDto preflight = await PrepareSetAsync(driver, prepare);
+
+        Assert.True((await CommitSetAsync(factory, prepare, preflight.PreflightToken)).ReleasedErasureFingerprint);
+
+        MemoryErasureRoundTrip<CovenantEraseRequest> again = await driver.EraseCovenantAsync(CovenantScope.Campaign, campaign, Key);
+
+        Assert.True(again.Result.Local.SuppressionFingerprintRecorded);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Covenant));
+
+        using HttpResponseMessage retried = await PutSetAsync(factory, prepare, preflight.PreflightToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, retried.StatusCode);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, await MemoryErasureRouteDriver.ReadErrorCodeAsync(retried));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Covenant));
+    }
+
+    /// <summary>
     /// A key nobody erased has nothing to release, whether or not the store holds another key's
     /// fingerprint, and the other key's fingerprint is left alone.
     /// </summary>
@@ -183,11 +227,17 @@ public sealed class MemoryErasureOperatorRecreationTests
     }
 
     /// <summary>
-    /// The same key set in another scope is a different identity: the fingerprint of the erased scope
-    /// stays, and both halves say nothing was released.
+    /// The same key set in another scope is a different identity, in either direction: the fingerprint
+    /// of the erased scope stays, and both halves say nothing was released.
     /// </summary>
-    [SkippableFact]
-    public async Task An_operator_set_in_another_scope_releases_nothing()
+    /// <remarks>
+    /// The Global-erased row matters most: a Global fingerprint is what restore staging uses to purge a
+    /// restored Global entry, so a Campaign write that lifted it would bring the entry back.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task An_operator_set_in_another_scope_releases_nothing(bool erasedInCampaign)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -199,9 +249,18 @@ public sealed class MemoryErasureOperatorRecreationTests
 
         Guid campaign = await RegisterCampaignAsync(factory, "c");
 
-        await EraseCovenantKeyAsync(driver, CovenantScope.Campaign, campaign, Key);
+        if (erasedInCampaign)
+        {
+            await EraseCovenantKeyAsync(driver, CovenantScope.Campaign, campaign, Key);
+        }
+        else
+        {
+            await EraseCovenantKeyAsync(driver, CovenantScope.Global, null, Key);
+        }
 
-        CovenantSetPrepareRequest prepare = new(CovenantScope.Global, null, Key, Content, 0, Guid.NewGuid(), Reactivate: false);
+        CovenantSetPrepareRequest prepare = erasedInCampaign
+            ? new(CovenantScope.Global, null, Key, Content, 0, Guid.NewGuid(), Reactivate: false)
+            : new(CovenantScope.Campaign, campaign, Key, Content, 0, Guid.NewGuid(), Reactivate: false);
 
         CovenantMutationPreflightDto preflight = await PrepareSetAsync(driver, prepare);
 
@@ -300,7 +359,7 @@ public sealed class MemoryErasureOperatorRecreationTests
 
         MemoryErasureRouteDriver driver = new(factory.CreateClient());
 
-        Guid session = await BoundSessionAsync(factory, "x");
+        (_, Guid session) = await BoundSessionAsync(factory, "x");
 
         Guid? erasedSession = erasedInCampaign ? session : null;
 
@@ -432,6 +491,233 @@ public sealed class MemoryErasureOperatorRecreationTests
         Assert.False(Assert.Single(replayed.Items).ReleasedErasureFingerprint);
     }
 
+    /// <summary>
+    /// A bulk correction releases only in the reviewed memory's own scope, in either direction, and the
+    /// fingerprint it left still refuses the content where it was erased.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Bulk_review_Correct_in_another_scope_releases_nothing(bool erasedInCampaign)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials, covenant: true);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        (Guid campaign, Guid session) = await BoundSessionAsync(factory, "x");
+
+        Guid? erasedSession = erasedInCampaign ? session : null;
+
+        Guid? correctedSession = erasedInCampaign ? null : session;
+
+        string beta = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "beta", erasedSession);
+
+        string alpha = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "alpha", correctedSession);
+
+        _ = await driver.EraseSagaAsync(beta);
+
+        MemoryReviewBulkResultDto result = await ReviewCorrectAsync(
+            client,
+            erasedInCampaign ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign,
+            erasedInCampaign ? null : campaign,
+            alpha,
+            "beta");
+
+        Assert.False(Assert.Single(result.Items).ReleasedErasureFingerprint);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        Assert.Equal("beta", (await ShowAsync(factory, alpha)).Memory.Content);
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Suppressed,
+            await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, "beta", erasedSession));
+    }
+
+    /// <summary>
+    /// A Saga correction runs under ordinary API authority, which a host-tools-tainted installation does
+    /// not refuse, while release requires authority it does. So on a tainted installation the correction
+    /// still lands but lifts nothing, and says so; the same correction on a clean one releases.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_Saga_correction_on_a_tainted_installation_commits_and_releases_nothing(bool tainted)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        TaintSwitch taint = new();
+
+        await using ArcanumWebApplicationFactory factory = TaintableHost(credentials, taint);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        string alpha = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "alpha");
+
+        string beta = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "beta");
+
+        _ = await driver.EraseSagaAsync(beta);
+
+        taint.Tainted = tainted;
+
+        SagaCurationResult corrected = await CorrectOkAsync(factory, alpha, "beta");
+
+        Assert.Equal(!tainted, corrected.ReleasedErasureFingerprint);
+
+        Assert.Equal(tainted ? 1 : 0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        Assert.Equal("beta", (await ShowAsync(factory, alpha)).Memory.Content);
+    }
+
+    /// <summary>The bulk correction follows the same rule as the single one on a tainted installation.</summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_bulk_review_Correct_on_a_tainted_installation_commits_and_releases_nothing(bool tainted)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        TaintSwitch taint = new();
+
+        await using ArcanumWebApplicationFactory factory = TaintableHost(credentials, taint);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        string alpha = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "alpha");
+
+        string beta = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "beta");
+
+        _ = await driver.EraseSagaAsync(beta);
+
+        taint.Tainted = tainted;
+
+        MemoryReviewBulkResultDto result = await ReviewCorrectAsync(client, SagaMemoryScopeKind.Global, null, alpha, "beta");
+
+        Assert.Equal(!tainted, Assert.Single(result.Items).ReleasedErasureFingerprint);
+
+        Assert.Equal(tainted ? 1 : 0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        Assert.Equal("beta", (await ShowAsync(factory, alpha)).Memory.Content);
+    }
+
+    /// <summary>
+    /// A Covenant set commits under Covenant management authority, which a tainted installation refuses
+    /// before the body is read, so a set prepared while the installation was clean cannot release once it
+    /// is tainted.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_Covenant_set_on_a_tainted_installation_is_refused_and_releases_nothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        TaintSwitch taint = new();
+
+        await using ArcanumWebApplicationFactory factory = TaintableHost(credentials, taint);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        await EraseCovenantKeyAsync(driver, CovenantScope.Global, null, Key);
+
+        CovenantSetPrepareRequest prepare = new(CovenantScope.Global, null, Key, Content, 0, Guid.NewGuid(), Reactivate: false);
+
+        CovenantMutationPreflightDto preflight = await PrepareSetAsync(driver, prepare);
+
+        Assert.True(preflight.Effect.ReleasesErasureFingerprint);
+
+        taint.Tainted = true;
+
+        using HttpResponseMessage refused = await PutSetAsync(factory, prepare, preflight.PreflightToken);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, refused.StatusCode);
+
+        Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, await MemoryErasureRouteDriver.ReadErrorCodeAsync(refused));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Covenant));
+    }
+
+    /// <summary>
+    /// An erasure host whose published authority can be reported host-tools tainted after startup, the
+    /// way a tainted installation publishes it.
+    /// </summary>
+    private static ArcanumWebApplicationFactory TaintableHost(InMemoryOsCredentialStore credentials, TaintSwitch taint)
+    {
+        ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials, covenant: true);
+
+        factory.ServiceOverrides += services =>
+        {
+            services.RemoveAll<ICovenantAuthoritySnapshotProvider>();
+
+            services.AddSingleton<ICovenantAuthoritySnapshotProvider>(provider =>
+            {
+                taint.Inner = provider.GetRequiredService<CovenantAuthoritySnapshotProvider>();
+
+                return taint;
+            });
+        };
+
+        return factory;
+    }
+
+    /// <summary>Lists one exact Saga scope, then prepares and applies one correction of one memory.</summary>
+    private static async Task<MemoryReviewBulkResultDto> ReviewCorrectAsync(
+        HttpClient client,
+        SagaMemoryScopeKind scopeKind,
+        Guid? campaignId,
+        string memoryId,
+        string replacement)
+    {
+        SagaReviewItemDto item;
+
+        using (HttpResponseMessage listed = await client.PostAsync(
+            "/api/memory/saga/review/list",
+            JsonContent.Create(
+                new SagaReviewListRequest(scopeKind, campaignId, 50, null),
+                ArcanumJsonContext.Default.SagaReviewListRequest)))
+        {
+            Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+            SagaReviewPageDto page = await MemoryErasureRouteDriver.ReadDataAsync(listed, ArcanumJsonContext.Default.ApiResponseSagaReviewPageDto);
+
+            item = Assert.Single(
+                page.Items,
+                candidate => string.Equals(candidate.SubjectId, memoryId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        SagaReviewBulkPrepareRequest prepare = new(
+            Guid.NewGuid(),
+            scopeKind,
+            campaignId,
+            MemoryReviewAction.Correct,
+            [new SagaReviewDecision(item.ObservationToken, replacement)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        using (HttpResponseMessage prepared = await client.PostAsync(
+            "/api/memory/saga/review/prepare",
+            JsonContent.Create(prepare, ArcanumJsonContext.Default.SagaReviewBulkPrepareRequest)))
+        {
+            Assert.Equal(HttpStatusCode.OK, prepared.StatusCode);
+
+            plan = await MemoryErasureRouteDriver.ReadDataAsync(prepared, ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
+        }
+
+        return await ApplyReviewAsync(client, new SagaReviewBulkApplyRequest(prepare, plan.PreparedPlanToken));
+    }
+
     /// <summary>Writes one Covenant key through the set routes and erases it through the erase routes.</summary>
     private static async Task EraseCovenantKeyAsync(
         MemoryErasureRouteDriver driver,
@@ -552,7 +838,7 @@ public sealed class MemoryErasureOperatorRecreationTests
     /// Registers one Campaign and binds a new Session to it through the turn-begin store, the writer that
     /// records a Session's Campaign binding.
     /// </summary>
-    private static async Task<Guid> BoundSessionAsync(ArcanumWebApplicationFactory factory, string suffix)
+    private static async Task<(Guid Campaign, Guid Session)> BoundSessionAsync(ArcanumWebApplicationFactory factory, string suffix)
     {
         Guid campaign = await RegisterCampaignAsync(factory, suffix);
 
@@ -570,6 +856,28 @@ public sealed class MemoryErasureOperatorRecreationTests
 
         Assert.True(session.IsSuccess, session.IsFailure ? session.Error.Message : null);
 
-        return session.Value;
+        return (campaign, session.Value);
+    }
+
+    /// <summary>
+    /// The host's published authority, reported as host-tools tainted while <see cref="Tainted"/> is
+    /// set, exactly as a tainted installation publishes it.
+    /// </summary>
+    private sealed class TaintSwitch : ICovenantAuthoritySnapshotProvider
+    {
+        private int _tainted;
+
+        internal ICovenantAuthoritySnapshotProvider? Inner { get; set; }
+
+        internal bool Tainted
+        {
+            get => Volatile.Read(ref _tainted) != 0;
+            set => Volatile.Write(ref _tainted, value ? 1 : 0);
+        }
+
+        public CovenantAuthoritySnapshot? Current =>
+            Inner?.Current is { } current && Tainted
+                ? current with { HostToolsState = CovenantHostToolsState.HostToolsTainted }
+                : Inner?.Current;
     }
 }

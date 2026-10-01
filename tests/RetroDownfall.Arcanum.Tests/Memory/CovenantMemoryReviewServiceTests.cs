@@ -501,12 +501,16 @@ public sealed class CovenantMemoryReviewServiceTests
     /// for its exact scope and key is still recorded, as a re-creation made while no key was latched
     /// leaves one, the correction releases it in the review's own transaction with the key the review
     /// captured before <c>BEGIN</c>, and says so on the item. Without a latched key it cannot check, and
-    /// says that instead. A replay answers from its receipt and released nothing.
+    /// says that instead. A fingerprint of the same key in Global is another identity, so a Campaign
+    /// correction leaves it. A replay answers from its receipt and released nothing.
     /// </summary>
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task A_review_correction_of_a_fingerprinted_key_releases_it_only_with_a_latched_key(bool keyLatched)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task A_review_correction_releases_only_its_own_scopes_fingerprint_and_only_with_a_latched_key(
+        bool keyLatched,
+        bool erasedInGlobal)
     {
         const string key = "response.detail";
 
@@ -523,7 +527,11 @@ public sealed class CovenantMemoryReviewServiceTests
             "Use moderate detail.",
             Token);
 
-        MemoryErasureIdentity identity = MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, CampaignOne, key);
+        MemoryErasureIdentity identity = erasedInGlobal
+            ? MemoryErasureIdentity.ForCovenant(CovenantScope.Global, null, key)
+            : MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, CampaignOne, key);
+
+        bool? expected = erasedInGlobal ? false : keyLatched ? true : null;
 
         // A latched key is the review's to use; one created and read by another keyring leaves this
         // process's latch unresolved.
@@ -584,10 +592,10 @@ public sealed class CovenantMemoryReviewServiceTests
 
         Assert.Equal("Corrected", corrected.Outcome);
 
-        Assert.Equal(keyLatched ? true : null, corrected.ReleasedErasureFingerprint);
+        Assert.Equal(expected, corrected.ReleasedErasureFingerprint);
 
         Assert.Equal(
-            keyLatched ? 0L : 1L,
+            expected is true ? 0L : 1L,
             await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM memory_erasure_fingerprints;"));
 
         await using CovenantWriteLease replayLease = runtime.WriteLease();

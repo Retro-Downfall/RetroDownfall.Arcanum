@@ -53,6 +53,9 @@ internal sealed partial class CovenantMutationService(
     /// </remarks>
     private static readonly TimeSpan PreflightLifetime = TimeSpan.FromMinutes(5);
 
+    /// <summary>Test seam: runs once the commit's receipt probe has found no receipt.</summary>
+    internal Func<CancellationToken, Task>? AfterReplayProbeForTesting { get; init; }
+
     public async ValueTask<Result<CovenantMutationPreflightDto>> PrepareSetAsync(
         CovenantSetPrepareRequest request,
         ICovenantSnapshotReadLease readLease,
@@ -421,6 +424,13 @@ internal sealed partial class CovenantMutationService(
         {
 
             return committed;
+
+        }
+
+        if (AfterReplayProbeForTesting is { } afterProbe)
+        {
+
+            await afterProbe(cancellationToken).ConfigureAwait(false);
 
         }
 

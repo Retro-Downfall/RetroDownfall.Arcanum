@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -125,6 +126,54 @@ public sealed class MemoryErasureReleaseEndpointTests
         MemoryErasureReleaseResultDto released = await driver.ReleaseSagaAsync(new(SagaMemoryScopeKind.Global, null, "Rotate.\n"));
 
         Assert.Equal(new MemoryErasureReleaseResultDto(MemoryReviewStore.Saga, MemoryErasureReleaseOutcome.Released, 2), released);
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+    }
+
+    /// <summary>
+    /// Saga content erased in one scope is released only in that scope, in either direction: a release
+    /// elsewhere finds nothing and the content stays refused where it was erased.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Saga_release_honors_the_exact_scope(bool erasedInCampaign)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials, covenant: true);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        (Guid campaign, Guid session) = await BoundSessionAsync(factory, "c");
+
+        Guid? erasedSession = erasedInCampaign ? session : null;
+
+        _ = await driver.EraseSagaAsync(await MemoryErasureRouteDriver.InsertSagaAsync(factory, Vault, erasedSession));
+
+        SagaErasureReleaseRequest elsewhere = erasedInCampaign
+            ? new(SagaMemoryScopeKind.Global, null, Vault)
+            : new(SagaMemoryScopeKind.Campaign, campaign, Vault);
+
+        Assert.Equal(
+            new MemoryErasureReleaseResultDto(MemoryReviewStore.Saga, MemoryErasureReleaseOutcome.NotFingerprinted, 0),
+            await driver.ReleaseSagaAsync(elsewhere));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        Assert.Equal(
+            SagaMemoryWriteOutcome.Suppressed,
+            await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, Vault, erasedSession));
+
+        SagaErasureReleaseRequest exact = erasedInCampaign
+            ? new(SagaMemoryScopeKind.Campaign, campaign, Vault)
+            : new(SagaMemoryScopeKind.Global, null, Vault);
+
+        Assert.Equal(
+            new MemoryErasureReleaseResultDto(MemoryReviewStore.Saga, MemoryErasureReleaseOutcome.Released, 1),
+            await driver.ReleaseSagaAsync(exact));
 
         Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
     }
@@ -332,6 +381,74 @@ public sealed class MemoryErasureReleaseEndpointTests
     }
 
     /// <summary>
+    /// A Lexicon name erased in Global is a different identity from the same name in a Campaign, so a
+    /// Campaign release finds nothing and only the Global release lifts it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Lexicon_release_of_a_Global_erasure_in_a_Campaign_releases_nothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials, covenant: true);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        Guid campaign = await RegisterCampaignAsync(factory, "c");
+
+        await ScribeAsync(factory, Keeper, null);
+
+        _ = await driver.EraseLexiconAsync(Keeper, null);
+
+        Assert.Equal(
+            new MemoryErasureReleaseResultDto(MemoryReviewStore.Lexicon, MemoryErasureReleaseOutcome.NotFingerprinted, 0),
+            await driver.ReleaseLexiconAsync(new(new LexiconCurationScope(LexiconScopeKind.Campaign, campaign), Keeper)));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Lexicon));
+
+        Assert.Equal(
+            new MemoryErasureReleaseResultDto(MemoryReviewStore.Lexicon, MemoryErasureReleaseOutcome.Released, 1),
+            await driver.ReleaseLexiconAsync(new(Global, Keeper)));
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Lexicon));
+    }
+
+    /// <summary>
+    /// A Covenant key erased in Global is a different identity from the same key in a Campaign, so a
+    /// Campaign release finds nothing and only the Global release lifts it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Covenant_release_of_a_Global_erasure_in_a_Campaign_releases_nothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(credentials, covenant: true);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        Guid campaign = await RegisterCampaignAsync(factory, "c");
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, Key, "Keep the vault key offline.");
+
+        _ = await driver.EraseCovenantAsync(CovenantScope.Global, null, Key);
+
+        Assert.Equal(
+            new MemoryErasureReleaseResultDto(MemoryReviewStore.Covenant, MemoryErasureReleaseOutcome.NotFingerprinted, 0),
+            await driver.ReleaseCovenantAsync(new(CovenantScope.Campaign, campaign, Key)));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Covenant));
+
+        Assert.Equal(
+            new MemoryErasureReleaseResultDto(MemoryReviewStore.Covenant, MemoryErasureReleaseOutcome.Released, 1),
+            await driver.ReleaseCovenantAsync(new(CovenantScope.Global, null, Key)));
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Covenant));
+    }
+
+    /// <summary>
     /// The Covenant key grammar is lower-case only and nothing is folded, so a key spelled any other way
     /// is refused as malformed rather than released, and a well-formed key releases only in its scope.
     /// </summary>
@@ -502,6 +619,31 @@ public sealed class MemoryErasureReleaseEndpointTests
         Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
 
         return (await MemoryErasureRouteDriver.ReadDataAsync(registered, ArcanumJsonContext.Default.ApiResponseCampaignDto)).Id;
+    }
+
+    /// <summary>
+    /// Registers one Campaign and binds a new Session to it through the turn-begin store, the writer that
+    /// records a Session's Campaign binding.
+    /// </summary>
+    private static async Task<(Guid Campaign, Guid Session)> BoundSessionAsync(ArcanumWebApplicationFactory factory, string suffix)
+    {
+        Guid campaign = await RegisterCampaignAsync(factory, suffix);
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        Result<Guid> session = await scope.ServiceProvider.GetRequiredService<ISessionTurnBeginStore>().CreateBoundSessionAsync(
+            CanonicalCampaignContext.Create(
+                SessionCampaignBinding.ForCampaign(campaign),
+                campaignAvailabilityGeneration: 1,
+                pathIdentityPolicyVersion: 1,
+                pathIdentityRevision: null,
+                rootIdentityDigest: null),
+            $"Release session {suffix}",
+            CancellationToken.None);
+
+        Assert.True(session.IsSuccess, session.IsFailure ? session.Error.Message : null);
+
+        return (campaign, session.Value);
     }
 
     /// <summary>The tuple every release response carries whatever its status (API §8.29, §8.35).</summary>

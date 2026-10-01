@@ -72,12 +72,17 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// Also installs the accelerator tier, so a suite can synchronize the search projection and erase
     /// what it holds.
     /// </param>
+    /// <param name="afterReplayProbeForTesting">
+    /// Runs inside a commit once its receipt probe has found nothing, so a suite can commit the same
+    /// mutation in between and make the first commit meet that receipt inside its own transaction.
+    /// </param>
     internal static async Task<CovenantServiceHarness> StartAsync(
         CancellationToken cancellationToken,
         bool withOwnerCleanup = false,
         bool withErasureEvidence = false,
         IReadOnlyList<string>? coreObjects = null,
-        bool withAccelerator = false)
+        bool withAccelerator = false,
+        Func<CancellationToken, Task>? afterReplayProbeForTesting = null)
     {
 
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
@@ -127,7 +132,10 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             new CovenantMutationKernel(new CovenantQuotaGuard(), fixture.ErasureKeys),
             new CovenantCurationKernel(),
             new HarnessAuthority(),
-            clock);
+            clock)
+        {
+            AfterReplayProbeForTesting = afterReplayProbeForTesting,
+        };
 
         return new CovenantServiceHarness(fixture, service, CovenantOperationGateFixture.CreateGate(), clock);
 

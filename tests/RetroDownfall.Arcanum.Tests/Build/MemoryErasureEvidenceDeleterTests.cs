@@ -1,5 +1,9 @@
 using System.Text.RegularExpressions;
 
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -45,6 +49,31 @@ public sealed class MemoryErasureEvidenceDeleterTests
     /// </summary>
     private const string EvidenceTable =
         @"(?:(?:""\w+""|\[\w+\]|`\w+`|'\w+'|\w+)\s*\.\s*)?[""\[`']?memory_erasure_(fingerprints|receipts|receipt_subjects)\b";
+
+    private const string FingerprintRelease = "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs";
+
+    /// <summary>
+    /// Closed: the one release service and the operator writes that re-create an erased identity, each
+    /// by the member that makes the call. Extraction, the Lexicon scribe, the Covenant kernel's agent arm
+    /// and turn publication are agent paths and never appear here.
+    /// </summary>
+    private static readonly string[] AllowedFingerprintReleaseCallers =
+    [
+        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs::ApplyDecisionAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::CommitAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::PrepareAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs::CorrectAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs::ReleaseCoreAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs::ApplyDecisionAsync",
+    ];
+
+    /// <summary>
+    /// A <c>using</c> alias or <c>using static</c> of either class, which would let a caller name its
+    /// members under a name no scan above reads.
+    /// </summary>
+    private static readonly Regex EvidenceAlias = new(
+        @"^\s*(?:global\s+)?using\s+(?:static\s+|\w+\s*=\s*)[\w.:]*\b(?:MemoryErasureEvidence|MemoryErasureFingerprintRelease)\s*;",
+        RegexOptions.CultureInvariant | RegexOptions.Multiline);
 
     /// <summary>The six files that create the evidence tables: each table's head file and its V13 step.</summary>
     private static readonly string[] EvidenceTableDdl =
@@ -124,6 +153,75 @@ public sealed class MemoryErasureEvidenceDeleterTests
         ];
 
         Assert.Equal(AllowedCallers.Order(StringComparer.Ordinal), callers);
+    }
+
+    /// <summary>
+    /// The fingerprint-release helper is the one deleter of fingerprints, so who may reach it is closed
+    /// too: a call from an agent path would lift an erasure no operator asked to lift.
+    /// </summary>
+    [Fact]
+    public void Fingerprint_release_callers_are_a_closed_allow_list()
+    {
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string[] callers =
+        [
+            .. Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                .Where(static file => !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                    && !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                .Select(file => (Path: Path.GetRelativePath(root, file).Replace('\\', '/'), Text: File.ReadAllText(file)))
+                .Where(static source => source.Path != FingerprintRelease
+                    && source.Text.Contains("MemoryErasureFingerprintRelease", StringComparison.Ordinal))
+                .SelectMany(static source => FingerprintReleaseCallers(source.Text).Select(member => $"{source.Path}::{member}"))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(AllowedFingerprintReleaseCallers.Order(StringComparer.Ordinal), callers);
+    }
+
+    /// <summary>The caller scan reads the member a call sits in, through lambdas, and qualified names too.</summary>
+    [Fact]
+    public void The_fingerprint_release_caller_scan_names_the_enclosing_member()
+    {
+        const string source = """
+            internal sealed class Fixture
+            {
+                internal async Task InsertCoreAsync()
+                {
+                    await Run(async () => _ = await MemoryErasureFingerprintRelease
+                        .ReleaseForOperatorWriteAsync(null!, null!, default, null, null, default));
+                }
+
+                internal Task<bool?> Probe() =>
+                    RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureFingerprintRelease.WouldReleaseAsync(null!, null, default, null, null, default);
+
+                internal bool Permitted() => MemoryErasureFingerprintRelease.OperatorMayRelease(null);
+            }
+            """;
+
+        Assert.Equal(["InsertCoreAsync", "Probe"], FingerprintReleaseCallers(source).Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// No source aliases the evidence store or the release helper, or imports either statically, so
+    /// every call to their members names the class the scans read.
+    /// </summary>
+    [Fact]
+    public void No_source_aliases_the_evidence_store_or_the_release_helper()
+    {
+        Assert.Matches(EvidenceAlias, "using Evidence = RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureEvidence;");
+
+        Assert.Matches(EvidenceAlias, "global using Release = global::RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureFingerprintRelease;");
+
+        Assert.Matches(EvidenceAlias, "using static RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureEvidence;");
+
+        Assert.DoesNotMatch(EvidenceAlias, "using RetroDownfall.Arcanum.Infrastructure.Data;");
+
+        Assert.Empty(
+            ProductionSourceInventory.Sources()
+                .Where(static source => EvidenceAlias.IsMatch(source.Text))
+                .Select(static source => source.RelativePath));
     }
 
     [Fact]
@@ -220,6 +318,35 @@ public sealed class MemoryErasureEvidenceDeleterTests
 
         Assert.All(ddl, static source => Assert.DoesNotMatch(ConflictReplace, source.Text));
     }
+
+    /// <summary>
+    /// The members whose code names one of the helper's three lifting members through its class,
+    /// comments aside. Its permission predicate deletes nothing and is not one of them.
+    /// </summary>
+    private static IEnumerable<string> FingerprintReleaseCallers(string source) =>
+        CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
+            .GetCompilationUnitRoot()
+            .DescendantNodes()
+            .OfType<MemberAccessExpressionSyntax>()
+            .Where(static access => access.Name.Identifier.ValueText
+                is "DeleteCandidatesAsync" or "WouldReleaseAsync" or "ReleaseForOperatorWriteAsync")
+            .Where(static access => access.Expression switch
+            {
+                IdentifierNameSyntax name => name.Identifier.ValueText == "MemoryErasureFingerprintRelease",
+                MemberAccessExpressionSyntax qualified => qualified.Name.Identifier.ValueText == "MemoryErasureFingerprintRelease",
+                AliasQualifiedNameSyntax alias => alias.Name.Identifier.ValueText == "MemoryErasureFingerprintRelease",
+                QualifiedNameSyntax qualified => qualified.Right.Identifier.ValueText == "MemoryErasureFingerprintRelease",
+                _ => false,
+            })
+            .Select(static access => access.Ancestors().OfType<MemberDeclarationSyntax>().First() switch
+            {
+                MethodDeclarationSyntax method => method.Identifier.ValueText,
+                ConstructorDeclarationSyntax => ".ctor",
+                PropertyDeclarationSyntax property => property.Identifier.ValueText,
+                FieldDeclarationSyntax field => string.Join(",", field.Declaration.Variables.Select(static variable => variable.Identifier.ValueText)),
+                BaseTypeDeclarationSyntax type => type.Identifier.ValueText,
+                MemberDeclarationSyntax other => other.Kind().ToString(),
+            });
 
     private static void AssertCaught(Regex pattern, string statement, string suffix)
     {

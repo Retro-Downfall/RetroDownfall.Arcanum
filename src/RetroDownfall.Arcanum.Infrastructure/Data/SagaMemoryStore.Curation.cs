@@ -487,6 +487,10 @@ internal sealed partial class SagaMemoryStore
     /// is content the operator erased in this memory's own scope, the write makes that identity live
     /// again and releases its fingerprint in the same transaction (spec §5.6). The key is a copy of the
     /// latch taken before the transaction, never a credential read.
+    ///
+    /// <para>A correction runs under ordinary API authority, which a host-tools-tainted installation
+    /// does not refuse, while release requires authority it does. So where release authority would not
+    /// be issued the correction still lands but lifts nothing and reports <see langword="false"/>.</para>
     /// </remarks>
     public async Task<SagaCurationOutcome> CorrectAsync(
         string id,
@@ -513,7 +517,9 @@ internal sealed partial class SagaMemoryStore
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to avoid corrupting the vec0 index.""");
         }
 
-        using MemoryErasureKey? erasureKey = erasureKeys.TryCopyLatched();
+        bool releasePermitted = MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
+
+        using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
@@ -622,13 +628,15 @@ internal sealed partial class SagaMemoryStore
                     recreated = null;
                 }
 
-                bool? released = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
-                    (SqliteConnection)connection,
-                    (SqliteTransaction)transaction,
-                    MemoryReviewStore.Saga,
-                    recreated,
-                    erasureKey,
-                    cancellationToken).ConfigureAwait(false);
+                bool? released = releasePermitted
+                    ? await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                        (SqliteConnection)connection,
+                        (SqliteTransaction)transaction,
+                        MemoryReviewStore.Saga,
+                        recreated,
+                        erasureKey,
+                        cancellationToken).ConfigureAwait(false)
+                    : false;
 
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
 

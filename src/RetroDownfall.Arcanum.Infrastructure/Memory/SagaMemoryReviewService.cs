@@ -30,6 +30,7 @@ internal sealed class SagaMemoryReviewService(
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
+    IOperatorAuthorityContextIssuer releaseAuthority,
     TimeProvider timeProvider) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
@@ -446,10 +447,13 @@ internal sealed class SagaMemoryReviewService(
         }
 
         // Only a correction can make erased content live again, so only a correction needs the key. It is
-        // a copy of the latch, taken once before any transaction, never a credential read.
-        using MemoryErasureKey? erasureKey = preparedRequest.Action == MemoryReviewAction.Correct
-            ? erasureKeys.TryCopyLatched()
-            : null;
+        // a copy of the latch, taken once before any transaction, never a credential read. Review runs
+        // under ordinary API authority, so where release authority would not be issued - a host-tools-
+        // tainted installation - a correction lands and lifts nothing.
+        bool releasePermitted = preparedRequest.Action == MemoryReviewAction.Correct
+            && MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
+
+        using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
@@ -539,6 +543,7 @@ internal sealed class SagaMemoryReviewService(
                         targets[index],
                         preparedRequest.Decisions[index],
                         embeddings.Value[index],
+                        releasePermitted,
                         erasureKey,
                         changedAt,
                         cancellationToken).ConfigureAwait(false);
@@ -687,6 +692,7 @@ internal sealed class SagaMemoryReviewService(
         SagaReviewEvent target,
         SagaReviewDecision decision,
         float[] embedding,
+        bool releasePermitted,
         MemoryErasureKey? erasureKey,
         DateTimeOffset changedAt,
         CancellationToken cancellationToken)
@@ -732,13 +738,15 @@ internal sealed class SagaMemoryReviewService(
 
                 // An operator write, so never refused: when the replacement is content erased in this
                 // memory's own scope, it is live again and its fingerprint goes in this transaction.
-                releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
-                    (SqliteConnection)connection,
-                    (SqliteTransaction)transaction,
-                    MemoryReviewStore.Saga,
-                    RecreatedIdentity(target, decision.ReplacementContent!),
-                    erasureKey,
-                    cancellationToken).ConfigureAwait(false);
+                releasedErasureFingerprint = releasePermitted
+                    ? await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                        (SqliteConnection)connection,
+                        (SqliteTransaction)transaction,
+                        MemoryReviewStore.Saga,
+                        RecreatedIdentity(target, decision.ReplacementContent!),
+                        erasureKey,
+                        cancellationToken).ConfigureAwait(false)
+                    : false;
 
                 replacementEventSequence = await ReadReviewEventSequenceAsync(
                     connection,

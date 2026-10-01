@@ -22,7 +22,7 @@ namespace RetroDownfall.Arcanum.Tests.Memory;
 /// </summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class MemoryErasureReleaseServiceTests
+public sealed class MemoryErasureReleaseServiceTests(GrimoireFixture fixture)
 {
     private static CancellationToken Token => CancellationToken.None;
 
@@ -68,5 +68,44 @@ public sealed class MemoryErasureReleaseServiceTests
             (await release.ReleaseCovenantAsync(new(CovenantScope.Global, null, "preference.x"), Token)).Error.Code);
 
         Assert.Equal(0, counting.Calls);
+    }
+
+    /// <summary>
+    /// Text that is not strict UTF-8 names no identity a fingerprint can describe, so a direct caller
+    /// that hands the port a lone surrogate gets the request refusal, not a failure from the digest
+    /// grammar, and nothing asks for the key. The HTTP routes never get this far: their JSON reader
+    /// already refuses the string.
+    /// </summary>
+    [SkippableFact]
+    public async Task Release_refuses_text_that_is_not_strict_utf8()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string path = fixture.CopyDatabase();
+
+        try
+        {
+            await using ArcanumDbContext db = fixture.CreateContext(path);
+
+            CountingOsCredentialStore counting = new(new InMemoryOsCredentialStore());
+
+            using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(counting);
+
+            MemoryErasureRelease release = new(db, keys, NullLogger<MemoryErasureRelease>.Instance);
+
+            Assert.Equal(
+                ErrorCodes.Validation.InvalidBody,
+                (await release.ReleaseSagaAsync(new(SagaMemoryScopeKind.Global, null, "a\uD800"), Token)).Error.Code);
+
+            Assert.Equal(
+                ErrorCodes.Lexicon.InvalidName,
+                (await release.ReleaseLexiconAsync(new(new LexiconCurationScope(LexiconScopeKind.Global, null), "\uDC00 Keeper"), Token)).Error.Code);
+
+            Assert.Equal(0, counting.Calls);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

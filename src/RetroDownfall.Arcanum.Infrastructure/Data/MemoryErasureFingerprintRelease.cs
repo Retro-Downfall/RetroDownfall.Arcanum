@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -22,9 +23,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// fingerprint was (or would be) deleted. <see langword="false"/>: the store holds nothing this write
 /// could release. <see langword="null"/>: the store holds fingerprints this write cannot check, because
 /// it has no key, its identity cannot be fingerprinted, or the store holds rows another key recorded.</para>
+///
+/// <para>Release needs the authority the release routes require, which a host-tools-tainted
+/// installation never issues. An operator write whose own route runs under weaker authority asks
+/// <see cref="OperatorMayRelease"/> first, and where it answers no the write still commits but lifts
+/// nothing and reports <see langword="false"/>.</para>
 /// </remarks>
 internal static class MemoryErasureFingerprintRelease
 {
+    /// <summary>
+    /// Whether this installation would issue the authority release requires now: the taint signal the
+    /// erase and release routes refuse on. No issuer composed is a no.
+    /// </summary>
+    internal static bool OperatorMayRelease(IOperatorAuthorityContextIssuer? issuer) =>
+        issuer is not null && issuer.Issue(CovenantAuthorityRequirement.LifecycleManage).IsSuccess;
+
     /// <summary>Deletes the fingerprint of each distinct candidate identity under <paramref name="key"/>.</summary>
     /// <returns>How many fingerprints were deleted.</returns>
     internal static async Task<int> DeleteCandidatesAsync(

@@ -175,6 +175,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs:LongRunningOperationStore:covenantDrain"] = "every use of the ICovenantConnectionDrain is null-safe; absence disables an observation, not a refusal",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:releaseAuthority"] = "the owner is registered in AddArcanumInfrastructure and IOperatorAuthorityContextIssuer by AddCovenantAuthority in the same composition; a null makes MemoryErasureFingerprintRelease.OperatorMayRelease answer no, so a correction lifts no erasure fingerprint and reports false (SagaMemoryStore.Curation.cs CorrectAsync) - the safe direction, and the container supplying it is what keeps an operator correction's release reachable",
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:labeledArtifactGuard"] = "the owner is registered at ServiceCollectionExtensions.cs:1225 and ICovenantLabeledArtifactGuard at :1949; a null skips the label guard in DeleteAsync (SagaMemoryStore.cs:518) and DeleteAllAsync (:622), so the container supplying it is what keeps those refusals reachable",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs:SessionAttachmentStore:blobStore"] = "owner is container-activated and IEncryptedBlobStore is registered; the container supplies it in a composed host",

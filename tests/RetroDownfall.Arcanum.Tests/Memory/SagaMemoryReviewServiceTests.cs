@@ -2,12 +2,14 @@ using Microsoft.Extensions.AI;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -1056,6 +1058,7 @@ public sealed class SagaMemoryReviewServiceTests
             new WeaveIndexAvailability(),
             Settings(),
             MemoryErasureTestKeys.Isolated(),
+            new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
             time);
 
         return new ReviewRuntime(service, codec, time);
