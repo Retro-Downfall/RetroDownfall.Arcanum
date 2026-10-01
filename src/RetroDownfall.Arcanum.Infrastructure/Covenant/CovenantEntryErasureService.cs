@@ -69,8 +69,9 @@ internal interface ICovenantEntryErasurePreparer
 /// closed until the host restarts. A committed erase reopens as a commit and a proven refusal as a
 /// rollback. A <c>COMMIT</c> that fails is settled by reading the receipt back on a fresh connection
 /// after its transaction is disposed: a receipt there is the committed erase; none means nothing
-/// changed, a rollback, and a retryable refusal; a read that cannot be made leaves the scope closed and
-/// asks for manual recovery. The erase publishes no availability, generation or authority transition,
+/// changed, a rollback, and a retryable refusal. The scope stays closed, and the erase asks for manual
+/// recovery, whenever that is not proved: a read that cannot be made or throws, or a rollback of the
+/// failed transaction that itself fails. The erase publishes no availability, generation or authority transition,
 /// so a commit needs no health publication before it reopens.</para>
 ///
 /// <para>The result is built from the receipt only after a commit that succeeded or whose receipt a fresh
@@ -131,7 +132,7 @@ internal sealed class CovenantEntryErasureService(
 
     private static readonly Error UncoveredReclamation = new(
         ErrorCodes.Covenant.ForbiddenAuthority,
-        "Reclaiming a Covenant key requires a closure over the whole installation.");
+        "Erasing a Global entry or reclaiming a Covenant key requires a closure over the whole installation.");
 
     private static readonly Error NotAbsent = new(
         ErrorCodes.MemoryErasure.ErasureIncomplete,
@@ -154,6 +155,12 @@ internal sealed class CovenantEntryErasureService(
 
     /// <summary>Test seam: replaces the fresh-connection receipt re-read of an uncertain commit when set.</summary>
     internal Func<Guid, CancellationToken, Task<Result<MemoryErasureReceiptRow?>>>? ReceiptReReadForTesting { get; init; }
+
+    /// <summary>
+    /// Test seam: runs once the pre-transaction receipt probe has found no receipt, while the probe's
+    /// short read lease is still held. Never set in production.
+    /// </summary>
+    internal Func<CancellationToken, Task>? AfterReceiptProbeForTesting { get; init; }
 
     public async Task<Result<MemoryErasurePreflightDto>> PrepareAsync(
         CovenantErasePrepareRequest request,
@@ -371,11 +378,12 @@ internal sealed class CovenantEntryErasureService(
 
         using MemoryErasureKey key = opened.Value;
 
-        // From the request alone, so a committed erase can answer before any token is read. The note
-        // set does not depend on whether the key was reclaimed, which a replay could not recover.
+        // From the request alone, so a committed erase can answer before any token is read.
         byte[] requestDigest = key.CovenantRequest(target.MutationId, target.Request);
 
-        MemoryErasureNote[] notes = MemoryErasureNotes.For(MemoryReviewStore.Covenant, target.Identity.Scope, reclaimsKey: false);
+        // A replay cannot tell from its receipt whether the key was reclaimed, and a reclaimed key's
+        // curation went in every scope, so a replay never claims that other scopes were unaffected.
+        MemoryErasureNote[] replayNotes = MemoryErasureNotes.For(MemoryReviewStore.Covenant, target.Identity.Scope, reclaimsKey: true);
 
         Result<CovenantReadLease> probe = await gate.AcquireReadAsync(target.Scope, cancellationToken).ConfigureAwait(false);
 
@@ -402,6 +410,11 @@ internal sealed class CovenantEntryErasureService(
 
             if (recorded.IsSuccess && recorded.Value is null)
             {
+                if (AfterReceiptProbeForTesting is { } afterProbe)
+                {
+                    await afterProbe(cancellationToken).ConfigureAwait(false);
+                }
+
                 present = await EntryPresentAsync(connection, target.EntryId, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -414,7 +427,7 @@ internal sealed class CovenantEntryErasureService(
         if (recorded.Value is { } committed)
         {
             return await MemoryErasureProtocol
-                .FinishAsync(connection, scrubber, committed, replayed: true, notes, CancellationToken.None)
+                .FinishAsync(connection, scrubber, committed, replayed: true, replayNotes, CancellationToken.None)
                 .ConfigureAwait(false);
         }
 
@@ -466,6 +479,12 @@ internal sealed class CovenantEntryErasureService(
         {
             return applied.Error;
         }
+
+        // A commit of this request proved, inside its transaction, that the subject's reclamation is the
+        // one the token recorded, so its notes say exactly that.
+        MemoryErasureNote[] notes = applied.Value.Replayed
+            ? replayNotes
+            : MemoryErasureNotes.For(MemoryReviewStore.Covenant, target.Identity.Scope, body.ReclaimsKey);
 
         // Reached only after a commit that succeeded or whose receipt a fresh connection read back, or
         // for a receipt a transaction found already committed, and only once any closure has reopened.
@@ -521,18 +540,22 @@ internal sealed class CovenantEntryErasureService(
                     disposition = CovenantExclusiveLeaseDisposition.CommitAndReopen;
                 }
             }
-            catch (UncertainCommitException)
+            catch (UncertainCommitException uncertain)
             {
-                // The transaction is disposed, so a commit that did not persist has been rolled back.
-                // Only the receipt, read on a connection of its own, can say which happened.
-                Result<MemoryErasureReceiptRow?> reread = ReceiptReReadForTesting is { } seam
-                    ? await seam(target.MutationId, CancellationToken.None).ConfigureAwait(false)
-                    : await scrubber.ReadCommittedReceiptAsync(target.MutationId, CancellationToken.None).ConfigureAwait(false);
+                // Closed until the outcome is proved: only a re-read that answers reopens the scope,
+                // whatever else fails on the way.
+                disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
+
+                applied = CommitUnsettled;
+
+                // A rollback that failed proves nothing about the commit, and may have left the
+                // connection's own transaction in an unknown state, so nothing is read through it.
+                Result<MemoryErasureReceiptRow?> reread = uncertain.RollbackFailed
+                    ? Result<MemoryErasureReceiptRow?>.Failure(CommitUnsettled)
+                    : await ReReadReceiptAsync(target.MutationId).ConfigureAwait(false);
 
                 if (reread.IsFailure)
                 {
-                    disposition = CovenantExclusiveLeaseDisposition.KeepClosed;
-
                     applied = CommitUnsettled;
                 }
                 else if (reread.Value is { Store: MemoryReviewStore.Covenant } persisted
@@ -544,6 +567,8 @@ internal sealed class CovenantEntryErasureService(
                 }
                 else
                 {
+                    disposition = CovenantExclusiveLeaseDisposition.RollbackAndReopen;
+
                     applied = CommitNotRecorded;
                 }
             }
@@ -558,6 +583,24 @@ internal sealed class CovenantEntryErasureService(
         }
 
         return applied;
+    }
+
+    /// <summary>
+    /// Reads the receipt back on a connection of its own, the transaction that may have committed it
+    /// already disposed. Any exception is a read that could not be made, never a proof either way.
+    /// </summary>
+    private async Task<Result<MemoryErasureReceiptRow?>> ReReadReceiptAsync(Guid mutationId)
+    {
+        try
+        {
+            return ReceiptReReadForTesting is { } seam
+                ? await seam(mutationId, CancellationToken.None).ConfigureAwait(false)
+                : await scrubber.ReadCommittedReceiptAsync(mutationId, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return Result<MemoryErasureReceiptRow?>.Failure(CommitUnsettled);
+        }
     }
 
     /// <summary>
@@ -636,7 +679,9 @@ internal sealed class CovenantEntryErasureService(
             return StalePlan;
         }
 
-        if (subject.ReclaimsKey && !lease.CoversInstallation)
+        // Every Campaign's turns read a Global entry, and reclamation removes the key's curation in
+        // every scope, so either one needs a closure that drained the whole installation.
+        if ((subject.ReclaimsKey || subject.Scope is CovenantScope.Global) && !lease.CoversInstallation)
         {
             return UncoveredReclamation;
         }
@@ -727,7 +772,20 @@ internal sealed class CovenantEntryErasureService(
         {
             // A busy COMMIT left the transaction open, and the retry's first step re-probes the receipt.
             // Anything else may have persisted the frame before it failed, so the outcome is uncertain.
-            throw new UncertainCommitException(failure);
+            // The transaction is rolled back here, where a rollback that fails is recorded rather than
+            // left to replace the commit's own failure on the way out of this method.
+            bool rollbackFailed = false;
+
+            try
+            {
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                rollbackFailed = true;
+            }
+
+            throw new UncertainCommitException(failure, rollbackFailed);
         }
 
         return new Applied(receipt, Replayed: false);
@@ -1045,7 +1103,13 @@ internal sealed class CovenantEntryErasureService(
 
     private sealed record Applied(MemoryErasureReceiptRow Receipt, bool Replayed);
 
-    /// <summary>A <c>COMMIT</c> that failed in a way that may still have persisted.</summary>
-    private sealed class UncertainCommitException(Exception commitFailure)
-        : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure);
+    /// <summary>
+    /// A <c>COMMIT</c> that failed in a way that may still have persisted, and whether the rollback that
+    /// followed it failed too.
+    /// </summary>
+    private sealed class UncertainCommitException(Exception commitFailure, bool rollbackFailed)
+        : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure)
+    {
+        internal bool RollbackFailed { get; } = rollbackFailed;
+    }
 }

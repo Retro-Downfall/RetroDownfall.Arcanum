@@ -157,20 +157,26 @@ public sealed class MemoryErasureProtocolTests(GrimoireFixture fixture) : IAsync
             [MemoryErasureNote.OtherScopesUnaffected],
             MemoryErasureNotes.For(MemoryReviewStore.Lexicon, MemoryErasureScopeKind.Global, false));
 
-        foreach (bool reclaimsKey in (bool[])[false, true])
-        {
-            Assert.Equal(
-                [
-                    MemoryErasureNote.GlobalKeyStillProposableInCampaigns,
-                    MemoryErasureNote.OtherScopesUnaffected,
-                    MemoryErasureNote.CovenantDrainsInFlightTurns,
-                ],
-                MemoryErasureNotes.For(MemoryReviewStore.Covenant, MemoryErasureScopeKind.Global, reclaimsKey));
+        Assert.Equal(
+            [
+                MemoryErasureNote.GlobalKeyStillProposableInCampaigns,
+                MemoryErasureNote.OtherScopesUnaffected,
+                MemoryErasureNote.CovenantDrainsInFlightTurns,
+            ],
+            MemoryErasureNotes.For(MemoryReviewStore.Covenant, MemoryErasureScopeKind.Global, false));
 
-            Assert.Equal(
-                [MemoryErasureNote.OtherScopesUnaffected, MemoryErasureNote.CovenantDrainsInFlightTurns],
-                MemoryErasureNotes.For(MemoryReviewStore.Covenant, MemoryErasureScopeKind.Campaign, reclaimsKey));
-        }
+        Assert.Equal(
+            [MemoryErasureNote.OtherScopesUnaffected, MemoryErasureNote.CovenantDrainsInFlightTurns],
+            MemoryErasureNotes.For(MemoryReviewStore.Covenant, MemoryErasureScopeKind.Campaign, false));
+
+        // Reclaiming the key removes its curation in every scope, so other scopes are not unaffected.
+        Assert.Equal(
+            [MemoryErasureNote.GlobalKeyStillProposableInCampaigns, MemoryErasureNote.CovenantDrainsInFlightTurns],
+            MemoryErasureNotes.For(MemoryReviewStore.Covenant, MemoryErasureScopeKind.Global, true));
+
+        Assert.Equal(
+            [MemoryErasureNote.CovenantDrainsInFlightTurns],
+            MemoryErasureNotes.For(MemoryReviewStore.Covenant, MemoryErasureScopeKind.Campaign, true));
 
         _ = Assert.Throws<ArgumentException>(
             () => MemoryErasureNotes.For(MemoryReviewStore.Saga, MemoryErasureScopeKind.Global, true));

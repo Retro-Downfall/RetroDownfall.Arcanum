@@ -348,8 +348,9 @@ internal static class MemoryErasureProtocol
 /// <remarks>
 /// A Global Covenant key stays proposable by agents inside Campaigns; an unresolved Saga scope stops
 /// matching once its Session's Campaign is resolved; erasure in one scope never reaches another; and a
-/// Covenant erase drains in-flight turns. A reclaimed Covenant key adds no note: its consequences are
-/// carried by the plan's own facts.
+/// Covenant erase drains in-flight turns. A Covenant erase that reclaims its key removes the key's
+/// curation in every scope, so it does not state that other scopes are unaffected; the rest of its
+/// consequences are carried by the plan's own facts.
 /// </remarks>
 internal static class MemoryErasureNotes
 {
@@ -388,7 +389,10 @@ internal static class MemoryErasureNotes
             notes.Add(MemoryErasureNote.UnresolvedScopeStopsMatchingOnResolution);
         }
 
-        notes.Add(MemoryErasureNote.OtherScopesUnaffected);
+        if (!reclaimsKey)
+        {
+            notes.Add(MemoryErasureNote.OtherScopesUnaffected);
+        }
 
         if (store is MemoryReviewStore.Covenant)
         {

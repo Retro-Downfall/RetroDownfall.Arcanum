@@ -1,7 +1,9 @@
 using System.Globalization;
 
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -72,6 +74,11 @@ public sealed class CovenantEntryErasureServiceTests
 
         Assert.Equal(first.Value.EffectDigest, replayed.Value.EffectDigest);
 
+        // The erase reclaimed the key, so neither answer claims other scopes were unaffected.
+        Assert.Equal([MemoryErasureNote.CovenantDrainsInFlightTurns], first.Value.Notes);
+
+        Assert.Equal([MemoryErasureNote.CovenantDrainsInFlightTurns], replayed.Value.Notes);
+
         Assert.Equal([$"read:{CampaignOne:D}"], recorder.Acquisitions);
 
         Assert.Empty(recorder.RefusedAttempts);
@@ -103,6 +110,14 @@ public sealed class CovenantEntryErasureServiceTests
         Assert.Equal(1, applied.Value.Local.ErasedItemCount);
 
         Assert.Equal(preflight.Plan.RowsToRemove, applied.Value.Local.RemovedRowCount);
+
+        // A reclaiming erase removes the key's curation in every scope, so neither the preflight nor
+        // the result claims other scopes were unaffected.
+        Assert.True(preflight.Plan.Covenant!.ReclaimsKey);
+
+        Assert.Equal([MemoryErasureNote.CovenantDrainsInFlightTurns], preflight.Notes);
+
+        Assert.Equal([MemoryErasureNote.CovenantDrainsInFlightTurns], applied.Value.Notes);
 
         Assert.False(await bed.EntryExistsAsync(entryId));
 
@@ -592,6 +607,472 @@ public sealed class CovenantEntryErasureServiceTests
             stored.TryGet(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount).Status);
     }
 
+    /// <summary>
+    /// Every target the absence proof covers is load-bearing. A test-only trigger silently skips one
+    /// table's delete, or the full-text delete trigger is dropped, and the erase must answer 500
+    /// <c>MemoryErasure.ErasureIncomplete</c>, roll back, and record no receipt and no fingerprint,
+    /// rather than reporting an erase over rows that remain.
+    /// </summary>
+    /// <remarks>
+    /// A table that a kept row still references is neutered together with what references it, because
+    /// skipping its delete alone fails the referencing delete's foreign key instead. Review events and
+    /// decision receipts go by cascade, so they are reached through the cases that keep the versions.
+    /// </remarks>
+    [Theory]
+    [InlineData("covenant_search_documents")]
+    [InlineData("covenant_search_outbox")]
+    [InlineData("covenant_mutation_receipts")]
+    [InlineData("covenant_version_attachment_provenance,covenant_versions,covenant_entries")]
+    [InlineData("covenant_heads,covenant_versions,covenant_entries")]
+    [InlineData("covenant_versions,covenant_entries")]
+    [InlineData("covenant_entries")]
+    [InlineData("covenant_curation_heads,covenant_curation_versions")]
+    [InlineData("covenant_curation_versions")]
+    [InlineData("covenant_curation_receipts")]
+    [InlineData("covenant_key_epochs")]
+    [InlineData("covenant_search_documents_ad")]
+    public async Task An_erase_that_leaves_a_planned_row_behind_fails_closed_as_incomplete(string faults)
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain, withAccelerator: true);
+
+        Guid entryId = await bed.SeedFullEntryAsync();
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        Assert.True(preflight.Plan.Covenant!.ReclaimsKey);
+
+        Snapshot before = await bed.SnapshotAsync(entryId);
+
+        Assert.Equal(1, await bed.ScalarAsync(FullTextMatchSql));
+
+        await bed.InstallFaultsAsync(faults);
+
+        List<string> recorded = [];
+
+        Result<MemoryErasureResultDto> applied = await bed
+            .Service(new DispositionRecordingGate(bed.Gate, recorded))
+            .ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.ErasureIncomplete, applied.Error.Code);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, ArcanumErrorMapper.ResolveStatusCode(applied.Error.Code));
+
+        Assert.Equal(["complete:RollbackAndReopen"], recorded);
+
+        await bed.AssertIntactAsync(entryId, before);
+
+        Assert.Equal(1, await bed.ScalarAsync(FullTextMatchSql));
+
+        await using CovenantReadLease reopened = (await bed.Gate.AcquireReadAsync(EntryScope(), Token)).Value;
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A request cancelled as the erase reaches <c>COMMIT</c> commits nothing, and the closure still
+    /// completes with its one disposition, so the scope reopens rather than staying closed.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_before_commit_reopens_the_scope_with_no_erase()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        Snapshot before = await bed.SnapshotAsync(entryId);
+
+        using CancellationTokenSource request = new();
+
+        List<string> recorded = [];
+
+        CovenantEntryErasureService service = bed.Service(
+            new DispositionRecordingGate(bed.Gate, recorded),
+            commit: async (transaction, cancellationToken) =>
+            {
+                await request.CancelAsync();
+
+                await transaction.CommitAsync(cancellationToken);
+            });
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, request.Token));
+
+        Assert.Equal(["complete:RollbackAndReopen"], recorded);
+
+        await bed.AssertIntactAsync(entryId, before);
+
+        await using CovenantReadLease reopened = (await bed.Gate.AcquireReadAsync(EntryScope(), Token)).Value;
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// An exception thrown inside the closure before <c>COMMIT</c>, here from the pre-commit
+    /// revalidation, rolls the erase back and still completes the closure, so the scope reopens.
+    /// </summary>
+    [Fact]
+    public async Task An_exception_before_commit_reopens_the_scope_with_no_erase()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        Snapshot before = await bed.SnapshotAsync(entryId);
+
+        List<string> recorded = [];
+
+        DispositionRecordingGate gate = new(bed.Gate, recorded) { ThrowOnRevalidation = 2 };
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => bed.Service(gate).ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token));
+
+        Assert.Equal(["complete:RollbackAndReopen"], recorded);
+
+        await bed.AssertIntactAsync(entryId, before);
+
+        await using CovenantReadLease reopened = (await bed.Gate.AcquireReadAsync(EntryScope(), Token)).Value;
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A busy <c>COMMIT</c> left its transaction open, so the erase runs again under the same closure,
+    /// starting from the receipt probe, and commits exactly once.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_commit_is_retried_and_commits_the_erase_once()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        int commits = 0;
+
+        List<string> recorded = [];
+
+        CovenantEntryErasureService service = bed.Service(
+            new DispositionRecordingGate(bed.Gate, recorded),
+            commit: async (transaction, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref commits) == 1)
+                {
+                    throw new SqliteException("database is locked", 5);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+            });
+
+        Result<MemoryErasureResultDto> applied = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? $"{applied.Error.Code}: {applied.Error.Message}" : null);
+
+        Assert.False(applied.Value.Replayed);
+
+        Assert.Equal(2, commits);
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.Equal(["complete:CommitAndReopen"], recorded);
+
+        Assert.False(await bed.EntryExistsAsync(entryId));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A retry whose receipt probe ran just before its original committed finds the entry gone. Its
+    /// transaction then replays the receipt before it asks whether the subject was erased, so the
+    /// retry answers with the committed erase rather than 410, and takes no closure.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_that_misses_the_receipt_of_an_entry_already_gone_replays_it()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        Result<MemoryErasureResultDto>? original = null;
+
+        DispositionRecordingGate gate = new(bed.Gate, []);
+
+        // The original runs through another host gate, because this retry still holds its probe's read
+        // lease on the bed's gate, which that gate's closure would drain against.
+        CovenantEntryErasureService retry = bed.Service(
+            gate,
+            afterReceiptProbe: async _ =>
+                original = await bed.Service(bed.SecondGate()).ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token));
+
+        Result<MemoryErasureResultDto> replayed = await retry.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.NotNull(original);
+
+        Assert.True(original.IsSuccess, original.IsFailure ? $"{original.Error.Code}: {original.Error.Message}" : null);
+
+        Assert.False(original.Value.Replayed);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? $"{replayed.Error.Code}: {replayed.Error.Message}" : null);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.Equal(original.Value.EffectDigest, replayed.Value.EffectDigest);
+
+        Assert.Empty(gate.Attempts);
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.False(await bed.EntryExistsAsync(entryId));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A retry that saw the entry still present asks for its closure after its original committed. Its
+    /// transaction replays the receipt before it asks whether the subject was erased.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_that_misses_the_receipt_under_its_closure_replays_it()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        Result<MemoryErasureResultDto>? original = null;
+
+        List<string> recorded = [];
+
+        DispositionRecordingGate gate = new(bed.Gate, recorded)
+        {
+            BeforeEntryErasure = async () =>
+                original = await bed.Service().ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token),
+        };
+
+        Result<MemoryErasureResultDto> replayed = await bed.Service(gate).ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.NotNull(original);
+
+        Assert.True(original.IsSuccess, original.IsFailure ? $"{original.Error.Code}: {original.Error.Message}" : null);
+
+        Assert.False(original.Value.Replayed);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? $"{replayed.Error.Code}: {replayed.Error.Message}" : null);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.Equal(original.Value.EffectDigest, replayed.Value.EffectDigest);
+
+        Assert.Equal(["entry-erasure:True"], gate.Attempts);
+
+        Assert.Equal(["complete:CommitAndReopen"], recorded);
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.False(await bed.EntryExistsAsync(entryId));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A re-read that throws, whatever it throws, has not proved whether the commit persisted, so the
+    /// closure stays closed and the erase asks for manual recovery.
+    /// </summary>
+    [Fact]
+    public async Task An_uncertain_commit_whose_re_read_throws_stays_closed_and_reports_manual_recovery()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        Snapshot before = await bed.SnapshotAsync(entryId);
+
+        List<string> recorded = [];
+
+        CovenantEntryErasureService service = bed.Service(
+            new DispositionRecordingGate(bed.Gate, recorded),
+            commit: static (_, _) => throw new SqliteException("disk I/O error", 10),
+            reread: static (_, _) => throw new NotSupportedException("A failure no storage filter names."));
+
+        Result<MemoryErasureResultDto> applied = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, applied.Error.Code);
+
+        Assert.Equal(["complete:KeepClosed"], recorded);
+
+        await bed.AssertIntactAsync(entryId, before);
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A <c>COMMIT</c> that persisted and then reported a failure leaves its transaction object
+    /// believing it is still open, so the rollback on disposal fails. That proves nothing about the
+    /// outcome, so the closure stays closed and the erase asks for manual recovery; the receipt it
+    /// committed answers any later retry.
+    /// </summary>
+    [Fact]
+    public async Task An_uncertain_commit_whose_rollback_fails_stays_closed_and_reports_manual_recovery()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        List<string> recorded = [];
+
+        CovenantEntryErasureService service = bed.Service(
+            new DispositionRecordingGate(bed.Gate, recorded),
+            commit: static async (transaction, cancellationToken) =>
+            {
+                await using (SqliteCommand commit = transaction.Connection!.CreateCommand())
+                {
+                    commit.Transaction = transaction;
+
+                    commit.CommandText = "COMMIT;";
+
+                    _ = await commit.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                throw new SqliteException("disk I/O error", 10);
+            });
+
+        Result<MemoryErasureResultDto> applied = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(applied.IsFailure, applied.IsSuccess ? "The erase reported success over an unsettled commit." : null);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, applied.Error.Code);
+
+        Assert.Equal(["complete:KeepClosed"], recorded);
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.False(await bed.EntryExistsAsync(entryId));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// A Global entry is read by every Campaign's turns, so even when its key stays, its erase closes
+    /// and drains the whole installation: a Campaign turn in flight is revoked and waited out.
+    /// </summary>
+    [Fact]
+    public async Task A_global_entry_erase_closes_the_installation_and_drains_campaign_turns()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(PatientDrain);
+
+        Guid twin = await bed.SetCampaignEntryAsync("Campaign twin text.");
+
+        Guid global = await bed.SetGlobalEntryAsync("Global text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service(), CovenantScope.Global);
+
+        Assert.False(preflight.Plan.Covenant!.ReclaimsKey);
+
+        MemoryErasureNote[] notes =
+        [
+            MemoryErasureNote.GlobalKeyStillProposableInCampaigns,
+            MemoryErasureNote.OtherScopesUnaffected,
+            MemoryErasureNote.CovenantDrainsInFlightTurns,
+        ];
+
+        Assert.Equal(notes, preflight.Notes);
+
+        List<string> recorded = [];
+
+        DispositionRecordingGate gate = new(bed.Gate, recorded);
+
+        CovenantTurnLease turn = (await bed.Gate.AcquireTurnAsync(CampaignContext(), Token)).Value;
+
+        Task<Result<MemoryErasureResultDto>> applying = bed.Service(gate).ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        await WaitForAsync(() => turn.Revocation.IsCancellationRequested);
+
+        Assert.False(applying.IsCompleted);
+
+        await turn.DisposeAsync();
+
+        Result<MemoryErasureResultDto> applied = await applying;
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? $"{applied.Error.Code}: {applied.Error.Message}" : null);
+
+        Assert.Equal(["entry-erasure:False"], gate.Attempts);
+
+        Assert.Equal(["complete:CommitAndReopen"], recorded);
+
+        Assert.Equal(notes, applied.Value.Notes);
+
+        Assert.False(await bed.EntryExistsAsync(global));
+
+        Assert.True(await bed.EntryExistsAsync(twin));
+
+        // A replay cannot tell from its receipt whether the key was reclaimed, so it never claims other
+        // scopes were unaffected.
+        Result<MemoryErasureResultDto> replayed = await bed.Service().ApplyAsync(Apply(prepare, "x"), bed.Context, Token);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? $"{replayed.Error.Code}: {replayed.Error.Message}" : null);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.Equal(
+            [MemoryErasureNote.GlobalKeyStillProposableInCampaigns, MemoryErasureNote.CovenantDrainsInFlightTurns],
+            replayed.Value.Notes);
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// Every Campaign's turns read a Global entry, so erasing one needs a closure over the whole
+    /// installation even when the key stays. The gate stub hands back a closure that covers one scope.
+    /// </summary>
+    [Fact]
+    public async Task A_global_erase_is_refused_when_the_held_lease_does_not_cover_the_installation()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        _ = await bed.SetCampaignEntryAsync("Campaign twin text.");
+
+        Guid global = await bed.SetGlobalEntryAsync("Global text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service(), CovenantScope.Global);
+
+        Assert.False(preflight.Plan.Covenant!.ReclaimsKey);
+
+        Snapshot before = await bed.SnapshotAsync(global);
+
+        List<string> recorded = [];
+
+        DispositionRecordingGate gate = new(bed.Gate, recorded) { ReportScopedCoverage = true };
+
+        Result<MemoryErasureResultDto> applied = await bed.Service(gate).ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, applied.Error.Code);
+
+        Assert.Equal(["complete:RollbackAndReopen"], recorded);
+
+        await bed.AssertIntactAsync(global, before);
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    private const string FullTextMatchSql = "SELECT count(*) FROM covenant_fts WHERE covenant_fts MATCH 'zebra';";
+
     private static CovenantEraseRequest Apply(CovenantErasePrepareRequest prepare, string token) =>
         new(prepare.Scope, prepare.CampaignId, prepare.Key, prepare.EntryId, prepare.Confirmed, prepare.Proposed, prepare.MutationId, token);
 
@@ -625,20 +1106,32 @@ public sealed class CovenantEntryErasureServiceTests
     {
         private readonly CovenantServiceHarness _harness;
 
+        private readonly FakeCovenantAvailability _availability;
+
+        private readonly TimeSpan _drainTimeout;
+
         private EraseBed(
             CovenantServiceHarness harness,
             CovenantOperationGate gate,
+            FakeCovenantAvailability availability,
             FakeCovenantAuthorityProvider authority,
-            OperatorAuthorityContext context)
+            OperatorAuthorityContext context,
+            TimeSpan drainTimeout)
         {
             _harness = harness;
 
             Gate = gate;
 
+            _availability = availability;
+
             Authority = authority;
 
             Context = context;
+
+            _drainTimeout = drainTimeout;
         }
+
+        internal CovenantServiceHarness Harness => _harness;
 
         internal CovenantCanonicalFixture Fixture => _harness.Fixture;
 
@@ -652,12 +1145,13 @@ public sealed class CovenantEntryErasureServiceTests
 
         internal TestEnvelopeCodec Codec { get; } = new();
 
-        internal static async Task<EraseBed> StartAsync(TimeSpan drainTimeout)
+        internal static async Task<EraseBed> StartAsync(TimeSpan drainTimeout, bool withAccelerator = false)
         {
             CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(
                 Token,
                 withErasureEvidence: true,
-                coreObjects: ["memory_erasure_receipts", "memory_erasure_receipt_subjects", "memory_erasure_receipts_guard_update"]);
+                coreObjects: ["memory_erasure_receipts", "memory_erasure_receipt_subjects", "memory_erasure_receipts_guard_update"],
+                withAccelerator: withAccelerator);
 
             try
             {
@@ -701,7 +1195,7 @@ public sealed class CovenantEntryErasureServiceTests
                     .Issue(CovenantAuthorityRequirement.LifecycleManage)
                     .Value;
 
-                return new EraseBed(harness, gate, authority, context);
+                return new EraseBed(harness, gate, availability, authority, context, drainTimeout);
             }
             catch
             {
@@ -715,7 +1209,8 @@ public sealed class CovenantEntryErasureServiceTests
             ICovenantOperationGate? gate = null,
             Func<SqliteTransaction, CancellationToken, Task>? commit = null,
             Func<Guid, CancellationToken, Task<Result<MemoryErasureReceiptRow?>>>? reread = null,
-            List<string>? recorder = null) =>
+            List<string>? recorder = null,
+            Func<CancellationToken, Task>? afterReceiptProbe = null) =>
             new(
                 new FixedCovenantConnectionSource(Connection),
                 Fixture.ErasureKeys,
@@ -729,7 +1224,15 @@ public sealed class CovenantEntryErasureServiceTests
             {
                 CommitForTesting = commit,
                 ReceiptReReadForTesting = reread,
+                AfterReceiptProbeForTesting = afterReceiptProbe,
             };
+
+        /// <summary>
+        /// A second production gate over the same tier and authority, whose leases the bed's own gate
+        /// does not see: what a concurrent request on another host gate would hold.
+        /// </summary>
+        internal CovenantOperationGate SecondGate() =>
+            CovenantOperationGateFixture.CreateGate(_availability, Authority, new FakeCovenantCampaignScopeProbe(), _drainTimeout);
 
         /// <summary>Writes the erased key's Campaign entry through the production prepare-and-commit path.</summary>
         internal async Task<Guid> SetCampaignEntryAsync(string content)
@@ -739,18 +1242,89 @@ public sealed class CovenantEntryErasureServiceTests
             return (await RequestAsync(Guid.NewGuid())).EntryId;
         }
 
+        /// <summary>Writes the key's Global entry through the production prepare-and-commit path.</summary>
+        internal async Task<Guid> SetGlobalEntryAsync(string content)
+        {
+            await _harness.SetAsync(CovenantScope.Global, null, Key, content, Token);
+
+            return (await RequestAsync(Guid.NewGuid(), CovenantScope.Global)).EntryId;
+        }
+
+        /// <summary>
+        /// Every target an entry can own, written through production paths: a search document, a
+        /// pending outbox delta, two Confirmed versions, an agent proposal with a provenance leaf, and a
+        /// pin. The text is projected into the full-text index before the correction.
+        /// </summary>
+        internal async Task<Guid> SeedFullEntryAsync()
+        {
+            Guid entryId = await SetCampaignEntryAsync("Zebra crossing text.");
+
+            _ = await CovenantSearchFixture.SynchronizeAsync(Fixture, Token);
+
+            await _harness.CorrectAsync(CovenantScope.Campaign, CampaignOne, Key, "Corrected operator text.", Token);
+
+            long keyEpoch = await ScalarAsync($"SELECT COALESCE(MAX(KeyEpoch), 0) FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';");
+
+            Result<IReadOnlyList<CovenantMutationReceipt>> proposed = await CovenantMutationFixture.ApplyAsync(
+                Fixture,
+                await CovenantMutationFixture.LiveBatchAsync(
+                    Fixture,
+                    Token,
+                    CovenantMutationFixture.AgentPropose(
+                        CampaignOne,
+                        Key,
+                        "Agent text.",
+                        0,
+                        keyEpoch,
+                        provenance:
+                        [
+                            new CovenantMutationProvenanceLeaf(
+                                0,
+                                new Guid("aaaaaaaa-2222-4222-8222-222222222222"),
+                                new Guid("bbbbbbbb-2222-4222-8222-222222222222"),
+                                "logical/service",
+                                CovenantOperationGateFixture.Digest(7),
+                                CovenantMaterializationSourceRange.WholeSource,
+                                null,
+                                null,
+                                null,
+                                null),
+                        ])),
+                Token);
+
+            Assert.True(proposed.IsSuccess, proposed.IsFailure ? proposed.Error.Message : null);
+
+            Result<CovenantCurationResultDto> pinned = await _harness.CurateAsync(
+                CovenantCurationKind.Pin,
+                CovenantScope.Campaign,
+                CampaignOne,
+                Key,
+                Token,
+                lane: CovenantLane.Confirmed);
+
+            Assert.True(pinned.IsSuccess, pinned.IsFailure ? pinned.Error.Message : null);
+
+            Assert.True(await ScalarAsync("SELECT count(*) FROM covenant_search_outbox WHERE DesiredVersionId IS NOT NULL;") > 0);
+
+            Assert.Equal(1, await ScalarAsync("SELECT count(*) FROM covenant_search_documents;"));
+
+            Assert.Equal(1, await ScalarAsync("SELECT count(*) FROM covenant_version_attachment_provenance;"));
+
+            return entryId;
+        }
+
         /// <summary>The erase target exactly as show reports it: the entry and both lane heads.</summary>
-        internal async Task<CovenantErasePrepareRequest> RequestAsync(Guid mutationId)
+        internal async Task<CovenantErasePrepareRequest> RequestAsync(Guid mutationId, CovenantScope scope = CovenantScope.Campaign)
         {
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
                 SELECT EntryId, LaneCode, CurrentVersionId, CurrentLaneRevision
                 FROM covenant_heads
-                WHERE CampaignId = $campaign AND NormalizedKey = $key;
+                WHERE CampaignId IS $campaign AND NormalizedKey = $key;
                 """;
 
-            _ = command.Parameters.AddWithValue("$campaign", CampaignOne.ToString("D"));
+            _ = command.Parameters.AddWithValue("$campaign", scope is CovenantScope.Campaign ? CampaignOne.ToString("D") : DBNull.Value);
 
             _ = command.Parameters.AddWithValue("$key", Key);
 
@@ -781,8 +1355,8 @@ public sealed class CovenantEntryErasureServiceTests
             Assert.NotNull(entryId);
 
             return new CovenantErasePrepareRequest(
-                CovenantScope.Campaign,
-                CampaignOne,
+                scope,
+                scope is CovenantScope.Campaign ? CampaignOne : null,
                 Key,
                 entryId!.Value,
                 confirmed,
@@ -791,9 +1365,10 @@ public sealed class CovenantEntryErasureServiceTests
         }
 
         internal async Task<(CovenantErasePrepareRequest Prepare, MemoryErasurePreflightDto Preflight)> PrepareAsync(
-            CovenantEntryErasureService service)
+            CovenantEntryErasureService service,
+            CovenantScope scope = CovenantScope.Campaign)
         {
-            CovenantErasePrepareRequest request = await RequestAsync(Guid.NewGuid());
+            CovenantErasePrepareRequest request = await RequestAsync(Guid.NewGuid(), scope);
 
             Result<MemoryErasurePreflightDto> prepared = await service.PrepareAsync(request, Context, Token);
 
@@ -819,6 +1394,24 @@ public sealed class CovenantEntryErasureServiceTests
             Assert.Equal(0, await ScalarAsync("SELECT count(*) FROM memory_erasure_receipts;"));
 
             Assert.Equal(0, await ScalarAsync("SELECT count(*) FROM memory_erasure_fingerprints;"));
+        }
+
+        /// <summary>
+        /// Installs test-only faults: a trigger that silently skips every delete from each named table,
+        /// or, for a name ending in <c>_ad</c>, drops that after-delete trigger.
+        /// </summary>
+        internal async Task InstallFaultsAsync(string faults)
+        {
+            foreach (string fault in faults.Split(','))
+            {
+                await using SqliteCommand command = Connection.CreateCommand();
+
+                command.CommandText = fault.EndsWith("_ad", StringComparison.Ordinal)
+                    ? $"DROP TRIGGER {fault};"
+                    : $"CREATE TRIGGER test_neuter_{fault} BEFORE DELETE ON {fault} BEGIN SELECT RAISE(IGNORE); END;";
+
+                _ = await command.ExecuteNonQueryAsync(Token);
+            }
         }
 
         internal async Task<bool> EntryExistsAsync(Guid entryId) =>
@@ -854,6 +1447,18 @@ public sealed class CovenantEntryErasureServiceTests
         internal int? CredentialCallsAtInstallationRead { get; private set; }
 
         internal List<string> Attempts { get; } = [];
+
+        /// <summary>Runs before the closure is asked for, while the erase holds no lease at all.</summary>
+        internal Func<Task>? BeforeEntryErasure { get; init; }
+
+        /// <summary>
+        /// The revalidation of a granted lease, counted from one, that throws instead of answering:
+        /// the first is the one straight after the drain, the second the one before <c>COMMIT</c>.
+        /// </summary>
+        internal int? ThrowOnRevalidation { get; init; }
+
+        /// <summary>The gate stub's other lie: the granted closure reports that it covers only one scope.</summary>
+        internal bool ReportScopedCoverage { get; init; }
 
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(CancellationToken cancellationToken)
         {
@@ -903,12 +1508,19 @@ public sealed class CovenantEntryErasureServiceTests
                 Attempts.Add($"entry-erasure:{reclaimsKey}");
             }
 
+            if (BeforeEntryErasure is { } before)
+            {
+                await before();
+            }
+
             Result<CovenantEntryErasureLease> acquired = await inner
                 .AcquireEntryErasureAsync(entryScope, !ForceCampaignClosure && reclaimsKey, owner, cancellationToken);
 
             return acquired.IsFailure
                 ? acquired
-                : Result<CovenantEntryErasureLease>.Success(new CovenantEntryErasureLease(new RecordingRegistration(acquired.Value, recorder)));
+                : Result<CovenantEntryErasureLease>.Success(
+                    new CovenantEntryErasureLease(
+                        new RecordingRegistration(acquired.Value, recorder, ThrowOnRevalidation, ReportScopedCoverage)));
         }
 
         public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
@@ -939,14 +1551,24 @@ public sealed class CovenantEntryErasureServiceTests
             inner.ResumeExclusiveAsync(owner, cancellationToken);
 
         /// <summary>The real lease, with its disposition written down on the way through.</summary>
-        private sealed class RecordingRegistration(CovenantEntryErasureLease lease, List<string> recorder)
+        private sealed class RecordingRegistration(
+            CovenantEntryErasureLease lease,
+            List<string> recorder,
+            int? throwOnRevalidation,
+            bool reportScopedCoverage)
             : ICovenantExclusiveLeaseRegistration
         {
-            public CovenantOperationLeaseSnapshot Snapshot => lease.Snapshot;
+            private int _revalidations;
+
+            public CovenantOperationLeaseSnapshot Snapshot =>
+                reportScopedCoverage ? lease.Snapshot with { Coverage = CovenantLeaseCoverage.Scoped } : lease.Snapshot;
 
             public CancellationToken Revocation => lease.Revocation;
 
-            public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) => lease.RevalidateAsync(cancellationToken);
+            public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
+                Interlocked.Increment(ref _revalidations) == throwOnRevalidation
+                    ? throw new InvalidOperationException("A fault injected between the drain and the commit.")
+                    : lease.RevalidateAsync(cancellationToken);
 
             public ValueTask ReleaseAsync() => lease.DisposeAsync();
 

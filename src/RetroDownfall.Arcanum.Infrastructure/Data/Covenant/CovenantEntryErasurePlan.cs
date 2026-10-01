@@ -35,6 +35,10 @@ internal enum CovenantEntryErasureMode
 /// version 6 is matched in.
 /// </param>
 /// <param name="HeadLanes">The lanes the entry holds a head in, which such a receipt is matched by.</param>
+/// <param name="SearchRowIds">
+/// The search projection rows of the entry's heads, which key its full-text index rows, captured
+/// before anything is deleted so the absence proof can still name them afterwards.
+/// </param>
 internal sealed record CovenantEntryErasureSubject(
     Guid EntryId,
     CovenantScope Scope,
@@ -43,7 +47,8 @@ internal sealed record CovenantEntryErasureSubject(
     bool IsMasked,
     bool ReclaimsKey,
     string CreatedAtUtc,
-    IReadOnlyList<CovenantLane> HeadLanes);
+    IReadOnlyList<CovenantLane> HeadLanes,
+    IReadOnlyList<long> SearchRowIds);
 
 /// <summary>What one entry-erasure plan run found or removed.</summary>
 /// <param name="Targets">
@@ -150,6 +155,8 @@ internal static class CovenantEntryErasurePlan
     private const string CurationReceipts = "covenant_curation_receipts";
 
     private const string KeyEpochs = "covenant_key_epochs";
+
+    private const string FullTextIndex = "covenant_fts";
 
     private const string CurationPrefix = "covenant_curation_";
 
@@ -390,11 +397,13 @@ internal static class CovenantEntryErasurePlan
 
         List<CovenantLane> lanes = [];
 
+        List<long> searchRows = [];
+
         await using (SqliteCommand command = Command(
             connection,
             transaction,
             $"""
-            SELECT LaneCode FROM covenant_heads
+            SELECT LaneCode, SearchRowId FROM covenant_heads
             WHERE {CovenantIdentitySql.Keyed("EntryId", "$entry")}
             ORDER BY LaneCode;
             """))
@@ -406,6 +415,8 @@ internal static class CovenantEntryErasurePlan
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 lanes.Add((CovenantLane)reader.GetInt32(0));
+
+                searchRows.Add(reader.GetInt64(1));
             }
         }
 
@@ -463,7 +474,8 @@ internal static class CovenantEntryErasurePlan
             masked,
             reclaims,
             createdAtUtc,
-            lanes);
+            lanes,
+            searchRows);
     }
 
     /// <summary>
@@ -471,8 +483,15 @@ internal static class CovenantEntryErasurePlan
     /// reporting only what remains.
     /// </summary>
     /// <remarks>
-    /// The outbox is counted by the erased version ids alone, so this erase's own content-free absent
-    /// deltas, which name no version, are not counted against it.
+    /// <para>The outbox is counted by the erased version ids alone, so this erase's own content-free
+    /// absent deltas, which name no version, are not counted against it.</para>
+    ///
+    /// <para>The full-text index holds the entry's tokens, so it is proved too, although no plan
+    /// statement deletes from it: the search documents' delete trigger does. FTS5 keeps one
+    /// <c>covenant_fts_docsize</c> row for every row it indexes, keyed by the content row id, which is
+    /// the head's search row id, so that row's absence is the exact proof that the index no longer
+    /// holds the entry. An index that has fallen out of step with its documents fails here, and the
+    /// erase rolls back rather than reporting an erase the index contradicts.</para>
     /// </remarks>
     internal static async Task<IReadOnlyList<MemoryErasureTableCount>> ProveAbsentAsync(
         SqliteConnection connection,
@@ -496,6 +515,20 @@ internal static class CovenantEntryErasurePlan
         if (await ObjectExistsAsync(connection, transaction, SearchDocuments, cancellationToken).ConfigureAwait(false))
         {
             proofs.Add((SearchDocuments, EntryPredicate("EntryId")));
+        }
+
+        List<MemoryErasureTableCount> remaining = [];
+
+        if (subject.SearchRowIds.Count > 0
+            && await ObjectExistsAsync(connection, transaction, FullTextIndex, cancellationToken).ConfigureAwait(false))
+        {
+            long indexed = await FullTextRowCountAsync(connection, transaction, subject.SearchRowIds, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (indexed != 0)
+            {
+                remaining.Add(new MemoryErasureTableCount(FullTextIndex, indexed));
+            }
         }
 
         proofs.Add((Outbox, VersionPredicate("DesiredVersionId", versionIds)));
@@ -528,8 +561,6 @@ internal static class CovenantEntryErasurePlan
 
             proofs.Add((table, CurationPredicate(table, subject)));
         }
-
-        List<MemoryErasureTableCount> remaining = [];
 
         foreach ((string table, string predicate) in proofs)
         {
@@ -924,6 +955,21 @@ internal static class CovenantEntryErasurePlan
         }
 
         return heads;
+    }
+
+    /// <summary>How many of the given search rows the full-text index still holds.</summary>
+    private static async Task<long> FullTextRowCountAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<long> searchRowIds,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = Command(
+            connection,
+            transaction,
+            $"SELECT count(*) FROM covenant_fts_docsize WHERE id IN ({string.Join(", ", searchRowIds.Select(static row => row.ToString(CultureInfo.InvariantCulture)))});");
+
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
     /// <summary>
