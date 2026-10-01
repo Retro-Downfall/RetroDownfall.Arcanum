@@ -2,6 +2,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Cli.Services;
+
 using RetroDownfall.Arcanum.Cli.UX;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -196,14 +198,35 @@ public sealed partial class MemoryCommands
 
         }
 
-        Result<MemoryErasureResultDto> result = await apply(prepared.Value).ConfigureAwait(false);
+        // A cancellation that lands before the apply is sent cancels an erase that never started, and
+        // must not claim otherwise.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<MemoryErasureResultDto> result;
+
+        try
+        {
+
+            result = await apply(prepared.Value).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Ctrl-C after the request went out: the exit stays the cancellation, and the operator is
+            // told the erase may still have happened.
+            MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
+
+            throw;
+
+        }
 
         if (result.IsFailure)
         {
 
             int exitCode = WriteError(result.Error);
 
-            if (exitCode == (int)CliExitCode.NetworkError)
+            if (ArcanumApiClient.ErasureOutcomeUnknown(result.Error))
             {
 
                 MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);

@@ -182,12 +182,16 @@ internal static class MemoryErasureRenderer
     }
 
     /// <summary>
-    /// Names the mutation of an apply the host never answered, because it may have committed.
+    /// Names the mutation of an apply whose outcome is unknown, because it may have committed.
     /// </summary>
     /// <remarks>
-    /// Callers write this for a connection failure only. Every refusal the host did send proves the
-    /// erase rolled back, so "may have been applied" would be false there. The identity is a random,
-    /// content-free GUID the operator can match against the host's own log and receipts.
+    /// Callers write this whenever the apply was sent and nothing proves it rolled back: the host said
+    /// the commit's outcome could not be read back (<c>Covenant.ManualRecoveryRequired</c>), it failed
+    /// with an exception it never classified (<c>Hub.Unhandled</c>), its answer could not be read at all, or the operator cancelled after the request went out — a Covenant
+    /// erase completes its disposition whatever the caller does, so cancelling does not stop it. A
+    /// typed refusal the host did send proves a rollback, and there the note would be false. The
+    /// identity is a random, content-free GUID the operator can match against the host's own log and
+    /// receipts.
     /// </remarks>
     public static void WriteUnconfirmedApply(
         IConsoleDispatcher dispatcher,

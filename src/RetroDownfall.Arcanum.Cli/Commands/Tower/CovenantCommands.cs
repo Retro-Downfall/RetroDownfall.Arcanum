@@ -1268,28 +1268,47 @@ public sealed class CovenantCommands(
 
         }
 
-        Result<MemoryErasureResultDto> erased = await apiClient
-            .EraseCovenantEntryAsync(
-                new CovenantEraseRequest(
-                    request.Scope,
-                    request.CampaignId,
-                    request.Key,
-                    request.EntryId,
-                    request.Confirmed,
-                    request.Proposed,
-                    request.MutationId,
-                    prepared.Value.PreflightToken),
-                cancellationToken)
-            .ConfigureAwait(false);
+        // A cancellation that lands before the apply is sent cancels an erase that never started, and
+        // must not claim otherwise.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<MemoryErasureResultDto> erased;
+
+        try
+        {
+
+            erased = await apiClient
+                .EraseCovenantEntryAsync(
+                    new CovenantEraseRequest(
+                        request.Scope,
+                        request.CampaignId,
+                        request.Key,
+                        request.EntryId,
+                        request.Confirmed,
+                        request.Proposed,
+                        request.MutationId,
+                        prepared.Value.PreflightToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // The host completes the erase's disposition whatever the caller does, so Ctrl-C after the
+            // request went out keeps the cancellation exit and says the erase may still have happened.
+            MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
+
+            throw;
+
+        }
 
         if (erased.IsFailure)
         {
 
-            CliExitCode exitCode = (CliExitCode)CliFailureExit.ExitCode(erased.Error);
+            int failed = Fail(erased.Error, (CliExitCode)CliFailureExit.ExitCode(erased.Error));
 
-            int failed = Fail(erased.Error, exitCode);
-
-            if (exitCode is CliExitCode.NetworkError)
+            if (ArcanumApiClient.ErasureOutcomeUnknown(erased.Error))
             {
 
                 MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);

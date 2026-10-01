@@ -84,6 +84,39 @@ public sealed partial class ArcanumApiClient
             ArcanumJsonContext.Default.ApiResponseMemoryErasureResultDto,
             cancellationToken);
 
+    /// <summary>
+    /// Whether a failed apply leaves the erase's outcome unknown, so the operator has to be told it may
+    /// have been applied.
+    /// </summary>
+    /// <remarks>
+    /// A typed refusal from an erase route proves the erase rolled back: the host settles an uncertain
+    /// <c>COMMIT</c> by reading its receipt back before it answers, and reports a commit it finds as the
+    /// committed result. Three kinds of failure prove nothing:
+    /// <list type="bullet">
+    /// <item><description><c>Covenant.ManualRecoveryRequired</c>, which is the host saying exactly that
+    /// the commit's outcome could not be read back.</description></item>
+    /// <item><description><c>Hub.Unhandled</c>, the host's catch-all for an exception nothing
+    /// classified. A Saga or Lexicon <c>COMMIT</c> that failed and whose receipt could not be read back
+    /// rethrows its failure, and this is how it reaches the wire.</description></item>
+    /// <item><description>Any failure in which the host's answer was never read as a typed refusal: the
+    /// connection failed or timed out, the answer was not an envelope or carried no result, it was too
+    /// large to read, it was an error status with no envelope, or the client failed unexpectedly after
+    /// sending.</description></item>
+    /// </list>
+    /// </remarks>
+    internal static bool ErasureOutcomeUnknown(Error error) =>
+        error.Code is ErrorCodes.Connection.Timeout
+            or ErrorCodes.Connection.Unreachable
+            or ErrorCodes.Covenant.ManualRecoveryRequired
+            or ErrorCodes.Hub.Unhandled
+            or UnreadableHttpErrorCode
+        || error.Code == InvalidResponseError.Code
+        || error.Code == ResponseTooLargeError.Code
+        || error.Code == RequestUnexpectedError.Code;
+
+    /// <summary>The code an error status without an envelope is reported under.</summary>
+    private const string UnreadableHttpErrorCode = "Api.HttpError";
+
     private Task<Result<T>> PostErasureAsync<T>(
         string relativePath,
         byte[] body,
@@ -95,7 +128,10 @@ public sealed partial class ArcanumApiClient
             body,
             JsonUtf8ContentType,
             responseTypeInfo,
-            static envelope => Result<T>.Success(envelope.Data!),
+            // A success envelope with no result is an answer the client cannot read, not a result.
+            static envelope => envelope.Data is { } data
+                ? Result<T>.Success(data)
+                : Result<T>.Failure(InvalidResponseError),
             cancellationToken,
             retryResponseBodyIOExceptionOnce: true);
 

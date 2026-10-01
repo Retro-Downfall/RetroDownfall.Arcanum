@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Annals;
@@ -49,6 +50,8 @@ public sealed class MemoryErasureCommandTests
     private const string ReclaimScopeSentence =
         "Reclaiming removes the key's pins and masks in every scope, not only this one; the key can be set "
             + "again later and starts with none.";
+
+    private const string MayHaveApplied = "may have been applied";
 
     private static readonly string ShownHash = new('A', 64);
 
@@ -124,6 +127,9 @@ public sealed class MemoryErasureCommandTests
         Assert.DoesNotContain(ErasureHandler.SagaContent, result.Output + result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain(CovenantExternalRetentionDisclosure.DestructiveOperationText, result.Output, StringComparison.Ordinal);
+
+        // A confirmed erase is not an uncertain one.
+        Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -189,13 +195,28 @@ public sealed class MemoryErasureCommandTests
             ? ["memory", "lexicon", "erase", "Operator"]
             : ["memory", "lexicon", "erase", "Operator", "--campaign", campaign];
 
-        CliTestResult result = await RunAsync(handler, args, new RecordingPrompt(handler, answer: true));
+        RecordingPrompt prompt = new(handler, answer: true);
+
+        CliTestResult result = await RunAsync(handler, args, prompt);
 
         Assert.True(result.ExitCode == 0, result.Error);
 
         Assert.Equal(
             ["POST /api/memory/lexicon/show", "POST /api/memory/lexicon/erase/prepare", "prompt", "POST /api/memory/lexicon/erase"],
             handler.Events);
+
+        AssertDisclosedBeforeThePrompt(prompt);
+
+        Assert.Equal(MutationIdIn(handler, "/api/memory/lexicon/erase/prepare"), MutationIdIn(handler, "/api/memory/lexicon/erase"));
+
+        // Neither the entry's facts nor the name the host stores for it are printed: the plan names
+        // counts, and the question names what the operator typed.
+        foreach (string shownText in LexiconCliFixture.Detail.Entry.Facts.Append(LexiconCliFixture.Detail.Entry.Name))
+        {
+            Assert.DoesNotContain(shownText, result.Output + result.Error, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
 
         using JsonDocument show = JsonDocument.Parse(handler.Body("/api/memory/lexicon/show"));
 
@@ -252,16 +273,29 @@ public sealed class MemoryErasureCommandTests
     {
         ErasureHandler handler = new();
 
+        RecordingPrompt prompt = new(handler, answer: true);
+
         CliTestResult result = await RunAsync(
             handler,
             ["memory", "covenant", "erase", CovenantKeyName, "--campaign", CovenantCampaign.ToString()],
-            new RecordingPrompt(handler, answer: true));
+            prompt);
 
         Assert.True(result.ExitCode == 0, result.Error);
 
         Assert.Equal(
             ["POST /api/memory/covenant/detail", "POST /api/memory/covenant/erase/prepare", "prompt", "POST /api/memory/covenant/erase"],
             handler.Events);
+
+        AssertDisclosedBeforeThePrompt(prompt);
+
+        // Nothing the detail route reported about the entry's content — its authored and rendered
+        // digests, its provenance digest — is printed.
+        foreach (string shownValue in new[] { ErasureHandler.AuthoredHashMarker, ErasureHandler.RenderedHashMarker, ErasureHandler.ProvenanceDigestMarker })
+        {
+            Assert.DoesNotContain(shownValue, result.Output + result.Error, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
 
         using JsonDocument detail = JsonDocument.Parse(handler.Body("/api/memory/covenant/detail"));
 
@@ -393,6 +427,50 @@ public sealed class MemoryErasureCommandTests
 
             Assert.DoesNotContain(sentence, result.Output, StringComparison.Ordinal);
         }
+
+        Assert.DoesNotContain(DrainSentence, result.Output, StringComparison.Ordinal);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            Assert.Equal(handler.PreparedMutationId, document.RootElement.GetProperty("mutationId").GetGuid());
+        }
+    }
+
+    /// <summary>
+    /// The drain cost is a warning weighed before answering, so it reaches the diagnostic stream in
+    /// every mode, and under <c>--json</c> stdout stays the one result document.
+    /// </summary>
+    /// <remarks>
+    /// The fake's Covenant preflight carries <see cref="MemoryErasureNote.CovenantDrainsInFlightTurns"/>
+    /// by default, because the host always sends it for a Covenant erase.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Covenant_drain_sentence_reaches_stderr_only_in_every_mode(bool json)
+    {
+        ErasureHandler handler = new();
+
+        string[] args = json
+            ? ["memory", "covenant", "erase", CovenantKeyName, "--campaign", CovenantCampaign.ToString(), "--yes", "--json"]
+            : ["memory", "covenant", "erase", CovenantKeyName, "--campaign", CovenantCampaign.ToString(), "--yes"];
+
+        CliTestResult result = await RunAsync(handler, args, new RecordingPrompt(handler, answer: false));
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        Assert.Contains(DrainSentence, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(DrainSentence, result.Output, StringComparison.Ordinal);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            Assert.Equal(handler.PreparedMutationId, document.RootElement.GetProperty("mutationId").GetGuid());
+        }
     }
 
     [Theory]
@@ -474,6 +552,33 @@ public sealed class MemoryErasureCommandTests
 
         // The disclosure was still written: the refusal comes from asking, which comes after it.
         Assert.Contains(CovenantExternalRetentionDisclosure.DestructiveOperationText, result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The shipped prompt treats <c>--json</c> as non-interactive by declaration, so a structured run
+    /// without <c>--yes</c> is refused rather than declined — the contract the Command Reference states.
+    /// </summary>
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task A_json_run_without_yes_is_refused_by_the_shipped_prompt_and_never_applies(string store)
+    {
+        ErasureHandler handler = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(Services(handler), [.. EraseArgs(store), "--json"]);
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.DoesNotContain(handler.Events, e => e.EndsWith("/erase", StringComparison.Ordinal));
+
+        Assert.Contains(CovenantExternalRetentionDisclosure.DestructiveOperationText, result.Error, StringComparison.Ordinal);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(2, document.RootElement.GetProperty("exitCode").GetInt32());
+
+        Assert.False(document.RootElement.TryGetProperty("cancelled", out _));
     }
 
     [Fact]
@@ -569,6 +674,7 @@ public sealed class MemoryErasureCommandTests
                 (ErrorCodes.MemoryErasure.Unavailable, 503),
                 (ErrorCodes.Covenant.ManualRecoveryRequired, 503),
                 (ErrorCodes.Covenant.ForbiddenAuthority, 403),
+                (ErrorCodes.Hub.Unhandled, 500),
             ];
 
             TheoryData<string, string, int> data = [];
@@ -603,6 +709,182 @@ public sealed class MemoryErasureCommandTests
         Assert.Contains(message, result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("No other memory store was touched.", result.Output, StringComparison.Ordinal);
+
+        // A typed refusal proves the erase rolled back. Two answers do not: the Covenant saying the
+        // commit's outcome could not be read back, and the host's catch-all for an exception nothing
+        // classified — which is how a Saga or Lexicon commit that failed and could not be read back
+        // reaches the wire. Only those may say the erase may have happened.
+        bool uncertain = code is ErrorCodes.Covenant.ManualRecoveryRequired or ErrorCodes.Hub.Unhandled;
+
+        Assert.Equal(uncertain, result.Error.Contains(MayHaveApplied, StringComparison.Ordinal));
+
+        Assert.Equal(uncertain, result.Error.Contains(handler.PreparedMutationId.ToString("D"), StringComparison.Ordinal));
+    }
+
+    public static TheoryData<string, string> UnreadableApplyAnswers
+    {
+        get
+        {
+            TheoryData<string, string> data = [];
+
+            foreach (string store in new[] { "saga", "lexicon", "covenant" })
+            {
+                foreach (string answer in new[] { "undecodable", "success-without-data", "error-without-envelope" })
+                {
+                    data.Add(store, answer);
+                }
+            }
+
+            return data;
+        }
+    }
+
+    /// <summary>
+    /// An apply whose answer cannot be read is an apply whose outcome is unknown.
+    /// </summary>
+    /// <remarks>
+    /// The host processed the request — headers came back — but the CLI cannot tell a committed
+    /// erase from a refused one: a 2xx body that is not an envelope, a success envelope with no
+    /// result, or an error status with no envelope at all.
+    /// </remarks>
+    [Theory]
+    [MemberData(nameof(UnreadableApplyAnswers))]
+    public async Task An_apply_answer_that_cannot_be_read_names_the_mutation(string store, string answer)
+    {
+        ErasureHandler handler = new()
+        {
+            RawResponses =
+            {
+                [ApplyPath(store)] = answer switch
+                {
+                    "undecodable" => (HttpStatusCode.OK, "this is not an envelope"),
+                    "success-without-data" => (HttpStatusCode.OK, "{\"isSuccess\":true}"),
+                    _ => (HttpStatusCode.InternalServerError, ""),
+                },
+            },
+        };
+
+        CliTestResult result = await RunAsync(handler, EraseArgs(store), new RecordingPrompt(handler, answer: true));
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains(handler.PreparedMutationId.ToString("D"), result.Error, StringComparison.Ordinal);
+
+        Assert.Contains(MayHaveApplied, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("No other memory store was touched.", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Ctrl-C after the apply was sent still cancels, and says the erase may have happened.
+    /// </summary>
+    /// <remarks>
+    /// Driven at the handler, because only the command tree's own token is a real Ctrl-C: the
+    /// cancellation must be the caller's for the client to rethrow it rather than report a timeout.
+    /// The exception propagating is what the tree maps to exit 130.
+    /// </remarks>
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task A_cancellation_after_the_apply_was_sent_names_the_mutation_and_still_cancels(string store)
+    {
+        using CancellationTokenSource cancellation = new();
+
+        ErasureHandler handler = new() { CancelOnApply = cancellation };
+
+        StringWriter error = new();
+
+        OperationCanceledException cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => EraseDirectlyAsync(handler, store, error, prompt: null, cancellation.Token));
+
+        Assert.Equal(CliExitCode.Cancelled, CliFailureMapper.Map(cancelled).ExitCode);
+
+        Assert.Contains($"POST {ApplyPath(store)}", handler.Events);
+
+        Assert.Contains(handler.PreparedMutationId.ToString("D"), error.ToString(), StringComparison.Ordinal);
+
+        Assert.Contains(MayHaveApplied, error.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A cancellation that lands after the question was answered but before the apply went out
+    /// cancels an erase that never started, so it sends nothing and claims nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task A_cancellation_before_the_apply_is_sent_sends_nothing_and_claims_nothing(string store)
+    {
+        using CancellationTokenSource cancellation = new();
+
+        ErasureHandler handler = new();
+
+        StringWriter error = new();
+
+        OperationCanceledException cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => EraseDirectlyAsync(handler, store, error, new CancellingApproval(cancellation), cancellation.Token));
+
+        Assert.Equal(CliExitCode.Cancelled, CliFailureMapper.Map(cancelled).ExitCode);
+
+        Assert.DoesNotContain(handler.Events, e => e.EndsWith("/erase", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(MayHaveApplied, error.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Runs one erase handler with the caller's own cancellation token, which only a direct call can
+    /// supply: through the command tree the token is System.CommandLine's.
+    /// </summary>
+    /// <remarks>
+    /// With no prompt the run approves through <c>--yes</c>; with one, the prompt is asked.
+    /// </remarks>
+    private static async Task<int> EraseDirectlyAsync(
+        ErasureHandler handler,
+        string store,
+        StringWriter error,
+        IConfirmationPrompt? prompt,
+        CancellationToken cancellationToken)
+    {
+        CliInvocationOptions options = new(Json: false, Plain: false, Yes: prompt is null);
+
+        ServiceCollection services = Services(handler);
+
+        services.AddSingleton<IConsoleDispatcher>(new ConsoleDispatcher(new StringWriter(), error, options));
+
+        if (prompt is not null)
+        {
+            services.AddSingleton(prompt);
+        }
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        using IDisposable invocation = CliInvocationContext.Push(options);
+
+        return store switch
+        {
+            "saga" => await provider.GetRequiredService<MemoryCommands>().SagaErase(SagaId, null, cancellationToken),
+            "lexicon" => await provider.GetRequiredService<MemoryCommands>().LexiconErase("Operator", null, cancellationToken),
+            _ => await provider.GetRequiredService<CovenantCommands>().Erase(CovenantKeyName, CovenantCampaign, cancellationToken),
+        };
+    }
+
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task A_cancellation_at_the_question_sends_no_apply_and_claims_nothing(string store)
+    {
+        ErasureHandler handler = new();
+
+        CliTestResult result = await RunAsync(handler, EraseArgs(store), new RecordingPrompt(handler, answer: true) { Cancel = true });
+
+        Assert.Equal(130, result.ExitCode);
+
+        Assert.DoesNotContain(handler.Events, e => e.EndsWith("/erase", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -660,6 +942,29 @@ public sealed class MemoryErasureCommandTests
 
     private static string PreparePath(string store) => $"/api/memory/{store}/erase/prepare";
 
+    private static Guid MutationIdIn(ErasureHandler handler, string path)
+    {
+        using JsonDocument body = JsonDocument.Parse(handler.Body(path));
+
+        return body.RootElement.GetProperty("mutationId").GetGuid();
+    }
+
+    /// <summary>The shared sentence, a channel line and the help targets, in that order, all before the question.</summary>
+    private static void AssertDisclosedBeforeThePrompt(RecordingPrompt prompt)
+    {
+        int disclosure = prompt.BeforePrompt.IndexOf(CovenantExternalRetentionDisclosure.DestructiveOperationText, StringComparison.Ordinal);
+
+        int channel = prompt.BeforePrompt.IndexOf("  Encrypted backups: ", StringComparison.Ordinal);
+
+        int guidance = prompt.BeforePrompt.IndexOf("Retention guidance", StringComparison.Ordinal);
+
+        Assert.True(disclosure >= 0, prompt.BeforePrompt);
+
+        Assert.True(channel > disclosure, prompt.BeforePrompt);
+
+        Assert.True(guidance > channel, prompt.BeforePrompt);
+    }
+
     private static string ApplyPath(string store) => $"/api/memory/{store}/erase";
 
     private static MemoryReviewStore Store(string store) => store switch
@@ -707,6 +1012,12 @@ public sealed class MemoryErasureCommandTests
     internal sealed class ErasureHandler : HttpMessageHandler
     {
         internal const string SagaContent = "The operator prefers terse release notes.";
+
+        internal const string AuthoredHashMarker = "authored-digest-marker";
+
+        internal const string RenderedHashMarker = "rendered-digest-marker";
+
+        internal const string ProvenanceDigestMarker = "provenance-digest-marker";
 
         internal static readonly MemoryErasureExternalExposureDto External = new(
             MemoryExternalRevocation.NotPerformed,
@@ -784,6 +1095,11 @@ public sealed class MemoryErasureCommandTests
 
         internal Dictionary<string, Exception> Exceptions { get; } = new(StringComparer.Ordinal);
 
+        internal Dictionary<string, (HttpStatusCode Status, string Body)> RawResponses { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Cancels the caller's token when the apply arrives, as Ctrl-C after sending would.</summary>
+        internal CancellationTokenSource? CancelOnApply { get; init; }
+
         internal MemoryErasurePreflightDto Preflight { get; init; } = DefaultPreflight;
 
         internal MemoryErasureResultDto Result { get; init; } = DefaultResult;
@@ -817,6 +1133,18 @@ public sealed class MemoryErasureCommandTests
                 PreparedMutationId = MutationIdOf(body);
             }
 
+            if (path.EndsWith("/erase", StringComparison.Ordinal) && CancelOnApply is { } cancel)
+            {
+                await cancel.CancelAsync();
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (RawResponses.TryGetValue(path, out (HttpStatusCode Status, string Body) raw))
+            {
+                return Respond(path, raw.Status, raw.Body);
+            }
+
             if (Failures.TryGetValue(path, out (HttpStatusCode Status, Error Error) failure))
             {
                 return Respond(path, failure.Status, JsonSerializer.Serialize(
@@ -830,10 +1158,10 @@ public sealed class MemoryErasureCommandTests
                 "/api/memory/lexicon/show" => Respond(path, Envelope(LexiconCliFixture.Detail, ArcanumJsonContext.Default.ApiResponseLexiconEntryDetail)),
                 "/api/memory/covenant/detail" => Respond(path, Envelope(CovenantDetail, ArcanumJsonContext.Default.ApiResponseCovenantDetailDto)),
                 _ when path.EndsWith("/erase/prepare", StringComparison.Ordinal) => Respond(path, Envelope(
-                    Preflight with { Store = StoreOf(path), MutationId = MutationIdOf(body) },
+                    Preflight with { Store = StoreOf(path), MutationId = MutationIdOf(body), Notes = HostNotes(path, Preflight.Notes) },
                     ArcanumJsonContext.Default.ApiResponseMemoryErasurePreflightDto)),
                 _ when path.EndsWith("/erase", StringComparison.Ordinal) => Respond(path, Envelope(
-                    Result with { Store = StoreOf(path), MutationId = MutationIdOf(body) },
+                    Result with { Store = StoreOf(path), MutationId = MutationIdOf(body), Notes = HostNotes(path, Result.Notes) },
                     ArcanumJsonContext.Default.ApiResponseMemoryErasureResultDto)),
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound),
             };
@@ -858,15 +1186,24 @@ public sealed class MemoryErasureCommandTests
                 revision,
                 CovenantLifecycle.Set,
                 CovenantOrigin.Operator,
-                "77",
-                "88",
+                AuthoredHashMarker,
+                RenderedHashMarker,
                 64,
                 0,
-                "99",
+                ProvenanceDigestMarker,
                 DateTimeOffset.UnixEpoch,
                 DateTimeOffset.UnixEpoch,
                 CovenantEffectiveShadowState.NotEvaluated,
                 CovenantEffectiveMaterialization.NotEvaluated);
+
+        /// <summary>
+        /// The host always states the drain cost on a Covenant erase, so the fake does too unless a test
+        /// already put it there.
+        /// </summary>
+        private static MemoryErasureNote[] HostNotes(string path, MemoryErasureNote[] notes) =>
+            StoreOf(path) is MemoryReviewStore.Covenant && !notes.Contains(MemoryErasureNote.CovenantDrainsInFlightTurns)
+                ? [.. notes, MemoryErasureNote.CovenantDrainsInFlightTurns]
+                : notes;
 
         private static Guid MutationIdOf(string body)
         {
@@ -901,6 +1238,9 @@ public sealed class MemoryErasureCommandTests
 
         internal string? Question { get; private set; }
 
+        /// <summary>Answers by cancelling, as Ctrl-C at the question would.</summary>
+        internal bool Cancel { get; init; }
+
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
         {
             BeforePrompt = Rendered.ToString();
@@ -909,7 +1249,18 @@ public sealed class MemoryErasureCommandTests
 
             handler.Events.Add("prompt");
 
-            return Task.FromResult(answer);
+            return Cancel ? throw new OperationCanceledException() : Task.FromResult(answer);
+        }
+    }
+
+    /// <summary>Approves the question, then cancels — Ctrl-C between the answer and the apply.</summary>
+    private sealed class CancellingApproval(CancellationTokenSource cancellation) : IConfirmationPrompt
+    {
+        public async Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            await cancellation.CancelAsync();
+
+            return true;
         }
     }
 
