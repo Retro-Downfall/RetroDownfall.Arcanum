@@ -4996,6 +4996,13 @@ public sealed class CovenantErasureSameProcessTests
             CancellationToken cancellationToken) =>
             inner.AcquireCampaignExclusiveAsync(campaignId, owner, cancellationToken);
 
+        public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+            CovenantOperationScope entryScope,
+            bool reclaimsKey,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            inner.AcquireEntryErasureAsync(entryScope, reclaimsKey, owner, cancellationToken);
+
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
             ProtectedTransferScope scope,
             CovenantExclusiveRecoveryOwner owner,

@@ -601,6 +601,13 @@ public sealed class BackupSessionImporterTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A selective import closes no Campaign.");
 
+        public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+            CovenantOperationScope entryScope,
+            bool reclaimsKey,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A selective import erases no Covenant entry.");
+
         public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken) =>

@@ -1093,6 +1093,13 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("A restore closes the installation, never one Campaign.");
 
+        public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+            CovenantOperationScope entryScope,
+            bool reclaimsKey,
+            CovenantExclusiveRecoveryOwner owner,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A restore closes the installation, never one Covenant entry.");
+
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
             ProtectedTransferScope scope,
             CovenantExclusiveRecoveryOwner owner,

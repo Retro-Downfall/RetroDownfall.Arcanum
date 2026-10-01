@@ -33,7 +33,39 @@ public sealed class CovenantOperationGateTests
 
         Assert.Equal((byte)8, (byte)CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
 
-        Assert.Equal(8, Enum.GetValues<CovenantExclusiveOperation>().Length);
+        Assert.Equal((byte)9, (byte)CovenantExclusiveOperation.CovenantEntryErasure);
+
+        Assert.Equal(9, Enum.GetValues<CovenantExclusiveOperation>().Length);
+
+    }
+
+    [Fact]
+    public void Lease_kind_codes_are_immutable()
+    {
+
+        Assert.Equal((byte)1, (byte)CovenantLeaseKind.InstallationRead);
+
+        Assert.Equal((byte)2, (byte)CovenantLeaseKind.Read);
+
+        Assert.Equal((byte)3, (byte)CovenantLeaseKind.Write);
+
+        Assert.Equal((byte)4, (byte)CovenantLeaseKind.Turn);
+
+        Assert.Equal((byte)5, (byte)CovenantLeaseKind.Mcp);
+
+        Assert.Equal((byte)6, (byte)CovenantLeaseKind.Accelerator);
+
+        Assert.Equal((byte)7, (byte)CovenantLeaseKind.Cleanup);
+
+        Assert.Equal((byte)8, (byte)CovenantLeaseKind.CampaignExclusive);
+
+        Assert.Equal((byte)9, (byte)CovenantLeaseKind.ProtectedTransfer);
+
+        Assert.Equal((byte)10, (byte)CovenantLeaseKind.Exclusive);
+
+        Assert.Equal((byte)11, (byte)CovenantLeaseKind.EntryErasure);
+
+        Assert.Equal(11, Enum.GetValues<CovenantLeaseKind>().Length);
 
     }
 
@@ -106,7 +138,13 @@ public sealed class CovenantOperationGateTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => new CovenantExclusiveRecoveryOwner(
                 Guid.NewGuid(),
-                (CovenantExclusiveOperation)9,
+                (CovenantExclusiveOperation)10,
+                CovenantOperationGateFixture.Digest(1)));
+
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => new CovenantExclusiveRecoveryOwner(
+                Guid.NewGuid(),
+                (CovenantExclusiveOperation)0,
                 CovenantOperationGateFixture.Digest(1)));
 
         _ = Assert.Throws<ArgumentException>(
@@ -114,6 +152,15 @@ public sealed class CovenantOperationGateTests
                 Guid.NewGuid(),
                 CovenantExclusiveOperation.CovenantReset,
                 default));
+
+        CovenantExclusiveRecoveryOwner entryErasure = new(
+            Guid.NewGuid(),
+            CovenantExclusiveOperation.CovenantEntryErasure,
+            CovenantOperationGateFixture.Digest(1));
+
+        Assert.Equal(CovenantExclusiveOperation.CovenantEntryErasure, entryErasure.Operation);
+
+        Assert.True(entryErasure.IsValid);
 
     }
 
@@ -236,6 +283,195 @@ public sealed class CovenantOperationGateTests
             Token);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, wrongTransferCode.Error.Code);
+
+        CovenantExclusiveRecoveryOwner entryErasure =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.AcquireExclusiveAsync(entryErasure, Token)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.ResumeOrAcquireExclusiveAsync(entryErasure, Token)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.ResumeExclusiveAsync(entryErasure, Token)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.AcquireCampaignExclusiveAsync(
+                CovenantOperationGateFixture.CampaignOne,
+                entryErasure,
+                Token)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.AcquireProtectedTransferAsync(
+                ProtectedTransferScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                entryErasure,
+                Token)).Error.Code);
+
+        // Every refusal above happened before a closure was installed, so the installation is open.
+        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+    }
+
+    [Theory]
+    [InlineData(CovenantExclusiveOperation.CampaignPathMutation)]
+    [InlineData(CovenantExclusiveOperation.CampaignDelete)]
+    [InlineData(CovenantExclusiveOperation.ProtectedSessionTransfer)]
+    [InlineData(CovenantExclusiveOperation.SchemaRepair)]
+    [InlineData(CovenantExclusiveOperation.BackupRestore)]
+    [InlineData(CovenantExclusiveOperation.CovenantFamilyReinitialize)]
+    [InlineData(CovenantExclusiveOperation.CovenantReset)]
+    [InlineData(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)]
+    public async Task The_entry_erasure_shape_refuses_every_other_operation_code(
+        CovenantExclusiveOperation operation)
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner = CovenantOperationGateFixture.Owner(operation);
+
+        Result<CovenantEntryErasureLease> campaignSlot = await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            owner,
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, campaignSlot.Error.Code);
+
+        Result<CovenantEntryErasureLease> installationSlot = await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.Global,
+            reclaimsKey: true,
+            owner,
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, installationSlot.Error.Code);
+
+        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+    }
+
+    /// <summary>
+    /// The whole operation enum against every exclusive acquisition, resume, and durable adoption
+    /// shape the gate has.
+    /// </summary>
+    /// <remarks>
+    /// Every shape admits an explicit allow-list, so an operation added to the enum later is refused
+    /// by all of them until someone decides where it belongs. The table must name every member, which
+    /// is what forces that decision to be made here rather than inherited from a default arm.
+    /// </remarks>
+    [Fact]
+    public async Task Every_operation_code_is_admitted_only_by_its_own_shapes()
+    {
+
+        string[] campaign = ["campaign-exclusive", "resume-campaign-exclusive", "adopt-scoped"];
+
+        string[] transfer = ["protected-transfer", "resume-protected-transfer", "adopt-scoped"];
+
+        string[] installation = ["exclusive", "resume-or-acquire-exclusive", "resume-exclusive", "adopt-installation"];
+
+        Dictionary<CovenantExclusiveOperation, string[]> expected = new()
+        {
+
+            [CovenantExclusiveOperation.CampaignPathMutation] = campaign,
+
+            [CovenantExclusiveOperation.CampaignDelete] = campaign,
+
+            [CovenantExclusiveOperation.ProtectedSessionTransfer] = transfer,
+
+            [CovenantExclusiveOperation.SchemaRepair] = installation,
+
+            [CovenantExclusiveOperation.BackupRestore] = installation,
+
+            [CovenantExclusiveOperation.CovenantFamilyReinitialize] = installation,
+
+            [CovenantExclusiveOperation.CovenantReset] = installation,
+
+            [CovenantExclusiveOperation.HealthyCatalogFactoryErasure] = installation,
+
+            [CovenantExclusiveOperation.CovenantEntryErasure] = ["entry-erasure"],
+
+        };
+
+        Assert.Equal(Enum.GetValues<CovenantExclusiveOperation>(), expected.Keys.Order());
+
+        List<string> admitted = [];
+
+        foreach (CovenantExclusiveOperation operation in Enum.GetValues<CovenantExclusiveOperation>())
+        {
+
+            List<string> shapes = [];
+
+            foreach ((string shape, Func<CovenantOperationGate, CovenantExclusiveRecoveryOwner, Task<bool>> admits) in ExclusiveShapes)
+            {
+
+                // A fresh gate per attempt: an admitted acquisition installs a closure, and the next
+                // shape must be judged on its own allow-list rather than on that closure.
+                if (await admits(
+                        CovenantOperationGateFixture.CreateGate(),
+                        CovenantOperationGateFixture.Owner(operation)))
+                {
+
+                    shapes.Add(shape);
+
+                }
+
+            }
+
+            admitted.Add($"{operation}: {string.Join(", ", shapes)}");
+
+        }
+
+        Assert.Equal(
+            expected
+                .OrderBy(static row => row.Key)
+                .Select(static row => $"{row.Key}: {string.Join(", ", row.Value)}"),
+            admitted);
+
+    }
+
+    /// <summary>
+    /// What a future operation code meets before anyone has decided where it belongs.
+    /// </summary>
+    /// <remarks>
+    /// The recovery owner's constructor refuses a code outside the enum, so the owner is forged
+    /// through its backing field to stand in for a member added later. Every acquisition, resume, and
+    /// durable adoption must refuse it: a default arm that classified it as installation-wide would
+    /// hand an unreviewed operation the powers of a reset.
+    /// </remarks>
+    [Fact]
+    public async Task An_operation_code_no_shape_names_is_refused_by_every_shape()
+    {
+
+        CovenantExclusiveRecoveryOwner unnamed = ForgeOperation(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            (CovenantExclusiveOperation)10);
+
+        Assert.True(unnamed.IsValid);
+
+        List<string> admitted = [];
+
+        foreach ((string shape, Func<CovenantOperationGate, CovenantExclusiveRecoveryOwner, Task<bool>> admits) in ExclusiveShapes)
+        {
+
+            if (await admits(CovenantOperationGateFixture.CreateGate(), unnamed))
+            {
+
+                admitted.Add(shape);
+
+            }
+
+        }
+
+        Assert.Empty(admitted);
 
     }
 
@@ -1013,6 +1249,451 @@ public sealed class CovenantOperationGateTests
     }
 
     [Fact]
+    public async Task Campaign_entry_erasure_closes_its_Campaign_and_installation_coverage_only()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantTurnLease campaignOneTurn = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+            Token)).Value;
+
+        CovenantInstallationReadLease installationRead = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        await using CovenantTurnLease campaignTwoTurn = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignTwo),
+            Token)).Value;
+
+        await using CovenantTurnLease globalTurn =
+            (await gate.AcquireTurnAsync(CanonicalCampaignContext.GlobalOnly, Token)).Value;
+
+        await using CovenantCleanupLease globalCleanup =
+            (await gate.AcquireCleanupAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Task<Result<CovenantEntryErasureLease>> close = gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token).AsTask();
+
+        await WaitForAsync(() => campaignOneTurn.Revocation.IsCancellationRequested, Token);
+
+        await WaitForAsync(() => installationRead.Revocation.IsCancellationRequested, Token);
+
+        Assert.False(campaignTwoTurn.Revocation.IsCancellationRequested);
+
+        Assert.False(globalTurn.Revocation.IsCancellationRequested);
+
+        Assert.False(globalCleanup.Revocation.IsCancellationRequested);
+
+        Assert.False(close.IsCompleted);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireTurnAsync(
+                CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+                Token)).Error.Code);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, (await gate.AcquireAcceleratorAsync(Token)).Error.Code);
+
+        CovenantReadLease campaignTwoRead = (await gate.AcquireReadAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignTwo),
+            Token)).Value;
+
+        Assert.Equal(CovenantOperationGateFixture.CampaignTwo, campaignTwoRead.Snapshot.Scope!.Value.CampaignId);
+
+        await campaignTwoRead.DisposeAsync();
+
+        await campaignOneTurn.DisposeAsync();
+
+        await installationRead.DisposeAsync();
+
+        Result<CovenantEntryErasureLease> acquired = await close;
+
+        Assert.True(acquired.IsSuccess);
+
+        await using CovenantEntryErasureLease lease = acquired.Value;
+
+        Assert.False(lease.CoversInstallation);
+
+        Assert.Equal(CovenantLeaseKind.EntryErasure, lease.Snapshot.Kind);
+
+        Assert.Equal(CovenantOperationGateFixture.CampaignOne, lease.Snapshot.Scope!.Value.CampaignId);
+
+        Assert.Equal(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            lease.Snapshot.RecoveryOwner);
+
+        Assert.IsAssignableFrom<ICovenantSnapshotReadLease>(lease);
+
+        Assert.IsAssignableFrom<ICovenantExclusiveOperationLease>(lease);
+
+    }
+
+    [Fact]
+    public async Task Global_entry_erasure_takes_the_installation_slot_and_drains_every_turn()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantTurnLease campaignOneTurn = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+            Token)).Value;
+
+        CovenantTurnLease campaignTwoTurn = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignTwo),
+            Token)).Value;
+
+        CovenantTurnLease globalTurn =
+            (await gate.AcquireTurnAsync(CanonicalCampaignContext.GlobalOnly, Token)).Value;
+
+        Task<Result<CovenantEntryErasureLease>> close = gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.Global,
+            reclaimsKey: false,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token).AsTask();
+
+        // A Global entry is read by every Campaign's turns, so every one of them is told to stop.
+        await WaitForAsync(() => campaignOneTurn.Revocation.IsCancellationRequested, Token);
+
+        await WaitForAsync(() => campaignTwoTurn.Revocation.IsCancellationRequested, Token);
+
+        await WaitForAsync(() => globalTurn.Revocation.IsCancellationRequested, Token);
+
+        Assert.False(close.IsCompleted);
+
+        await campaignOneTurn.DisposeAsync();
+
+        await campaignTwoTurn.DisposeAsync();
+
+        await globalTurn.DisposeAsync();
+
+        Result<CovenantEntryErasureLease> acquired = await close;
+
+        Assert.True(acquired.IsSuccess);
+
+        await using CovenantEntryErasureLease lease = acquired.Value;
+
+        Assert.True(lease.CoversInstallation);
+
+        Assert.Null(lease.Snapshot.Scope);
+
+        Assert.Equal(CovenantLeaseKind.EntryErasure, lease.Snapshot.Kind);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireReadAsync(
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignTwo),
+                Token)).Error.Code);
+
+    }
+
+    [Fact]
+    public async Task A_reclaiming_Campaign_entry_erasure_takes_the_installation_slot()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantTurnLease campaignTwoTurn = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignTwo),
+            Token)).Value;
+
+        Task<Result<CovenantEntryErasureLease>> close = gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: true,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token).AsTask();
+
+        // Reclamation removes the key's curation in every scope, so another Campaign's turn drains.
+        await WaitForAsync(() => campaignTwoTurn.Revocation.IsCancellationRequested, Token);
+
+        Assert.False(close.IsCompleted);
+
+        await campaignTwoTurn.DisposeAsync();
+
+        Result<CovenantEntryErasureLease> acquired = await close;
+
+        Assert.True(acquired.IsSuccess);
+
+        await using CovenantEntryErasureLease lease = acquired.Value;
+
+        Assert.True(lease.CoversInstallation);
+
+        Assert.Null(lease.Snapshot.Scope);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
+
+    }
+
+    [Theory]
+    [InlineData(CovenantCampaignScopeState.Deleted, false, ErrorCodes.Covenant.LifecycleConflict)]
+    [InlineData(CovenantCampaignScopeState.Deleted, true, ErrorCodes.Covenant.LifecycleConflict)]
+    [InlineData(CovenantCampaignScopeState.Unknown, false, ErrorCodes.Covenant.NotFound)]
+    [InlineData(CovenantCampaignScopeState.Unknown, true, ErrorCodes.Covenant.NotFound)]
+    public async Task Campaign_entry_erasure_refuses_a_deleted_or_unknown_Campaign(
+        CovenantCampaignScopeState state,
+        bool reclaimsKey,
+        string expectedCode)
+    {
+
+        FakeCovenantCampaignScopeProbe campaigns = new();
+
+        campaigns.Set(CovenantOperationGateFixture.CampaignOne, state);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(campaigns: campaigns);
+
+        Result<CovenantEntryErasureLease> refused = await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token);
+
+        Assert.Equal(expectedCode, refused.Error.Code);
+
+        // The refusal came before any scope closed.
+        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Entry_erasure_requires_an_initialized_entry_scope(bool reclaimsKey)
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Result<CovenantEntryErasureLease> refused = await gate.AcquireEntryErasureAsync(
+            default,
+            reclaimsKey,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.InvalidScope, refused.Error.Code);
+
+        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+    }
+
+    [Fact]
+    public async Task Entry_erasure_owner_is_never_adopted_durably()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure);
+
+        // The exact type, not any ArgumentException: an entry erasure is refused for having no durable
+        // owner by design, which is a different diagnosis from an unclassified operation code.
+        _ = Assert.Throws<ArgumentException>(
+            () => gate.AdoptDurableRecoveryOwner(owner, scope: null, cleanupOnlyHistoricalCampaign: false));
+
+        _ = Assert.Throws<ArgumentException>(
+            () => gate.AdoptDurableRecoveryOwner(
+                owner,
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                cleanupOnlyHistoricalCampaign: false));
+
+        // Neither refusal installed a closure that no later process could ever resume.
+        await using CovenantInstallationReadLease open = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Assert.Equal(CovenantLeaseKind.InstallationRead, open.Snapshot.Kind);
+
+    }
+
+    [Fact]
+    public async Task An_undrained_turn_refuses_the_entry_erasure_and_reopens()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            drainTimeout: TimeSpan.FromMilliseconds(150));
+
+        await using CovenantTurnLease held = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+            Token)).Value;
+
+        Result<CovenantEntryErasureLease> refused = await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, refused.Error.Code);
+
+        Assert.True(held.Revocation.IsCancellationRequested);
+
+        await using CovenantTurnLease admitted = (await gate.AcquireTurnAsync(
+            CovenantOperationGateFixture.CampaignContext(CovenantOperationGateFixture.CampaignOne),
+            Token)).Value;
+
+        Assert.Equal(CovenantOperationGateFixture.CampaignOne, admitted.Snapshot.Scope!.Value.CampaignId);
+
+    }
+
+    [Fact]
+    public async Task A_closed_entry_erasure_scope_refuses_a_second_closure_without_waiting()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantEntryErasureLease first = (await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            Token)).Value;
+
+        CovenantExclusiveRecoveryOwner second = CovenantOperationGateFixture.Owner(
+            CovenantExclusiveOperation.CovenantEntryErasure,
+            operationId: new Guid("66666666-6666-4666-8666-666666666666"));
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireEntryErasureAsync(
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                reclaimsKey: false,
+                second,
+                Token)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireEntryErasureAsync(CovenantOperationScope.Global, reclaimsKey: false, second, Token))
+                .Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireCampaignExclusiveAsync(
+                CovenantOperationGateFixture.CampaignOne,
+                CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CampaignDelete),
+                Token)).Error.Code);
+
+        await using CovenantEntryErasureLease otherCampaign = (await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignTwo),
+            reclaimsKey: false,
+            second,
+            Token)).Value;
+
+        Assert.Equal(CovenantOperationGateFixture.CampaignTwo, otherCampaign.Snapshot.Scope!.Value.CampaignId);
+
+    }
+
+    [Fact]
+    public async Task A_kept_closed_entry_erasure_has_no_resume_shape()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveRecoveryOwner owner =
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure);
+
+        CovenantEntryErasureLease lease = (await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            owner,
+            Token)).Value;
+
+        Assert.True((await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.KeepClosed, Token)).IsSuccess);
+
+        await lease.DisposeAsync();
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireReadAsync(
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                Token)).Error.Code);
+
+        // Nothing in this process can take the closure over; only a fresh process, which never adopts
+        // an entry-erasure owner, starts without it.
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.ResumeCampaignExclusiveAsync(CovenantOperationGateFixture.CampaignOne, owner, Token))
+                .Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            (await gate.ResumeExclusiveAsync(owner, Token)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireEntryErasureAsync(
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                reclaimsKey: false,
+                owner,
+                Token)).Error.Code);
+
+    }
+
+    [Theory]
+    [InlineData(CovenantExclusiveLeaseDisposition.RollbackAndReopen)]
+    [InlineData(CovenantExclusiveLeaseDisposition.CommitAndReopen)]
+    public async Task Completing_with_CancellationToken_None_after_the_request_was_cancelled_reopens_the_scope(
+        CovenantExclusiveLeaseDisposition disposition)
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        using CancellationTokenSource request = new();
+
+        await using CovenantEntryErasureLease lease = (await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            request.Token)).Value;
+
+        await request.CancelAsync();
+
+        Assert.True((await lease.CompleteAsync(disposition, CancellationToken.None)).IsSuccess);
+
+        await using CovenantReadLease reopened = (await gate.AcquireReadAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            Token)).Value;
+
+        Assert.Equal(CovenantOperationGateFixture.CampaignOne, reopened.Snapshot.Scope!.Value.CampaignId);
+
+    }
+
+    /// <summary>
+    /// Why the entry erasure must complete every disposition with <see cref="CancellationToken.None"/>:
+    /// the request's own token, once cancelled, consumes the one disposition without reopening.
+    /// </summary>
+    [Fact]
+    public async Task Completing_with_the_cancelled_request_token_leaves_the_scope_closed()
+    {
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        using CancellationTokenSource request = new();
+
+        CovenantEntryErasureLease lease = (await gate.AcquireEntryErasureAsync(
+            CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+            reclaimsKey: false,
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantEntryErasure),
+            request.Token)).Value;
+
+        await request.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await lease.CompleteAsync(
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                request.Token));
+
+        await lease.DisposeAsync();
+
+        Assert.Equal(
+            ErrorCodes.Covenant.Unavailable,
+            (await gate.AcquireReadAsync(
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                Token)).Error.Code);
+
+    }
+
+    [Fact]
     public async Task Revalidation_notices_a_committed_dataset_generation_change()
     {
 
@@ -1125,6 +1806,107 @@ public sealed class CovenantOperationGateTests
         Assert.Equal(
             ErrorCodes.Covenant.Unavailable,
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Error.Code);
+
+    }
+
+    /// <summary>
+    /// Every gate entry point that takes a recovery owner, each judged on a fresh gate by whether it
+    /// refused the owner's operation code as the wrong shape.
+    /// </summary>
+    private static readonly (string Shape, Func<CovenantOperationGate, CovenantExclusiveRecoveryOwner, Task<bool>> Admits)[] ExclusiveShapes =
+    [
+        ("exclusive", static (gate, owner) => AdmitsAsync(gate.AcquireExclusiveAsync(owner, Token))),
+        ("resume-or-acquire-exclusive", static (gate, owner) => AdmitsAsync(gate.ResumeOrAcquireExclusiveAsync(owner, Token))),
+        ("resume-exclusive", static (gate, owner) => AdmitsAsync(gate.ResumeExclusiveAsync(owner, Token))),
+        ("campaign-exclusive", static (gate, owner) => AdmitsAsync(
+            gate.AcquireCampaignExclusiveAsync(CovenantOperationGateFixture.CampaignOne, owner, Token))),
+        ("resume-campaign-exclusive", static (gate, owner) => AdmitsAsync(
+            gate.ResumeCampaignExclusiveAsync(CovenantOperationGateFixture.CampaignOne, owner, Token))),
+        ("protected-transfer", static (gate, owner) => AdmitsAsync(
+            gate.AcquireProtectedTransferAsync(
+                ProtectedTransferScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                owner,
+                Token))),
+        ("resume-protected-transfer", static (gate, owner) => AdmitsAsync(
+            gate.ResumeProtectedTransferAsync(
+                ProtectedTransferScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                owner,
+                Token))),
+        ("entry-erasure", static (gate, owner) => AdmitsAsync(
+            gate.AcquireEntryErasureAsync(
+                CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne),
+                reclaimsKey: false,
+                owner,
+                Token))),
+        ("adopt-installation", static (gate, owner) => Task.FromResult(Adopts(gate, owner, scope: null))),
+        ("adopt-scoped", static (gate, owner) => Task.FromResult(
+            Adopts(gate, owner, CovenantOperationScope.ForCampaign(CovenantOperationGateFixture.CampaignOne)))),
+    ];
+
+    /// <summary>
+    /// Whether an acquisition or resume got past its operation-code check. A resume on a fresh gate
+    /// that passes the check still finds no closure, which is a different refusal than the shape one.
+    /// </summary>
+    private static async Task<bool> AdmitsAsync<TLease>(ValueTask<Result<TLease>> attempt)
+        where TLease : CovenantOperationLease
+    {
+
+        Result<TLease> result = await attempt;
+
+        if (result.IsSuccess)
+        {
+
+            await result.Value.DisposeAsync();
+
+            return true;
+
+        }
+
+        return result.Error.Code != ErrorCodes.Covenant.ForbiddenAuthority;
+
+    }
+
+    private static CovenantExclusiveRecoveryOwner ForgeOperation(
+        CovenantExclusiveRecoveryOwner owner,
+        CovenantExclusiveOperation operation)
+    {
+
+        object boxed = owner;
+
+        typeof(CovenantExclusiveRecoveryOwner)
+            .GetField(
+                $"<{nameof(CovenantExclusiveRecoveryOwner.Operation)}>k__BackingField",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(boxed, operation);
+
+        CovenantExclusiveRecoveryOwner forged = (CovenantExclusiveRecoveryOwner)boxed;
+
+        Assert.Equal(operation, forged.Operation);
+
+        return forged;
+
+    }
+
+    private static bool Adopts(
+        CovenantOperationGate gate,
+        CovenantExclusiveRecoveryOwner owner,
+        CovenantOperationScope? scope)
+    {
+
+        try
+        {
+
+            gate.AdoptDurableRecoveryOwner(owner, scope, cleanupOnlyHistoricalCampaign: false);
+
+            return true;
+
+        }
+        catch (ArgumentException)
+        {
+
+            return false;
+
+        }
 
     }
 

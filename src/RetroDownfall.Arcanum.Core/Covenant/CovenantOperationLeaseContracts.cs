@@ -215,16 +215,23 @@ public enum CovenantLeaseKind : byte
 
     Exclusive = 10,
 
+    EntryErasure = 11,
+
 }
 
 /// <summary>
-/// The eight operations that may close Covenant admission.
+/// The nine operations that may close Covenant admission.
 /// </summary>
 /// <remarks>
 /// Closed and numbered because the code is persisted in a recovery journal and compared after a
 /// restart. <see cref="CampaignPathMutation"/> and <see cref="CampaignDelete"/> are valid only for a
 /// Campaign-exclusive acquisition, <see cref="ProtectedSessionTransfer"/> only for the compound
-/// transfer acquisition, and the remaining five only for a global exclusive acquisition.
+/// transfer acquisition, <see cref="CovenantEntryErasure"/> only for the compound entry-erasure
+/// acquisition, and the remaining five only for a global exclusive acquisition.
+///
+/// <para><see cref="CovenantEntryErasure"/> is the one code no journal ever holds. An entry erasure is
+/// a single SQLite transaction, so a crash leaves nothing to resume and the gate refuses to adopt it
+/// as a durable owner.</para>
 /// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantExclusiveOperation>))]
 public enum CovenantExclusiveOperation : byte
@@ -245,6 +252,8 @@ public enum CovenantExclusiveOperation : byte
     CovenantReset = 7,
 
     HealthyCatalogFactoryErasure = 8,
+
+    CovenantEntryErasure = 9,
 
 }
 
@@ -288,7 +297,7 @@ public readonly record struct CovenantExclusiveRecoveryOwner
         OperationId = CovenantValidation.RequireNonEmpty(operationId, nameof(operationId));
 
         Operation = operation is >= CovenantExclusiveOperation.CampaignPathMutation
-            and <= CovenantExclusiveOperation.HealthyCatalogFactoryErasure
+            and <= CovenantExclusiveOperation.CovenantEntryErasure
             ? operation
             : throw new ArgumentOutOfRangeException(nameof(operation));
 
@@ -505,7 +514,7 @@ public abstract class CovenantOperationLease : ICovenantOperationLease
 }
 
 /// <summary>
-/// Shared one-shot disposition behaviour for the three exclusive leases.
+/// Shared one-shot disposition behaviour for the four exclusive leases.
 /// </summary>
 public abstract class CovenantExclusiveOperationLease
     : CovenantOperationLease, ICovenantExclusiveOperationLease
@@ -691,6 +700,27 @@ public sealed class CovenantProtectedTransferLease(ICovenantExclusiveLeaseRegist
 public sealed class CovenantExclusiveLease(ICovenantExclusiveLeaseRegistration registration)
     : CovenantExclusiveOperationLease(registration)
 {
+}
+
+/// <summary>
+/// The one compound lease a selective Covenant entry erasure runs under.
+/// </summary>
+/// <remarks>
+/// Read and exclusive in one object for the same reason as <see cref="CovenantProtectedTransferLease"/>:
+/// the erase re-reads its entry inside its own closure, and a separate read lease over the closed scope
+/// would deadlock against its own drain. A Campaign entry that keeps its key closes only its Campaign;
+/// a Global entry, or any erase that reclaims its key, closes the installation.
+/// </remarks>
+public sealed class CovenantEntryErasureLease(ICovenantExclusiveLeaseRegistration registration)
+    : CovenantExclusiveOperationLease(registration), ICovenantSnapshotReadLease
+{
+
+    /// <summary>
+    /// Whether this lease closed and drained the whole installation rather than one Campaign. Only
+    /// such a lease may reclaim a key.
+    /// </summary>
+    public bool CoversInstallation => Snapshot.Coverage == CovenantLeaseCoverage.Installation;
+
 }
 
 /// <summary>

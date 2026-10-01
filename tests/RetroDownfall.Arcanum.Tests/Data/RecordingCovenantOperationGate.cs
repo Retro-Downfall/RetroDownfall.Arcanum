@@ -157,6 +157,13 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         CancellationToken cancellationToken) =>
         Refuse<CovenantCampaignExclusiveLease>("campaign-exclusive");
 
+    public ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
+        CovenantOperationScope entryScope,
+        bool reclaimsKey,
+        CovenantExclusiveRecoveryOwner owner,
+        CancellationToken cancellationToken) =>
+        Refuse<CovenantEntryErasureLease>("entry-erasure");
+
     public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
         ProtectedTransferScope scope,
         CovenantExclusiveRecoveryOwner owner,

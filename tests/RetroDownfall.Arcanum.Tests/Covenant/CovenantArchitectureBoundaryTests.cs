@@ -462,6 +462,11 @@ public sealed class CovenantArchitectureBoundaryTests
                     typeof(CovenantReadLease),
                     typeof(CovenantTurnLease),
                     typeof(CovenantProtectedTransferLease),
+
+                    // A compound read-and-exclusive lease minted only by AcquireEntryErasureAsync. It
+                    // claims installation coverage only after it has closed and drained the whole
+                    // installation, so it is never a second ordinary all-scopes read.
+                    typeof(CovenantEntryErasureLease),
                 ]));
     }
 
