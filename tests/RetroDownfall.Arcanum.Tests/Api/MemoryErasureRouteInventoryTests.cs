@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -45,9 +46,13 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         ("EraseSagaMemory", "POST", "/api/memory/saga/erase", CovenantAuthorityRequirement.SensitivityRetentionPurge),
         ("PrepareLexiconEntryErasure", "POST", "/api/memory/lexicon/erase/prepare", CovenantAuthorityRequirement.SensitivityRetentionPurge),
         ("EraseLexiconEntry", "POST", "/api/memory/lexicon/erase", CovenantAuthorityRequirement.SensitivityRetentionPurge),
+        ("PrepareCovenantErasure", "POST", "/api/memory/covenant/erase/prepare", CovenantAuthorityRequirement.LifecycleManage),
+        ("EraseCovenantEntry", "POST", "/api/memory/covenant/erase", CovenantAuthorityRequirement.LifecycleManage),
     ];
 
     private const string LexiconName = "Mill Warden";
+
+    private const string CovenantKey = "taint.covenant";
 
     private static readonly Regex ErasurePath = new(
         "^/api/memory/(saga|lexicon|covenant)/(erase|release)",
@@ -158,7 +163,10 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
 
         TaintSwitch taint = new();
 
-        await using ArcanumWebApplicationFactory host = MemoryErasureRouteDriver.Host(credentials);
+        // A Covenant erase needs the Covenant tier to name a genuine entry at all.
+        bool covenant = IsCovenantRoute(name);
+
+        await using ArcanumWebApplicationFactory host = MemoryErasureRouteDriver.Host(credentials, covenant: covenant);
 
         host.ServiceOverrides += services =>
         {
@@ -179,6 +187,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         string memoryId = await MemoryErasureRouteDriver.InsertSagaAsync(host, "The ward-stone lies under the mill.");
 
         await ScribeLexiconAsync(host);
+
+        if (covenant)
+        {
+            _ = await driver.SetCovenantAsync(CovenantScope.Global, null, CovenantKey, "Name the taint key in this scope.");
+        }
 
         // A genuine body, built while the installation is clean: a refusal of {} could never have
         // changed anything, so it would prove nothing about this one.
@@ -207,6 +220,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         using (HttpResponseMessage shown = await ShowLexiconAsync(driver))
         {
             Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+        }
+
+        if (covenant)
+        {
+            Assert.NotNull((await ShowCovenantAsync(driver)).EntryId);
         }
 
         Assert.Equal(0, await ReceiptsAsync(host, mutationId));
@@ -301,6 +319,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
             return await GenuineLexiconBodyAsync(name, driver);
         }
 
+        if (IsCovenantRoute(name))
+        {
+            return await GenuineCovenantBodyAsync(name, driver);
+        }
+
         using HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{sagaMemoryId}");
 
         SagaMemoryDetail detail = await MemoryErasureRouteDriver.ReadDataAsync(
@@ -369,6 +392,59 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
 
         return (JsonSerializer.Serialize(apply, ArcanumJsonContext.Default.LexiconEraseRequest), prepare.MutationId);
     }
+
+    /// <summary>The Covenant erase bodies: detail's exact entry and heads, and for an apply the token its prepare issued.</summary>
+    private static async Task<(string Body, Guid MutationId)> GenuineCovenantBodyAsync(string name, MemoryErasureRouteDriver driver)
+    {
+        CovenantDetailDto detail = await ShowCovenantAsync(driver);
+
+        CovenantErasePrepareRequest prepare = new(
+            CovenantScope.Global,
+            null,
+            CovenantKey,
+            detail.EntryId!.Value,
+            detail.Confirmed is { } confirmed ? new(confirmed.VersionId, confirmed.LaneRevision) : null,
+            null,
+            Guid.NewGuid());
+
+        if (name == "PrepareCovenantErasure")
+        {
+            return (JsonSerializer.Serialize(prepare, ArcanumJsonContext.Default.CovenantErasePrepareRequest), prepare.MutationId);
+        }
+
+        using HttpResponseMessage prepared = await driver.PostAsync(
+            PathOf("PrepareCovenantErasure"),
+            prepare,
+            ArcanumJsonContext.Default.CovenantErasePrepareRequest);
+
+        MemoryErasurePreflightDto preflight = await MemoryErasureRouteDriver.ReadDataAsync(
+            prepared,
+            ArcanumJsonContext.Default.ApiResponseMemoryErasurePreflightDto);
+
+        CovenantEraseRequest apply = new(
+            prepare.Scope,
+            prepare.CampaignId,
+            prepare.Key,
+            prepare.EntryId,
+            prepare.Confirmed,
+            prepare.Proposed,
+            prepare.MutationId,
+            preflight.PreflightToken);
+
+        return (JsonSerializer.Serialize(apply, ArcanumJsonContext.Default.CovenantEraseRequest), prepare.MutationId);
+    }
+
+    private static async Task<CovenantDetailDto> ShowCovenantAsync(MemoryErasureRouteDriver driver)
+    {
+        using HttpResponseMessage shown = await driver.PostAsync(
+            "/api/memory/covenant/detail",
+            new CovenantDetailRequest(CovenantScope.Global, null, CovenantKey),
+            ArcanumJsonContext.Default.CovenantDetailRequest);
+
+        return await MemoryErasureRouteDriver.ReadDataAsync(shown, ArcanumJsonContext.Default.ApiResponseCovenantDetailDto);
+    }
+
+    private static bool IsCovenantRoute(string name) => name is "PrepareCovenantErasure" or "EraseCovenantEntry";
 
     /// <summary>Scribes the Global entry the Lexicon rows act on, through the host's own Lexicon service.</summary>
     private static async Task ScribeLexiconAsync(ArcanumWebApplicationFactory host)

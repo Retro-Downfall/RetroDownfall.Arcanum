@@ -9,10 +9,12 @@ using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -53,6 +55,14 @@ internal static class MemoryErasureEndpoints
         api.MapPost("/memory/lexicon/erase", HandleLexiconEraseAsync)
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.SensitivityRetentionPurge)
             .WithName("EraseLexiconEntry");
+
+        api.MapPost("/memory/covenant/erase/prepare", HandleCovenantErasePrepareAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("PrepareCovenantErasure");
+
+        api.MapPost("/memory/covenant/erase", HandleCovenantEraseAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("EraseCovenantEntry");
 
         return api;
     }
@@ -174,6 +184,153 @@ internal static class MemoryErasureEndpoints
             .ConfigureAwait(false);
 
         return Respond(context, applied, typeInfo);
+    }
+
+    /// <summary>
+    /// Prepares a Covenant erase under an installation read lease, which the protected response holds
+    /// until the body is written, so a reset or another erase never drains past a preflight still being
+    /// serialized.
+    /// </summary>
+    private static async Task<IResult> HandleCovenantErasePrepareAsync(ICovenantEntryErasurePreparer covenant, HttpContext context)
+    {
+        JsonTypeInfo<ApiResponse<MemoryErasurePreflightDto>> typeInfo =
+            ArcanumJsonContext.Default.ApiResponseMemoryErasurePreflightDto;
+
+        (CovenantErasePrepareRequest? request, IResult? error) = await ReadBodyAsync(
+            context,
+            ArcanumJsonContext.Default.CovenantErasePrepareRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        Result shape = CheckCovenantBody(
+            request?.Scope,
+            request?.CampaignId,
+            request?.Key,
+            request?.EntryId,
+            request?.Proposed,
+            request?.MutationId,
+            preflightToken: null,
+            applying: false);
+
+        if (shape.IsFailure)
+        {
+            return Respond(context, Result<MemoryErasurePreflightDto>.Failure(shape.Error), typeInfo);
+        }
+
+        OperatorAuthorityContext authority = CovenantRequestFeatures.Authority(context)!.Context;
+
+        Result<CovenantEntryErasurePrepared> prepared = await covenant
+            .PrepareHeldAsync(request!, authority, context.RequestAborted)
+            .ConfigureAwait(false);
+
+        if (prepared.IsFailure)
+        {
+            return Respond(context, Result<MemoryErasurePreflightDto>.Failure(prepared.Error), typeInfo);
+        }
+
+        ICovenantSnapshotReadLease? owned = prepared.Value.ReadLease;
+
+        try
+        {
+            // Ownership moves to the result, which revalidates before the first byte and disposes in
+            // its own finally. Clearing the local is what keeps the guard below from double-releasing.
+            IResult response = new CovenantProtectedJsonResult<MemoryErasurePreflightDto>(
+                owned,
+                prepared.Value.Preflight,
+                typeInfo);
+
+            owned = null;
+
+            return response;
+        }
+        finally
+        {
+            if (owned is not null)
+            {
+                await owned.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task<IResult> HandleCovenantEraseAsync(ICovenantEntryErasureService covenant, HttpContext context)
+    {
+        JsonTypeInfo<ApiResponse<MemoryErasureResultDto>> typeInfo =
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureResultDto;
+
+        (CovenantEraseRequest? request, IResult? error) = await ReadBodyAsync(
+            context,
+            ArcanumJsonContext.Default.CovenantEraseRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        Result shape = CheckCovenantBody(
+            request?.Scope,
+            request?.CampaignId,
+            request?.Key,
+            request?.EntryId,
+            request?.Proposed,
+            request?.MutationId,
+            request?.PreflightToken,
+            applying: true);
+
+        if (shape.IsFailure)
+        {
+            return Respond(context, Result<MemoryErasureResultDto>.Failure(shape.Error), typeInfo);
+        }
+
+        // The middleware issued this route's context before the body was bound, so it is present
+        // whenever the handler runs; the filter has already refused a request without it.
+        OperatorAuthorityContext authority = CovenantRequestFeatures.Authority(context)!.Context;
+
+        Result<MemoryErasureResultDto> applied = await covenant
+            .ApplyAsync(request!, authority, context.RequestAborted)
+            .ConfigureAwait(false);
+
+        return Respond(context, applied, typeInfo);
+    }
+
+    /// <summary>
+    /// A recognized scope with its Campaign exactly when it is Campaign scope and no Proposed head for a
+    /// Global entry, a key, a nonempty entry id, a nonempty mutation id and, to apply, a preflight token.
+    /// </summary>
+    private static Result CheckCovenantBody(
+        CovenantScope? scope,
+        Guid? campaignId,
+        string? key,
+        Guid? entryId,
+        CovenantEraseHeadExpectation? proposed,
+        Guid? mutationId,
+        string? preflightToken,
+        bool applying)
+    {
+        if (scope is not (CovenantScope.Global or CovenantScope.Campaign)
+            || key is null
+            || entryId is not { } entry
+            || entry == Guid.Empty
+            || mutationId is not { } mutation
+            || mutation == Guid.Empty
+            || (applying && string.IsNullOrWhiteSpace(preflightToken)))
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Validation.InvalidBody,
+                "A Covenant erase names a scope, a key, the entryId and lane heads show reported, a mutationId and, to apply, a preflightToken."));
+        }
+
+        bool paired = scope is CovenantScope.Campaign
+            ? campaignId is { } campaign && campaign != Guid.Empty
+            : campaignId is null;
+
+        return paired && !(scope is CovenantScope.Global && proposed is not null)
+            ? Result.Success()
+            : Result.Failure(new Error(
+                ErrorCodes.Covenant.InvalidScope,
+                "A Global Covenant entry has no Proposed lane, and a Campaign scope names exactly one Campaign."));
     }
 
     /// <summary>

@@ -506,6 +506,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCleanupWorker.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCurationKernel.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureJournal.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEntryErasurePlan.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEnvelopeStateStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantIndexRebuilder.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantManagedFileErasureKernel.cs",

@@ -1046,6 +1046,27 @@ public static class ServiceCollectionExtensions
 
         services.AddCovenantPersistence();
 
+        // Host only, like the Saga and Lexicon erases: prepare may create the erasure key, and only the
+        // host may. One scoped instance answers both the erase port and the preparer whose installation
+        // read lease the prepare route's protected response holds; it runs on the scope's own Covenant
+        // connection.
+        services.AddScoped(static sp => new CovenantEntryErasureService(
+            sp.GetRequiredService<ICovenantConnectionSource>(),
+            sp.GetRequiredService<IMemoryErasureKeyCreator>(),
+            sp.GetRequiredService<IMemoryErasureKeyProvider>(),
+            sp.GetRequiredService<ICovenantEnvelopeCodec>(),
+            sp.GetRequiredService<MemoryErasureScrubber>(),
+            sp.GetRequiredService<ICovenantOperationGate>(),
+            sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<TimeProvider>()));
+
+        services.AddScoped<ICovenantEntryErasureService>(
+            static sp => sp.GetRequiredService<CovenantEntryErasureService>());
+
+        services.AddScoped<ICovenantEntryErasurePreparer>(
+            static sp => sp.GetRequiredService<CovenantEntryErasureService>());
+
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped(
             static sp => new EmbeddingsResetService(

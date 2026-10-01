@@ -638,6 +638,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerLifecycleC
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CampaignPathMarkerRootAuthority.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantContextProvider.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantEntryErasureService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantExclusiveDisposition.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantExportPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantFamilyReinitializeCoordinator.cs
@@ -700,6 +701,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCurationKernel.
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureExposureReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureJournal.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantDisclosureWriter.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEntryErasurePlan.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEnvelopeStateStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureProgress.cs

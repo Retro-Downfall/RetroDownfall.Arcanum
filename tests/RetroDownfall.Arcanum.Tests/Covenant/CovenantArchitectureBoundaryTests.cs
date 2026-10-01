@@ -534,6 +534,12 @@ public sealed class CovenantArchitectureBoundaryTests
                 // clearing the projection is not a race against the workers that own it.
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantCanonicalErasureTransaction.cs",
 
+                // The fourth declared exception. A selective entry erasure deletes the entry's search
+                // documents and appends content-free absent deltas in the same transaction, under an
+                // entry-erasure closure during which the accelerator lease is refused, so the applied
+                // tuple never claims a document this file removed.
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEntryErasurePlan.cs",
+
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantIndexRebuilder.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchIndex.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchOutboxWorker.cs",

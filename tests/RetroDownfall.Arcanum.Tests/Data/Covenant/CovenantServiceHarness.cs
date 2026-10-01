@@ -68,15 +68,21 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// Further named core objects a suite depends on, installed after the ones the other switches
     /// imply, such as the disclosure journal an exposure read measures.
     /// </param>
+    /// <param name="withAccelerator">
+    /// Also installs the accelerator tier, so a suite can synchronize the search projection and erase
+    /// what it holds.
+    /// </param>
     internal static async Task<CovenantServiceHarness> StartAsync(
         CancellationToken cancellationToken,
         bool withOwnerCleanup = false,
         bool withErasureEvidence = false,
-        IReadOnlyList<string>? coreObjects = null)
+        IReadOnlyList<string>? coreObjects = null,
+        bool withAccelerator = false)
     {
 
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             cancellationToken,
+            withAccelerator: withAccelerator,
             coreObjects:
             [
                 .. withOwnerCleanup

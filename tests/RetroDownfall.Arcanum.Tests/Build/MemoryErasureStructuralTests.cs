@@ -57,6 +57,8 @@ public sealed class MemoryErasureStructuralTests
         "Data/MemoryErasureLabels.cs",
         "Memory/SagaMemoryErasureService.cs",
         "Lexicon/LexiconService.Erasure.cs",
+        "Data/Covenant/CovenantEntryErasurePlan.cs",
+        "Covenant/CovenantEntryErasureService.cs",
     ];
 
     private const string InfrastructureRoot = "src/RetroDownfall.Arcanum.Infrastructure";
@@ -64,6 +66,10 @@ public sealed class MemoryErasureStructuralTests
     private const string SagaStore = "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs";
 
     private const string SagaExtraction = "src/RetroDownfall.Arcanum.Infrastructure/Hosting/SagaExtractionService.cs";
+
+    private const string EntryErasureService = "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantEntryErasureService.cs";
+
+    private const string EntryErasureAuthorization = "CovenantSqliteAuthorizationKind.CovenantEntryErasure";
 
     /// <summary>
     /// An insert or replace into <c>saga_memories</c> as SQLite accepts it: optionally schema-qualified
@@ -252,6 +258,61 @@ public sealed class MemoryErasureStructuralTests
         Assert.Equal(["Confirm", "Correct", "Retire", "Pin", "Unpin"], Enum.GetNames<MemoryReviewAction>());
     }
 
+    /// <summary>
+    /// Authorization kind 12 opens every canonical delete guard an entry erasure needs, so exactly one
+    /// production file may grant it: the entry-erasure service, which grants it to its own erase
+    /// transaction. The plan it runs deletes under whatever its caller granted.
+    /// </summary>
+    [Fact]
+    public void Only_the_entry_erasure_service_names_its_authorization_kind()
+    {
+        string[] declaring =
+        [
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteAuthorizationKind.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectionInitializer.cs",
+        ];
+
+        string[] naming =
+        [
+            .. Sources("*.cs")
+                .Where(source => !declaring.Contains(source.Path, StringComparer.Ordinal))
+                .Where(static source => source.Text.Contains("CovenantEntryErasure", StringComparison.Ordinal))
+                .Where(static source => MemberAccesses(source.Text, EntryErasureAuthorization) > 0)
+                .Select(static source => source.Path)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal([EntryErasureService], naming);
+    }
+
+    /// <summary>
+    /// A disposition completed with a cancelled request token claims the lease's one disposition and
+    /// then throws, which leaves the entry's scope closed until the host restarts. Every completion in
+    /// the entry-erasure service therefore passes <see cref="CancellationToken.None"/>.
+    /// </summary>
+    [Fact]
+    public void The_entry_erasure_service_completes_every_closure_with_CancellationToken_None()
+    {
+        string path = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), EntryErasureService);
+
+        InvocationExpressionSyntax[] completions =
+        [
+            .. CSharpSyntaxTree.ParseText(File.ReadAllText(path), new CSharpParseOptions(LanguageVersion.Preview))
+                .GetCompilationUnitRoot()
+                .DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Where(static invocation => InvokedName(invocation) == "CompleteAsync"),
+        ];
+
+        Assert.NotEmpty(completions);
+
+        Assert.All(
+            completions,
+            static invocation => Assert.Equal(
+                "CancellationToken.None",
+                invocation.ArgumentList.Arguments.Last().Expression.ToString()));
+    }
+
     [Fact]
     public void New_erasure_log_templates_are_content_free()
     {
@@ -437,6 +498,14 @@ public sealed class MemoryErasureStructuralTests
         GenericNameSyntax generic => generic.Identifier.ValueText,
         _ => string.Empty,
     };
+
+    /// <summary>How many member accesses in a file spell exactly <paramref name="access"/>, comments and crefs aside.</summary>
+    private static int MemberAccesses(string source, string access) =>
+        CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
+            .GetCompilationUnitRoot()
+            .DescendantNodes()
+            .OfType<MemberAccessExpressionSyntax>()
+            .Count(member => string.Equals(member.ToString(), access, StringComparison.Ordinal));
 
     /// <summary>Whether a file names the Saga store, as the port or as the concrete class.</summary>
     private static bool NamesSagaStore(string source) =>

@@ -1,0 +1,759 @@
+using System.Collections.Immutable;
+using System.Data;
+using System.Globalization;
+
+using Microsoft.Data.Sqlite;
+
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
+
+namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
+
+/// <summary>
+/// The one plan a Covenant entry erasure counts, deletes and proves absent by, run inside the caller's
+/// transaction over rows the production kernel and services wrote.
+/// </summary>
+/// <remarks>
+/// Raw SQL here is assertion-only, with two named exceptions: the legacy receipt no head writer can
+/// produce any more, and the one fault the absence proof is shown to catch.
+/// </remarks>
+[Trait("Category", "Integration")]
+public sealed class CovenantEntryErasurePlanTests
+{
+    private const string Key = "erasure.subject";
+
+    private static readonly Guid CampaignOne = CovenantOperationGateFixture.CampaignOne;
+
+    private static readonly Guid CampaignTwo = CovenantOperationGateFixture.CampaignTwo;
+
+    private static readonly string[] OrderedTargets =
+    [
+        "covenant_search_documents",
+        "covenant_search_outbox",
+        "covenant_mutation_receipts",
+        "covenant_version_attachment_provenance",
+        "covenant_heads",
+        "covenant_versions",
+        "covenant_review_events",
+        "covenant_review_decision_receipts",
+        "covenant_entries",
+        "covenant_curation_heads",
+        "covenant_curation_versions",
+        "covenant_curation_receipts",
+    ];
+
+    private static readonly string[] CurationTables =
+        ["covenant_curation_heads", "covenant_curation_versions", "covenant_curation_receipts"];
+
+    private static CancellationToken Token => CancellationToken.None;
+
+    [Theory]
+    [InlineData(nameof(CovenantEntryErasureMode.Live))]
+    [InlineData(nameof(CovenantEntryErasureMode.Staged))]
+    public async Task Count_measures_exactly_what_Delete_removes(string modeName)
+    {
+        CovenantEntryErasureMode mode = Enum.Parse<CovenantEntryErasureMode>(modeName);
+
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        Guid entryId = await SeedFullEntryAsync(harness);
+
+        CovenantEntryErasureTally counted = null!;
+
+        CovenantEntryErasureTally deleted = null!;
+
+        IReadOnlyList<MemoryErasureTableCount> remaining = null!;
+
+        await InTransactionAsync(harness, mode, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            Assert.True(subject.ReclaimsKey);
+
+            counted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Count, mode, Token);
+
+            deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, mode, Token);
+
+            remaining = await CovenantEntryErasurePlan.ProveAbsentAsync(
+                connection, transaction, subject, deleted.VersionIds, Token);
+        });
+
+        Assert.Equal([.. OrderedTargets, "covenant_key_epochs"], counted.Targets.Select(static target => target.Table));
+
+        Assert.Equal(counted.Targets, deleted.Targets);
+
+        Assert.All(
+            counted.Targets.Where(static target => target.Table != "covenant_review_decision_receipts"),
+            static target => Assert.True(target.Rows > 0, $"{target.Table} held none of the entry's rows."));
+
+        Assert.Equal(1, Rows(counted, "covenant_search_documents"));
+
+        Assert.Equal(2, Rows(counted, "covenant_heads"));
+
+        Assert.Equal(3, Rows(counted, "covenant_versions"));
+
+        Assert.Equal(3, Rows(counted, "covenant_review_events"));
+
+        Assert.Equal(1, Rows(counted, "covenant_version_attachment_provenance"));
+
+        Assert.Equal(3, Rows(counted, "covenant_mutation_receipts"));
+
+        Assert.Equal(1, Rows(counted, "covenant_entries"));
+
+        Assert.Equal(1, Rows(counted, "covenant_key_epochs"));
+
+        Assert.Equal((2, 1), (counted.ConfirmedVersions, counted.ProposedVersions));
+
+        Assert.Equal(3, counted.VersionIds.Count);
+
+        Assert.True(deleted.KeyReclaimed);
+
+        Assert.Empty(remaining);
+
+        Assert.Equal(0, await CountAsync(harness, "SELECT count(*) FROM covenant_entries;"));
+
+        Assert.Equal(0, await CountAsync(harness, "SELECT count(*) FROM covenant_search_documents;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    [Theory]
+    [InlineData(nameof(CovenantEntryErasureMode.Live), 2, 1)]
+    [InlineData(nameof(CovenantEntryErasureMode.Staged), 0, 0)]
+    public async Task Live_mode_appends_one_absent_delta_per_erased_head_and_advances_the_search_sequence_once(
+        string modeName,
+        int expectedDeltas,
+        int expectedAdvance)
+    {
+        CovenantEntryErasureMode mode = Enum.Parse<CovenantEntryErasureMode>(modeName);
+
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Operator text.", Token);
+
+        await ProposeAsync(harness, CampaignOne, Key, "Agent text.");
+
+        Guid entryId = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        long before = await CountAsync(harness, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;");
+
+        long[] headRows = await RowIdsAsync(harness, entryId);
+
+        Assert.Equal(2, headRows.Length);
+
+        Assert.True(await CountAsync(harness, "SELECT count(*) FROM covenant_search_outbox WHERE DesiredVersionId IS NOT NULL;") > 0);
+
+        CovenantEntryErasureTally deleted = null!;
+
+        await InTransactionAsync(harness, mode, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, mode, Token);
+        });
+
+        Assert.Equal(
+            expectedDeltas,
+            await CountAsync(
+                harness,
+                $"SELECT count(*) FROM covenant_search_outbox WHERE DesiredVersionId IS NULL AND SearchSequence = {before + 1} AND SearchRowId IN ({string.Join(',', headRows)});"));
+
+        Assert.Equal(expectedDeltas, await CountAsync(harness, "SELECT count(*) FROM covenant_search_outbox;"));
+
+        Assert.Equal(
+            before + expectedAdvance,
+            await CountAsync(harness, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;"));
+
+        foreach (Guid version in deleted.VersionIds)
+        {
+            Assert.Equal(
+                0,
+                await CountAsync(
+                    harness,
+                    $"SELECT count(*) FROM covenant_search_outbox WHERE lower(replace(DesiredVersionId, '-', '')) = '{version:N}';"));
+        }
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    /// <summary>
+    /// A receipt written before canonical version 6 names no entry, so the erase finds a NoChange one by
+    /// its scope, Campaign and lane inside the entry's lifetime, and counts it with the rest.
+    /// </summary>
+    /// <remarks>
+    /// The one raw seed in this suite besides the fault below: no head writer from version 6 on can
+    /// write a receipt without its entry, so the shape is reachable only on a catalog that predates it.
+    /// </remarks>
+    [Fact]
+    public async Task A_legacy_NoChange_receipt_in_the_entry_window_is_deleted_and_counted()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(Token);
+
+        await InstallAsync(connection, CovenantCanonicalSchemaVersionFiveFixture.ChainSet(), 5);
+
+        await ExecuteAsync(connection, LegacyNoChangeReceiptSql("legacy-inside", "2099-01-01T00:00:00.0000000Z"));
+
+        await ExecuteAsync(connection, LegacyNoChangeReceiptSql("legacy-before", "2000-01-01T00:00:00.0000000Z"));
+
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 6);
+
+        await ApplyOperatorSetAsync(connection, Key, "Global text.");
+
+        Assert.Equal(1, await ScalarAsync(connection, "SELECT count(*) FROM covenant_mutation_receipts WHERE EntryId IS NOT NULL;"));
+
+        Guid entryId = Guid.Parse((string)(await ScalarObjectAsync(connection, "SELECT EntryId FROM covenant_entries;"))!, CultureInfo.InvariantCulture);
+
+        CovenantEntryErasureTally counted;
+
+        CovenantEntryErasureTally deleted;
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
+        {
+            using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                connection,
+                CovenantSqliteAuthorizationKind.CovenantEntryErasure);
+
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            counted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Count, CovenantEntryErasureMode.Live, Token);
+
+            deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+            Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, deleted.VersionIds, Token));
+
+            await transaction.CommitAsync(Token);
+        }
+
+        Assert.Equal(2, counted.Targets.Single(static target => target.Table == "covenant_mutation_receipts").Rows);
+
+        Assert.Equal(counted.Targets, deleted.Targets);
+
+        Assert.Equal(0, await ScalarAsync(connection, "SELECT count(*) FROM covenant_mutation_receipts WHERE MutationId = 'legacy-inside';"));
+
+        Assert.Equal(1, await ScalarAsync(connection, "SELECT count(*) FROM covenant_mutation_receipts WHERE MutationId = 'legacy-before';"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(connection, Token);
+    }
+
+    /// <summary>
+    /// A Campaign's mask is policy about the Global key, not content of the erased entry, so it outlives
+    /// the erase whenever the key itself stays. It is kept at the key's binding epoch, which for a key
+    /// row created from version 6 on is 0 while its dependency epoch has moved.
+    /// </summary>
+    [Fact]
+    public async Task A_masked_campaign_confirmed_subject_is_retained_when_the_key_is_not_reclaimed()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, Key, "Global text.", Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Campaign text.", Token);
+
+        await ProposeAsync(harness, CampaignOne, Key, "Agent text.");
+
+        await CurateAsync(harness, CovenantCurationKind.Mask, CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed);
+
+        await CurateAsync(harness, CovenantCurationKind.Pin, CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed);
+
+        Assert.Equal(0, await CountAsync(harness, $"SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';"));
+
+        Assert.True(await CountAsync(harness, $"SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';") > 0);
+
+        Guid entryId = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        CovenantEntryErasureTally deleted = null!;
+
+        await InTransactionAsync(harness, CovenantEntryErasureMode.Live, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            Assert.True(subject.IsMasked);
+
+            Assert.False(subject.ReclaimsKey);
+
+            deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+            Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, deleted.VersionIds, Token));
+        });
+
+        Assert.True(deleted.RetainsCampaignMask);
+
+        Assert.False(deleted.KeyReclaimed);
+
+        Assert.DoesNotContain(deleted.Targets, static target => target.Table == "covenant_key_epochs");
+
+        Assert.Equal(
+            1,
+            await CountAsync(
+                harness,
+                $"SELECT count(*) FROM covenant_curation_heads WHERE NormalizedKey = '{Key}' AND CampaignId IS NOT NULL AND LaneCode = 1 AND IsMasked = 1 AND KeyEpoch = 0;"));
+
+        Assert.Equal(1, await CountAsync(harness, $"SELECT count(*) FROM covenant_curation_heads WHERE NormalizedKey = '{Key}';"));
+
+        Assert.Equal(1, await CountAsync(harness, $"SELECT count(*) FROM covenant_curation_versions WHERE NormalizedKey = '{Key}';"));
+
+        Assert.Equal(0, await CountAsync(harness, $"SELECT count(*) FROM covenant_curation_heads WHERE NormalizedKey = '{Key}' AND IsPinned = 1;"));
+
+        Assert.Equal(1, await CountAsync(harness, "SELECT count(*) FROM covenant_entries;"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    /// <summary>
+    /// The key's only entry reclaims the key: every curation row for it in every scope goes in the same
+    /// transaction as its epoch row, the reclamation epoch moves once, and a pin that outlived the purge
+    /// could never bind the key that next takes the name.
+    /// </summary>
+    [Fact]
+    public async Task Reclamation_purges_curation_in_every_scope_deletes_the_key_row_and_advances_the_epoch()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.AddCampaignAsync(CampaignTwo, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Campaign text.", Token);
+
+        await CurateAsync(harness, CovenantCurationKind.Pin, CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed);
+
+        await CurateAsync(harness, CovenantCurationKind.Pin, CovenantScope.Global, null, CovenantLane.Confirmed);
+
+        await CurateAsync(harness, CovenantCurationKind.Mask, CovenantScope.Campaign, CampaignTwo, CovenantLane.Confirmed);
+
+        foreach (string table in CurationTables)
+        {
+            Assert.Equal(3, await CountAsync(harness, $"SELECT count(*) FROM {table} WHERE NormalizedKey = '{Key}';"));
+        }
+
+        long reclamation = await CountAsync(harness, "SELECT KeyReclamationEpoch FROM covenant_state WHERE StateKey = 1;");
+
+        Guid entryId = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        CovenantEntryErasureTally deleted = null!;
+
+        await InTransactionAsync(harness, CovenantEntryErasureMode.Live, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            Assert.True(subject.ReclaimsKey);
+
+            deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+            Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, deleted.VersionIds, Token));
+        });
+
+        Assert.True(deleted.KeyReclaimed);
+
+        Assert.False(deleted.RetainsCampaignMask);
+
+        Assert.Equal(3, Rows(deleted, "covenant_curation_heads"));
+
+        foreach (string table in CurationTables)
+        {
+            Assert.Equal(0, await CountAsync(harness, $"SELECT count(*) FROM {table} WHERE NormalizedKey = '{Key}';"));
+        }
+
+        Assert.Equal(0, await CountAsync(harness, $"SELECT count(*) FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';"));
+
+        Assert.Equal(reclamation + 1, await CountAsync(harness, "SELECT KeyReclamationEpoch FROM covenant_state WHERE StateKey = 1;"));
+
+        // The key is re-created by a later operator set. Its binding epoch starts at 0 again, and no pin
+        // recorded against the reclaimed incarnation is there to bind it.
+        await harness.SetAsync(CovenantScope.Global, null, Key, "A new key of the same name.", Token);
+
+        Assert.Equal(0, await CountAsync(harness, $"SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';"));
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                harness,
+                $"SELECT count(*) FROM covenant_curation_heads c WHERE c.NormalizedKey = '{Key}' AND c.KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = c.NormalizedKey), 0);"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    [Fact]
+    public async Task Search_documents_are_deleted_even_when_covenant_fts_secure_delete_is_unverifiable()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Indexed text.", Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(harness.Fixture, Token);
+
+        Guid entryId = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        Assert.Equal(1, await CountAsync(harness, $"SELECT count(*) FROM covenant_search_documents WHERE lower(replace(EntryId, '-', '')) = '{entryId:N}';"));
+
+        await ExecuteAsync(harness.Fixture.Connection, "INSERT INTO covenant_fts(covenant_fts, rank) VALUES('secure-delete', 0);");
+
+        CovenantEntryErasureTally deleted = null!;
+
+        await InTransactionAsync(harness, CovenantEntryErasureMode.Live, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+        });
+
+        Assert.False(deleted.FullTextSecureDeleteVerified);
+
+        Assert.Equal(1, Rows(deleted, "covenant_search_documents"));
+
+        Assert.Equal(0, await CountAsync(harness, $"SELECT count(*) FROM covenant_search_documents WHERE lower(replace(EntryId, '-', '')) = '{entryId:N}';"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    /// <summary>The absence proof counts every target again and reports exactly what it still finds.</summary>
+    /// <remarks>
+    /// The fault: one outbox delta re-naming an erased version, which only a raw insert can make, since
+    /// the outbox carries no insert guard and no production writer names a version it never wrote.
+    /// </remarks>
+    [Fact]
+    public async Task Absence_proof_reports_any_remaining_target()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Campaign text.", Token);
+
+        Guid entryId = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        IReadOnlyList<MemoryErasureTableCount> remaining = null!;
+
+        await InTransactionAsync(harness, CovenantEntryErasureMode.Live, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            CovenantEntryErasureTally deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+            Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, deleted.VersionIds, Token));
+
+            await using (SqliteCommand fault = connection.CreateCommand())
+            {
+                fault.Transaction = transaction;
+
+                fault.CommandText = """
+                    INSERT INTO covenant_search_outbox (SearchSequence, Ordinal, SearchRowId, EntryId, LaneCode, DesiredVersionId)
+                    VALUES (9000, 0, 9000, $entry, 1, $version);
+                    """;
+
+                _ = fault.Parameters.AddWithValue("$entry", entryId.ToString("D"));
+
+                _ = fault.Parameters.AddWithValue("$version", deleted.VersionIds[0].ToString("D"));
+
+                _ = await fault.ExecuteNonQueryAsync(Token);
+            }
+
+            remaining = await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, deleted.VersionIds, Token);
+        });
+
+        MemoryErasureTableCount left = Assert.Single(remaining);
+
+        Assert.Equal(new MemoryErasureTableCount("covenant_search_outbox", 1), left);
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    /// <summary>
+    /// Two Campaign entries share a key, so erasing the first reclaims nothing; the subject read for the
+    /// second after the first is gone does reclaim. A staged restore relies on reading each subject
+    /// immediately before its own delete.
+    /// </summary>
+    [Fact]
+    public async Task ReadSubject_recomputes_reclamation_per_entry()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.AddCampaignAsync(CampaignTwo, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "First Campaign text.", Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignTwo, Key, "Second Campaign text.", Token);
+
+        Guid first = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+
+        Guid second = await EntryIdAsync(harness, CovenantScope.Campaign, CampaignTwo, Key);
+
+        await InTransactionAsync(harness, CovenantEntryErasureMode.Staged, async (connection, transaction) =>
+        {
+            CovenantEntryErasureSubject one = await ReadSubjectAsync(connection, transaction, first);
+
+            Assert.False(one.ReclaimsKey);
+
+            CovenantEntryErasureTally removed = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, one, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Staged, Token);
+
+            Assert.False(removed.KeyReclaimed);
+
+            CovenantEntryErasureSubject two = await ReadSubjectAsync(connection, transaction, second);
+
+            Assert.True(two.ReclaimsKey);
+
+            CovenantEntryErasureTally reclaimed = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, two, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Staged, Token);
+
+            Assert.True(reclaimed.KeyReclaimed);
+
+            Assert.Null(await CovenantEntryErasurePlan.ReadSubjectAsync(connection, transaction, first, Token));
+        });
+
+        Assert.Equal(0, await CountAsync(harness, $"SELECT count(*) FROM covenant_key_epochs WHERE NormalizedKey = '{Key}';"));
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    /// <summary>
+    /// Every target table at once: two Confirmed versions, one projected into the search index and one
+    /// still pending in the outbox, a Proposed version with a provenance leaf, three receipts, and a pin
+    /// in each lane.
+    /// </summary>
+    private static async Task<Guid> SeedFullEntryAsync(CovenantServiceHarness harness)
+    {
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "First operator text.", Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(harness.Fixture, Token);
+
+        await harness.CorrectAsync(CovenantScope.Campaign, CampaignOne, Key, "Second operator text.", Token);
+
+        await ProposeAsync(
+            harness,
+            CampaignOne,
+            Key,
+            "Agent text.",
+            [
+                new CovenantMutationProvenanceLeaf(
+                    0,
+                    new Guid("aaaaaaaa-1111-4111-8111-111111111111"),
+                    new Guid("bbbbbbbb-1111-4111-8111-111111111111"),
+                    "logical/one",
+                    CovenantOperationGateFixture.Digest(5),
+                    CovenantMaterializationSourceRange.WholeSource,
+                    null,
+                    null,
+                    null,
+                    null),
+            ]);
+
+        await CurateAsync(harness, CovenantCurationKind.Pin, CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed);
+
+        await CurateAsync(harness, CovenantCurationKind.Pin, CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed);
+
+        Assert.True(await CountAsync(harness, "SELECT count(*) FROM covenant_search_outbox;") > 0);
+
+        return await EntryIdAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
+    }
+
+    private static async Task<CovenantServiceHarness> StartAsync() =>
+        await CovenantServiceHarness.StartAsync(Token, withAccelerator: true);
+
+    /// <summary>One agent proposal for the key, published through the kernel the turn commit uses.</summary>
+    private static async Task ProposeAsync(
+        CovenantServiceHarness harness,
+        Guid campaignId,
+        string key,
+        string content,
+        ImmutableArray<CovenantMutationProvenanceLeaf>? provenance = null)
+    {
+        long keyEpoch = await CountAsync(
+            harness,
+            $"SELECT COALESCE(MAX(KeyEpoch), 0) FROM covenant_key_epochs WHERE NormalizedKey = '{key}';");
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await CovenantMutationFixture.ApplyAsync(
+            harness.Fixture,
+            await CovenantMutationFixture.LiveBatchAsync(
+                harness.Fixture,
+                Token,
+                CovenantMutationFixture.AgentPropose(campaignId, key, content, 0, keyEpoch, provenance: provenance)),
+            Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+    }
+
+    private static async Task CurateAsync(
+        CovenantServiceHarness harness,
+        CovenantCurationKind kind,
+        CovenantScope scope,
+        Guid? campaignId,
+        CovenantLane lane)
+    {
+        Result<CovenantCurationResultDto> curated = await harness.CurateAsync(kind, scope, campaignId, Key, Token, lane: lane);
+
+        Assert.True(curated.IsSuccess, curated.IsFailure ? curated.Error.Message : string.Empty);
+    }
+
+    /// <summary>
+    /// Runs one erase step in the caller-owned immediate transaction, under the authorization its mode
+    /// runs under in production, and commits it.
+    /// </summary>
+    private static async Task InTransactionAsync(
+        CovenantServiceHarness harness,
+        CovenantEntryErasureMode mode,
+        Func<SqliteConnection, SqliteTransaction, Task> work)
+    {
+        SqliteConnection connection = harness.Fixture.Connection;
+
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+        using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
+            connection,
+            mode is CovenantEntryErasureMode.Live
+                ? CovenantSqliteAuthorizationKind.CovenantEntryErasure
+                : CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance);
+
+        await work(connection, transaction);
+
+        await transaction.CommitAsync(Token);
+    }
+
+    private static async Task<CovenantEntryErasureSubject> ReadSubjectAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid entryId)
+    {
+        CovenantEntryErasureSubject? subject = await CovenantEntryErasurePlan.ReadSubjectAsync(connection, transaction, entryId, Token);
+
+        Assert.NotNull(subject);
+
+        return subject!;
+    }
+
+    private static long Rows(CovenantEntryErasureTally tally, string table) =>
+        tally.Targets.Single(target => target.Table == table).Rows;
+
+    private static async Task<Guid> EntryIdAsync(CovenantServiceHarness harness, CovenantScope scope, Guid? campaignId, string key)
+    {
+        await using SqliteCommand command = harness.Fixture.Connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT EntryId FROM covenant_entries
+            WHERE ScopeCode = $scope AND CampaignId IS $campaign AND NormalizedKey = $key;
+            """;
+
+        _ = command.Parameters.AddWithValue("$scope", (int)scope);
+
+        _ = command.Parameters.AddWithValue("$campaign", campaignId is { } campaign ? campaign.ToString("D") : DBNull.Value);
+
+        _ = command.Parameters.AddWithValue("$key", key);
+
+        return Guid.Parse((string)(await command.ExecuteScalarAsync(Token))!, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<long[]> RowIdsAsync(CovenantServiceHarness harness, Guid entryId)
+    {
+        await using SqliteCommand command = harness.Fixture.Connection.CreateCommand();
+
+        command.CommandText = "SELECT SearchRowId FROM covenant_heads WHERE lower(replace(EntryId, '-', '')) = $entry ORDER BY SearchRowId;";
+
+        _ = command.Parameters.AddWithValue("$entry", entryId.ToString("N"));
+
+        List<long> rows = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(Token);
+
+        while (await reader.ReadAsync(Token))
+        {
+            rows.Add(reader.GetInt64(0));
+        }
+
+        return [.. rows];
+    }
+
+    private static Task<long> CountAsync(CovenantServiceHarness harness, string sql) =>
+        ScalarAsync(harness.Fixture.Connection, sql);
+
+    private static async Task<long> ScalarAsync(SqliteConnection connection, string sql) =>
+        Convert.ToInt64(await ScalarObjectAsync(connection, sql), CultureInfo.InvariantCulture);
+
+    private static async Task<object?> ScalarObjectAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return await command.ExecuteScalarAsync(Token);
+    }
+
+    private static async Task ExecuteAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(Token);
+    }
+
+    private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
+    {
+        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 1536, Token);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.CovenantCanonical.Health);
+
+        Assert.Equal(version, result.CovenantCanonical.SchemaVersion);
+    }
+
+    /// <summary>A Global Confirmed NoChange receipt as version 5 wrote one: no entry column at all.</summary>
+    private static string LegacyNoChangeReceiptSql(string mutationId, string committedAtUtc) =>
+        $"""
+        INSERT INTO covenant_mutation_receipts (
+            MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
+            ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
+            ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc)
+        VALUES (
+            '{mutationId}', randomblob(32), randomblob(32), randomblob(32), 1,
+            1, NULL, randomblob(32), 1, 2, NULL,
+            NULL, randomblob(32), NULL, '{committedAtUtc}');
+        """;
+
+    /// <summary>Commits one Global operator set through the kernel against the evolved catalog's epochs.</summary>
+    private static async Task ApplyOperatorSetAsync(SqliteConnection connection, string key, string authored)
+    {
+        CovenantMutationBatch batch = new(
+            new Guid((byte[])(await ScalarObjectAsync(connection, "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;"))!),
+            await ScalarAsync(connection, "SELECT KeyReclamationEpoch FROM covenant_state WHERE StateKey = 1;"),
+            await ScalarAsync(connection, "SELECT RegistryEpoch FROM campaign_registry_state WHERE StateKey = 1;"),
+            CovenantMutationFixture.CommitTime,
+            [CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, key, authored, 0, 0)]);
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, Token);
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> applied =
+            await new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated())
+                .ApplyBatchAsync(batch, new CovenantMutationTransaction(connection, transaction), CovenantAgentErasureGate.None, Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        await transaction.CommitAsync(Token);
+    }
+}
