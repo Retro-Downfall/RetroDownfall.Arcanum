@@ -347,6 +347,7 @@ R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerEvent.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerInfo.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerState.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerTransport.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureAdministration.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureKeyProvider.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureRelease.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureServices.cs
@@ -1607,6 +1608,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/SdkMcpClientWrapper.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/SessionAttachmentAmbientSend.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/TrustedMcpWorkspaceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/TrustedStructuredToolResult.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureAdministration.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureExposure.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureProtocol.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs

@@ -19,8 +19,8 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 namespace RetroDownfall.Arcanum.Api.Tower;
 
 /// <summary>
-/// The selective-erasure routes: per-store prepare and apply, and per-store release, each an
-/// authenticated static POST with a typed body under exactly one operator authority.
+/// The selective-erasure routes: per-store prepare and apply, per-store release, and the
+/// installation-wide status, scrub and key reset, each an authenticated static route.
 /// </summary>
 /// <remarks>
 /// <para>Every route declares its authority as metadata, so the pre-binding middleware issues the
@@ -38,6 +38,14 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// its store: release is the unsafe direction, because it lets extraction and agents write an erased
 /// identity again. A release takes no mutation id and is naturally idempotent. Its handler refuses a
 /// missing body or member as an invalid body, and the release port validates the rest.</para>
+///
+/// <para>The status read is the one GET and the one route without operator authority: it returns only
+/// a key state and counts, so authentication is enough, and its handler marks the response protected
+/// itself. The scrub, the key-reset preview and the key reset are POSTs under
+/// <see cref="CovenantAuthorityRequirement.LifecycleManage"/>, refused on a host-tools-tainted
+/// installation like every other route here: a reset discards evidence and may write the key, and a
+/// scrub rewrites receipts. The scrub and the preview take no body; the reset takes the preview's
+/// token.</para>
 /// </remarks>
 internal static class MemoryErasureEndpoints
 {
@@ -81,7 +89,85 @@ internal static class MemoryErasureEndpoints
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
             .WithName("ReleaseCovenantErasure");
 
+        api.MapGet("/memory/erasure", HandleStatusAsync)
+            .WithName("GetMemoryErasureStatus");
+
+        api.MapPost("/memory/erasure/scrub", HandleScrubAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("ScrubMemoryErasures");
+
+        api.MapPost("/memory/erasure/reset-key/prepare", HandlePrepareKeyResetAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("PrepareMemoryErasureKeyReset");
+
+        api.MapPost("/memory/erasure/reset-key", HandleResetKeyAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("ResetMemoryErasureKey");
+
         return api;
+    }
+
+    /// <summary>The key's state and content-free counts. Authentication only; the response is protected.</summary>
+    private static async Task<IResult> HandleStatusAsync(IMemoryErasureAdministration administration, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        return Respond(
+            context,
+            await administration.GetStatusAsync(context.RequestAborted).ConfigureAwait(false),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureStatusDto);
+    }
+
+    private static async Task<IResult> HandleScrubAsync(IMemoryErasureAdministration administration, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        return Respond(
+            context,
+            await administration.ScrubAsync(context.RequestAborted).ConfigureAwait(false),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureScrubResultDto);
+    }
+
+    private static async Task<IResult> HandlePrepareKeyResetAsync(IMemoryErasureAdministration administration, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        return Respond(
+            context,
+            await administration.PrepareKeyResetAsync(context.RequestAborted).ConfigureAwait(false),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetPreflightDto);
+    }
+
+    private static async Task<IResult> HandleResetKeyAsync(IMemoryErasureAdministration administration, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        JsonTypeInfo<ApiResponse<MemoryErasureKeyResetResultDto>> typeInfo =
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetResultDto;
+
+        (MemoryErasureKeyResetRequest? request, IResult? error) = await ReadBodyAsync(
+            context,
+            ArcanumJsonContext.Default.MemoryErasureKeyResetRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (string.IsNullOrWhiteSpace(request?.PreflightToken))
+        {
+            return Respond(
+                context,
+                Result<MemoryErasureKeyResetResultDto>.Failure(new Error(
+                    ErrorCodes.Validation.InvalidBody,
+                    "A key reset names the preflightToken its prepare issued.")),
+                typeInfo);
+        }
+
+        return Respond(
+            context,
+            await administration.ResetKeyAsync(request, context.RequestAborted).ConfigureAwait(false),
+            typeInfo);
     }
 
     private static async Task<IResult> HandleSagaErasePrepareAsync(ISagaMemoryErasureService saga, HttpContext context)

@@ -187,6 +187,45 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
         }
     }
 
+    /// <summary>
+    /// Asks the credential store only whether the key's item exists, reading no secret.
+    /// </summary>
+    /// <remarks>
+    /// The erasure status uses this when no evidence exists, so an installation that has never erased
+    /// anything is reported without the key's bytes ever being asked for, which on macOS is the difference
+    /// between a silent answer and a prompt. It runs under the keyring's lock, like every other credential
+    /// call, and never changes the latch: whether an item exists says nothing about whether it holds a
+    /// key, so only a read may publish.
+    /// </remarks>
+    /// <returns>
+    /// The store's answer; <see cref="OsCredentialStoreStatus.Unavailable"/> when the probe faults or the
+    /// keyring is disposed; null when the store has no metadata-only probe.
+    /// </returns>
+    internal OsCredentialStoreStatus? ProbePresence()
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return OsCredentialStoreStatus.Unavailable;
+            }
+
+            if (_credentials is not IOsCredentialPresenceProbe presence)
+            {
+                return null;
+            }
+
+            try
+            {
+                return presence.ProbePresence(ArcanumCredentialIdentity.Service, Account);
+            }
+            catch (Exception exception) when (IsStoreFault(exception))
+            {
+                return OsCredentialStoreStatus.Unavailable;
+            }
+        }
+    }
+
     /// <summary>Zeroes the cached key. Every later call reads as Unavailable and performs no I/O.</summary>
     public void Dispose()
     {

@@ -285,6 +285,9 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
 
         Assert.Equal(1L, counts.UnverifiableReceipts);
 
+        // The unverifiable receipts are split by store too, in the order of the store counts.
+        Assert.Equal<long>([0, 0, 1], counts.UnverifiableStoreReceipts);
+
         Assert.Equal(2L, counts.PendingScrubReceipts);
 
         // With no key, nothing can be verified.
@@ -295,6 +298,8 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
         Assert.Equal(1L, keyless.Stores[2].Unverifiable);
 
         Assert.Equal(2L, keyless.UnverifiableReceipts);
+
+        Assert.Equal<long>([0, 1, 1], keyless.UnverifiableStoreReceipts);
 
         Assert.Equal((2L, 1L), await MemoryErasureEvidence.DeleteUnverifiableAsync(Connection, null, currentKeyId, Token));
 
@@ -313,6 +318,56 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
         Assert.Equal(new MemoryErasureStoreCountsDto(MemoryReviewStore.Lexicon, 0, 0, 0), after.Stores[2]);
 
         Assert.Equal(0L, after.UnverifiableReceipts);
+
+        Assert.Equal<long>([0, 0, 0], after.UnverifiableStoreReceipts);
+    }
+
+    /// <summary>
+    /// The scrub's snapshot: every receipt still pending on the write-ahead log, by mutation id, and
+    /// nothing once the reason is cleared or on a catalog that cannot hold evidence.
+    /// </summary>
+    [SkippableFact]
+    public async Task Wal_pending_ids_are_read_in_order_and_only_while_the_wal_bit_is_set()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        Guid verified = Guid.Parse("0A000000-0000-4000-8000-000000000003");
+
+        Guid first = Guid.Parse("1A000000-0000-4000-8000-000000000001");
+
+        Guid second = Guid.Parse("2A000000-0000-4000-8000-000000000002");
+
+        // Written out of order, so the order read back is the store's and not the insertion's.
+        await InsertPendingReceiptAsync(key, second, MemoryReviewStore.Lexicon, key.KeyId.ToArray(), mask: 1 | 2);
+
+        await InsertPendingReceiptAsync(key, verified, MemoryReviewStore.Saga, key.KeyId.ToArray(), mask: 1);
+
+        await InsertPendingReceiptAsync(key, first, MemoryReviewStore.Saga, key.KeyId.ToArray(), mask: 1);
+
+        Assert.Equal(1L, await MemoryErasureEvidence.ClearWalPendingAsync(Connection, null, verified, Token));
+
+        Assert.Equal<Guid>([first, second], await MemoryErasureEvidence.ReadWalPendingAsync(Connection, null, Token));
+
+        await ExecuteAsync(
+            Connection,
+            "UPDATE grimoire_feature_schemas SET SchemaVersion = 12 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+
+        Assert.Empty(await MemoryErasureEvidence.ReadWalPendingAsync(Connection, null, Token));
+
+        await ExecuteAsync(
+            Connection,
+            "UPDATE grimoire_feature_schemas SET SchemaVersion = 13 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+
+        Assert.Equal<Guid>([first, second], await MemoryErasureEvidence.ReadWalPendingAsync(Connection, null, Token));
+
+        Assert.Equal(1L, await MemoryErasureEvidence.ClearWalPendingAsync(Connection, null, null, Token));
+
+        Assert.Empty(await MemoryErasureEvidence.ReadWalPendingAsync(Connection, null, Token));
+
+        // The second receipt is still pending, for a reason the log never clears.
+        Assert.Equal((1, 2), await ScrubAsync(second));
     }
 
     /// <summary>
@@ -460,8 +515,12 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
 
                 Assert.Equal(0L, counts.UnverifiableReceipts);
 
+                Assert.Equal<long>([0, 0, 0], counts.UnverifiableStoreReceipts);
+
                 Assert.Equal(0L, counts.PendingScrubReceipts);
             }
+
+            Assert.Empty(await MemoryErasureEvidence.ReadWalPendingAsync(connection, null, Token));
 
             Assert.Equal(0L, await MemoryErasureEvidence.ClearWalPendingAsync(connection, null, mutationId, Token));
 

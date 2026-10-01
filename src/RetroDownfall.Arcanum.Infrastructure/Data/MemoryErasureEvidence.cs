@@ -35,10 +35,14 @@ internal sealed record MemoryErasureReceiptRow(
 /// <param name="Stores">Always three entries, in store-code order: Covenant, Saga, Lexicon.</param>
 /// <param name="UnverifiableReceipts">Receipts recorded under a key other than the current one.</param>
 /// <param name="PendingScrubReceipts">Receipts whose scrub is still pending, whatever key wrote them.</param>
+/// <param name="UnverifiableStoreReceipts">
+/// <see cref="UnverifiableReceipts"/> split by store: three entries, aligned with <see cref="Stores"/>.
+/// </param>
 internal sealed record MemoryErasureEvidenceCounts(
     IReadOnlyList<MemoryErasureStoreCountsDto> Stores,
     long UnverifiableReceipts,
-    long PendingScrubReceipts);
+    long PendingScrubReceipts,
+    IReadOnlyList<long> UnverifiableStoreReceipts);
 
 /// <summary>
 /// The only reader and writer of the erasure evidence tables: fingerprints, receipts, and receipt
@@ -518,7 +522,7 @@ internal static class MemoryErasureEvidence
 
         Dictionary<MemoryReviewStore, (long Fingerprints, long Unverifiable)> fingerprints = [];
 
-        Dictionary<MemoryReviewStore, long> receipts = [];
+        Dictionary<MemoryReviewStore, (long Receipts, long Unverifiable)> receipts = [];
 
         long unverifiableReceipts = 0;
 
@@ -566,7 +570,7 @@ internal static class MemoryErasureEvidence
 
             while (await receiptReader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                receipts[(MemoryReviewStore)receiptReader.GetInt32(0)] = receiptReader.GetInt64(1);
+                receipts[(MemoryReviewStore)receiptReader.GetInt32(0)] = (receiptReader.GetInt64(1), receiptReader.GetInt64(2));
 
                 unverifiableReceipts += receiptReader.GetInt64(2);
 
@@ -580,11 +584,51 @@ internal static class MemoryErasureEvidence
             {
                 (long total, long unverifiable) = fingerprints.GetValueOrDefault(store);
 
-                return new MemoryErasureStoreCountsDto(store, total, unverifiable, receipts.GetValueOrDefault(store));
+                return new MemoryErasureStoreCountsDto(store, total, unverifiable, receipts.GetValueOrDefault(store).Receipts);
             }),
         ];
 
-        return new MemoryErasureEvidenceCounts(stores, unverifiableReceipts, pendingReceipts);
+        long[] unverifiableStoreReceipts = [.. Stores.Select(store => receipts.GetValueOrDefault(store).Unverifiable)];
+
+        return new MemoryErasureEvidenceCounts(stores, unverifiableReceipts, pendingReceipts, unverifiableStoreReceipts);
+    }
+
+    /// <summary>
+    /// The receipts still pending on the write-ahead log, by mutation id: the snapshot a scrub takes
+    /// before it checkpoints, so it clears only what the checkpoint can have covered.
+    /// </summary>
+    /// <returns>The mutation ids in their stored order, or none when the catalog cannot hold evidence.</returns>
+    internal static async Task<IReadOnlyList<Guid>> ReadWalPendingAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+
+        await using SqliteCommand command = Command(
+            connection,
+            transaction,
+            """
+            SELECT MutationId
+            FROM memory_erasure_receipts
+            WHERE ScrubStateCode = 1
+              AND (ScrubPendingReasonMask & 1) = 1
+            ORDER BY MutationId;
+            """);
+
+        List<Guid> pending = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            pending.Add(Guid.ParseExact(reader.GetString(0), "D"));
+        }
+
+        return pending;
     }
 
     /// <summary>

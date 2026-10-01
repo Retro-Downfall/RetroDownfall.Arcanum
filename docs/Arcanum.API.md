@@ -128,6 +128,10 @@ The established §8 contract numbers are retained in this extracted reference so
 | POST | `/api/memory/covenant/erase/prepare` | Measures the selective erasure of one whole Covenant entry against the entry id and lane heads `detail` reported, and issues a five-minute preflight token (`CovenantErasePrepareRequest` → `ApiResponse<MemoryErasurePreflightDto>`; `LifecycleManage`; §8.35). |
 | POST | `/api/memory/covenant/erase` | Drains the entry's Covenant scope and applies that erasure in one verified transaction, or replays it from its receipt (`CovenantEraseRequest` → `ApiResponse<MemoryErasureResultDto>`; `LifecycleManage`; §8.35). |
 | POST | `/api/memory/covenant/release` | Releases the erasure fingerprint of one well-formed Covenant key in one exact scope, so agents may author it there again; never creates the erasure key and takes no `mutationId` (`CovenantErasureReleaseRequest` → `ApiResponse<MemoryErasureReleaseResultDto>`; `LifecycleManage`; §8.35). |
+| GET | `/api/memory/erasure` | The installation's erasure status: the erasure key's state (`Absent`, `Present`, `Unavailable` or `Lost`), each store's fingerprint, unverifiable and receipt counts, and the receipts still pending a scrub; authentication only, with no operator authority, and reads no secret when no evidence exists (`ApiResponse<MemoryErasureStatusDto>`; §8.35). |
+| POST | `/api/memory/erasure/scrub` | Retries the write-ahead-log checkpoint for the receipts still pending on it, and moves those whose only reason was the log to `Verified`; no body (`ApiResponse<MemoryErasureScrubResultDto>`; `LifecycleManage`; §8.35). |
+| POST | `/api/memory/erasure/reset-key/prepare` | Measures the erasure key's state and each store's unverifiable fingerprints and receipts, and issues a five-minute key-reset token; no body (`ApiResponse<MemoryErasureKeyResetPreflightDto>`; `LifecycleManage`; §8.35). |
+| POST | `/api/memory/erasure/reset-key` | Applies that token: keeps a present key or creates one when it is proven absent, then discards only the evidence the key cannot verify; naturally idempotent and takes no `mutationId` (`MemoryErasureKeyResetRequest` → `ApiResponse<MemoryErasureKeyResetResultDto>`; `LifecycleManage`; §8.35). |
 | GET | `/api/spells` | Compatibility list is still `ApiResponse<SpellSummary[]>`; `paged=true` selects the bounded `ApiResponse<SpellCatalogPage>` contract with `workspace`, `q`, `tag`, `tool`, `source`, and opaque `cursor` (§8.14). |
 | GET | `/api/spells/{name}` | Spell detail (`ApiResponse<SpellDetail>`; optional `workspace` query; **404** when missing). |
 | POST | `/api/spells` | Create workspace spell (`ApiResponse<bool>`; optional `workspace` query; **400** validation). |
@@ -1076,5 +1080,45 @@ The result is `MemoryErasureReleaseResultDto`: `store`, `outcome` (`Released` or
 | **503** | `MemoryErasure.KeyUnavailable` when the key could not be read; `MemoryErasure.Unavailable` until the schema that records erasures is reached; `Covenant.OperatorAuthorityUnavailable` |
 
 Release keeps every receipt, so a later erase of the same identity is a new erasure with a receipt of its own. An operator write that re-creates an erased identity in its own scope, a Covenant `set` or `correct` and a Saga correction, single or by review, releases its fingerprint too, in its own transaction, and reports it (§8.28, §8.30, §8.34); Lexicon has no operator write that can re-create an erased entry.
+
+#### Status, scrub and key reset
+
+| Route | Body | Response |
+|---|---|---|
+| `GET /api/memory/erasure` | none | `MemoryErasureStatusDto` |
+| `POST /api/memory/erasure/scrub` | none | `MemoryErasureScrubResultDto` |
+| `POST /api/memory/erasure/reset-key/prepare` | none | `MemoryErasureKeyResetPreflightDto` |
+| `POST /api/memory/erasure/reset-key` | `MemoryErasureKeyResetRequest`: `preflightToken` | `MemoryErasureKeyResetResultDto` |
+
+These four belong to no one store. The status read declares no operator authority, because it returns only a key state and counts: authentication is enough, and it answers on a host-tools-tainted installation too. The scrub and both halves of the key reset require `LifecycleManage` and are refused on a host-tools-tainted installation with **503** `Covenant.OperatorAuthorityUnavailable`. All four answer with the protected tuple. Below the schema that records erasures there is no evidence: status reports zero counts, and the other three answer **503** `MemoryErasure.Unavailable`.
+
+**Key states.** `keyStatus` is one of four values:
+- `Absent`: no key item exists, and no fingerprint needs one. The first erase creates it.
+- `Present`: the key is readable.
+- `Lost`: fingerprints exist and the key item is gone, so nothing can verify them. Every automatic writer fails closed: Saga extraction defers its page before the model call, and the Lexicon scribe and agent Covenant proposals are refused with `MemoryErasure.KeyLost`. Operator writes still succeed but release nothing.
+- `Unavailable`: the credential store could not answer, or the stored item is not a valid key.
+
+**Counts.** `stores` always lists `Covenant`, `Saga` and `Lexicon`, in that order. Each entry carries `fingerprints`, `receipts`, and `unverifiable`: the fingerprints the current key did not record, which is every fingerprint when the key is lost. A row is unverifiable when a different key recorded it, as happens when a second test home overwrites the shared account. While the key is `Unavailable` nothing can be said about which rows it would verify, so `unverifiable` reads 0, meaning unknown. `pendingScrubReceipts` counts receipts still pending for any reason, whatever key wrote them. An erase is one fingerprint and one receipt, however many Saga twins it removed.
+
+**The presence probe.** With no evidence rows, status only asks the credential store whether the key's item exists. It reads no secret, so it never prompts for keychain access, and it leaves the host's key state as it was. A malformed item therefore reads `Present` here until an erase or a reset opens it. With rows, status reads the key again, as every operator call does, and publishes what it finds, so a transient failure an automatic writer latched clears.
+
+**Scrub.** The scrub first reads which receipts are still pending on the write-ahead log. Only then does it retry the checkpoint once, on a dedicated connection with a quarter-second wait. Only a checkpoint that truncated clears `WalCheckpointPending`, and only on the receipts read before it ran; a receipt whose only reason was the log becomes `Verified`. `FullTextSecureDeleteUnverified` and `VectorIndexScrubUnverified` never clear. A busy or unavailable checkpoint changes nothing; run the scrub again once readers have finished. The result carries `walCheckpointAttempt` (`NotAttempted` when nothing was pending on the log, otherwise `Truncated`, `Busy` or `Unavailable`), `verified` (the receipts this call moved to `Verified`) and `stillPending` (the receipts still pending for any reason).
+
+**Key reset, prepare.** Prepare reads the key again and measures each store's unverifiable fingerprints and receipts. The response carries `keyStatus` (`Present`, `Lost` or `Absent`), `stores` as status reports them, `issuedAtUtc`, `expiresAtUtc`, and a five-minute `preflightToken`. The token binds the key state and all six per-store counts. A key that cannot be read, or an item that is not a valid key, refuses prepare with **503** `MemoryErasure.KeyUnavailable`.
+
+**Key reset, apply.** Apply runs three steps:
+1. **Read the key**, outside any transaction. A key the store cannot read, or a malformed item, is **503** `MemoryErasure.KeyUnavailable`: nothing is discarded and no keychain item is written. A malformed item is never overwritten. The remedy is to remove it with the OS credential tool, then prepare and apply again.
+2. **Settle the key.** A present key is kept. A proven absence creates a new key, which is read back before use, and the result reports `keyCreated: true`. A key is created only for a token prepared without one (`Lost` or `Absent`). A token prepared while a key was present is **409** `MemoryErasure.StalePlan`, and nothing is created.
+3. **Discard**, in one `BEGIN IMMEDIATE`. The evidence the current key cannot verify is measured again. If there is none, the reset succeeds with zero counts, so applying the same token twice is harmless. If any store's counts differ from the token's, the reset is **409** `MemoryErasure.StalePlan`, even when the totals still match. Otherwise every fingerprint and receipt the current key did not record is deleted, and the receipts' subjects go with them.
+
+The result is `MemoryErasureKeyResetResultDto`: `keyStatus` (`Present`), `fingerprintsDiscarded`, `receiptsDiscarded` and `keyCreated`. A reset takes no `mutationId` and writes no receipt.
+
+The key is settled before any row is touched, because the keychain is never read or written inside a transaction. A crash between the two steps leaves a present key and rows it cannot verify: status reports them as unverifiable, the writers stay refused, and a later reset finishes, or the same token does while it lives. The discarded erasures are gone for good: extraction, the scribe and agent proposals may write that content, name or key again. The CLI confirms before it applies.
+
+| Status | Codes |
+|---|---|
+| **400** | `Validation.InvalidBody` for a reset body without a `preflightToken`; `MemoryErasure.InvalidPreflight` for an undecodable, expired, tampered or borrowed token |
+| **409** | `MemoryErasure.StalePlan`: the key's state or a store's unverifiable counts changed after prepare |
+| **503** | `MemoryErasure.KeyUnavailable` when the key cannot be read or the item is malformed; `MemoryErasure.Unavailable` until the schema that records erasures is reached; `Covenant.OperatorAuthorityUnavailable` |
 
 *End of API reference.*

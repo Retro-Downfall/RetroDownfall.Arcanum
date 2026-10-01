@@ -51,7 +51,15 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         ("ReleaseSagaErasure", "POST", "/api/memory/saga/release", CovenantAuthorityRequirement.LifecycleManage),
         ("ReleaseLexiconErasure", "POST", "/api/memory/lexicon/release", CovenantAuthorityRequirement.LifecycleManage),
         ("ReleaseCovenantErasure", "POST", "/api/memory/covenant/release", CovenantAuthorityRequirement.LifecycleManage),
+        ("GetMemoryErasureStatus", "GET", "/api/memory/erasure", null),
+        ("ScrubMemoryErasures", "POST", "/api/memory/erasure/scrub", CovenantAuthorityRequirement.LifecycleManage),
+        ("PrepareMemoryErasureKeyReset", "POST", "/api/memory/erasure/reset-key/prepare", CovenantAuthorityRequirement.LifecycleManage),
+        ("ResetMemoryErasureKey", "POST", "/api/memory/erasure/reset-key", CovenantAuthorityRequirement.LifecycleManage),
     ];
+
+    private const string Service = ArcanumCredentialIdentity.Service;
+
+    private const string Account = ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount;
 
     private const string LexiconName = "Mill Warden";
 
@@ -66,6 +74,18 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
     private static readonly Regex ErasurePath = new(
         "^/api/memory/(saga|lexicon|covenant)/(erase|release)",
         RegexOptions.CultureInvariant);
+
+    public static TheoryData<string> AllRoutes()
+    {
+        TheoryData<string> rows = [];
+
+        foreach ((string name, _, _, _) in Routes)
+        {
+            rows.Add(name);
+        }
+
+        return rows;
+    }
 
     public static TheoryData<string> PostRoutes()
     {
@@ -144,22 +164,93 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         Assert.Equal(declared, mapped);
     }
 
+    /// <summary>
+    /// Every erasure route answers with the protected tuple. An erase, release or key-reset apply
+    /// refuses the empty body; the status read, the scrub and the reset preview take no body and
+    /// answer it.
+    /// </summary>
     [SkippableTheory]
-    [MemberData(nameof(PostRoutes))]
-    public async Task Every_erasure_post_answers_with_the_protected_header_tuple(string name)
+    [MemberData(nameof(AllRoutes))]
+    public async Task Every_erasure_route_answers_with_the_protected_header_tuple(string name)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
-        using HttpResponseMessage response = await client.PostAsync(PathOf(name), EmptyBody());
+        (_, string method, string path, _) = Routes.Single(route => string.Equals(route.Name, name, StringComparison.Ordinal));
 
-        // Any 400 code: a store may answer its own validation code for an empty body.
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using HttpRequestMessage request = new(new HttpMethod(method), path);
 
-        Assert.NotEmpty(await MemoryErasureRouteDriver.ReadErrorCodeAsync(response));
+        if (method == "POST")
+        {
+            request.Content = EmptyBody();
+        }
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        if (name is "GetMemoryErasureStatus" or "ScrubMemoryErasures" or "PrepareMemoryErasureKeyReset")
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+        else if (name is "ResetMemoryErasureKey")
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            Assert.Equal(ErrorCodes.Validation.InvalidBody, await MemoryErasureRouteDriver.ReadErrorCodeAsync(response));
+        }
+        else
+        {
+            // Any 400 code: a store may answer its own validation code for an empty body.
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            Assert.NotEmpty(await MemoryErasureRouteDriver.ReadErrorCodeAsync(response));
+        }
 
         AssertProtectedTuple(response);
+    }
+
+    /// <summary>
+    /// The status read returns only counts and states, so it declares no operator authority and is
+    /// answered on a host-tools-tainted installation too; it still requires the API key.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_status_route_is_a_GET_with_no_operator_authority_that_still_requires_authentication()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RouteEndpoint endpoint = Assert.Single(
+            Endpoints(),
+            static candidate => string.Equals(
+                candidate.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName,
+                "GetMemoryErasureStatus",
+                StringComparison.Ordinal));
+
+        Assert.Equal("/api/memory/erasure", endpoint.RoutePattern.RawText);
+
+        Assert.Equal(["GET"], endpoint.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods);
+
+        Assert.Empty(endpoint.Metadata.GetOrderedMetadata<CovenantAuthorityRequirementMetadata>());
+
+        Assert.Null(endpoint.Metadata.GetMetadata<CovenantConditionalReadRequirementMetadata>());
+
+        using (HttpResponseMessage anonymous = await factory.CreateClient().GetAsync("/api/memory/erasure"))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        }
+
+        using HttpResponseMessage authenticated = await factory.CreateAuthenticatedClient().GetAsync("/api/memory/erasure");
+
+        Assert.Equal(HttpStatusCode.OK, authenticated.StatusCode);
+
+        AssertProtectedTuple(authenticated);
+
+        MemoryErasureStatusDto status = await MemoryErasureRouteDriver.ReadDataAsync(
+            authenticated,
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureStatusDto);
+
+        Assert.Equal(
+            [MemoryReviewStore.Covenant, MemoryReviewStore.Saga, MemoryReviewStore.Lexicon],
+            status.Stores.Select(static store => store.Store));
     }
 
     [SkippableTheory]
@@ -205,9 +296,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         // A genuine body, built while the installation is clean: a refusal of {} could never have
         // changed anything, so it would prove nothing about this one. A release body names a
         // fingerprint an actual erase recorded, so it has something to remove.
-        (string body, Guid mutationId) = await GenuineBodyAsync(name, client, driver, memoryId, host);
+        (string? body, Guid mutationId) = await GenuineBodyAsync(name, client, driver, memoryId, host);
 
         long[] fingerprints = await FingerprintsAsync(host);
+
+        bool keyBefore = credentials.ProbePresence(Service, Account) is OsCredentialStoreStatus.Ok;
 
         taint.Tainted = true;
 
@@ -243,10 +336,20 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
 
         Assert.Equal(fingerprints, await FingerprintsAsync(host));
 
+        // A refused reset wrote no key: on this installation no erase has created one yet.
+        Assert.Equal(keyBefore, credentials.ProbePresence(Service, Account) is OsCredentialStoreStatus.Ok);
+
         // The same body on the clean installation is accepted, so the refusal above is what stopped it.
         using (HttpResponseMessage accepted = await client.PostAsync(PathOf(name), Json(body)))
         {
             Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        }
+
+        if (name == "ResetMemoryErasureKey")
+        {
+            Assert.False(keyBefore);
+
+            Assert.Equal(OsCredentialStoreStatus.Ok, credentials.ProbePresence(Service, Account));
         }
 
         if (ReleasedStore(name) is { } released)
@@ -324,7 +427,7 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
     /// A body each erasure POST would act on: the exact target its store's show reports, and for an
     /// apply the token its prepare issued. A route added to <see cref="Routes"/> adds its body here.
     /// </summary>
-    private static async Task<(string Body, Guid MutationId)> GenuineBodyAsync(
+    private static async Task<(string? Body, Guid MutationId)> GenuineBodyAsync(
         string name,
         HttpClient client,
         MemoryErasureRouteDriver driver,
@@ -334,6 +437,27 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         if (ReleasedStore(name) is { } store)
         {
             return (await GenuineReleaseBodyAsync(store, driver, host), Guid.NewGuid());
+        }
+
+        // The scrub and the reset preview take no body, so the genuine request is the bodiless one.
+        if (name is "ScrubMemoryErasures" or "PrepareMemoryErasureKeyReset")
+        {
+            return (null, Guid.NewGuid());
+        }
+
+        if (name == "ResetMemoryErasureKey")
+        {
+            using HttpResponseMessage prepared = await client.PostAsync(PathOf("PrepareMemoryErasureKeyReset"), content: null);
+
+            MemoryErasureKeyResetPreflightDto preflight = await MemoryErasureRouteDriver.ReadDataAsync(
+                prepared,
+                ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetPreflightDto);
+
+            return (
+                JsonSerializer.Serialize(
+                    new MemoryErasureKeyResetRequest(preflight.PreflightToken),
+                    ArcanumJsonContext.Default.MemoryErasureKeyResetRequest),
+                Guid.NewGuid());
         }
 
         if (name is "PrepareLexiconEntryErasure" or "EraseLexiconEntry")
@@ -547,7 +671,7 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
             new LexiconShowRequest(LexiconName, new LexiconCurationScope(LexiconScopeKind.Global, null)),
             ArcanumJsonContext.Default.LexiconShowRequest);
 
-    private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
+    private static StringContent? Json(string? body) => body is null ? null : new(body, Encoding.UTF8, "application/json");
 
     private static async Task<SqliteConnection> OpenAsync(IServiceScope scope)
     {

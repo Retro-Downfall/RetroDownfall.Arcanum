@@ -787,6 +787,68 @@ public sealed class MemoryErasureKeyringTests
         Assert.Equal(0, store.Calls);
     }
 
+    /// <summary>
+    /// The presence probe asks only whether the item exists: it reads no secret, never resolves or
+    /// changes the latch, answers null for a store that cannot probe, and fails closed.
+    /// </summary>
+    [Fact]
+    public void Presence_probe_reads_no_secret_and_leaves_the_latch_alone()
+    {
+        InMemoryOsCredentialStore inner = new();
+
+        CountingCredentialStore store = new(inner);
+
+        using (MemoryErasureKeyring absent = new(store))
+        {
+            Assert.Equal(OsCredentialStoreStatus.NotFound, absent.ProbePresence());
+
+            Assert.Equal(MemoryErasureKeyState.Unresolved, absent.Latch.State);
+        }
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, inner.Set(Service, Account, Base64Url.EncodeToString(FixedKey)).Status);
+
+        using (MemoryErasureKeyring present = new(store))
+        {
+            Assert.Equal(OsCredentialStoreStatus.Ok, present.ProbePresence());
+
+            Assert.Equal(MemoryErasureKeyState.Unresolved, present.Latch.State);
+
+            Assert.Null(present.TryCopyLatched());
+        }
+
+        Assert.Equal(0, store.TryGetCount);
+
+        Assert.Equal(0, store.SetCount);
+
+        Assert.Equal(2, store.ProbeCount);
+
+        ScriptedCredentialStore scripted = new();
+
+        using (MemoryErasureKeyring withoutProbe = new(scripted))
+        {
+            Assert.Null(withoutProbe.ProbePresence());
+
+            Assert.Equal(MemoryErasureKeyState.Unresolved, withoutProbe.Latch.State);
+        }
+
+        Assert.Equal(0, scripted.TryGetCount);
+
+        using (MemoryErasureKeyring throwing = new(new ThrowingProbeCredentialStore()))
+        {
+            Assert.Equal(OsCredentialStoreStatus.Unavailable, throwing.ProbePresence());
+
+            Assert.Equal(MemoryErasureKeyState.Unresolved, throwing.Latch.State);
+        }
+
+        MemoryErasureKeyring disposed = new(store);
+
+        disposed.Dispose();
+
+        Assert.Equal(OsCredentialStoreStatus.Unavailable, disposed.ProbePresence());
+
+        Assert.Equal(2, store.ProbeCount);
+    }
+
     /// <summary>The key id computed from the labelled HMAC directly, independent of the grammar.</summary>
     private static byte[] IndependentKeyId(byte[] key) =>
         HMACSHA256.HashData(key, "Arcanum.MemoryErasure.KeyId.v1\0"u8)[..16];
@@ -805,8 +867,10 @@ public sealed class MemoryErasureKeyringTests
     /// </summary>
     private sealed class CountingCredentialStore(
         InMemoryOsCredentialStore inner,
-        TimeSpan readDelay = default) : IOsCredentialStore
+        TimeSpan readDelay = default) : IOsCredentialStore, IOsCredentialPresenceProbe
     {
+        private int _probeCount;
+
         private int _tryGetCount;
 
         private int _setCount;
@@ -825,7 +889,16 @@ public sealed class MemoryErasureKeyringTests
 
         public int MaxConcurrentCalls => Volatile.Read(ref _maxConcurrentCalls);
 
+        public int ProbeCount => Volatile.Read(ref _probeCount);
+
         public bool IsAvailable => true;
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account)
+        {
+            _ = Interlocked.Increment(ref _probeCount);
+
+            return inner.ProbePresence(service, account);
+        }
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
@@ -988,6 +1061,28 @@ public sealed class MemoryErasureKeyringTests
             Assert.Equal(Service, service);
 
             Assert.Equal(Account, account);
+        }
+    }
+
+    /// <summary>A store whose presence probe throws, and whose every other member fails the test.</summary>
+    private sealed class ThrowingProbeCredentialStore : IOsCredentialStore, IOsCredentialPresenceProbe
+    {
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreStatus ProbePresence(string service, string account) =>
+            throw new IOException("test probe failure");
+
+        public OsCredentialStoreResult TryGet(string service, string account) => Forbidden();
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) => Forbidden();
+
+        public OsCredentialStoreResult Delete(string service, string account) => Forbidden();
+
+        private static OsCredentialStoreResult Forbidden()
+        {
+            Assert.Fail("The presence probe must not read, write or delete the secret.");
+
+            return OsCredentialStoreResult.NotFound();
         }
     }
 

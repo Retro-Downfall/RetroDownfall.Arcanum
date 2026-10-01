@@ -1420,6 +1420,11 @@ public static class ServiceCollectionExtensions
         // never creates it, on the same DbContext connection the write chokepoints use.
         services.AddScoped<IMemoryErasureRelease, MemoryErasureRelease>();
 
+        // Host only, beside release: status, the scrub retry and key reset, on the same DbContext
+        // connection. Key reset reaches the keyring as itself, because it is the one surface besides
+        // erase prepare that may create the key, and status asks the keyring's metadata-only probe.
+        services.AddScoped<IMemoryErasureAdministration, MemoryErasureAdministration>();
+
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
         services.AddScoped<LexiconService>();

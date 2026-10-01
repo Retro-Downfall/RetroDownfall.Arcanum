@@ -33,12 +33,14 @@ public sealed class MemoryErasureEvidenceDeleterTests
     private const string Owner = "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs";
 
     /// <summary>
-    /// Closed. Release and every operator re-creation delete through the one fingerprint-release file;
-    /// reset-key and restore staging add themselves when they exist. Nothing else.
+    /// Closed. Release and every operator re-creation delete through the one fingerprint-release file,
+    /// and reset-key is the one caller of the unverifiable-row delete; restore staging adds itself when
+    /// it exists. Nothing else.
     /// </summary>
     internal static readonly string[] AllowedCallers =
     [
         "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs",
+        "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureAdministration.cs",
     ];
 
     /// <summary>
@@ -65,6 +67,16 @@ public sealed class MemoryErasureEvidenceDeleterTests
         "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs::CorrectAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs::ReleaseCoreAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs::ApplyDecisionAsync",
+    ];
+
+    /// <summary>
+    /// The members of the fingerprint-release helper that delete nothing, and so may be read from any
+    /// path. Closed: every other member, the three lifting members and any member added later, is a
+    /// deleter whose callers must be listed above until it is classified here.
+    /// </summary>
+    private static readonly string[] NonDeletingFingerprintReleaseMembers =
+    [
+        "OperatorMayRelease",
     ];
 
     /// <summary>
@@ -180,7 +192,11 @@ public sealed class MemoryErasureEvidenceDeleterTests
         Assert.Equal(AllowedFingerprintReleaseCallers.Order(StringComparer.Ordinal), callers);
     }
 
-    /// <summary>The caller scan reads the member a call sits in, through lambdas, and qualified names too.</summary>
+    /// <summary>
+    /// The caller scan reads the member a call sits in, through lambdas, and qualified names too, and it
+    /// reads every member of the helper but the one that deletes nothing: a member added to the helper
+    /// later is a caller to list, whatever it is named.
+    /// </summary>
     [Fact]
     public void The_fingerprint_release_caller_scan_names_the_enclosing_member()
     {
@@ -197,10 +213,43 @@ public sealed class MemoryErasureEvidenceDeleterTests
                     RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureFingerprintRelease.WouldReleaseAsync(null!, null, default, null, null, default);
 
                 internal bool Permitted() => MemoryErasureFingerprintRelease.OperatorMayRelease(null);
+
+                internal Task<int> ExtractAsync() =>
+                    MemoryErasureFingerprintRelease.LiftAsync(null!, null, null!, default);
             }
             """;
 
-        Assert.Equal(["InsertCoreAsync", "Probe"], FingerprintReleaseCallers(source).Order(StringComparer.Ordinal));
+        Assert.Equal(
+            ["ExtractAsync", "InsertCoreAsync", "Probe"],
+            FingerprintReleaseCallers(source).Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Every non-private member the helper declares is either a deleter whose callers the allow-list
+    /// closes, or classified as deleting nothing. A new member fails here until it is one or the other.
+    /// </summary>
+    [Fact]
+    public void Every_fingerprint_release_member_is_classified()
+    {
+        string text = File.ReadAllText(Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), FingerprintRelease));
+
+        string[] members =
+        [
+            .. CSharpSyntaxTree.ParseText(text, new CSharpParseOptions(LanguageVersion.Preview))
+                .GetCompilationUnitRoot()
+                .DescendantNodes()
+                .OfType<MethodDeclarationSyntax>()
+                .Where(static method => !method.Modifiers.Any(static modifier => modifier.IsKind(SyntaxKind.PrivateKeyword)))
+                .Select(static method => method.Identifier.ValueText)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(
+            ["DeleteCandidatesAsync", "OperatorMayRelease", "ReleaseForOperatorWriteAsync", "WouldReleaseAsync"],
+            members);
+
+        Assert.All(NonDeletingFingerprintReleaseMembers, member => Assert.Contains(member, members));
     }
 
     /// <summary>
@@ -320,16 +369,15 @@ public sealed class MemoryErasureEvidenceDeleterTests
     }
 
     /// <summary>
-    /// The members whose code names one of the helper's three lifting members through its class,
-    /// comments aside. Its permission predicate deletes nothing and is not one of them.
+    /// The members whose code names any member of the helper through its class, comments aside, but
+    /// the ones classified as deleting nothing.
     /// </summary>
     private static IEnumerable<string> FingerprintReleaseCallers(string source) =>
         CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
             .GetCompilationUnitRoot()
             .DescendantNodes()
             .OfType<MemberAccessExpressionSyntax>()
-            .Where(static access => access.Name.Identifier.ValueText
-                is "DeleteCandidatesAsync" or "WouldReleaseAsync" or "ReleaseForOperatorWriteAsync")
+            .Where(static access => !NonDeletingFingerprintReleaseMembers.Contains(access.Name.Identifier.ValueText, StringComparer.Ordinal))
             .Where(static access => access.Expression switch
             {
                 IdentifierNameSyntax name => name.Identifier.ValueText == "MemoryErasureFingerprintRelease",
