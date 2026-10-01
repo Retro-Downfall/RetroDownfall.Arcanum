@@ -314,6 +314,75 @@ public sealed class MemoryReviewCommandTests
         }
     }
 
+    /// <summary>
+    /// A host refusal of a review apply under <c>--json</c> writes the command's wrapped output,
+    /// <c>{output, exitCode}</c> with the message on stderr, and not the <c>{error, exitCode}</c> envelope
+    /// the erasure verbs write; the Command Reference states this shape, and this pins it there.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_json_review_apply_writes_the_wrapped_output_document()
+    {
+        Guid requestId = Guid.NewGuid();
+
+        MemoryReviewBulkPlanDto plan = new(
+            MemoryReviewStore.Saga,
+            requestId,
+            MemoryReviewAction.Confirm,
+            [new MemoryReviewBulkPlanItemDto(1, "memory-1", "version-1", true, "AgentExtracted", "session-1", "Global")],
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z"),
+            DateTimeOffset.Parse("2026-09-28T12:05:00Z"),
+            "prepared-plan");
+
+        RecordingHandler handler = new(plan)
+        {
+            Refusal = new Error(ErrorCodes.MemoryReview.StaleObservation, "The observed version is no longer current."),
+        };
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(handler));
+
+        services.AddSingleton<ISecretStore>(new FixedSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(services, FixedSecretStore.Key);
+
+        string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            File.WriteAllText(
+                requestPath,
+                JsonSerializer.Serialize(
+                    new SagaReviewBulkPrepareRequest(
+                        requestId,
+                        SagaMemoryScopeKind.Global,
+                        CampaignId: null,
+                        MemoryReviewAction.Confirm,
+                        [new SagaReviewDecision("observation", ReplacementContent: null)]),
+                    ArcanumJsonContext.Default.SagaReviewBulkPrepareRequest));
+
+            CliTestResult result = await CliTestHarness.RunAsync(services, ["memory", "saga", "review", "apply", "--file", requestPath, "--json", "--yes"]);
+
+            Assert.Equal(1, result.ExitCode);
+
+            Assert.Equal(["/api/memory/saga/review/prepare"], handler.Paths);
+
+            Assert.Contains("The observed version is no longer current.", result.Error, StringComparison.Ordinal);
+
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            Assert.Equal(
+                ("", 1, false),
+                (document.RootElement.GetProperty("output").GetString(), document.RootElement.GetProperty("exitCode").GetInt32(), document.RootElement.TryGetProperty("error", out _)));
+        }
+        finally
+        {
+            File.Delete(requestPath);
+        }
+    }
+
     [Fact]
     public async Task Invalid_json_review_lane_writes_one_error_document()
     {
@@ -586,11 +655,24 @@ public sealed class MemoryReviewCommandTests
         /// <summary>What an apply answers with; without one, every route answers with the plan.</summary>
         public MemoryReviewBulkResultDto? Applied { get; init; }
 
+        /// <summary>When set, every route refuses with this error instead.</summary>
+        public Error? Refusal { get; init; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             Paths.Add(request.RequestUri!.AbsolutePath);
+
+            if (Refusal is { } refusal)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(
+                        new ApiResponse<MemoryReviewBulkPlanDto>(null, false, refusal),
+                        ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto)),
+                });
+            }
 
             byte[] json = Applied is { } applied && request.RequestUri.AbsolutePath.EndsWith("/apply", StringComparison.Ordinal)
                 ? JsonSerializer.SerializeToUtf8Bytes(

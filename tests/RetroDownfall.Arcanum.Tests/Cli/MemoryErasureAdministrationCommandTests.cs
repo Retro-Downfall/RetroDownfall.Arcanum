@@ -905,6 +905,52 @@ public sealed class MemoryErasureAdministrationCommandTests
         Assert.DoesNotContain(ResentNote, result.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A resend the host refuses is still a resend: the first attempt may have taken effect before its
+    /// answer was cut off, so a typed refusal of the second no longer proves a rollback, and the note is
+    /// written beside the refusal.
+    /// </summary>
+    [Theory]
+    [InlineData("release-saga", "release", ErrorCodes.MemoryErasure.Unavailable, 503)]
+    [InlineData("release-lexicon", "release", ErrorCodes.MemoryErasure.Unavailable, 503)]
+    [InlineData("release-covenant", "release", ErrorCodes.MemoryErasure.Unavailable, 503)]
+    [InlineData("scrub", "scrub", ErrorCodes.MemoryErasure.Unavailable, 503)]
+    [InlineData("reset-key", "key reset", ErrorCodes.MemoryErasure.Unavailable, 503)]
+    [InlineData("reset-key", "key reset", ErrorCodes.MemoryErasure.StalePlan, 409)]
+    public async Task A_resend_the_host_refuses_still_says_the_first_attempt_may_have_taken_effect(
+        string verb,
+        string operation,
+        string code,
+        int status)
+    {
+        using ContentFile file = new(SagaContent);
+
+        string path = MutationPath(verb);
+
+        AdministrationHandler handler = new()
+        {
+            CutOffOnce = { path },
+            Failures = { [path] = ((HttpStatusCode)status, new Error(code, $"The host refused the resend with {code}.")) },
+        };
+
+        CliTestResult result = await RunAsync(handler, [.. VerbArgs(verb, file.Path), "--json", "--yes"], new RecordingPrompt(handler, answer: false));
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Equal(2, handler.Events.Count(e => e == $"POST {path}"));
+
+        // The refusal is still the one document on stdout.
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(1, document.RootElement.GetProperty("exitCode").GetInt32());
+
+        Assert.Contains(
+            $"The host's answer to this {operation} {ResentNote}. The first attempt may already have taken effect; "
+                + "the outcome and counts reported here describe only the resend.",
+            result.Error,
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("release-saga")]
     [InlineData("release-lexicon")]
