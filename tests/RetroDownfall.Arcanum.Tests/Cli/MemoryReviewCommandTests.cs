@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -116,6 +117,203 @@ public sealed class MemoryReviewCommandTests
         }
     }
 
+    /// <summary>
+    /// A correction that re-creates erased content or an erased key releases its erasure fingerprint,
+    /// which is the unsafe direction, so the operator is told which items will release before the
+    /// question — on the diagnostic stream — and which did after the apply; an item the host could not
+    /// check says so both times, and an item that releases nothing adds no line.
+    /// </summary>
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("covenant")]
+    public async Task Review_apply_names_each_item_that_will_release_before_the_question_and_each_that_did_after(string store)
+    {
+        MemoryReviewStore reviewStore = store == "saga" ? MemoryReviewStore.Saga : MemoryReviewStore.Covenant;
+
+        Guid requestId = Guid.NewGuid();
+
+        MemoryReviewBulkPlanDto plan = new(
+            reviewStore,
+            requestId,
+            MemoryReviewAction.Correct,
+            [
+                new MemoryReviewBulkPlanItemDto(1, "memory-1", "version-1", true, "Operator", "session-1", "Global", ReleasesErasureFingerprint: true),
+                new MemoryReviewBulkPlanItemDto(2, "memory-2", "version-2", true, "Operator", "session-1", "Global", ReleasesErasureFingerprint: false),
+                new MemoryReviewBulkPlanItemDto(3, "memory-3", "version-3", true, "Operator", "session-1", "Global", ReleasesErasureFingerprint: null),
+            ],
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z"),
+            DateTimeOffset.Parse("2026-09-28T12:05:00Z"),
+            "prepared-plan");
+
+        MemoryReviewBulkResultDto applied = new(
+            reviewStore,
+            requestId,
+            MemoryReviewAction.Correct,
+            [
+                new MemoryReviewBulkItemResultDto(1, "memory-1", "version-1", "Corrected", "version-1b", ReleasedErasureFingerprint: true),
+                new MemoryReviewBulkItemResultDto(2, "memory-2", "version-2", "Corrected", "version-2b", ReleasedErasureFingerprint: false),
+                new MemoryReviewBulkItemResultDto(3, "memory-3", "version-3", "Corrected", "version-3b", ReleasedErasureFingerprint: null),
+            ],
+            ReviewedThroughEventSequence: 3,
+            Replayed: false);
+
+        (int exitCode, string output, string error, SnapshotConfirmation confirmation) = await ApplyCorrectionAsync(store, plan, applied, json: false);
+
+        Assert.True(exitCode == (int)CliExitCode.Success, error);
+
+        Assert.Contains(
+            "Event 1 (memory-1) releases an erasure fingerprint: extraction or agents may write this again in its scope.",
+            confirmation.ErrorBefore,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Event 3 (memory-3): Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.",
+            confirmation.ErrorBefore,
+            StringComparison.Ordinal);
+
+        // Before the question, on the diagnostic stream only.
+        Assert.DoesNotContain("releases an erasure fingerprint", confirmation.OutputBefore, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("could not be checked", confirmation.OutputBefore, StringComparison.Ordinal);
+
+        Assert.Contains("Released an erasure fingerprint for event 1 (memory-1).", output, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Event 3 (memory-3): Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.",
+            output,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(memory-2)", output + error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Review_apply_prints_no_release_line_when_no_item_releases()
+    {
+        Guid requestId = Guid.NewGuid();
+
+        MemoryReviewBulkPlanDto plan = new(
+            MemoryReviewStore.Saga,
+            requestId,
+            MemoryReviewAction.Correct,
+            [new MemoryReviewBulkPlanItemDto(1, "memory-1", "version-1", true, "Operator", "session-1", "Global", ReleasesErasureFingerprint: false)],
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z"),
+            DateTimeOffset.Parse("2026-09-28T12:05:00Z"),
+            "prepared-plan");
+
+        MemoryReviewBulkResultDto applied = new(
+            MemoryReviewStore.Saga,
+            requestId,
+            MemoryReviewAction.Correct,
+            [new MemoryReviewBulkItemResultDto(1, "memory-1", "version-1", "Corrected", "version-1b", ReleasedErasureFingerprint: false)],
+            ReviewedThroughEventSequence: 1,
+            Replayed: false);
+
+        (int exitCode, string output, string error, _) = await ApplyCorrectionAsync("saga", plan, applied, json: false);
+
+        Assert.True(exitCode == (int)CliExitCode.Success, error);
+
+        Assert.DoesNotContain("erasure fingerprint", output + error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("could not be checked", output + error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Json_review_apply_keeps_the_release_flag_and_writes_one_document()
+    {
+        Guid requestId = Guid.NewGuid();
+
+        MemoryReviewBulkPlanDto plan = new(
+            MemoryReviewStore.Covenant,
+            requestId,
+            MemoryReviewAction.Correct,
+            [new MemoryReviewBulkPlanItemDto(1, "memory-1", "version-1", true, "Operator", "session-1", "Global", ReleasesErasureFingerprint: true)],
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z"),
+            DateTimeOffset.Parse("2026-09-28T12:05:00Z"),
+            "prepared-plan");
+
+        MemoryReviewBulkResultDto applied = new(
+            MemoryReviewStore.Covenant,
+            requestId,
+            MemoryReviewAction.Correct,
+            [new MemoryReviewBulkItemResultDto(1, "memory-1", "version-1", "Corrected", "version-1b", ReleasedErasureFingerprint: true)],
+            ReviewedThroughEventSequence: 1,
+            Replayed: false);
+
+        (int exitCode, string output, string error, _) = await ApplyCorrectionAsync("covenant", plan, applied, json: true);
+
+        Assert.True(exitCode == (int)CliExitCode.Success, error);
+
+        using JsonDocument document = JsonDocument.Parse(output);
+
+        Assert.True(document.RootElement.GetProperty("items")[0].GetProperty("releasedErasureFingerprint").GetBoolean());
+
+        // The warning is still given before the question, on the diagnostic stream.
+        Assert.Contains("Event 1 (memory-1) releases an erasure fingerprint", error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The shipped prompt treats <c>--json</c> as non-interactive by declaration, so a structured review
+    /// apply without <c>--yes</c> is refused with exit 2 and never applies — it never reaches a decline.
+    /// </summary>
+    [Fact]
+    public async Task A_json_review_apply_without_yes_is_refused_by_the_shipped_prompt_and_never_applies()
+    {
+        Guid requestId = Guid.NewGuid();
+
+        MemoryReviewBulkPlanDto plan = new(
+            MemoryReviewStore.Saga,
+            requestId,
+            MemoryReviewAction.Confirm,
+            [new MemoryReviewBulkPlanItemDto(1, "memory-1", "version-1", true, "AgentExtracted", "session-1", "Global")],
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z"),
+            DateTimeOffset.Parse("2026-09-28T12:05:00Z"),
+            "prepared-plan");
+
+        RecordingHandler handler = new(plan);
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(handler));
+
+        services.AddSingleton<ISecretStore>(new FixedSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(services, FixedSecretStore.Key);
+
+        string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            File.WriteAllText(
+                requestPath,
+                JsonSerializer.Serialize(
+                    new SagaReviewBulkPrepareRequest(
+                        requestId,
+                        SagaMemoryScopeKind.Global,
+                        CampaignId: null,
+                        MemoryReviewAction.Confirm,
+                        [new SagaReviewDecision("observation", ReplacementContent: null)]),
+                    ArcanumJsonContext.Default.SagaReviewBulkPrepareRequest));
+
+            CliTestResult result = await CliTestHarness.RunAsync(services, ["memory", "saga", "review", "apply", "--file", requestPath, "--json"]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal(["/api/memory/saga/review/prepare"], handler.Paths);
+
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, document.RootElement.GetProperty("exitCode").GetInt32());
+
+            Assert.False(document.RootElement.TryGetProperty("cancelled", out _));
+        }
+        finally
+        {
+            File.Delete(requestPath);
+        }
+    }
+
     [Fact]
     public async Task Invalid_json_review_lane_writes_one_error_document()
     {
@@ -169,6 +367,73 @@ public sealed class MemoryReviewCommandTests
                 error,
                 exitCode,
                 "Saga review decisions are not valid JSON for this store.");
+        }
+        finally
+        {
+            File.Delete(requestPath);
+        }
+    }
+
+    /// <summary>
+    /// Runs one correction review apply through the handler, approved by a prompt that snapshots both
+    /// streams at the question, against a host that answers prepare with <paramref name="plan"/> and
+    /// apply with <paramref name="applied"/>.
+    /// </summary>
+    private static async Task<(int ExitCode, string Output, string Error, SnapshotConfirmation Confirmation)> ApplyCorrectionAsync(
+        string store,
+        MemoryReviewBulkPlanDto plan,
+        MemoryReviewBulkResultDto applied,
+        bool json)
+    {
+        CliInvocationOptions options = new(Json: json, Plain: false, Yes: false);
+
+        StringWriter output = new();
+
+        StringWriter error = new();
+
+        SnapshotConfirmation confirmation = new(output, error);
+
+        MemoryCommands commands = new(
+            new ArcanumApiClient(
+                new SingleHandlerFactory(new RecordingHandler(plan) { Applied = applied }),
+                ArcanumApiCredentialLeaseTestFactory.Create(FixedSecretStore.Key)),
+            themePalette: null!,
+            new ConsoleDispatcher(output, error, options),
+            confirmation,
+            Options.Create(new ArcanumSettings()));
+
+        string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            File.WriteAllText(
+                requestPath,
+                store == "saga"
+                    ? JsonSerializer.Serialize(
+                        new SagaReviewBulkPrepareRequest(
+                            plan.RequestId,
+                            SagaMemoryScopeKind.Global,
+                            CampaignId: null,
+                            MemoryReviewAction.Correct,
+                            [.. plan.Items.Select(static item => new SagaReviewDecision($"observation-{item.EventSequence}", "replacement"))]),
+                        ArcanumJsonContext.Default.SagaReviewBulkPrepareRequest)
+                    : JsonSerializer.Serialize(
+                        new CovenantReviewBulkPrepareRequest(
+                            plan.RequestId,
+                            CovenantScope.Global,
+                            CampaignId: null,
+                            CovenantLane.Confirmed,
+                            MemoryReviewAction.Correct,
+                            [.. plan.Items.Select(static item => new CovenantReviewDecision($"observation-{item.EventSequence}", "replacement"))]),
+                        ArcanumJsonContext.Default.CovenantReviewBulkPrepareRequest));
+
+            using IDisposable invocation = CliInvocationContext.Push(options);
+
+            int exitCode = store == "saga"
+                ? await commands.SagaReviewApply(requestPath, CancellationToken.None)
+                : await commands.CovenantReviewApply(requestPath, CancellationToken.None);
+
+            return (exitCode, output.ToString(), error.ToString(), confirmation);
         }
         finally
         {
@@ -262,9 +527,29 @@ public sealed class MemoryReviewCommandTests
             Task.FromResult(confirmed);
     }
 
+    /// <summary>Approves, snapshotting what each stream held when the question was put.</summary>
+    private sealed class SnapshotConfirmation(StringWriter output, StringWriter error) : IConfirmationPrompt
+    {
+        public string OutputBefore { get; private set; } = "";
+
+        public string ErrorBefore { get; private set; } = "";
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            OutputBefore = output.ToString();
+
+            ErrorBefore = error.ToString();
+
+            return Task.FromResult(true);
+        }
+    }
+
     private sealed class RecordingHandler(MemoryReviewBulkPlanDto plan) : HttpMessageHandler
     {
         public List<string> Paths { get; } = [];
+
+        /// <summary>What an apply answers with; without one, every route answers with the plan.</summary>
+        public MemoryReviewBulkResultDto? Applied { get; init; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -272,10 +557,14 @@ public sealed class MemoryReviewCommandTests
         {
             Paths.Add(request.RequestUri!.AbsolutePath);
 
-            byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-                ApiResponse<MemoryReviewBulkPlanDto>.FromResult(
-                    Result<MemoryReviewBulkPlanDto>.Success(plan)),
-                ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
+            byte[] json = Applied is { } applied && request.RequestUri.AbsolutePath.EndsWith("/apply", StringComparison.Ordinal)
+                ? JsonSerializer.SerializeToUtf8Bytes(
+                    ApiResponse<MemoryReviewBulkResultDto>.FromResult(Result<MemoryReviewBulkResultDto>.Success(applied)),
+                    ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkResultDto)
+                : JsonSerializer.SerializeToUtf8Bytes(
+                    ApiResponse<MemoryReviewBulkPlanDto>.FromResult(
+                        Result<MemoryReviewBulkPlanDto>.Success(plan)),
+                    ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {

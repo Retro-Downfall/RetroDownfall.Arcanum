@@ -115,6 +115,7 @@
         "memory covenant list",
         "memory covenant mask",
         "memory covenant pin",
+        "memory covenant release",
         "memory covenant retire",
         "memory covenant review list",
         "memory covenant search",
@@ -126,10 +127,12 @@
         "memory lexicon erase",
         "memory lexicon pin",
         "memory lexicon reinstate",
+        "memory lexicon release",
         "memory lexicon retire",
         "memory lexicon review list",
         "memory lexicon show",
         "memory lexicon unpin",
+        "memory saga release",
         "memory saga review list",
         "run"
       ]
@@ -153,6 +156,7 @@
         "memory lexicon correct",
         "memory lexicon review apply",
         "memory saga correct",
+        "memory saga release",
         "memory saga review apply"
       ]
     },
@@ -3123,6 +3127,40 @@
               "commands": []
             },
             {
+              "path": "memory covenant release",
+              "name": "release",
+              "description": "Release one key\u0027s erasure fingerprint in exactly one scope, so agents may propose that key there again.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant release preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
               "path": "memory covenant pin",
               "name": "pin",
               "description": "Mark one preference durable, so the agent may not write over it or retire it.",
@@ -3830,6 +3868,40 @@
                 "arcanum memory lexicon erase Operator"
               ],
               "commands": []
+            },
+            {
+              "path": "memory lexicon release",
+              "name": "release",
+              "description": "Release one exact Lexicon name\u0027s erasure fingerprint, so extraction and agents may write it again in that scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon release Operator"
+              ],
+              "commands": []
             }
           ]
         },
@@ -4042,6 +4114,53 @@
               "commands": []
             },
             {
+              "path": "memory saga release",
+              "name": "release",
+              "description": "Release the erasure fingerprint of one Saga content in one exact scope, so extraction may write it again there.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--file",
+                  "aliases": [
+                    "-f"
+                  ],
+                  "description": "Read the erased content from this file, or use - for stdin (requires --yes). Sent exactly as read.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Alone it means Campaign scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--scope",
+                  "aliases": [],
+                  "description": "global, campaign, unresolved, or unclassified. Omit for Global, or for Campaign when --campaign is given.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga release --file erased.txt",
+                "arcanum memory saga release --file erased.txt --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
               "path": "memory saga review",
               "name": "review",
               "description": "Review newly written Saga versions without gating their normal eligibility.",
@@ -4130,6 +4249,58 @@
                   "commands": []
                 }
               ]
+            }
+          ]
+        },
+        {
+          "path": "memory erasure",
+          "name": "erasure",
+          "description": "Inspect and administer erasure fingerprints and receipts across the memory stores.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "memory erasure status",
+              "name": "status",
+              "description": "Show the erasure key\u0027s state and each store\u0027s fingerprint, unverifiable and receipt counts.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [
+                "arcanum memory erasure status",
+                "arcanum memory erasure status --json"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory erasure scrub",
+              "name": "scrub",
+              "description": "Retry the write-ahead-log checkpoint erasures left pending, and report what it verified.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [
+                "arcanum memory erasure scrub"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory erasure reset-key",
+              "name": "reset-key",
+              "description": "Discard the erasure evidence the current key cannot verify, creating a key when none exists.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [],
+              "examples": [
+                "arcanum memory erasure reset-key"
+              ],
+              "commands": []
             }
           ]
         }

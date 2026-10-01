@@ -55,18 +55,21 @@ public sealed class MemoryErasureEvidenceDeleterTests
     private const string FingerprintRelease = "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs";
 
     /// <summary>
-    /// Closed: the one release service and the operator writes that re-create an erased identity, each
-    /// by the member that makes the call. Extraction, the Lexicon scribe, the Covenant kernel's agent arm
-    /// and turn publication are agent paths and never appear here.
+    /// Closed: the one release service, the operator writes that re-create an erased identity, and the
+    /// preflights that disclose such a release before it is approved, each by the member that makes the
+    /// call. Extraction, the Lexicon scribe, the Covenant kernel's agent arm and turn publication are
+    /// agent paths and never appear here.
     /// </summary>
     private static readonly string[] AllowedFingerprintReleaseCallers =
     [
         "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs::ApplyDecisionAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs::PrepareAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::CommitAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::PrepareAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs::CorrectAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs::ReleaseCoreAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs::ApplyDecisionAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs::PrepareAsync",
     ];
 
     /// <summary>

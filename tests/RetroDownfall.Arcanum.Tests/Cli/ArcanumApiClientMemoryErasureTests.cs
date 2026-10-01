@@ -6,15 +6,18 @@ using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 /// <summary>
-/// The six erase calls, as the CLI reaches them: one static POST each, a body the shared context
-/// writes and reads back unchanged, and the envelope the route answers with.
+/// The erasure calls, as the CLI reaches them: one static route each — six erase POSTs, three release
+/// POSTs, the status GET, and the scrub and key-reset POSTs — a body the shared context writes and reads
+/// back unchanged, and the envelope the route answers with.
 /// </summary>
 public sealed class ArcanumApiClientMemoryErasureTests
 {
@@ -158,6 +161,129 @@ public sealed class ArcanumApiClientMemoryErasureTests
         Assert.Equal(ErrorCodes.MemoryErasure.SubjectErased, result.Error.Code);
 
         Assert.Equal("Already erased.", result.Error.Message);
+    }
+
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task Release_posts_its_exact_path_and_decodes_the_result(string store)
+    {
+        RecordingHandler handler = new(_ => Envelope(
+            new MemoryErasureReleaseResultDto(Store(store), MemoryErasureReleaseOutcome.Released, 2),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto));
+
+        ArcanumApiClient client = Client(handler);
+
+        Guid campaign = Guid.Parse("5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77");
+
+        (Result<MemoryErasureReleaseResultDto> result, string expectedBody, Func<string, string> roundTrip) = store switch
+        {
+            "saga" => (
+                await client.ReleaseSagaErasureAsync(new(SagaMemoryScopeKind.Campaign, campaign, "Rotate the vault key.\n"), CancellationToken.None),
+                Serialize(new SagaErasureReleaseRequest(SagaMemoryScopeKind.Campaign, campaign, "Rotate the vault key.\n"), ArcanumJsonContext.Default.SagaErasureReleaseRequest),
+                RoundTrip(ArcanumJsonContext.Default.SagaErasureReleaseRequest)),
+            "lexicon" => (
+                await client.ReleaseLexiconErasureAsync(new(new(LexiconScopeKind.Campaign, campaign), "Vault Keeper"), CancellationToken.None),
+                Serialize(new LexiconErasureReleaseRequest(new(LexiconScopeKind.Campaign, campaign), "Vault Keeper"), ArcanumJsonContext.Default.LexiconErasureReleaseRequest),
+                RoundTrip(ArcanumJsonContext.Default.LexiconErasureReleaseRequest)),
+            _ => (
+                await client.ReleaseCovenantErasureAsync(new(CovenantScope.Campaign, campaign, "preference.vault"), CancellationToken.None),
+                Serialize(new CovenantErasureReleaseRequest(CovenantScope.Campaign, campaign, "preference.vault"), ArcanumJsonContext.Default.CovenantErasureReleaseRequest),
+                RoundTrip(ArcanumJsonContext.Default.CovenantErasureReleaseRequest)),
+        };
+
+        Assert.Equal([$"POST /api/memory/{store}/release"], handler.Requests);
+
+        string body = Assert.Single(handler.Bodies);
+
+        Assert.Equal(expectedBody, body);
+
+        Assert.Equal(body, roundTrip(body));
+
+        Assert.Equal("application/json; charset=utf-8", Assert.Single(handler.ContentTypes));
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal((Store(store), MemoryErasureReleaseOutcome.Released, 2), (result.Value.Store, result.Value.Outcome, result.Value.ReleasedCount));
+    }
+
+    [Fact]
+    public async Task Status_is_a_get_with_no_body()
+    {
+        MemoryErasureStatusDto status = new(
+            MemoryErasureKeyStatus.Lost,
+            [
+                new(MemoryReviewStore.Covenant, 0, 0, 0),
+                new(MemoryReviewStore.Saga, 1, 1, 1),
+                new(MemoryReviewStore.Lexicon, 0, 0, 0),
+            ],
+            0);
+
+        RecordingHandler handler = new(_ => Envelope(status, ArcanumJsonContext.Default.ApiResponseMemoryErasureStatusDto));
+
+        Result<MemoryErasureStatusDto> result = await Client(handler).GetMemoryErasureStatusAsync(CancellationToken.None);
+
+        Assert.Equal(["GET /api/memory/erasure"], handler.Requests);
+
+        Assert.Equal("", Assert.Single(handler.Bodies));
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(MemoryErasureKeyStatus.Lost, result.Value.KeyStatus);
+
+        Assert.Equal(1, result.Value.Stores[1].Unverifiable);
+    }
+
+    [Theory]
+    [InlineData("scrub")]
+    [InlineData("reset-key/prepare")]
+    public async Task Scrub_and_reset_prepare_post_an_empty_body(string suffix)
+    {
+        RecordingHandler handler = new(_ => suffix == "scrub"
+            ? Envelope(
+                new MemoryErasureScrubResultDto(MemoryErasureWalCheckpointAttempt.Truncated, 1, 0),
+                ArcanumJsonContext.Default.ApiResponseMemoryErasureScrubResultDto)
+            : Envelope(
+                new MemoryErasureKeyResetPreflightDto(MemoryErasureKeyStatus.Lost, [], DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddMinutes(5), "reset-token"),
+                ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetPreflightDto));
+
+        ArcanumApiClient client = Client(handler);
+
+        bool succeeded = suffix == "scrub"
+            ? (await client.ScrubMemoryErasuresAsync(CancellationToken.None)).IsSuccess
+            : (await client.PrepareMemoryErasureKeyResetAsync(CancellationToken.None)) is { IsSuccess: true, Value.PreflightToken: "reset-token" };
+
+        Assert.True(succeeded);
+
+        Assert.Equal([$"POST /api/memory/erasure/{suffix}"], handler.Requests);
+
+        Assert.Equal("", Assert.Single(handler.Bodies));
+    }
+
+    [Fact]
+    public async Task Reset_key_posts_the_preflight_token_and_decodes_the_result()
+    {
+        RecordingHandler handler = new(_ => Envelope(
+            new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, 2, 2, KeyCreated: true),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetResultDto));
+
+        Result<MemoryErasureKeyResetResultDto> result = await Client(handler)
+            .ResetMemoryErasureKeyAsync(new MemoryErasureKeyResetRequest("reset-token"), CancellationToken.None);
+
+        Assert.Equal(["POST /api/memory/erasure/reset-key"], handler.Requests);
+
+        string body = Assert.Single(handler.Bodies);
+
+        Assert.Equal(Serialize(new MemoryErasureKeyResetRequest("reset-token"), ArcanumJsonContext.Default.MemoryErasureKeyResetRequest), body);
+
+        using JsonDocument document = JsonDocument.Parse(body);
+
+        Assert.Equal("reset-token", document.RootElement.GetProperty("preflightToken").GetString());
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal((2L, 2L, true), (result.Value.FingerprintsDiscarded, result.Value.ReceiptsDiscarded, result.Value.KeyCreated));
     }
 
     private static async Task<(Result<MemoryErasureResultDto> Result, string Body, Func<string, string> RoundTrip)> ApplyAsync(

@@ -293,6 +293,25 @@ internal static partial class CliCommandTree
 
         covenant.Add(erase);
 
+        Command release = new(
+            "release",
+            "Release one key's erasure fingerprint in exactly one scope, so agents may propose that key there again.");
+
+        Argument<string> releaseKey = new("key") { Description = "The preference key." };
+
+        release.Add(releaseKey);
+
+        release.Add(campaign);
+
+        release.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Release(
+                    pr.GetValue(releaseKey)!,
+                    pr.GetValue(campaign),
+                    ct).ConfigureAwait(false));
+
+        covenant.Add(release);
+
         covenant.Add(CurationCommand(
             handler,
             CovenantCurationKind.Pin,

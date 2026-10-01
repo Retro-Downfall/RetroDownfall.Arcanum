@@ -243,6 +243,15 @@ public sealed record CovenantReviewPageDto(
     string? NextCursor,
     bool Truncated);
 
+/// <summary>One exact target of a prepared bulk review.</summary>
+/// <param name="ReleasesErasureFingerprint">
+/// What applying this item would do to an erasure fingerprint, measured when the plan was prepared so
+/// the operator sees it before approving: <see langword="true"/> when a Saga or Covenant <c>Correct</c>
+/// would delete the fingerprint of its replacement's content (Saga) or of its key (Covenant) in the
+/// item's own scope, <see langword="false"/> when it would release nothing, and <see langword="null"/>
+/// when the store holds fingerprints this host could not check. Every other action, and every Lexicon
+/// item, reports <see langword="false"/>.
+/// </param>
 public sealed record MemoryReviewBulkPlanItemDto(
     long EventSequence,
     string SubjectId,
@@ -250,7 +259,8 @@ public sealed record MemoryReviewBulkPlanItemDto(
     bool IsCurrent,
     string Origin,
     string Source,
-    string Scope);
+    string Scope,
+    bool? ReleasesErasureFingerprint = false);
 
 public sealed record MemoryReviewBulkPlanDto(
     MemoryReviewStore Store,

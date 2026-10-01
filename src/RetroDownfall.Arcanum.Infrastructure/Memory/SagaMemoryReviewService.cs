@@ -293,6 +293,14 @@ internal sealed class SagaMemoryReviewService(
 
         MemoryReviewObservationTokenFacts first = observations.Value[0];
 
+        // The plan discloses what apply will do to an erasure fingerprint, under apply's own rule: only
+        // a correction that changes the content can release, only where release authority would be
+        // issued, and only with the key copied from the latch before any transaction.
+        bool releasePermitted = request.Action == MemoryReviewAction.Correct
+            && MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
+
+        using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -338,7 +346,18 @@ internal sealed class SagaMemoryReviewService(
                         return Result<MemoryReviewBulkPlanDto>.Failure(error);
                     }
 
-                    items[index] = PlanItem(row!);
+                    items[index] = PlanItem(row!) with
+                    {
+                        ReleasesErasureFingerprint = releasePermitted && !ReplacesNothing(row!, request.Decisions[index])
+                            ? await MemoryErasureFingerprintRelease.WouldReleaseAsync(
+                                (SqliteConnection)connection,
+                                (SqliteTransaction)transaction,
+                                MemoryReviewStore.Saga,
+                                RecreatedIdentity(row!, request.Decisions[index].ReplacementContent!),
+                                erasureKey,
+                                cancellationToken).ConfigureAwait(false)
+                            : false,
+                    };
                 }
 
                 MemoryReviewDigest requestDigest = OrderedRequestDigest(request);
@@ -711,11 +730,7 @@ internal sealed class SagaMemoryReviewService(
                 break;
 
             case MemoryReviewAction.Correct:
-                byte[] current = AnnalContentDigest.ForSagaMemory(target.CurrentContent!);
-
-                byte[] replacement = AnnalContentDigest.ForSagaMemory(decision.ReplacementContent!);
-
-                if (CryptographicOperations.FixedTimeEquals(current, replacement))
+                if (ReplacesNothing(target, decision))
                 {
                     outcome = nameof(SagaCurationOutcomeKind.Unchanged);
 
@@ -889,6 +904,15 @@ internal sealed class SagaMemoryReviewService(
             return null;
         }
     }
+
+    /// <summary>
+    /// Whether a correction's replacement is the content the memory already holds, so it writes
+    /// nothing and can release nothing. Prepare's disclosure and apply's write both decide by it.
+    /// </summary>
+    private static bool ReplacesNothing(SagaReviewEvent target, SagaReviewDecision decision) =>
+        CryptographicOperations.FixedTimeEquals(
+            AnnalContentDigest.ForSagaMemory(target.CurrentContent!),
+            AnnalContentDigest.ForSagaMemory(decision.ReplacementContent!));
 
     private async Task<string?> RetireAsync(
         DbConnection connection,

@@ -109,6 +109,7 @@ internal static class CliSurfaceExamples
         ["memory lexicon pin"] = ["arcanum memory lexicon pin Operator"],
         ["memory lexicon unpin"] = ["arcanum memory lexicon unpin Operator"],
         ["memory lexicon erase"] = ["arcanum memory lexicon erase Operator"],
+        ["memory lexicon release"] = ["arcanum memory lexicon release Operator"],
         ["memory lexicon search"] = ["arcanum memory lexicon search \"ward policy\""],
         ["memory lexicon delete"] = [$"arcanum memory lexicon delete {SampleGuid}"],
         ["memory lexicon review list"] = ["arcanum memory lexicon review list --limit 25"],
@@ -125,6 +126,8 @@ internal static class CliSurfaceExamples
             ["arcanum memory covenant retire preference.builds --expected-revision 1"],
         ["memory covenant erase"] =
             ["arcanum memory covenant erase preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
+        ["memory covenant release"] =
+            ["arcanum memory covenant release preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"],
         ["memory covenant correct"] =
             ["arcanum memory covenant correct preference.builds --file corrected.txt --target-version 0195a0f0-0000-7000-8000-0000000000aa --target-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-revision 1"],
         ["memory covenant pin"] =
@@ -143,6 +146,14 @@ internal static class CliSurfaceExamples
         ["memory saga pin"] = ["arcanum memory saga pin mem-01j9x8"],
         ["memory saga unpin"] = ["arcanum memory saga unpin mem-01j9x8"],
         ["memory saga erase"] = ["arcanum memory saga erase 7c9e6679-7425-40de-944b-e07fc1f90ae7"],
+        ["memory saga release"] =
+        [
+            "arcanum memory saga release --file erased.txt",
+            "arcanum memory saga release --file erased.txt --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77",
+        ],
+        ["memory erasure status"] = ["arcanum memory erasure status", "arcanum memory erasure status --json"],
+        ["memory erasure scrub"] = ["arcanum memory erasure scrub"],
+        ["memory erasure reset-key"] = ["arcanum memory erasure reset-key"],
         ["memory saga review list"] = ["arcanum memory saga review list --limit 25"],
         ["memory saga review apply"] = ["arcanum memory saga review apply --file saga-review.json"],
         ["memory covenant mask"] =

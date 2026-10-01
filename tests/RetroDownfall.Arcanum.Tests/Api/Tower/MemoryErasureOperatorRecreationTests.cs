@@ -420,6 +420,45 @@ public sealed class MemoryErasureOperatorRecreationTests
         Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(second, MemoryReviewStore.Saga));
     }
 
+    /// <summary>
+    /// A bulk correction under a key that did not record the store's evidence cannot check it, so both
+    /// the plan and the result say so rather than claiming nothing would be or was released.
+    /// </summary>
+    [SkippableFact]
+    public async Task Bulk_review_Correct_with_evidence_under_a_replaced_key_reports_null_before_and_after()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        string alpha;
+
+        await using (ArcanumWebApplicationFactory first = MemoryErasureRouteDriver.Host(credentials, profile, covenant: true))
+        {
+            alpha = await MemoryErasureRouteDriver.InsertSagaAsync(first, "alpha");
+
+            string beta = await MemoryErasureRouteDriver.InsertSagaAsync(first, "beta");
+
+            _ = await new MemoryErasureRouteDriver(first.CreateClient()).EraseSagaAsync(beta);
+        }
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            credentials.Set(Service, Account, Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32))).Status);
+
+        await using ArcanumWebApplicationFactory second = MemoryErasureRouteDriver.Host(credentials, profile, covenant: true);
+
+        MemoryReviewBulkResultDto result = await ReviewCorrectAsync(second.CreateAuthenticatedClient(), SagaMemoryScopeKind.Global, null, alpha, "beta");
+
+        Assert.Null(Assert.Single(result.Items).ReleasedErasureFingerprint);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(second, MemoryReviewStore.Saga));
+
+        Assert.Equal("beta", (await ShowAsync(second, alpha)).Memory.Content);
+    }
+
     [SkippableFact]
     public async Task Bulk_review_Correct_to_erased_content_releases_and_reports_it_on_the_item()
     {
@@ -473,6 +512,9 @@ public sealed class MemoryErasureOperatorRecreationTests
 
             plan = await MemoryErasureRouteDriver.ReadDataAsync(prepared, ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
         }
+
+        // The plan says so before anything is applied, so the operator approves the release knowingly.
+        Assert.True(Assert.Single(plan.Items).ReleasesErasureFingerprint);
 
         MemoryReviewBulkResultDto result = await ApplyReviewAsync(client, new SagaReviewBulkApplyRequest(prepare, plan.PreparedPlanToken));
 
@@ -715,7 +757,12 @@ public sealed class MemoryErasureOperatorRecreationTests
             plan = await MemoryErasureRouteDriver.ReadDataAsync(prepared, ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
         }
 
-        return await ApplyReviewAsync(client, new SagaReviewBulkApplyRequest(prepare, plan.PreparedPlanToken));
+        MemoryReviewBulkResultDto result = await ApplyReviewAsync(client, new SagaReviewBulkApplyRequest(prepare, plan.PreparedPlanToken));
+
+        // What the plan disclosed before the question is what the apply did: true, false and null alike.
+        Assert.Equal(Assert.Single(result.Items).ReleasedErasureFingerprint, Assert.Single(plan.Items).ReleasesErasureFingerprint);
+
+        return result;
     }
 
     /// <summary>Writes one Covenant key through the set routes and erases it through the erase routes.</summary>

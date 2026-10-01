@@ -1336,6 +1336,116 @@ public sealed class CovenantCommands(
 
     }
 
+    /// <summary>
+    /// Releases the erasure fingerprint of one Covenant key in exactly one scope, so agents may propose
+    /// that key there again.
+    /// </summary>
+    /// <remarks>
+    /// The key is positional, as on every Covenant verb, and must already be well formed: the host
+    /// refuses rather than folds any other spelling, so the CLI refuses it the same way before asking.
+    /// An omitted <c>--campaign</c> is the Global scope. Release is the unsafe direction, so the warning
+    /// is written before the question in every mode and <c>--yes</c> answers the question without
+    /// skipping it.
+    /// </remarks>
+    public async Task<int> Release(
+        string key,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        CovenantErasureReleaseRequest request = new(
+            campaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
+            campaignId,
+            key);
+
+        if (request.Validate() is { IsFailure: true } invalid)
+        {
+
+            return Fail(invalid.Error, CliExitCode.ConfigurationError);
+
+        }
+
+        string scopeText = campaignId is { } campaign ? $"Campaign {campaign:D}" : "Global";
+
+        MemoryErasureRenderer.WriteReleasePlan(
+            dispatcher,
+            MemoryReviewStore.Covenant,
+            scopeText,
+            $"the Covenant key '{key}'",
+            invocationContext.Options.Json);
+
+        if (!invocationContext.Options.Yes
+            && !await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Release the Covenant erasure fingerprint for '{key}' in the {scopeText} scope?",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} release cancelled; nothing was released.");
+
+            if (invocationContext.Options.Json)
+            {
+
+                dispatcher.WriteJson(
+                    new MemoryErasureCancellationPayload("release", MemoryReviewStore.Covenant, MutationId: null, Cancelled: true),
+                    CliJsonContext.Default.MemoryErasureCancellationPayload);
+
+            }
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<MemoryErasureReleaseResultDto> released;
+
+        try
+        {
+
+            released = await apiClient
+                .ReleaseCovenantErasureAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            MemoryCommands.WriteUnconfirmedRelease(dispatcher);
+
+            throw;
+
+        }
+
+        if (released.IsFailure)
+        {
+
+            int failed = Fail(released.Error, (CliExitCode)CliFailureExit.ExitCode(released.Error));
+
+            MemoryCommands.WriteReleaseRefusalGuidance(dispatcher, released.Error);
+
+            return failed;
+
+        }
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(released.Value, ArcanumJsonContext.Default.MemoryErasureReleaseResultDto);
+
+        }
+        else
+        {
+
+            MemoryErasureRenderer.WriteReleaseResult(dispatcher, released.Value);
+
+        }
+
+        return (int)CliExitCode.Success;
+
+    }
+
     /// <summary>The exact lane head an erase requires still to be current, or none for an empty lane.</summary>
     private static CovenantEraseHeadExpectation? Expectation(CovenantHeadDto? head) =>
         head is null ? null : new CovenantEraseHeadExpectation(head.VersionId, head.LaneRevision);

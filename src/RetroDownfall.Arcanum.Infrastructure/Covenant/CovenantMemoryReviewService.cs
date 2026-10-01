@@ -318,6 +318,13 @@ internal sealed class CovenantMemoryReviewService(
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        // A correction commits an operator set of the item's key, which releases that key's erasure
+        // fingerprint in its scope; the plan says so before the operator approves it. The key is read
+        // from the latch before BEGIN, exactly as apply reads it, so the two answer alike.
+        using CovenantAgentErasureGate erasureGate = request.Action == MemoryReviewAction.Correct
+            ? mutationKernel.CaptureErasureGate()
+            : CovenantAgentErasureGate.None;
+
         await using SqliteTransaction transaction = (SqliteTransaction)await connection
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -373,7 +380,18 @@ internal sealed class CovenantMemoryReviewService(
                 return error;
             }
 
-            items[index] = PlanItem(row!);
+            items[index] = PlanItem(row!) with
+            {
+                ReleasesErasureFingerprint = request.Action == MemoryReviewAction.Correct
+                    ? await MemoryErasureFingerprintRelease.WouldReleaseAsync(
+                        connection,
+                        transaction,
+                        MemoryReviewStore.Covenant,
+                        MemoryErasureIdentity.ForCovenant(row!.Scope, row.CampaignId, row.Key),
+                        erasureGate.Key,
+                        cancellationToken).ConfigureAwait(false)
+                    : false,
+            };
         }
 
         MemoryReviewDigest requestDigest = OrderedRequestDigest(request);

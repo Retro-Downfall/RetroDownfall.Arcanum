@@ -16,8 +16,10 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 /// The selective-erasure surface, as the CLI reaches it.
 /// </summary>
 /// <remarks>
-/// Two static POSTs per store with typed bodies: nothing about the target — a memory id, a Lexicon
-/// name, a Covenant key — travels in a URL where a proxy or an access log would keep it.
+/// Two static POSTs per store with typed bodies, plus one release POST per store: nothing about the
+/// target — a memory id, Saga content, a Lexicon name, a Covenant key — travels in a URL where a proxy
+/// or an access log would keep it. The administration routes belong to no one store: a status GET, and
+/// bodiless POSTs for the scrub and the key-reset prepare, whose apply carries only its token.
 ///
 /// <para>Every call is sent with <c>retryResponseBodyIOExceptionOnce</c>. A prepare writes nothing but,
 /// on a fresh installation, the key, so asking again only measures again. An apply is the case the
@@ -25,7 +27,8 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 /// erase that committed, and the only safe second attempt is the identical request. The same bytes
 /// carry the same <c>mutationId</c>, which the host answers from its receipt as a replay rather than
 /// erasing anything again. The body is serialized once, before the first send, so a retry cannot
-/// carry a different mutation.</para>
+/// carry a different mutation. Release, scrub and key reset are naturally idempotent, and the status
+/// read writes nothing, so the same single retry is safe on each.</para>
 /// </remarks>
 public sealed partial class ArcanumApiClient
 {
@@ -84,6 +87,67 @@ public sealed partial class ArcanumApiClient
             ArcanumJsonContext.Default.ApiResponseMemoryErasureResultDto,
             cancellationToken);
 
+    public Task<Result<MemoryErasureReleaseResultDto>> ReleaseSagaErasureAsync(
+        SagaErasureReleaseRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostErasureAsync(
+            "api/memory/saga/release",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.SagaErasureReleaseRequest),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto,
+            cancellationToken);
+
+    public Task<Result<MemoryErasureReleaseResultDto>> ReleaseLexiconErasureAsync(
+        LexiconErasureReleaseRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostErasureAsync(
+            "api/memory/lexicon/release",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.LexiconErasureReleaseRequest),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto,
+            cancellationToken);
+
+    public Task<Result<MemoryErasureReleaseResultDto>> ReleaseCovenantErasureAsync(
+        CovenantErasureReleaseRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostErasureAsync(
+            "api/memory/covenant/release",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CovenantErasureReleaseRequest),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto,
+            cancellationToken);
+
+    public Task<Result<MemoryErasureStatusDto>> GetMemoryErasureStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        SendErasureAsync(
+            HttpMethod.Get,
+            "api/memory/erasure",
+            body: null,
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureStatusDto,
+            cancellationToken);
+
+    public Task<Result<MemoryErasureScrubResultDto>> ScrubMemoryErasuresAsync(
+        CancellationToken cancellationToken = default) =>
+        PostErasureAsync(
+            "api/memory/erasure/scrub",
+            body: null,
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureScrubResultDto,
+            cancellationToken);
+
+    public Task<Result<MemoryErasureKeyResetPreflightDto>> PrepareMemoryErasureKeyResetAsync(
+        CancellationToken cancellationToken = default) =>
+        PostErasureAsync(
+            "api/memory/erasure/reset-key/prepare",
+            body: null,
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetPreflightDto,
+            cancellationToken);
+
+    public Task<Result<MemoryErasureKeyResetResultDto>> ResetMemoryErasureKeyAsync(
+        MemoryErasureKeyResetRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostErasureAsync(
+            "api/memory/erasure/reset-key",
+            JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.MemoryErasureKeyResetRequest),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureKeyResetResultDto,
+            cancellationToken);
+
     /// <summary>
     /// Whether a failed apply leaves the erase's outcome unknown, so the operator has to be told it may
     /// have been applied.
@@ -119,14 +183,22 @@ public sealed partial class ArcanumApiClient
 
     private Task<Result<T>> PostErasureAsync<T>(
         string relativePath,
-        byte[] body,
+        byte[]? body,
+        JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
+        CancellationToken cancellationToken) =>
+        SendErasureAsync(HttpMethod.Post, relativePath, body, responseTypeInfo, cancellationToken);
+
+    private Task<Result<T>> SendErasureAsync<T>(
+        HttpMethod method,
+        string relativePath,
+        byte[]? body,
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
         CancellationToken cancellationToken) =>
         SendRequestAsync(
-            HttpMethod.Post,
+            method,
             relativePath,
             body,
-            JsonUtf8ContentType,
+            body is null ? null : JsonUtf8ContentType,
             responseTypeInfo,
             // A success envelope with no result is an answer the client cannot read, not a result.
             static envelope => envelope.Data is { } data

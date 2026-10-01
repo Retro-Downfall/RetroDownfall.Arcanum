@@ -4,6 +4,7 @@ using System.Text.Json.Serialization.Metadata;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -230,6 +231,25 @@ public sealed partial class MemoryCommands
 
         WriteReviewPlan(prepared.Value);
 
+        // Releasing an erasure fingerprint is the unsafe direction, so it is part of what is approved:
+        // a warning beside the question, on the diagnostic stream, in every mode.
+        foreach (MemoryReviewBulkPlanItemDto item in prepared.Value.Items)
+        {
+            switch (item.ReleasesErasureFingerprint)
+            {
+                case true:
+                    dispatcher.WriteDiagnostic(
+                        $"Event {item.EventSequence} ({item.SubjectId}) releases an erasure fingerprint: "
+                        + "extraction or agents may write this again in its scope.");
+                    break;
+
+                case null:
+                    dispatcher.WriteDiagnostic(
+                        $"Event {item.EventSequence} ({item.SubjectId}): {MemoryErasureRenderer.UncheckedFingerprints}");
+                    break;
+            }
+        }
+
         string prompt = prepared.Value.Action is MemoryReviewAction.Confirm
             ? $"Acknowledge that these {prepared.Value.Items.Length} exact {prepared.Value.Store} version(s) were reviewed? This changes no content, lifecycle, or Covenant lane."
             : $"Apply {prepared.Value.Action.ToString().ToLowerInvariant()} to {prepared.Value.Items.Length} exact {prepared.Value.Store} version(s)? No other memory store is touched.";
@@ -270,6 +290,22 @@ public sealed partial class MemoryCommands
                 $"{result.Value.Action} completed for {result.Value.Items.Length} exact {result.Value.Store} version(s). "
                 + $"Reviewed through event {result.Value.ReviewedThroughEventSequence}. "
                 + $"Replayed: {(result.Value.Replayed ? "yes" : "no")}. No other memory store was touched.");
+
+            foreach (MemoryReviewBulkItemResultDto item in result.Value.Items)
+            {
+                switch (item.ReleasedErasureFingerprint)
+                {
+                    case true:
+                        dispatcher.WritePayload(
+                            $"Released an erasure fingerprint for event {item.EventSequence} ({item.SubjectId}).");
+                        break;
+
+                    case null:
+                        dispatcher.WritePayload(
+                            $"Event {item.EventSequence} ({item.SubjectId}): {MemoryErasureRenderer.UncheckedFingerprints}");
+                        break;
+                }
+            }
         }
 
         return (int)CliExitCode.Success;

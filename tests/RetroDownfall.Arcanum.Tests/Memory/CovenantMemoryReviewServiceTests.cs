@@ -574,6 +574,9 @@ public sealed class CovenantMemoryReviewServiceTests
             plan = (await runtime.Service.PrepareAsync(correction, prepareLease, Token)).Value;
         }
 
+        // The plan discloses, before the question, exactly what the apply will do.
+        Assert.Equal(expected, Assert.Single(plan.Items).ReleasesErasureFingerprint);
+
         MemoryReviewBulkResultDto first;
 
         await using (CovenantWriteLease writeLease = runtime.WriteLease())
