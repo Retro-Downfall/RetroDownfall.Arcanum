@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 454;
+    private const int ExpectedProductionAcquisitionCount = 455;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -37,6 +37,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureInventorySource.cs", "CovenantErasureInventorySource", "WithOrdinarySnapshotAsync(2)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantHealthyCatalogErasureGuard.cs", "CovenantHealthyCatalogErasureGuard", "RequireHealthyAsync(1)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs", "MemoryErasureScrubber", "CheckpointAsync(1)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs", "MemoryErasureScrubber", "ReadCommittedReceiptAsync(2)"),
     ];
 
     private static readonly string[] Task9AmbientMaintenanceTestBridge =

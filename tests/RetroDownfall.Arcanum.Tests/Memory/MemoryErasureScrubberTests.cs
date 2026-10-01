@@ -20,7 +20,8 @@ namespace RetroDownfall.Arcanum.Tests.Memory;
 
 /// <summary>
 /// The post-commit WAL scrub: one checked truncating checkpoint on its own unpooled read-write
-/// connection, with a short wait so a busy log is reported rather than waited out.
+/// connection, with a short wait so a busy log is reported rather than waited out; and the receipt
+/// read-back that settles an uncertain commit on a read-only connection of its own.
 /// </summary>
 [Collection("Grimoire")]
 public sealed class MemoryErasureScrubberTests(GrimoireFixture fixture) : IAsyncLifetime
@@ -145,6 +146,85 @@ public sealed class MemoryErasureScrubberTests(GrimoireFixture fixture) : IAsync
         Assert.Equal(
             MemoryErasureWalCheckpointAttempt.Unavailable,
             await new MemoryErasureScrubber(factory).CheckpointAsync(Token));
+    }
+
+    /// <summary>
+    /// An erase whose commit failed reads its receipt back on a read-only connection of its own, which
+    /// it releases, and finds exactly the receipt that committed or none.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_receipt_read_back_uses_a_fresh_read_only_connection_and_finds_what_committed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FixtureOrdinaryConnectionFactory factory = FixtureOrdinaryConnectionFactory.For(_db!);
+
+        using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
+
+        MemoryErasureReceiptRow committed = new(
+            Guid.NewGuid(),
+            MemoryReviewStore.Saga,
+            key.KeyId.ToArray(),
+            new byte[32],
+            new byte[32],
+            1,
+            1,
+            0,
+            0,
+            MemoryExternalEvidence.Known,
+            MemoryExternalEvidence.NotRecorded,
+            MemoryExternalEvidence.Known,
+            MemoryExternalEvidence.NotRecorded,
+            MemoryExternalEvidence.NotRecorded,
+            0,
+            1,
+            1);
+
+        await Connection.OpenAsync(Token);
+
+        await using (SqliteTransaction transaction = Connection.BeginTransaction())
+        {
+            await MemoryErasureEvidence.InsertReceiptAsync(Connection, transaction, committed, [new byte[32]], Token);
+
+            await transaction.CommitAsync(Token);
+        }
+
+        MemoryErasureScrubber scrubber = new(factory);
+
+        Result<MemoryErasureReceiptRow?> found = await scrubber.ReadCommittedReceiptAsync(committed.MutationId, Token);
+
+        Assert.True(found.IsSuccess);
+
+        Assert.Equal(committed.MutationId, found.Value!.MutationId);
+
+        Result<MemoryErasureReceiptRow?> absent = await scrubber.ReadCommittedReceiptAsync(Guid.NewGuid(), Token);
+
+        Assert.True(absent.IsSuccess);
+
+        Assert.Null(absent.Value);
+
+        Assert.Equal([GrimoireOrdinaryFreshConnectionKind.ReadOnly, GrimoireOrdinaryFreshConnectionKind.ReadOnly], factory.Kinds);
+
+        Assert.Equal(0, factory.LiveFreshLeaseCount);
+    }
+
+    /// <summary>
+    /// A read-back that cannot be made says neither that the erase committed nor that it did not, so it
+    /// is a failure rather than an absent receipt.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_receipt_read_back_that_cannot_open_is_a_failure_not_an_absence(bool throws)
+    {
+        RefusingFactory factory = new() { Throw = throws };
+
+        Result<MemoryErasureReceiptRow?> read = await new MemoryErasureScrubber(factory)
+            .ReadCommittedReceiptAsync(Guid.NewGuid(), Token);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal([GrimoireOrdinaryFreshConnectionKind.ReadOnly], factory.Requested);
     }
 
     [Fact]

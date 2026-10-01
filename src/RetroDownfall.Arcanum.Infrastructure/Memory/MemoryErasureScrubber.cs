@@ -10,7 +10,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 
 /// <summary>
-/// The post-commit write-ahead-log scrub every erase attempts once its transaction is disposed.
+/// The post-commit write-ahead-log scrub every erase attempts once its transaction is disposed, and the
+/// receipt read-back an erase makes when its commit's outcome is uncertain.
 /// </summary>
 /// <remarks>
 /// <para>The checkpoint runs on a dedicated, unpooled read-write connection opened for it alone, never
@@ -24,9 +25,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 /// checkpoint that could not be read, is <see cref="MemoryErasureWalCheckpointAttempt.Unavailable"/>,
 /// because a committed erase must always be able to report its result.</para>
 ///
+/// <para><b>An uncertain commit is settled by its receipt.</b> A <c>COMMIT</c> that fails with anything
+/// but a busy database may still have persisted. The erase reads its receipt back here, on a read-only
+/// unpooled connection of its own, after its transaction is disposed: a receipt that is there is an
+/// erase that happened, and one that is not is an erase that did not. A read that cannot be made says
+/// neither, and the erase reports its failure.</para>
+///
 /// <para>Its two log lines are content-free: the attempt, and, when the erase protocol abandons a
 /// committed erase's scrub or receipt upgrade, the failure's type. Neither names content, a
-/// fingerprint, a key, or an exception message.</para>
+/// fingerprint, a key, or an exception message. The read-back logs nothing.</para>
 /// </remarks>
 internal sealed class MemoryErasureScrubber(
     IGrimoireOrdinaryConnectionFactory connections,
@@ -35,6 +42,10 @@ internal sealed class MemoryErasureScrubber(
     private readonly IGrimoireOrdinaryConnectionFactory _connections = connections;
 
     private readonly ILogger<MemoryErasureScrubber> _logger = logger;
+
+    private static readonly Error ReceiptUnreadable = new(
+        ErrorCodes.MemoryErasure.Unavailable,
+        "The erasure receipt could not be read back to settle an uncertain commit.");
 
     internal MemoryErasureScrubber(IGrimoireOrdinaryConnectionFactory connections)
         : this(connections, NullLogger<MemoryErasureScrubber>.Instance)
@@ -70,6 +81,38 @@ internal sealed class MemoryErasureScrubber(
         _logger.LogInformation("Erasure write-ahead-log checkpoint attempt: {WalCheckpointAttempt}.", attempt);
 
         return attempt;
+    }
+
+    /// <summary>
+    /// Reads one erase's receipt on a fresh read-only connection, to settle whether a commit that
+    /// failed persisted.
+    /// </summary>
+    /// <returns>The receipt, null when none is recorded, or a failure when the read could not be made.</returns>
+    internal async Task<Result<MemoryErasureReceiptRow?>> ReadCommittedReceiptAsync(
+        Guid mutationId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            Result<IGrimoireOrdinaryConnectionLease> opened = await _connections
+                .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (opened.IsFailure)
+            {
+                return Result<MemoryErasureReceiptRow?>.Failure(ReceiptUnreadable);
+            }
+
+            await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+            return Result<MemoryErasureReceiptRow?>.Success(await MemoryErasureEvidence
+                .ReadReceiptAsync(lease.Connection, null, mutationId, cancellationToken)
+                .ConfigureAwait(false));
+        }
+        catch (Exception failure) when (IsStorageFault(failure) || failure is InvalidDataException)
+        {
+            return Result<MemoryErasureReceiptRow?>.Failure(ReceiptUnreadable);
+        }
     }
 
     /// <summary>

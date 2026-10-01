@@ -1,6 +1,8 @@
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
@@ -88,6 +90,14 @@ internal sealed class SagaMemoryErasureService(
         ErrorCodes.MemoryErasure.ErasureIncomplete,
         "The memory's stored identity cannot be named exactly, so nothing was erased.");
 
+    private static readonly Error UnseekableTwin = new(
+        ErrorCodes.MemoryErasure.ErasureIncomplete,
+        "A memory with this content in this scope is stored under a Campaign spelling the erase cannot seek, so nothing was erased.");
+
+    private static readonly Error SharedMemberId = new(
+        ErrorCodes.MemoryErasure.ErasureIncomplete,
+        "Another memory shares the identity of one this erase would remove, so nothing was erased.");
+
     private static readonly Error NotAbsent = new(
         ErrorCodes.MemoryErasure.ErasureIncomplete,
         "The erase could not prove every planned row absent, so it rolled back and recorded nothing.");
@@ -107,6 +117,12 @@ internal sealed class SagaMemoryErasureService(
     /// <summary>A Saga request names no scope, so an apply and its replay state the one note every erase does.</summary>
     private static readonly MemoryErasureNote[] ApplyNotes =
         MemoryErasureNotes.For(MemoryReviewStore.Saga, MemoryErasureScopeKind.Global, reclaimsKey: false);
+
+    /// <summary>Test seam: replaces the transaction's <c>COMMIT</c> when set.</summary>
+    internal Func<SqliteTransaction, CancellationToken, Task>? CommitForTesting { get; init; }
+
+    /// <summary>Test seam: runs once the pre-transaction receipt probe has found no receipt.</summary>
+    internal Func<CancellationToken, Task>? AfterReceiptProbeForTesting { get; init; }
 
     public async Task<Result<MemoryErasurePreflightDto>> PrepareAsync(
         SagaErasePrepareRequest request,
@@ -305,6 +321,11 @@ internal sealed class SagaMemoryErasureService(
                 .ConfigureAwait(false);
         }
 
+        if (AfterReceiptProbeForTesting is { } afterProbe)
+        {
+            await afterProbe(cancellationToken).ConfigureAwait(false);
+        }
+
         Result<MemoryErasurePlanTokenFacts> read = tokens.ReadErasurePlan(request.PreflightToken);
 
         if (read.IsFailure
@@ -326,17 +347,22 @@ internal sealed class SagaMemoryErasureService(
             CovenantArtifactErasureAuthority? erasure = null;
 
             // A labelled plan takes the one write lease over its labels' owner before BEGIN, and the lease
-            // must still see the dataset the labels were measured in.
-            if (plan.DatasetGeneration is { } generation)
+            // must still see the dataset the labels were measured in. A class that no longer exists, or
+            // no longer carries a label, takes no lease: the transaction answers it, replaying a receipt
+            // that committed meanwhile, refusing an erased subject with 410 and a missing row with 404,
+            // and refusing anything else that changed as a stale plan.
+            Result<CovenantOperationScope?> owner = plan.DatasetGeneration is null
+                ? Result<CovenantOperationScope?>.Success(null)
+                : await ReadOwnerAsync(connection, target, cancellationToken).ConfigureAwait(false);
+
+            if (owner.IsFailure)
             {
-                Result<CovenantOperationScope> owner = await ReadOwnerAsync(connection, target, cancellationToken).ConfigureAwait(false);
+                return owner.Error;
+            }
 
-                if (owner.IsFailure)
-                {
-                    return owner.Error;
-                }
-
-                Result<CovenantWriteLease> acquired = await gate.AcquireWriteAsync(owner.Value, cancellationToken).ConfigureAwait(false);
+            if (plan.DatasetGeneration is { } generation && owner.Value is { } labelOwner)
+            {
+                Result<CovenantWriteLease> acquired = await gate.AcquireWriteAsync(labelOwner, cancellationToken).ConfigureAwait(false);
 
                 if (acquired.IsFailure)
                 {
@@ -360,9 +386,18 @@ internal sealed class SagaMemoryErasureService(
                 }
             }
 
-            applied = await SqliteBusyRetry.ExecuteAsync(
-                () => ApplyInTransactionAsync(connection, key, target, requestDigest, plan, erasure, cancellationToken),
-                cancellationToken).ConfigureAwait(false);
+            try
+            {
+                applied = await SqliteBusyRetry.ExecuteAsync(
+                    () => ApplyInTransactionAsync(connection, key, target, requestDigest, plan, erasure, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (UncertainCommitException uncertain)
+            {
+                // The transaction is disposed, so a commit that did not persist has been rolled back.
+                // Only the receipt can say which happened.
+                applied = await SettleUncertainCommitAsync(target, requestDigest, uncertain).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -575,9 +610,59 @@ internal sealed class SagaMemoryErasureService(
             }
         }
 
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await (CommitForTesting is { } commit
+                ? commit(transaction, cancellationToken)
+                : transaction.CommitAsync(cancellationToken)).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException && !IsBusy(failure))
+        {
+            // A busy COMMIT left the transaction open, and the retry's first step re-probes the receipt.
+            // Anything else may have persisted the frame before it failed, so the outcome is uncertain.
+            throw new UncertainCommitException(failure);
+        }
 
         return new Applied(receipt, Replayed: false);
+    }
+
+    /// <summary>
+    /// Settles a commit that failed: the receipt read back on a fresh connection is an erase that
+    /// happened, and its absence, or a read that cannot be made, reports the commit's own failure.
+    /// </summary>
+    private async Task<Applied> SettleUncertainCommitAsync(
+        Target target,
+        byte[] requestDigest,
+        UncertainCommitException uncertain)
+    {
+        Result<MemoryErasureReceiptRow?> reread = await scrubber
+            .ReadCommittedReceiptAsync(target.MutationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (reread.IsSuccess
+            && reread.Value is { Store: MemoryReviewStore.Saga } persisted
+            && CryptographicOperations.FixedTimeEquals(persisted.RequestDigest, requestDigest))
+        {
+            return new Applied(persisted, Replayed: false);
+        }
+
+        ExceptionDispatchInfo.Capture(uncertain.InnerException!).Throw();
+
+        throw new UnreachableException();
+    }
+
+    /// <summary>Whether a failure is SQLite's busy or locked answer, which the busy retry handles.</summary>
+    private static bool IsBusy(Exception failure)
+    {
+        for (Exception? current = failure; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException sqlite)
+            {
+                return sqlite.SqliteErrorCode is 5 or 6;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -618,14 +703,16 @@ internal sealed class SagaMemoryErasureService(
     /// taken before <c>BEGIN</c>.
     /// </summary>
     /// <remarks>
-    /// A class that no longer carries a label, or no longer exists, cannot be the plan that measured one:
-    /// it is stale. The transaction re-proves the labels against the lease either way.
+    /// A class that no longer exists, or no longer carries a label, has no owner, and the transaction
+    /// decides what that means: a replay, 410, 404, or a stale plan. Answering here would pre-empt the
+    /// receipt re-probe and the subject check. Labels that name two owners are refused, because one
+    /// erase holds one write lease.
     /// </remarks>
-    private static async Task<Result<CovenantOperationScope>> ReadOwnerAsync(
+    private static async Task<Result<CovenantOperationScope?>> ReadOwnerAsync(
         SqliteConnection connection,
         Target target,
         CancellationToken cancellationToken) =>
-        await SqliteBusyRetry.ExecuteAsync<Result<CovenantOperationScope>>(
+        await SqliteBusyRetry.ExecuteAsync<Result<CovenantOperationScope?>>(
             async () =>
             {
                 await using SqliteTransaction snapshot = connection.BeginTransaction(deferred: true);
@@ -639,7 +726,7 @@ internal sealed class SagaMemoryErasureService(
 
                 if (row.Value is not { } live)
                 {
-                    return StalePlan;
+                    return Result<CovenantOperationScope?>.Success(null);
                 }
 
                 Result<ClassMembers> members = await ReadClassAsync(connection, snapshot, live, cancellationToken).ConfigureAwait(false);
@@ -653,14 +740,7 @@ internal sealed class SagaMemoryErasureService(
                     .ReadAsync(connection, snapshot, SensitiveArtifactKind.Saga, [.. members.Value.Members.Select(static member => member.Id)], cancellationToken)
                     .ConfigureAwait(false);
 
-                Result<CovenantOperationScope?> owner = SingleOwner(labels);
-
-                if (owner.IsFailure)
-                {
-                    return owner.Error;
-                }
-
-                return owner.Value is { } scope ? scope : StalePlan;
+                return SingleOwner(labels);
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -705,6 +785,13 @@ internal sealed class SagaMemoryErasureService(
             CovenantArtifactPlanTally tally = await CovenantArtifactPlanRunner
                 .RunAsync(connection, transaction, SensitiveArtifactKind.Saga, member.Key, CovenantArtifactPlanMode.Count, cancellationToken)
                 .ConfigureAwait(false);
+
+            // A member's normalised id names exactly its own row. A second row under it, in any scope,
+            // would be deleted with the member.
+            if (tally.ArtifactRows != 1)
+            {
+                return SharedMemberId;
+            }
 
             if (targets is null)
             {
@@ -780,9 +867,14 @@ internal sealed class SagaMemoryErasureService(
     /// The target and its twins: byte-identical content in the target's exact scope and Campaign.
     /// </summary>
     /// <remarks>
-    /// The scope index is sought with the Campaign bound in each spelling a writer has produced:
+    /// <para>The scope index is sought with the Campaign bound in each spelling a writer has produced:
     /// upper- and lower-case, dashed and undashed. A stored Campaign that is not a GUID, a twin whose id
-    /// is not one, or a class that somehow does not contain its own target fails closed.
+    /// is not one, or a class that somehow does not contain its own target fails closed.</para>
+    ///
+    /// <para>The seek is then checked against a count of the same scope and content that compares the
+    /// Campaign normalised, which reads every spelling. A twin stored in a spelling the seek missed would
+    /// be suppressed by the fingerprint and left live by the delete, so a count the seek does not match
+    /// fails closed before anything is deleted.</para>
     /// </remarks>
     private static async Task<Result<ClassMembers>> ReadClassAsync(
         SqliteConnection connection,
@@ -862,9 +954,63 @@ internal sealed class SagaMemoryErasureService(
             return Unidentifiable;
         }
 
+        if (await CountClassAsync(connection, transaction, live, identity, cancellationToken).ConfigureAwait(false) != members.Count)
+        {
+            return UnseekableTwin;
+        }
+
         members.Sort(static (left, right) => string.CompareOrdinal(left.Key, right.Key));
 
         return new ClassMembers(identity, members);
+    }
+
+    /// <summary>
+    /// Every row of the class's scope and content, with the Campaign compared normalised rather than
+    /// sought by spelling.
+    /// </summary>
+    private static async Task<long> CountClassAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        TargetRow live,
+        MemoryErasureIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        if (identity.CampaignId is { } campaign)
+        {
+            command.CommandText =
+                $"""
+                SELECT count(*)
+                FROM saga_memories
+                WHERE ScopeKindCode = $scope
+                  AND {CovenantIdentitySql.Keyed("CampaignId", "$campaign")}
+                  AND Content = $content;
+                """;
+
+            _ = command.Parameters.AddWithValue("$campaign", CovenantIdentitySql.Key(campaign));
+        }
+        else
+        {
+            command.CommandText =
+                """
+                SELECT count(*)
+                FROM saga_memories
+                WHERE ScopeKindCode = $scope
+                  AND CampaignId IS NULL
+                  AND Content = $content;
+                """;
+        }
+
+        _ = command.Parameters.AddWithValue("$scope", (int)live.ScopeKind);
+
+        _ = command.Parameters.AddWithValue("$content", live.Content);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rows
+            ? rows
+            : throw new InvalidDataException("The erased class's cross-check count did not return an integer.");
     }
 
     /// <summary>The target row by its normalised id, or null when no row has that id.</summary>
@@ -1048,4 +1194,8 @@ internal sealed class SagaMemoryErasureService(
         MemoryErasureEffectFacts Facts);
 
     private sealed record Applied(MemoryErasureReceiptRow Receipt, bool Replayed);
+
+    /// <summary>A <c>COMMIT</c> that failed in a way that may still have persisted.</summary>
+    private sealed class UncertainCommitException(Exception commitFailure)
+        : Exception("The erase's commit failed, and its outcome is settled by its receipt.", commitFailure);
 }

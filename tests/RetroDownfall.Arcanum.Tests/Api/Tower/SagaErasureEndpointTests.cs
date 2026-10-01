@@ -8,11 +8,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -20,9 +23,13 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -879,6 +886,610 @@ public sealed class SagaErasureEndpointTests
         await AssertNoOrphanClaimsAsync(factory);
     }
 
+    /// <summary>
+    /// A labelled memory takes the owner's write lease before its transaction, and an erase that finds
+    /// its subject already erased by another mutation must still answer as the transaction would: 410,
+    /// not a stale plan.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_second_mutation_on_a_labelled_memory_answers_410_at_apply()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(
+            new InMemoryOsCredentialStore(),
+            covenant: true);
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        await LabelAsync(factory, target, sessionA, campaignA);
+
+        SagaErasePrepareRequest first = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        SagaErasePrepareRequest second = first with { MutationId = Guid.NewGuid() };
+
+        MemoryErasurePreflightDto firstPlan = await PrepareOkAsync(driver, first);
+
+        MemoryErasurePreflightDto secondPlan = await PrepareOkAsync(driver, second);
+
+        Assert.Equal(1, firstPlan.Plan.LabelsToRemove);
+
+        MemoryErasureResultDto applied = await driver.ApplySagaAsync(Apply(first, firstPlan));
+
+        Assert.False(applied.Replayed);
+
+        await AssertApplyRefusedAsync(driver, Apply(second, secondPlan), HttpStatusCode.Gone, ErrorCodes.MemoryErasure.SubjectErased);
+
+        Assert.Equal(0, await ReceiptSubjectsAsync(factory, second.MutationId));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// Two applies of one labelled mutation race: the retry finds no receipt before the original
+    /// commits, and must replay the original's receipt rather than refuse the erase it asked for.
+    /// </summary>
+    /// <remarks>
+    /// The seam runs the original apply to completion between the retry's receipt probe and everything
+    /// after it, which is the one interleaving that matters and the one a plain concurrent pair reaches
+    /// only by chance.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_labelled_retry_that_misses_the_receipt_replays_the_committed_erase()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        MemoryErasureRouteDriver? inner = null;
+
+        SagaEraseRequest? original = null;
+
+        MemoryErasureResultDto? committed = null;
+
+        int fired = 0;
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(
+            new InMemoryOsCredentialStore(),
+            covenant: true);
+
+        UseSeamedService(
+            factory,
+            afterReceiptProbe: async cancellationToken =>
+            {
+                if (Interlocked.Exchange(ref fired, 1) == 0)
+                {
+                    committed = await inner!.ApplySagaAsync(original!, cancellationToken);
+                }
+            });
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        inner = new MemoryErasureRouteDriver(factory.CreateAuthenticatedClient());
+
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        await LabelAsync(factory, target, sessionA, campaignA);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        original = Apply(prepare, await PrepareOkAsync(driver, prepare));
+
+        MemoryErasureResultDto retried = await driver.ApplySagaAsync(original);
+
+        Assert.NotNull(committed);
+
+        Assert.False(committed!.Replayed);
+
+        Assert.True(retried.Replayed);
+
+        AssertSameErase(committed, retried);
+
+        Assert.Equal(1, await ReceiptsAsync(factory, prepare.MutationId));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// A <c>COMMIT</c> that fails after its frame persisted is an erase that happened: the receipt is
+    /// read back on a connection of its own and the committed erase is reported.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_commit_that_fails_after_persisting_reports_the_committed_erase()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        UseSeamedService(
+            factory,
+            commit: static async (transaction, cancellationToken) =>
+            {
+                await transaction.CommitAsync(cancellationToken);
+
+                throw new SqliteException("disk I/O error", 10);
+            });
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        MemoryErasurePreflightDto preflight = await PrepareOkAsync(driver, prepare);
+
+        MemoryErasureResultDto result = await driver.ApplySagaAsync(Apply(prepare, preflight));
+
+        Assert.False(result.Replayed);
+
+        Assert.Equal(prepare.MutationId, result.MutationId);
+
+        Assert.Equal(preflight.EffectDigest, result.EffectDigest);
+
+        Assert.Equal(preflight.Plan.RowsToRemove, result.Local.RemovedRowCount);
+
+        await AssertShowRefusedAsync(client, target, HttpStatusCode.NotFound, ErrorCodes.Saga.NotFound);
+
+        Assert.Equal(1, await ReceiptsAsync(factory, prepare.MutationId));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// A <c>COMMIT</c> that fails before anything persisted reports the failure and no result: the
+    /// receipt is absent on a fresh connection, so nothing is said to have been erased.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_commit_that_fails_without_persisting_reports_the_failure_and_no_result()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<MemoryErasureScrubber> scrubLog = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        factory.ServiceOverrides += services =>
+            services.AddSingleton<ILogger<MemoryErasureScrubber>>(scrubLog);
+
+        UseSeamedService(
+            factory,
+            commit: static (_, _) => throw new SqliteException("disk I/O error", 10));
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        MemoryErasurePreflightDto preflight = await PrepareOkAsync(driver, prepare);
+
+        using HttpResponseMessage response = await driver.PostAsync(
+            "/api/memory/saga/erase",
+            Apply(prepare, preflight),
+            ArcanumJsonContext.Default.SagaEraseRequest);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        await AssertNoResultAsync(response);
+
+        Assert.Empty(scrubLog.Entries);
+
+        await AssertShownAsync(client, target, T);
+
+        Assert.Equal(0, await ReceiptsAsync(factory, prepare.MutationId));
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// The twin seek binds the Campaign in every spelling a writer has produced, and each one is erased.
+    /// </summary>
+    /// <remarks>
+    /// The version-5 guard now admits only the canonical spelling, so the three legacy spellings can
+    /// exist only on rows written before its sweep reached them. The guard is lifted for the one
+    /// rewrite that recreates each, and put back from the shipped schema file.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Every_campaign_spelling_a_writer_has_produced_is_in_the_twin_class()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        string lowerDashed = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        string upperUndashed = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        string lowerUndashed = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        await RewriteCampaignSpellingAsync(factory, lowerDashed, campaignA.ToString("D"));
+
+        await RewriteCampaignSpellingAsync(factory, upperUndashed, campaignA.ToString("N").ToUpperInvariant());
+
+        await RewriteCampaignSpellingAsync(factory, lowerUndashed, campaignA.ToString("N"));
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
+
+        Assert.Equal(4, erased.Preflight.Plan.ErasedItemCount);
+
+        Assert.Equal(4, erased.Result.Local.ErasedItemCount);
+
+        foreach (string id in (string[])[target, lowerDashed, upperUndashed, lowerUndashed])
+        {
+            await AssertShowRefusedAsync(client, id, HttpStatusCode.NotFound, ErrorCodes.Saga.NotFound);
+        }
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// A twin stored under a Campaign spelling the seek does not bind would be suppressed by the
+    /// fingerprint and left live by the delete, so the erase refuses and removes nothing.
+    /// </summary>
+    /// <remarks>
+    /// No writer has ever produced a mixed-case Campaign, and the version-5 guard refuses one, so the
+    /// guard is lifted to plant it. The cross-check that catches it counts the scope with the
+    /// normalised comparison, which reads every spelling.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_twin_under_a_campaign_spelling_the_seek_misses_fails_closed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        string hidden = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        string canonical = campaignA.ToString("D").ToUpperInvariant();
+
+        await RewriteCampaignSpellingAsync(factory, hidden, canonical[..8].ToLowerInvariant() + canonical[8..]);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        using HttpResponseMessage response = await PostPrepareAsync(driver, prepare);
+
+        await AssertRefusalAsync(response, HttpStatusCode.InternalServerError, ErrorCodes.MemoryErasure.ErasureIncomplete);
+
+        Assert.Equal(2, await ContentRowsAsync(factory, T));
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+    }
+
+    /// <summary>
+    /// A member whose normalised id another row shares would take that row with it, so the erase
+    /// refuses and removes nothing.
+    /// </summary>
+    /// <remarks>
+    /// Every Saga id is minted by <c>Guid.NewGuid().ToString()</c>, so no writer stores two ids that
+    /// differ only in case; the colliding row is planted directly to stand in for one.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_twin_whose_id_another_row_shares_fails_closed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        (_, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        string twin = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        await ExecuteAsync(
+            factory,
+            "INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode) VALUES ($id, $content, $createdAt, 1);",
+            [("$id", twin.ToUpperInvariant()), ("$content", Other), ("$createdAt", UtcInstantText.Format(DateTimeOffset.UtcNow))]);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        using HttpResponseMessage response = await PostPrepareAsync(driver, prepare);
+
+        await AssertRefusalAsync(response, HttpStatusCode.InternalServerError, ErrorCodes.MemoryErasure.ErasureIncomplete);
+
+        Assert.Equal(2, await ContentRowsAsync(factory, T));
+
+        Assert.Equal(1, await ContentRowsAsync(factory, Other));
+    }
+
+    /// <summary>
+    /// The plan's mirror, attachment-provenance and review rows are measured, removed, and counted
+    /// exactly, each through its own production writer.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_erase_removes_the_mirror_provenance_and_review_rows_it_measured()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        // No schema file installs the mirror; an accelerator builds it. A plain table stands in for a
+        // mirror this runtime can write, and The Weave is told it is there so the insert fills it.
+        await ExecuteAsync(
+            factory,
+            """CREATE TABLE "saga_memory_embeddings_vec" ("MemoryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL);""");
+
+        factory.Services.GetRequiredService<WeaveIndexAvailability>().SetAvailable(true, "Test mirror present.");
+
+        string target = Guid.NewGuid().ToString();
+
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            SagaMemoryWriteOutcome written = await scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>().InsertAsync(
+                target,
+                T,
+                DateTimeOffset.UtcNow,
+                sessionA,
+                tags: null,
+                source: "attachment-extraction",
+                Vector(),
+                new AttachmentMemoryProvenance(
+                    sessionA,
+                    Guid.NewGuid(),
+                    "logical-key",
+                    1,
+                    "attachment-hash",
+                    DateTimeOffset.UtcNow,
+                    "note",
+                    AttachmentSourceAvailability.Available),
+                CancellationToken.None);
+
+            Assert.Equal(SagaMemoryWriteOutcome.Written, written);
+        }
+
+        await ConfirmReviewAsync(client, campaignA, target);
+
+        string[] ids = [target];
+
+        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_vec WHERE MemoryId IN ({0})", ids));
+
+        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})", ids));
+
+        Assert.True(await CountForIdsAsync(factory, ReviewEvents, ids) > 0);
+
+        Assert.True(await CountForIdsAsync(factory, DecisionReceipts, ids) > 0);
+
+        long before = await PlanRowsAsync(factory, ids);
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
+
+        Assert.Equal(before, erased.Preflight.Plan.RowsToRemove);
+
+        Assert.Equal(before, erased.Result.Local.RemovedRowCount);
+
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_vec WHERE MemoryId IN ({0})", ids));
+
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})", ids));
+
+        Assert.Equal(0, await CountForIdsAsync(factory, ReviewEvents, ids));
+
+        Assert.Equal(0, await CountForIdsAsync(factory, DecisionReceipts, ids));
+
+        Assert.Equal(0, await PlanRowsAsync(factory, ids, requireRows: false));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// Every Session without a resolved binding shares one unresolved scope, so the erased class spans
+    /// them, and the preflight says the fingerprint stops matching once a binding is resolved.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_legacy_unresolved_memory_is_erased_across_every_unbound_session()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        Guid firstSession = await UnboundSessionAsync(client, "first");
+
+        Guid secondSession = await UnboundSessionAsync(client, "second");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, firstSession);
+
+        string twin = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, secondSession);
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
+
+        Assert.Equal(2, erased.Preflight.Plan.ErasedItemCount);
+
+        Assert.Equal(
+            [MemoryErasureNote.UnresolvedScopeStopsMatchingOnResolution, MemoryErasureNote.OtherScopesUnaffected],
+            erased.Preflight.Notes);
+
+        Assert.Equal([MemoryErasureNote.OtherScopesUnaffected], erased.Result.Notes);
+
+        await AssertShowRefusedAsync(client, target, HttpStatusCode.NotFound, ErrorCodes.Saga.NotFound);
+
+        await AssertShowRefusedAsync(client, twin, HttpStatusCode.NotFound, ErrorCodes.Saga.NotFound);
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// The fingerprint refuses the erased text in the erased scope and nowhere else: not in another
+    /// Campaign, not in Global, and not with a byte of difference.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_fingerprint_refuses_the_text_only_in_the_erased_scope()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        (_, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+
+        (_, Guid sessionB) = await BoundSessionAsync(factory, client, "b");
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+
+        _ = await driver.EraseSagaAsync(target);
+
+        Assert.Equal(SagaMemoryWriteOutcome.Suppressed, await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, T, sessionA));
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, T, sessionB));
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, T));
+
+        Assert.Equal(SagaMemoryWriteOutcome.Written, await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, T + " ", sessionA));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    private const string ReviewEvents =
+        "SELECT count(*) FROM annal_review_events WHERE SubjectStoreCode = 1 AND SubjectId IN ({0})";
+
+    private const string DecisionReceipts =
+        "SELECT count(*) FROM annal_review_decision_receipts WHERE ReviewEventSequence IN "
+        + "(SELECT Sequence FROM annal_review_events WHERE SubjectStoreCode = 1 AND SubjectId IN ({0}))";
+
+    /// <summary>
+    /// Replaces the host's erase service with the production one carrying test seams, built from the
+    /// host's own registrations.
+    /// </summary>
+    private static void UseSeamedService(
+        ArcanumWebApplicationFactory factory,
+        Func<SqliteTransaction, CancellationToken, Task>? commit = null,
+        Func<CancellationToken, Task>? afterReceiptProbe = null) =>
+        factory.ServiceOverrides += services => services.AddScoped<ISagaMemoryErasureService>(provider =>
+            new SagaMemoryErasureService(
+                provider.GetRequiredService<ArcanumDbContext>(),
+                provider.GetRequiredService<IMemoryErasureKeyCreator>(),
+                provider.GetRequiredService<IMemoryErasureKeyProvider>(),
+                provider.GetRequiredService<IMemoryErasureTokenCodec>(),
+                provider.GetRequiredService<MemoryErasureScrubber>(),
+                provider.GetRequiredService<ICovenantOperationGate>(),
+                provider.GetRequiredService<IOperatorAuthorityContextIssuer>(),
+                provider.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>())
+            {
+                CommitForTesting = commit,
+                AfterReceiptProbeForTesting = afterReceiptProbe,
+            });
+
+    /// <summary>A Session created through its route, which binds it to no Campaign until a turn begins.</summary>
+    private static async Task<Guid> UnboundSessionAsync(HttpClient client, string suffix)
+    {
+        using HttpResponseMessage created = await client.PostAsync(
+            "/api/sessions",
+            JsonContent.Create(new CreateSessionRequest(null, $"Unbound {suffix}"), ArcanumJsonContext.Default.CreateSessionRequest));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        return (await MemoryErasureRouteDriver.ReadDataAsync(created, ArcanumJsonContext.Default.ApiResponseSessionDetailDto)).Id;
+    }
+
+    /// <summary>Confirms one memory's current version through the Saga review routes, which records a decision.</summary>
+    private static async Task ConfirmReviewAsync(HttpClient client, Guid campaignId, string memoryId)
+    {
+        using HttpResponseMessage listed = await client.PostAsync(
+            "/api/memory/saga/review/list",
+            JsonContent.Create(
+                new SagaReviewListRequest(SagaMemoryScopeKind.Campaign, campaignId, 50, null),
+                ArcanumJsonContext.Default.SagaReviewListRequest));
+
+        Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+        SagaReviewPageDto page = await MemoryErasureRouteDriver.ReadDataAsync(listed, ArcanumJsonContext.Default.ApiResponseSagaReviewPageDto);
+
+        SagaReviewItemDto item = Assert.Single(
+            page.Items,
+            candidate => string.Equals(candidate.SubjectId, memoryId, StringComparison.OrdinalIgnoreCase));
+
+        SagaReviewBulkPrepareRequest prepare = new(
+            Guid.NewGuid(),
+            SagaMemoryScopeKind.Campaign,
+            campaignId,
+            MemoryReviewAction.Confirm,
+            [new SagaReviewDecision(item.ObservationToken, null)]);
+
+        using HttpResponseMessage prepared = await client.PostAsync(
+            "/api/memory/saga/review/prepare",
+            JsonContent.Create(prepare, ArcanumJsonContext.Default.SagaReviewBulkPrepareRequest));
+
+        Assert.Equal(HttpStatusCode.OK, prepared.StatusCode);
+
+        MemoryReviewBulkPlanDto plan = await MemoryErasureRouteDriver.ReadDataAsync(
+            prepared,
+            ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
+
+        using HttpResponseMessage applied = await client.PostAsync(
+            "/api/memory/saga/review/apply",
+            JsonContent.Create(
+                new SagaReviewBulkApplyRequest(prepare, plan.PreparedPlanToken),
+                ArcanumJsonContext.Default.SagaReviewBulkApplyRequest));
+
+        Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+    }
+
+    /// <summary>
+    /// Rewrites one memory's stored Campaign to a spelling the version-5 guard would refuse, standing
+    /// in for a row written before that guard's sweep reached it.
+    /// </summary>
+    private static async Task RewriteCampaignSpellingAsync(ArcanumWebApplicationFactory factory, string memoryId, string spelling)
+    {
+        const string guard = "saga_memories_CampaignId_guard_identity_update";
+
+        await ExecuteAsync(factory, $"DROP TRIGGER {guard};");
+
+        await ExecuteAsync(
+            factory,
+            "UPDATE saga_memories SET CampaignId = $campaign WHERE Id = $id;",
+            [("$campaign", spelling), ("$id", memoryId)]);
+
+        await ExecuteAsync(
+            factory,
+            File.ReadAllText(Path.Combine(
+                NativeSqlCipherTestPaths.RepositoryRoot(),
+                "src",
+                "RetroDownfall.Arcanum.Infrastructure",
+                "Data",
+                "Schema",
+                "Triggers",
+                guard + ".sql")));
+
+        Assert.Equal(1, await ScalarAsync(factory, "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name = $name;", [("$name", guard)]));
+    }
+
+    private static float[] Vector()
+    {
+        float[] vector = new float[MemoryErasureRouteDriver.Dimensions];
+
+        vector[0] = 1f;
+
+        return vector;
+    }
+
     private static (HttpClient Client, MemoryErasureRouteDriver Driver) Connect(ArcanumWebApplicationFactory factory)
     {
         HttpClient client = factory.CreateAuthenticatedClient();
@@ -1007,7 +1618,15 @@ public sealed class SagaErasureEndpointTests
 
         Assert.Equal(code, await MemoryErasureRouteDriver.ReadErrorCodeAsync(response));
 
+        await AssertNoResultAsync(response);
+    }
+
+    /// <summary>A failure envelope that carries no result.</summary>
+    private static async Task AssertNoResultAsync(HttpResponseMessage response)
+    {
         using System.Text.Json.JsonDocument body = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.False(body.RootElement.GetProperty("isSuccess").GetBoolean());
 
         // The envelope omits an absent result rather than writing a null one; either way there is none.
         Assert.False(
@@ -1069,7 +1688,10 @@ public sealed class SagaErasureEndpointTests
     /// Every row the Saga plan owns for these memories, counted table by table with the relations
     /// spelled out here rather than borrowed from the plan. Assertion-only.
     /// </summary>
-    private static async Task<long> PlanRowsAsync(ArcanumWebApplicationFactory factory, IReadOnlyList<string> ids)
+    private static async Task<long> PlanRowsAsync(
+        ArcanumWebApplicationFactory factory,
+        IReadOnlyList<string> ids,
+        bool requireRows = true)
     {
         const string claims = "SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId IN ({0})";
 
@@ -1097,12 +1719,19 @@ public sealed class SagaErasureEndpointTests
             total += await CountForIdsAsync(factory, count, ids);
         }
 
-        // Nothing in these hosts builds a vector mirror, so the plan's mirror target counts nothing.
-        Assert.Equal(0, await ScalarAsync(
-            factory,
-            "SELECT count(*) FROM sqlite_master WHERE name = 'saga_memory_embeddings_vec';"));
+        // A mirror exists only where a test built one in place of an accelerator, and only as a plain
+        // table; a legacy virtual mirror is never counted, because the plan skips it.
+        if (await ScalarAsync(
+                factory,
+                "SELECT count(*) FROM sqlite_master WHERE name = 'saga_memory_embeddings_vec' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%';") == 1)
+        {
+            total += await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_vec WHERE MemoryId IN ({0})", ids);
+        }
 
-        Assert.True(total >= ids.Count * 4L);
+        if (requireRows)
+        {
+            Assert.True(total >= ids.Count * 4L);
+        }
 
         return total;
     }
@@ -1153,7 +1782,10 @@ public sealed class SagaErasureEndpointTests
         return (long)(await command.ExecuteScalarAsync())!;
     }
 
-    private static async Task ExecuteAsync(ArcanumWebApplicationFactory factory, string sql)
+    private static async Task ExecuteAsync(
+        ArcanumWebApplicationFactory factory,
+        string sql,
+        IReadOnlyList<(string Name, object Value)>? parameters = null)
     {
         using IServiceScope scope = factory.Services.CreateScope();
 
@@ -1162,6 +1794,11 @@ public sealed class SagaErasureEndpointTests
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters ?? [])
+        {
+            _ = command.Parameters.AddWithValue(name, value);
+        }
 
         _ = await command.ExecuteNonQueryAsync();
     }

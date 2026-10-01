@@ -45,9 +45,9 @@ internal sealed record MemoryErasureRoundTrip<TApply>(
 /// the caller's in-memory one, and a caller that restarts the host passes the same instance to the next
 /// one, so the erasure key survives the restart exactly as it would in the OS store.</para>
 ///
-/// <para>The client is authenticated on the way in. A caller that hands over a bare
-/// <c>CreateClient()</c> gets the test API key added, and an unauthenticated probe uses its own client
-/// rather than this driver.</para>
+/// <para>The driver authenticates its own requests: each one it sends carries the test API key unless
+/// the client already sends one. The caller's client is never changed, so a test may build the driver
+/// from a bare <c>CreateClient()</c> and still use that same client for an unauthenticated probe.</para>
 /// </remarks>
 internal sealed class MemoryErasureRouteDriver
 {
@@ -59,11 +59,6 @@ internal sealed class MemoryErasureRouteDriver
     internal MemoryErasureRouteDriver(HttpClient client)
     {
         ArgumentNullException.ThrowIfNull(client);
-
-        if (!client.DefaultRequestHeaders.Contains(ArcanumApiHeaders.ApiKey))
-        {
-            client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, ArcanumWebApplicationFactory.TestApiKey);
-        }
 
         _client = client;
     }
@@ -220,7 +215,7 @@ internal sealed class MemoryErasureRouteDriver
         Guid? mutationId = null,
         CancellationToken ct = default)
     {
-        using HttpResponseMessage shown = await _client.GetAsync($"/api/memory/saga/{memoryId}", ct);
+        using HttpResponseMessage shown = await SendAsync(HttpMethod.Get, $"/api/memory/saga/{memoryId}", content: null, ct);
 
         Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
 
@@ -375,12 +370,11 @@ internal sealed class MemoryErasureRouteDriver
             prepare.Reactivate,
             preflight.PreflightToken);
 
-        using HttpRequestMessage message = new(HttpMethod.Put, "/api/memory/covenant")
-        {
-            Content = JsonContent.Create(commit, ArcanumJsonContext.Default.CovenantSetRequest),
-        };
-
-        using HttpResponseMessage committed = await _client.SendAsync(message, ct);
+        using HttpResponseMessage committed = await SendAsync(
+            HttpMethod.Put,
+            "/api/memory/covenant",
+            JsonContent.Create(commit, ArcanumJsonContext.Default.CovenantSetRequest),
+            ct);
 
         Assert.Equal(HttpStatusCode.OK, committed.StatusCode);
 
@@ -393,7 +387,7 @@ internal sealed class MemoryErasureRouteDriver
         TRequest body,
         JsonTypeInfo<TRequest> info,
         CancellationToken ct = default) =>
-        _client.PostAsync(path, JsonContent.Create(body, info), ct);
+        SendAsync(HttpMethod.Post, path, JsonContent.Create(body, info), ct);
 
     /// <summary>A success envelope's data, requiring the envelope to report success.</summary>
     internal static async Task<T> ReadDataAsync<T>(HttpResponseMessage response, JsonTypeInfo<ApiResponse<T>> info)
@@ -419,6 +413,25 @@ internal sealed class MemoryErasureRouteDriver
         Assert.False(root.GetProperty("isSuccess").GetBoolean());
 
         return root.GetProperty("error").GetProperty("code").GetString()!;
+    }
+
+    /// <summary>
+    /// Sends one request carrying the test API key, unless the client already sends one, and leaves the
+    /// client's own headers alone.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, HttpContent? content, CancellationToken ct)
+    {
+        using HttpRequestMessage message = new(method, path)
+        {
+            Content = content,
+        };
+
+        if (!_client.DefaultRequestHeaders.Contains(ArcanumApiHeaders.ApiKey))
+        {
+            message.Headers.Add(ArcanumApiHeaders.ApiKey, ArcanumWebApplicationFactory.TestApiKey);
+        }
+
+        return await _client.SendAsync(message, ct);
     }
 
     private async Task<MemoryErasurePreflightDto> PrepareAsync<TRequest>(

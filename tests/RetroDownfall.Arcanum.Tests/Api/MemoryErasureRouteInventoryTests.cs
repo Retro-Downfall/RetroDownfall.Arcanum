@@ -1,17 +1,23 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -160,32 +166,82 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
             });
         };
 
+        HttpClient client = host.CreateAuthenticatedClient();
+
+        MemoryErasureRouteDriver driver = new(client);
+
         string memoryId = await MemoryErasureRouteDriver.InsertSagaAsync(host, "The ward-stone lies under the mill.");
+
+        // A genuine body, built while the installation is clean: a refusal of {} could never have
+        // changed anything, so it would prove nothing about this one.
+        (string body, Guid mutationId) = await GenuineBodyAsync(name, client, driver, memoryId);
 
         taint.Tainted = true;
 
-        HttpClient client = host.CreateAuthenticatedClient();
+        using (HttpResponseMessage refused = await client.PostAsync(PathOf(name), Json(body)))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, refused.StatusCode);
 
-        using HttpResponseMessage response = await client.PostAsync(PathOf(name), EmptyBody());
+            Assert.Equal(
+                ErrorCodes.Covenant.OperatorAuthorityUnavailable,
+                await MemoryErasureRouteDriver.ReadErrorCodeAsync(refused));
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-
-        Assert.Equal(
-            ErrorCodes.Covenant.OperatorAuthorityUnavailable,
-            await MemoryErasureRouteDriver.ReadErrorCodeAsync(response));
-
-        AssertProtectedTuple(response);
+            AssertProtectedTuple(refused);
+        }
 
         taint.Tainted = false;
 
-        using HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{memoryId}");
+        using (HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{memoryId}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+        }
 
-        Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+        Assert.Equal(0, await ReceiptsAsync(host, mutationId));
 
         foreach (MemoryReviewStore store in Enum.GetValues<MemoryReviewStore>())
         {
             Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(host, store));
         }
+
+        // The same body on the clean installation is accepted, so the refusal above is what stopped it.
+        using (HttpResponseMessage accepted = await client.PostAsync(PathOf(name), Json(body)))
+        {
+            Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        }
+
+        using IServiceScope check = host.Services.CreateScope();
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(await OpenAsync(check));
+    }
+
+    /// <summary>
+    /// The driver authenticates its own requests and leaves the caller's client as it found it, so a
+    /// test that keeps that client for an unauthenticated probe still gets 401 from it.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_route_driver_authenticates_its_own_requests_and_leaves_the_callers_client_alone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient bare = factory.CreateClient();
+
+        MemoryErasureRouteDriver driver = new(bare);
+
+        Assert.False(bare.DefaultRequestHeaders.Contains(ArcanumApiHeaders.ApiKey));
+
+        string path = Routes[0].Path;
+
+        using (HttpResponseMessage viaDriver = await driver.PostAsync(
+            path,
+            new SagaErasePrepareRequest("not-a-guid", new string('0', 64), null, Guid.NewGuid()),
+            ArcanumJsonContext.Default.SagaErasePrepareRequest))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, viaDriver.StatusCode);
+        }
+
+        using HttpResponseMessage direct = await bare.PostAsync(path, EmptyBody());
+
+        Assert.Equal(HttpStatusCode.Unauthorized, direct.StatusCode);
     }
 
     [SkippableFact]
@@ -215,6 +271,83 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         _ = factory.CreateAuthenticatedClient();
 
         return [.. factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>()];
+    }
+
+    /// <summary>
+    /// A body each erasure POST would act on: the exact target its store's show reports, and for an
+    /// apply the token its prepare issued. A route added to <see cref="Routes"/> adds its body here.
+    /// </summary>
+    private static async Task<(string Body, Guid MutationId)> GenuineBodyAsync(
+        string name,
+        HttpClient client,
+        MemoryErasureRouteDriver driver,
+        string sagaMemoryId)
+    {
+        using HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{sagaMemoryId}");
+
+        SagaMemoryDetail detail = await MemoryErasureRouteDriver.ReadDataAsync(
+            shown,
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+
+        SagaErasePrepareRequest prepare = new(sagaMemoryId, detail.ContentHash, detail.Claim?.CurrentVersionId, Guid.NewGuid());
+
+        switch (name)
+        {
+            case "PrepareSagaMemoryErasure":
+                return (JsonSerializer.Serialize(prepare, ArcanumJsonContext.Default.SagaErasePrepareRequest), prepare.MutationId);
+
+            case "EraseSagaMemory":
+                using (HttpResponseMessage prepared = await driver.PostAsync(
+                    PathOf("PrepareSagaMemoryErasure"),
+                    prepare,
+                    ArcanumJsonContext.Default.SagaErasePrepareRequest))
+                {
+                    MemoryErasurePreflightDto preflight = await MemoryErasureRouteDriver.ReadDataAsync(
+                        prepared,
+                        ArcanumJsonContext.Default.ApiResponseMemoryErasurePreflightDto);
+
+                    SagaEraseRequest apply = new(
+                        prepare.MemoryId,
+                        prepare.ExpectedContentHash,
+                        prepare.ExpectedClaimVersionId,
+                        prepare.MutationId,
+                        preflight.PreflightToken);
+
+                    return (JsonSerializer.Serialize(apply, ArcanumJsonContext.Default.SagaEraseRequest), prepare.MutationId);
+                }
+
+            default:
+                throw new InvalidOperationException($"Give the erasure route {name} a genuine body here.");
+        }
+    }
+
+    private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
+
+    private static async Task<SqliteConnection> OpenAsync(IServiceScope scope)
+    {
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await db.Database.OpenConnectionAsync();
+        }
+
+        return connection;
+    }
+
+    private static async Task<long> ReceiptsAsync(ArcanumWebApplicationFactory host, Guid mutationId)
+    {
+        using IServiceScope scope = host.Services.CreateScope();
+
+        await using SqliteCommand command = (await OpenAsync(scope)).CreateCommand();
+
+        command.CommandText = "SELECT count(*) FROM memory_erasure_receipts WHERE MutationId = $mutation;";
+
+        _ = command.Parameters.AddWithValue("$mutation", mutationId.ToString("D").ToUpperInvariant());
+
+        return (long)(await command.ExecuteScalarAsync())!;
     }
 
     private static string Row(string name, string method, string path) => $"{name} {method} {path}";
