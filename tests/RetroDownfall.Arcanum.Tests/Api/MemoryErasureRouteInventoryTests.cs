@@ -12,7 +12,9 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -41,7 +43,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
     [
         ("PrepareSagaMemoryErasure", "POST", "/api/memory/saga/erase/prepare", CovenantAuthorityRequirement.SensitivityRetentionPurge),
         ("EraseSagaMemory", "POST", "/api/memory/saga/erase", CovenantAuthorityRequirement.SensitivityRetentionPurge),
+        ("PrepareLexiconEntryErasure", "POST", "/api/memory/lexicon/erase/prepare", CovenantAuthorityRequirement.SensitivityRetentionPurge),
+        ("EraseLexiconEntry", "POST", "/api/memory/lexicon/erase", CovenantAuthorityRequirement.SensitivityRetentionPurge),
     ];
+
+    private const string LexiconName = "Mill Warden";
 
     private static readonly Regex ErasurePath = new(
         "^/api/memory/(saga|lexicon|covenant)/(erase|release)",
@@ -172,6 +178,8 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
 
         string memoryId = await MemoryErasureRouteDriver.InsertSagaAsync(host, "The ward-stone lies under the mill.");
 
+        await ScribeLexiconAsync(host);
+
         // A genuine body, built while the installation is clean: a refusal of {} could never have
         // changed anything, so it would prove nothing about this one.
         (string body, Guid mutationId) = await GenuineBodyAsync(name, client, driver, memoryId);
@@ -192,6 +200,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         taint.Tainted = false;
 
         using (HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{memoryId}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+        }
+
+        using (HttpResponseMessage shown = await ShowLexiconAsync(driver))
         {
             Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
         }
@@ -283,6 +296,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         MemoryErasureRouteDriver driver,
         string sagaMemoryId)
     {
+        if (name is "PrepareLexiconEntryErasure" or "EraseLexiconEntry")
+        {
+            return await GenuineLexiconBodyAsync(name, driver);
+        }
+
         using HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{sagaMemoryId}");
 
         SagaMemoryDetail detail = await MemoryErasureRouteDriver.ReadDataAsync(
@@ -320,6 +338,55 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
                 throw new InvalidOperationException($"Give the erasure route {name} a genuine body here.");
         }
     }
+
+    /// <summary>The Lexicon erase bodies: show's exact target, and for an apply the token its prepare issued.</summary>
+    private static async Task<(string Body, Guid MutationId)> GenuineLexiconBodyAsync(string name, MemoryErasureRouteDriver driver)
+    {
+        LexiconEntryDetail detail;
+
+        using (HttpResponseMessage shown = await ShowLexiconAsync(driver))
+        {
+            detail = await MemoryErasureRouteDriver.ReadDataAsync(shown, ArcanumJsonContext.Default.ApiResponseLexiconEntryDetail);
+        }
+
+        LexiconErasePrepareRequest prepare = new(detail.Target, Guid.NewGuid());
+
+        if (name == "PrepareLexiconEntryErasure")
+        {
+            return (JsonSerializer.Serialize(prepare, ArcanumJsonContext.Default.LexiconErasePrepareRequest), prepare.MutationId);
+        }
+
+        using HttpResponseMessage prepared = await driver.PostAsync(
+            PathOf("PrepareLexiconEntryErasure"),
+            prepare,
+            ArcanumJsonContext.Default.LexiconErasePrepareRequest);
+
+        MemoryErasurePreflightDto preflight = await MemoryErasureRouteDriver.ReadDataAsync(
+            prepared,
+            ArcanumJsonContext.Default.ApiResponseMemoryErasurePreflightDto);
+
+        LexiconEraseRequest apply = new(prepare.Target, prepare.MutationId, preflight.PreflightToken);
+
+        return (JsonSerializer.Serialize(apply, ArcanumJsonContext.Default.LexiconEraseRequest), prepare.MutationId);
+    }
+
+    /// <summary>Scribes the Global entry the Lexicon rows act on, through the host's own Lexicon service.</summary>
+    private static async Task ScribeLexiconAsync(ArcanumWebApplicationFactory host)
+    {
+        using IServiceScope scope = host.Services.CreateScope();
+
+        Result<LexiconEntryDto> scribed = await scope.ServiceProvider
+            .GetRequiredService<ILexiconService>()
+            .UpsertAsync(LexiconName, "Place", ["guards the mill"], LexiconScope.Global, CancellationToken.None);
+
+        Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : null);
+    }
+
+    private static Task<HttpResponseMessage> ShowLexiconAsync(MemoryErasureRouteDriver driver) =>
+        driver.PostAsync(
+            "/api/memory/lexicon/show",
+            new LexiconShowRequest(LexiconName, new LexiconCurationScope(LexiconScopeKind.Global, null)),
+            ArcanumJsonContext.Default.LexiconShowRequest);
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 

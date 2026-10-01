@@ -157,7 +157,7 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
                 + (node.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "outside-method");
 
             foreach (IdentifierNameSyntax type in unit.DescendantNodes().OfType<IdentifierNameSyntax>()
-                .Where(type => type.Identifier.ValueText is "ILexiconService" or "ILexiconCurationService"))
+                .Where(type => type.Identifier.ValueText is "ILexiconService" or "ILexiconCurationService" or "ILexiconErasureService"))
             {
                 consumers.Add(Location(type) + ":" + type.Identifier.ValueText);
             }
@@ -185,6 +185,8 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
             "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
             "LexiconCurationEndpoints.cs:MapLexiconCurationEndpoints:ILexiconCurationService",
+            "MemoryErasureEndpoints.cs:HandleLexiconErasePrepareAsync:ILexiconErasureService",
+            "MemoryErasureEndpoints.cs:HandleLexiconEraseAsync:ILexiconErasureService",
             "MemoryEndpoints.cs:HandleSourcesAsync:ILexiconCurationService",
             "MemoryEndpoints.cs:HandleExplainAsync:ILexiconCurationService",
             "MemoryEndpoints.cs:HandleSearchAsync:ILexiconCurationService",
@@ -215,6 +217,8 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             "MemoryEndpoints.cs:RespondToLexiconCountsAsync:CountInspectionAsync",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ListInspectionAsync",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:SearchInspectionAsync",
+            "MemoryErasureEndpoints.cs:HandleLexiconEraseAsync:ApplyAsync",
+            "MemoryErasureEndpoints.cs:HandleLexiconErasePrepareAsync:PrepareAsync",
         }, calls.Order(StringComparer.Ordinal));
     }
 

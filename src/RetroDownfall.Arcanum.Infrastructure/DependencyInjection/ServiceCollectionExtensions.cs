@@ -1405,6 +1405,19 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILexiconMemoryReviewService>(provider => provider.GetRequiredService<LexiconService>());
 
+        // Host only, like the Saga erase: prepare creates the erasure key on first use, and only the host
+        // may. The service activator hands these to LexiconService, whose erase verbs answer unavailable
+        // in any container that does not compose them.
+        services.AddScoped(static provider => new LexiconErasureDependencies(
+            provider.GetRequiredService<IMemoryErasureKeyCreator>(),
+            provider.GetRequiredService<IMemoryErasureTokenCodec>(),
+            provider.GetRequiredService<MemoryErasureScrubber>(),
+            provider.GetRequiredService<ICovenantOperationGate>(),
+            provider.GetRequiredService<IOperatorAuthorityContextIssuer>(),
+            provider.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+
+        services.AddScoped<ILexiconErasureService>(provider => provider.GetRequiredService<LexiconService>());
+
         services.AddScoped<IAnnalsStore, AnnalsStore>();
 
         // One owner for the Campaign-scoped-memory gate, so retrieval and every inspection surface

@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -22,9 +23,9 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// <remarks>
 /// <para>Every route declares its authority as metadata, so the pre-binding middleware issues the
 /// operator context before the body is read, refuses a host-tools-tainted installation, and marks the
-/// response protected: every status carries the no-store header tuple (API §8.35). Saga erase requires
-/// <see cref="CovenantAuthorityRequirement.SensitivityRetentionPurge"/>, the authority its label purge
-/// needs.</para>
+/// response protected: every status carries the no-store header tuple (API §8.35). Saga and Lexicon
+/// erase require <see cref="CovenantAuthorityRequirement.SensitivityRetentionPurge"/>, the authority
+/// their label purges need.</para>
 ///
 /// <para>A body is read through <see cref="ReadBodyAsync{T}"/>, which answers malformed JSON with the
 /// house invalid-body envelope rather than an empty minimal-API 400. Each handler validates the body's
@@ -44,6 +45,14 @@ internal static class MemoryErasureEndpoints
         api.MapPost("/memory/saga/erase", HandleSagaEraseAsync)
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.SensitivityRetentionPurge)
             .WithName("EraseSagaMemory");
+
+        api.MapPost("/memory/lexicon/erase/prepare", HandleLexiconErasePrepareAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.SensitivityRetentionPurge)
+            .WithName("PrepareLexiconEntryErasure");
+
+        api.MapPost("/memory/lexicon/erase", HandleLexiconEraseAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.SensitivityRetentionPurge)
+            .WithName("EraseLexiconEntry");
 
         return api;
     }
@@ -105,6 +114,102 @@ internal static class MemoryErasureEndpoints
             .ConfigureAwait(false);
 
         return Respond(context, applied, typeInfo);
+    }
+
+    private static async Task<IResult> HandleLexiconErasePrepareAsync(ILexiconErasureService lexicon, HttpContext context)
+    {
+        JsonTypeInfo<ApiResponse<MemoryErasurePreflightDto>> typeInfo =
+            ArcanumJsonContext.Default.ApiResponseMemoryErasurePreflightDto;
+
+        (LexiconErasePrepareRequest? request, IResult? error) = await ReadLexiconBodyAsync(
+            context,
+            ArcanumJsonContext.Default.LexiconErasePrepareRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        Result shape = CheckLexiconBody(request?.Target, request?.MutationId, preflightToken: null, applying: false);
+
+        if (shape.IsFailure)
+        {
+            return Respond(context, Result<MemoryErasurePreflightDto>.Failure(shape.Error), typeInfo);
+        }
+
+        Result<MemoryErasurePreflightDto> prepared = await lexicon
+            .PrepareAsync(request!, context.RequestAborted)
+            .ConfigureAwait(false);
+
+        return Respond(context, prepared, typeInfo);
+    }
+
+    private static async Task<IResult> HandleLexiconEraseAsync(ILexiconErasureService lexicon, HttpContext context)
+    {
+        JsonTypeInfo<ApiResponse<MemoryErasureResultDto>> typeInfo =
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureResultDto;
+
+        (LexiconEraseRequest? request, IResult? error) = await ReadLexiconBodyAsync(
+            context,
+            ArcanumJsonContext.Default.LexiconEraseRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        Result shape = CheckLexiconBody(request?.Target, request?.MutationId, request?.PreflightToken, applying: true);
+
+        if (shape.IsFailure)
+        {
+            return Respond(context, Result<MemoryErasureResultDto>.Failure(shape.Error), typeInfo);
+        }
+
+        // The middleware issued this route's context before the body was bound, so it is present
+        // whenever the handler runs; the filter has already refused a request without it.
+        OperatorAuthorityContext authority = CovenantRequestFeatures.Authority(context)!.Context;
+
+        Result<MemoryErasureResultDto> applied = await lexicon
+            .ApplyAsync(request!, authority, context.RequestAborted)
+            .ConfigureAwait(false);
+
+        return Respond(context, applied, typeInfo);
+    }
+
+    /// <summary>
+    /// Reads one Lexicon erase body. A target's label arm carries generation provenance whose own
+    /// constructor validates it, so a malformed one is a body refusal like any other malformed JSON.
+    /// </summary>
+    private static async Task<(T? Body, IResult? Error)> ReadLexiconBodyAsync<T>(HttpContext context, JsonTypeInfo<T> typeInfo)
+        where T : class
+    {
+        try
+        {
+            return await ReadBodyAsync(context, typeInfo).ConfigureAwait(false);
+        }
+        catch (ArgumentException)
+        {
+            return (null, ApiRequestJson.InvalidBodyResult(context, ApiRequestJson.MalformedJsonMessage));
+        }
+    }
+
+    /// <summary>
+    /// The complete target show reported, a nonempty mutation id and, to apply, a preflight token.
+    /// </summary>
+    private static Result CheckLexiconBody(LexiconCurationTarget? target, Guid? mutationId, string? preflightToken, bool applying)
+    {
+        if (target is null || target.Validate().IsFailure)
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Lexicon.InvalidCurationTarget,
+                "A Lexicon erase names the complete target that show reported."));
+        }
+
+        return mutationId is { } id && id != Guid.Empty && (!applying || !string.IsNullOrWhiteSpace(preflightToken))
+            ? Result.Success()
+            : Result.Failure(new Error(
+                ErrorCodes.Validation.InvalidBody,
+                "A Lexicon erase names the complete target that show reported, a mutationId and, to apply, a preflightToken."));
     }
 
     /// <summary>

@@ -56,6 +56,7 @@ public sealed class MemoryErasureStructuralTests
         "Data/SagaRetirementSuppression.cs",
         "Data/MemoryErasureLabels.cs",
         "Memory/SagaMemoryErasureService.cs",
+        "Lexicon/LexiconService.Erasure.cs",
     ];
 
     private const string InfrastructureRoot = "src/RetroDownfall.Arcanum.Infrastructure";

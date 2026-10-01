@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -138,7 +139,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         string name = args.Name.Trim();
 
-        if (IsProtectedDaemonStateName(name))
+        if (LexiconDaemonStateNames.Is(name))
         {
             return ToolError(
                 "delete_lexicon cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
@@ -252,9 +253,6 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("An internal error occurred during tool execution.");
         }
     }
-
-    private static bool IsProtectedDaemonStateName(string name) =>
-        name.StartsWith("daemon_state:", StringComparison.OrdinalIgnoreCase);
 
     private async Task<McpToolsCallResultWire> ExecuteSearchArchivesAsync(
         JsonElement arguments,

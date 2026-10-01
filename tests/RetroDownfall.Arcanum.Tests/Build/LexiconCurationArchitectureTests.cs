@@ -20,6 +20,8 @@ public sealed class LexiconCurationArchitectureTests
 
     private const string Review = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.MemoryReview.cs";
 
+    private const string Erasure = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Erasure.cs";
+
     private const string Annals = "RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsStore.cs";
 
     private const string Writer = "RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsClaimWriter.cs";
@@ -59,6 +61,9 @@ public sealed class LexiconCurationArchitectureTests
         { Review, "ApplyReviewActionAsync", 0, "CurrentVersionId" },
         { Review, "AdvanceReviewMarkerAsync", 0, "Sequence,IsReviewed" },
         { Inspection, "ReadInspectionIdentitiesAsync", 0, "Id,ScopeCampaignId" },
+        { Erasure, "ErasureEntryExistsAsync", 0, "count(*)" },
+        { Erasure, "GlobalEntryExistsAsync", 0, "count(*)" },
+        { Erasure, "FullTextSecureDeleteIsOnAsync", 0, "v" },
         { Projection, "VerifyInspectionAuthorityAsync", 0, "OrphanLabels" },
         { Projection, "VerifyInspectionAuthorityAsync", 2, EvidenceColumns },
         { Projection, "StreamInspectionAsync", 0, "InvalidFacts" },
@@ -129,7 +134,7 @@ public sealed class LexiconCurationArchitectureTests
 
         string[] readers = [.. methods.Where(method => ReaderSlots(method).Length > 0).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection or Projection or Review).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
+        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection or Projection or Review or Erasure).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
 
         string[] executed = [.. methods.Where(method => Calls(method, "ExecuteReaderAsync")).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
@@ -149,7 +154,7 @@ public sealed class LexiconCurationArchitectureTests
             && !new[] { "DeleteByNameAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection or Review).Select(row => (string)row[1])
+        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection or Review or Erasure).Select(row => (string)row[1])
             .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadNamedEntryAsync" })

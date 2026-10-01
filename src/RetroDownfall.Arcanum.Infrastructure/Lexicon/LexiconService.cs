@@ -40,7 +40,8 @@ internal sealed partial class LexiconService(
     IMemoryErasureKeyProvider erasureKeys,
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
     IMemoryReviewTokenCodec? reviewTokenCodec = null,
-    TimeProvider? reviewTimeProvider = null) : ILexiconService, ILexiconCurationService, ILexiconMemoryReviewService
+    TimeProvider? reviewTimeProvider = null,
+    LexiconErasureDependencies? erasure = null) : ILexiconService, ILexiconCurationService, ILexiconMemoryReviewService
 {
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
