@@ -59,7 +59,7 @@ public sealed partial class MemoryCommands
         if (shown.IsFailure)
         {
 
-            return WriteError(shown.Error);
+            return WriteErasureError(shown.Error);
 
         }
 
@@ -114,7 +114,7 @@ public sealed partial class MemoryCommands
         if (scope.Validate() is { IsFailure: true } invalid)
         {
 
-            return WriteLexiconInputError(invalid.Error.Message);
+            return WriteErasureInputError(invalid.Error.Message);
 
         }
 
@@ -125,7 +125,7 @@ public sealed partial class MemoryCommands
         if (shown.IsFailure)
         {
 
-            return WriteError(shown.Error);
+            return WriteErasureError(shown.Error);
 
         }
 
@@ -173,7 +173,7 @@ public sealed partial class MemoryCommands
         if (prepared.IsFailure)
         {
 
-            return WriteError(prepared.Error);
+            return WriteErasureError(prepared.Error);
 
         }
 
@@ -230,7 +230,7 @@ public sealed partial class MemoryCommands
         if (result.IsFailure)
         {
 
-            int exitCode = WriteError(result.Error);
+            int exitCode = WriteErasureError(result.Error);
 
             if (ArcanumApiClient.ErasureOutcomeUnknown(result.Error))
             {
@@ -322,7 +322,7 @@ public sealed partial class MemoryCommands
                 scopeText,
                 "the exact content read from the file, which is not shown; its trimmed form is tried too",
                 $"Release the Saga erasure fingerprint for this content in the {scopeText} scope?",
-                () => apiClient.ReleaseSagaErasureAsync(request, cancellationToken),
+                onResent => apiClient.ReleaseSagaErasureAsync(request, cancellationToken, onResent),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -360,7 +360,7 @@ public sealed partial class MemoryCommands
                 scopeText,
                 $"the Lexicon name '{name}', trimmed and case-folded as the scribe reads it",
                 $"Release the Lexicon erasure fingerprint for '{name}' in the {scopeText} scope?",
-                () => apiClient.ReleaseLexiconErasureAsync(request, cancellationToken),
+                onResent => apiClient.ReleaseLexiconErasureAsync(request, cancellationToken, onResent),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -383,7 +383,7 @@ public sealed partial class MemoryCommands
         if (status.IsFailure)
         {
 
-            return WriteError(status.Error);
+            return WriteErasureError(status.Error);
 
         }
 
@@ -416,13 +416,15 @@ public sealed partial class MemoryCommands
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        bool resent = false;
+
         Result<MemoryErasureScrubResultDto> scrubbed;
 
         try
         {
 
             scrubbed = await apiClient
-                .ScrubMemoryErasuresAsync(cancellationToken)
+                .ScrubMemoryErasuresAsync(cancellationToken, () => resent = true)
                 .ConfigureAwait(false);
 
         }
@@ -438,7 +440,7 @@ public sealed partial class MemoryCommands
         if (scrubbed.IsFailure)
         {
 
-            int exitCode = WriteError(scrubbed.Error);
+            int exitCode = WriteErasureError(scrubbed.Error);
 
             if (ArcanumApiClient.ErasureOutcomeUnknown(scrubbed.Error))
             {
@@ -446,6 +448,8 @@ public sealed partial class MemoryCommands
                 WriteUnconfirmedScrub();
 
             }
+
+            WriteResentNote(resent, "scrub");
 
             return exitCode;
 
@@ -463,6 +467,8 @@ public sealed partial class MemoryCommands
             MemoryErasureRenderer.WriteScrubResult(dispatcher, scrubbed.Value);
 
         }
+
+        WriteResentNote(resent, "scrub");
 
         return (int)CliExitCode.Success;
 
@@ -522,13 +528,18 @@ public sealed partial class MemoryCommands
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        bool resent = false;
+
         Result<MemoryErasureKeyResetResultDto> reset;
 
         try
         {
 
             reset = await apiClient
-                .ResetMemoryErasureKeyAsync(new MemoryErasureKeyResetRequest(prepared.Value.PreflightToken), cancellationToken)
+                .ResetMemoryErasureKeyAsync(
+                    new MemoryErasureKeyResetRequest(prepared.Value.PreflightToken),
+                    cancellationToken,
+                    () => resent = true)
                 .ConfigureAwait(false);
 
         }
@@ -553,6 +564,8 @@ public sealed partial class MemoryCommands
 
             }
 
+            WriteResentNote(resent, "key reset");
+
             return exitCode;
 
         }
@@ -569,6 +582,8 @@ public sealed partial class MemoryCommands
             MemoryErasureRenderer.WriteKeyResetResult(dispatcher, reset.Value);
 
         }
+
+        WriteResentNote(resent, "key reset");
 
         return (int)CliExitCode.Success;
 
@@ -587,7 +602,7 @@ public sealed partial class MemoryCommands
         string scope,
         string identity,
         string question,
-        Func<Task<Result<MemoryErasureReleaseResultDto>>> release,
+        Func<Action, Task<Result<MemoryErasureReleaseResultDto>>> release,
         CancellationToken cancellationToken)
     {
 
@@ -618,12 +633,14 @@ public sealed partial class MemoryCommands
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        bool resent = false;
+
         Result<MemoryErasureReleaseResultDto> released;
 
         try
         {
 
-            released = await release().ConfigureAwait(false);
+            released = await release(() => resent = true).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException)
@@ -638,9 +655,11 @@ public sealed partial class MemoryCommands
         if (released.IsFailure)
         {
 
-            int exitCode = WriteError(released.Error);
+            int exitCode = WriteErasureError(released.Error);
 
             WriteReleaseRefusalGuidance(dispatcher, released.Error);
+
+            WriteResentNote(resent, "release");
 
             return exitCode;
 
@@ -659,6 +678,8 @@ public sealed partial class MemoryCommands
 
         }
 
+        WriteResentNote(resent, "release");
+
         return (int)CliExitCode.Success;
 
     }
@@ -667,13 +688,18 @@ public sealed partial class MemoryCommands
     /// What follows a refused release: the status verb when the key is lost, or the may-have-applied
     /// note when nothing proves the release rolled back.
     /// </summary>
+    /// <remarks>
+    /// The status verb is named only when the host's own message does not already name it, so the
+    /// operator is told once.
+    /// </remarks>
     internal static void WriteReleaseRefusalGuidance(IConsoleDispatcher dispatcher, Error error)
     {
 
-        if (error.Code == ErrorCodes.MemoryErasure.KeyLost)
+        if (error.Code == ErrorCodes.MemoryErasure.KeyLost
+            && !error.Message.Contains(StatusCommand, StringComparison.Ordinal))
         {
 
-            dispatcher.WriteDiagnostic("Run 'arcanum memory erasure status'.");
+            dispatcher.WriteDiagnostic($"Run '{StatusCommand}'.");
 
         }
 
@@ -681,6 +707,22 @@ public sealed partial class MemoryCommands
         {
 
             WriteUnconfirmedRelease(dispatcher);
+
+        }
+
+    }
+
+    /// <summary>The verb that reports the erasure key's state and what it cannot verify.</summary>
+    private const string StatusCommand = "arcanum memory erasure status";
+
+    /// <summary>Says a resend happened, so the outcome just reported describes only the resend.</summary>
+    private void WriteResentNote(bool resent, string operation)
+    {
+
+        if (resent)
+        {
+
+            MemoryErasureRenderer.WriteResent(dispatcher, operation);
 
         }
 
@@ -705,36 +747,33 @@ public sealed partial class MemoryCommands
             "Run 'arcanum memory erasure status' before resetting again.");
 
     /// <summary>
-    /// Writes a refused key reset with the host's message and, for the refusals an operator can act on,
-    /// what to do next. Every typed refusal proves nothing was discarded.
+    /// Writes a refused key reset: for the three refusals an operator can act on, the CLI's own
+    /// explanation in place of the host's message, and otherwise the host's message.
     /// </summary>
+    /// <remarks>
+    /// Each of the three proves nothing was discarded: the host refuses before its delete commits. A
+    /// stale plan can still follow the key an apply created before it re-measured, so its text says so.
+    /// The explanation replaces the host's message rather than following it, because the host's says the
+    /// same thing less exactly, and the key remedy must be read with its caveats, once.
+    /// </remarks>
     private int WriteKeyResetError(Error error)
     {
 
-        int exitCode = WriteError(error);
-
-        string? remedy = error.Code switch
+        string? explanation = error.Code switch
         {
             ErrorCodes.MemoryErasure.StalePlan =>
-                "Nothing was discarded: the key or the counts changed after the preview. "
-                + "Run 'arcanum memory erasure reset-key' again to review them.",
+                "The erasure key's state or a store's counts changed after the preview, so nothing was discarded, "
+                + "though a new erasure key may have been created. Run 'arcanum memory erasure reset-key' again to review them.",
             ErrorCodes.MemoryErasure.InvalidPreflight =>
-                "Nothing was discarded: the preview expired, or the host restarted after issuing it. "
-                + "Run 'arcanum memory erasure reset-key' again.",
+                "The preview is no longer valid: it expired, or the host restarted after issuing it. Nothing was "
+                + "discarded. Run 'arcanum memory erasure reset-key' again.",
             ErrorCodes.MemoryErasure.KeyUnavailable =>
-                "Nothing was discarded. If the stored erasure key item is malformed, remove it with the OS "
-                + "credential tool, then run 'arcanum memory erasure reset-key' again.",
+                "The erasure key could not be read, or the stored item is not a valid key, so nothing was discarded "
+                + $"and no key was written. {MemoryErasureRenderer.KeyUnavailableRemedy}",
             _ => null,
         };
 
-        if (remedy is not null)
-        {
-
-            dispatcher.WriteDiagnostic(remedy);
-
-        }
-
-        return exitCode;
+        return WriteErasureError(explanation is null ? error : error with { Message = explanation });
 
     }
 
@@ -808,12 +847,38 @@ public sealed partial class MemoryCommands
             _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "No text exists for this Saga scope."),
         };
 
-    private int WriteErasureInputError(string message)
+    /// <summary>
+    /// Writes a refusal of the command line itself, before any request, with exit 2.
+    /// </summary>
+    private int WriteErasureInputError(string message) =>
+        WriteErasureFailure(message, (int)CliExitCode.ConfigurationError);
+
+    /// <summary>
+    /// Writes a host refusal or a transport failure with its classified exit code.
+    /// </summary>
+    private int WriteErasureError(Error error) =>
+        WriteErasureFailure(error.Message, CliFailureExit.ExitCode(error));
+
+    /// <summary>
+    /// The one failure shape every erase, release and erasure-administration verb shares: the message on
+    /// the diagnostic stream, and under <c>--json</c> the CLI error envelope as the one stdout document,
+    /// as every other direct verb's refusal writes it.
+    /// </summary>
+    private int WriteErasureFailure(string message, int exitCode)
     {
 
         dispatcher.WriteDiagnostic(message);
 
-        return (int)CliExitCode.ConfigurationError;
+        if (CliInvocationContext.Current.Json)
+        {
+
+            dispatcher.WriteJson(
+                new CliErrorPayload(message, exitCode),
+                CliJsonContext.Default.CliErrorPayload);
+
+        }
+
+        return exitCode;
 
     }
 

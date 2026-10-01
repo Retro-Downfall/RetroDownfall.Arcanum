@@ -887,6 +887,35 @@ public sealed class MemoryErasureCommandTests
         Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A refusal under <c>--json --yes</c> writes the CLI error envelope as the one stdout document,
+    /// whichever store refused, with the message also on the diagnostic stream for a human reader.
+    /// </summary>
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task A_refusal_under_json_writes_one_error_envelope(string store)
+    {
+        ErasureHandler handler = new()
+        {
+            Failures =
+            {
+                [ApplyPath(store)] = (HttpStatusCode.Conflict, new Error(ErrorCodes.MemoryErasure.StalePlan, "What this erase would remove changed after it was prepared.")),
+            },
+        };
+
+        CliTestResult result = await RunAsync(handler, [.. EraseArgs(store), "--json", "--yes"], new RecordingPrompt(handler, answer: false));
+
+        Assert.Equal(1, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal("What this erase would remove changed after it was prepared.", document.RootElement.GetProperty("error").GetString());
+
+        Assert.Equal(1, document.RootElement.GetProperty("exitCode").GetInt32());
+    }
+
     [Theory]
     [InlineData("saga")]
     [InlineData("lexicon")]
@@ -1230,6 +1259,13 @@ public sealed class MemoryErasureCommandTests
         }
     }
 
+    /// <summary>
+    /// Answers the question, having written it to the diagnostic stream exactly as the shipped prompt
+    /// does, so every assertion over what reached a stream covers the question as well.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="BeforePrompt"/> is everything the operator saw before answering, the question included.
+    /// </remarks>
     private sealed class RecordingPrompt(ErasureHandler handler, bool answer) : IConfirmationPrompt
     {
         internal StringBuilder Rendered { get; } = new();
@@ -1241,8 +1277,13 @@ public sealed class MemoryErasureCommandTests
         /// <summary>Answers by cancelling, as Ctrl-C at the question would.</summary>
         internal bool Cancel { get; init; }
 
+        /// <summary>The dispatcher the run writes through, set when the run composes it.</summary>
+        internal IConsoleDispatcher? Dispatcher { get; set; }
+
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
         {
+            Dispatcher?.WriteDiagnostic($"{question} [y/N]");
+
             BeforePrompt = Rendered.ToString();
 
             Question = question;
@@ -1264,8 +1305,21 @@ public sealed class MemoryErasureCommandTests
         }
     }
 
-    private sealed class ObservingDispatcher(IConsoleDispatcher inner, RecordingPrompt prompt) : IConsoleDispatcher
+    private sealed class ObservingDispatcher : IConsoleDispatcher
     {
+        private readonly IConsoleDispatcher inner;
+
+        private readonly RecordingPrompt prompt;
+
+        internal ObservingDispatcher(IConsoleDispatcher inner, RecordingPrompt prompt)
+        {
+            this.inner = inner;
+
+            this.prompt = prompt;
+
+            prompt.Dispatcher = this;
+        }
+
         public void WritePayload(string value)
         {
             prompt.Rendered.Append(value).Append('\n');

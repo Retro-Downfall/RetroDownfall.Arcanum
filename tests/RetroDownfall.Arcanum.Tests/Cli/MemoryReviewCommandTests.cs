@@ -375,9 +375,9 @@ public sealed class MemoryReviewCommandTests
     }
 
     /// <summary>
-    /// Runs one correction review apply through the handler, approved by a prompt that snapshots both
-    /// streams at the question, against a host that answers prepare with <paramref name="plan"/> and
-    /// apply with <paramref name="applied"/>.
+    /// Runs one correction review apply through the registered command tree, approved by a prompt that
+    /// snapshots what each stream had received when the question was put, against a host that answers
+    /// prepare with <paramref name="plan"/> and apply with <paramref name="applied"/>.
     /// </summary>
     private static async Task<(int ExitCode, string Output, string Error, SnapshotConfirmation Confirmation)> ApplyCorrectionAsync(
         string store,
@@ -385,22 +385,25 @@ public sealed class MemoryReviewCommandTests
         MemoryReviewBulkResultDto applied,
         bool json)
     {
-        CliInvocationOptions options = new(Json: json, Plain: false, Yes: false);
+        StreamRecorder streams = new();
 
-        StringWriter output = new();
+        SnapshotConfirmation confirmation = new(streams);
 
-        StringWriter error = new();
+        ServiceCollection services = new();
 
-        SnapshotConfirmation confirmation = new(output, error);
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
 
-        MemoryCommands commands = new(
-            new ArcanumApiClient(
-                new SingleHandlerFactory(new RecordingHandler(plan) { Applied = applied }),
-                ArcanumApiCredentialLeaseTestFactory.Create(FixedSecretStore.Key)),
-            themePalette: null!,
-            new ConsoleDispatcher(output, error, options),
-            confirmation,
-            Options.Create(new ArcanumSettings()));
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(new RecordingHandler(plan) { Applied = applied }));
+
+        services.AddSingleton<ISecretStore>(new FixedSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(services, FixedSecretStore.Key);
+
+        services.AddSingleton<IConfirmationPrompt>(confirmation);
+
+        services.AddSingleton<IConsoleDispatcher>(provider => new RecordingDispatcher(
+            new ConsoleDispatcher(provider.GetRequiredService<ICliInvocationContext>()),
+            streams));
 
         string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
 
@@ -427,13 +430,11 @@ public sealed class MemoryReviewCommandTests
                             [.. plan.Items.Select(static item => new CovenantReviewDecision($"observation-{item.EventSequence}", "replacement"))]),
                         ArcanumJsonContext.Default.CovenantReviewBulkPrepareRequest));
 
-            using IDisposable invocation = CliInvocationContext.Push(options);
+            CliTestResult result = await CliTestHarness.RunAsync(
+                services,
+                ["memory", store, "review", "apply", "--file", requestPath, .. json ? new[] { "--json" } : []]);
 
-            int exitCode = store == "saga"
-                ? await commands.SagaReviewApply(requestPath, CancellationToken.None)
-                : await commands.CovenantReviewApply(requestPath, CancellationToken.None);
-
-            return (exitCode, output.ToString(), error.ToString(), confirmation);
+            return (result.ExitCode, result.Output, result.Error, confirmation);
         }
         finally
         {
@@ -527,8 +528,8 @@ public sealed class MemoryReviewCommandTests
             Task.FromResult(confirmed);
     }
 
-    /// <summary>Approves, snapshotting what each stream held when the question was put.</summary>
-    private sealed class SnapshotConfirmation(StringWriter output, StringWriter error) : IConfirmationPrompt
+    /// <summary>Approves, snapshotting what each stream had received when the question was put.</summary>
+    private sealed class SnapshotConfirmation(StreamRecorder streams) : IConfirmationPrompt
     {
         public string OutputBefore { get; private set; } = "";
 
@@ -536,12 +537,46 @@ public sealed class MemoryReviewCommandTests
 
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
         {
-            OutputBefore = output.ToString();
+            OutputBefore = streams.Payload.ToString();
 
-            ErrorBefore = error.ToString();
+            ErrorBefore = streams.Diagnostic.ToString();
 
             return Task.FromResult(true);
         }
+    }
+
+    /// <summary>What the command wrote to each stream, in order.</summary>
+    private sealed class StreamRecorder
+    {
+        public System.Text.StringBuilder Payload { get; } = new();
+
+        public System.Text.StringBuilder Diagnostic { get; } = new();
+    }
+
+    /// <summary>Writes through the production dispatcher, recording each line by the stream it took.</summary>
+    private sealed class RecordingDispatcher(IConsoleDispatcher inner, StreamRecorder streams) : IConsoleDispatcher
+    {
+        public void WritePayload(string value)
+        {
+            streams.Payload.Append(value).Append('\n');
+
+            inner.WritePayload(value);
+        }
+
+        public void WriteDiagnostic(string value)
+        {
+            streams.Diagnostic.Append(value).Append('\n');
+
+            inner.WriteDiagnostic(value);
+        }
+
+        public void WriteVerbose(string value) => inner.WriteVerbose(value);
+
+        public void WriteJson<T>(T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo) => inner.WriteJson(value, typeInfo);
+
+        public void WriteJson(JsonElement value) => inner.WriteJson(value);
+
+        public void BeginJsonStream() => inner.BeginJsonStream();
     }
 
     private sealed class RecordingHandler(MemoryReviewBulkPlanDto plan) : HttpMessageHandler

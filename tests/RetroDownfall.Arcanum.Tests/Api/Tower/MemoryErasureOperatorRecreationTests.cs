@@ -692,6 +692,163 @@ public sealed class MemoryErasureOperatorRecreationTests
     }
 
     /// <summary>
+    /// A Covenant review correction discloses its release in the plan the routes return, before the
+    /// operator approves it, and does what it disclosed.
+    /// </summary>
+    /// <remarks>
+    /// The only way a live key and its fingerprint coexist is an operator re-creation made while the key
+    /// was lost: that write lands, cannot check, and leaves the fingerprint. The plan then says it cannot
+    /// check either. Once the original key is back, the plan says the correction will release it, and the
+    /// apply does.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Covenant_review_Correct_discloses_its_release_in_the_plan_the_routes_return()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        await using (ArcanumWebApplicationFactory first = MemoryErasureRouteDriver.Host(credentials, profile, covenant: true))
+        {
+            await EraseCovenantKeyAsync(new MemoryErasureRouteDriver(first.CreateClient()), CovenantScope.Global, null, Key);
+        }
+
+        OsCredentialStoreResult original = credentials.TryGet(Service, Account);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, original.Status);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, credentials.Delete(Service, Account).Status);
+
+        await using (ArcanumWebApplicationFactory keyless = MemoryErasureRouteDriver.Host(credentials, profile, covenant: true))
+        {
+            MemoryErasureRouteDriver driver = new(keyless.CreateClient());
+
+            CovenantSetPrepareRequest prepare = new(CovenantScope.Global, null, Key, Content, 0, Guid.NewGuid(), Reactivate: false);
+
+            CovenantMutationPreflightDto preflight = await PrepareSetAsync(driver, prepare);
+
+            Assert.Null((await CommitSetAsync(keyless, prepare, preflight.PreflightToken)).ReleasedErasureFingerprint);
+
+            (_, MemoryReviewBulkPlanDto keylessPlan) = await PrepareCovenantCorrectionAsync(driver);
+
+            Assert.Null(Assert.Single(keylessPlan.Items).ReleasesErasureFingerprint);
+        }
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, credentials.Set(Service, Account, original.Value!).Status);
+
+        await using ArcanumWebApplicationFactory restored = MemoryErasureRouteDriver.Host(credentials, profile, covenant: true);
+
+        MemoryErasureRouteDriver restoredDriver = new(restored.CreateClient());
+
+        // An operator read of the status with evidence present reads the key and latches it.
+        using (HttpResponseMessage status = await restored.CreateAuthenticatedClient().GetAsync("/api/memory/erasure"))
+        {
+            Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        }
+
+        (CovenantReviewBulkPrepareRequest correction, MemoryReviewBulkPlanDto plan) = await PrepareCovenantCorrectionAsync(restoredDriver);
+
+        Assert.True(Assert.Single(plan.Items).ReleasesErasureFingerprint);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(restored, MemoryReviewStore.Covenant));
+
+        using HttpResponseMessage applied = await restoredDriver.PostAsync(
+            "/api/memory/covenant/review/apply",
+            new CovenantReviewBulkApplyRequest(correction, plan.PreparedPlanToken),
+            ArcanumJsonContext.Default.CovenantReviewBulkApplyRequest);
+
+        Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+
+        MemoryReviewBulkResultDto result = await MemoryErasureRouteDriver.ReadDataAsync(applied, ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkResultDto);
+
+        Assert.True(Assert.Single(result.Items).ReleasedErasureFingerprint);
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(restored, MemoryReviewStore.Covenant));
+    }
+
+    /// <summary>
+    /// A bulk correction to the content a memory already holds writes nothing and releases nothing, even
+    /// when that content is still fingerprinted in its scope, and its plan says the same.
+    /// </summary>
+    /// <remarks>
+    /// The state comes from a correction made on a host-tools-tainted installation, which lands without
+    /// releasing; the review then runs once the installation is clean, where release would be permitted.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_bulk_review_Correct_to_the_content_already_held_releases_nothing_and_its_plan_says_so()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        TaintSwitch taint = new();
+
+        await using ArcanumWebApplicationFactory factory = TaintableHost(credentials, taint);
+
+        MemoryErasureRouteDriver driver = new(factory.CreateClient());
+
+        string alpha = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "alpha");
+
+        string beta = await MemoryErasureRouteDriver.InsertSagaAsync(factory, "beta");
+
+        _ = await driver.EraseSagaAsync(beta);
+
+        taint.Tainted = true;
+
+        Assert.False((await CorrectOkAsync(factory, alpha, "beta")).ReleasedErasureFingerprint);
+
+        taint.Tainted = false;
+
+        MemoryReviewBulkResultDto result = await ReviewCorrectAsync(factory.CreateAuthenticatedClient(), SagaMemoryScopeKind.Global, null, alpha, "beta");
+
+        MemoryReviewBulkItemResultDto item = Assert.Single(result.Items);
+
+        Assert.Equal(nameof(SagaCurationOutcomeKind.Unchanged), item.Outcome);
+
+        Assert.False(item.ReleasedErasureFingerprint);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+    }
+
+    /// <summary>Lists the Global Confirmed Covenant queue and prepares a correction of its one item.</summary>
+    private static async Task<(CovenantReviewBulkPrepareRequest Request, MemoryReviewBulkPlanDto Plan)> PrepareCovenantCorrectionAsync(
+        MemoryErasureRouteDriver driver)
+    {
+        CovenantReviewItemDto item;
+
+        using (HttpResponseMessage listed = await driver.PostAsync(
+            "/api/memory/covenant/review/list",
+            new CovenantReviewListRequest(CovenantScope.Global, null, CovenantLane.Confirmed, 50, null),
+            ArcanumJsonContext.Default.CovenantReviewListRequest))
+        {
+            Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+            CovenantReviewPageDto page = await MemoryErasureRouteDriver.ReadDataAsync(listed, ArcanumJsonContext.Default.ApiResponseCovenantReviewPageDto);
+
+            item = Assert.Single(page.Items, candidate => candidate.Key == Key && candidate.IsCurrent);
+        }
+
+        CovenantReviewBulkPrepareRequest correction = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Global,
+            null,
+            CovenantLane.Confirmed,
+            MemoryReviewAction.Correct,
+            [new CovenantReviewDecision(item.ObservationToken, "Keep the vault key in the safe.")]);
+
+        using HttpResponseMessage prepared = await driver.PostAsync(
+            "/api/memory/covenant/review/prepare",
+            correction,
+            ArcanumJsonContext.Default.CovenantReviewBulkPrepareRequest);
+
+        Assert.Equal(HttpStatusCode.OK, prepared.StatusCode);
+
+        return (correction, await MemoryErasureRouteDriver.ReadDataAsync(prepared, ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto));
+    }
+
+    /// <summary>
     /// An erasure host whose published authority can be reported host-tools tainted after startup, the
     /// way a tainted installation publishes it.
     /// </summary>

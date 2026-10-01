@@ -48,6 +48,22 @@ internal static class MemoryErasureRenderer
     internal const string UncheckedFingerprints =
         "Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.";
 
+    /// <summary>
+    /// What to do about a key that cannot be read, in the order that cannot cost the operator a valid
+    /// key: the case that is no fault of the item first, removal only for an item confirmed malformed,
+    /// and what removal costs.
+    /// </summary>
+    /// <remarks>
+    /// One state covers a credential store that could not answer and an item that is not a key, and
+    /// nothing the host reports tells them apart. Removing a valid key because the keychain was locked
+    /// would turn every fingerprint unverifiable, and the reset that follows would discard them all.
+    /// </remarks>
+    internal const string KeyUnavailableRemedy =
+        "If the credential store is locked or did not answer, unlock it and run this again. Only if that persists "
+        + "and the stored erasure key item is confirmed malformed, remove it with the OS credential tool and run "
+        + "'arcanum memory erasure reset-key': removing a key makes every erasure fingerprint unverifiable, and "
+        + "the reset discards them, so erased content could be learned again.";
+
     /// <summary>What a Covenant erase costs every Covenant turn and installation-wide lease while it runs.</summary>
     private const string DrainSentence =
         "Erasing drains in-flight Covenant turns first: it waits up to 30 seconds for them to finish, "
@@ -301,7 +317,13 @@ internal static class MemoryErasureRenderer
         if (status.KeyStatus is MemoryErasureKeyStatus.Unavailable)
         {
 
-            dispatcher.WritePayload("Unverifiable counts are unknown while the erasure key cannot be read.");
+            // With nothing recorded there is nothing a key could verify, so the zeros are measurements.
+            dispatcher.WritePayload(
+                status.Stores.Any(static store => store.Fingerprints > 0 || store.Receipts > 0)
+                    ? "Unverifiable counts are unknown while the erasure key cannot be read."
+                    : "Nothing is recorded, so there is nothing to verify.");
+
+            dispatcher.WritePayload(KeyUnavailableRemedy);
 
         }
 
@@ -330,7 +352,7 @@ internal static class MemoryErasureRenderer
         {
             MemoryErasureWalCheckpointAttempt.Truncated => "the log checkpoint truncated",
             MemoryErasureWalCheckpointAttempt.Busy => "the log checkpoint was busy because a reader still held the log, so run it again once readers finish",
-            MemoryErasureWalCheckpointAttempt.Unavailable => "the log checkpoint could not open its connection",
+            MemoryErasureWalCheckpointAttempt.Unavailable => "the log checkpoint could not run, so run it again later",
             MemoryErasureWalCheckpointAttempt.NotAttempted => "nothing was pending on the log",
             _ => throw new ArgumentOutOfRangeException(nameof(result), result.WalCheckpointAttempt, "No text exists for this checkpoint attempt."),
         };
@@ -408,6 +430,28 @@ internal static class MemoryErasureRenderer
 
     }
 
+    /// <summary>
+    /// Tells the operator that a release, scrub or key reset was sent a second time, so what was just
+    /// reported describes the second attempt only.
+    /// </summary>
+    /// <remarks>
+    /// The client resends once, byte for byte, when an answer's body is cut off after its headers arrived.
+    /// All three operations are idempotent, so the resend changes nothing the first attempt did; but if
+    /// the first attempt took effect, the resend finds nothing left to do and reports exactly that.
+    /// </remarks>
+    public static void WriteResent(
+        IConsoleDispatcher dispatcher,
+        string operation)
+    {
+
+        ArgumentNullException.ThrowIfNull(dispatcher);
+
+        dispatcher.WriteDiagnostic(
+            $"The host's answer to this {operation} was cut off, so it was sent once more. The first attempt may "
+            + "already have taken effect; the outcome and counts reported here describe only the resend.");
+
+    }
+
     private static void WriteStoreCounts(Action<string> write, IEnumerable<MemoryErasureStoreCountsDto> stores)
     {
 
@@ -428,8 +472,9 @@ internal static class MemoryErasureRenderer
             MemoryErasureKeyStatus.Absent => "No key item exists and no fingerprint needs one; the first erase creates it.",
             MemoryErasureKeyStatus.Present => "The key is readable.",
             MemoryErasureKeyStatus.Lost =>
-                "Fingerprints exist and the key item is gone, so nothing can verify them; extraction, the Lexicon "
-                + "scribe and agent Covenant proposals stay refused until the evidence is reset.",
+                "Fingerprints exist and the key item is gone, so nothing can verify them. Automatic writes to each "
+                + "store listed with fingerprints (extraction, the Lexicon scribe, agent Covenant proposals) are "
+                + "refused until the evidence is reset.",
             MemoryErasureKeyStatus.Unavailable => "The credential store could not answer, or the stored item is not a valid key.",
             _ => throw new ArgumentOutOfRangeException(nameof(status), status, "No text exists for this key status."),
         };
@@ -525,7 +570,7 @@ internal static class MemoryErasureRenderer
         {
             MemoryErasureWalCheckpointAttempt.Truncated or MemoryErasureWalCheckpointAttempt.NotAttempted => null,
             MemoryErasureWalCheckpointAttempt.Busy => "The WAL checkpoint was busy; a reader still held the log.",
-            MemoryErasureWalCheckpointAttempt.Unavailable => "The WAL checkpoint could not open its connection.",
+            MemoryErasureWalCheckpointAttempt.Unavailable => "The WAL checkpoint could not run.",
             _ => throw new ArgumentOutOfRangeException(nameof(attempt), attempt, "No text exists for this checkpoint attempt."),
         };
 

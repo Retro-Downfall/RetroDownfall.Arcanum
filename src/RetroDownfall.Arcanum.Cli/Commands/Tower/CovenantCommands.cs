@@ -1399,13 +1399,15 @@ public sealed class CovenantCommands(
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        bool resent = false;
+
         Result<MemoryErasureReleaseResultDto> released;
 
         try
         {
 
             released = await apiClient
-                .ReleaseCovenantErasureAsync(request, cancellationToken)
+                .ReleaseCovenantErasureAsync(request, cancellationToken, () => resent = true)
                 .ConfigureAwait(false);
 
         }
@@ -1425,6 +1427,13 @@ public sealed class CovenantCommands(
 
             MemoryCommands.WriteReleaseRefusalGuidance(dispatcher, released.Error);
 
+            if (resent)
+            {
+
+                MemoryErasureRenderer.WriteResent(dispatcher, "release");
+
+            }
+
             return failed;
 
         }
@@ -1439,6 +1448,14 @@ public sealed class CovenantCommands(
         {
 
             MemoryErasureRenderer.WriteReleaseResult(dispatcher, released.Value);
+
+        }
+
+        if (resent)
+        {
+
+            // The answer just rendered describes the resend: the first attempt may already have released.
+            MemoryErasureRenderer.WriteResent(dispatcher, "release");
 
         }
 

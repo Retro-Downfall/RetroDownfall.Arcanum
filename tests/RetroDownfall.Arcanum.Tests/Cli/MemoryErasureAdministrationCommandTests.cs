@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using System.Text.RegularExpressions;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -38,6 +39,8 @@ public sealed class MemoryErasureAdministrationCommandTests
 
     private const string MayHaveApplied = "may have been applied";
 
+    private const string ResentNote = "was cut off, so it was sent once more";
+
     [Theory]
     [InlineData(new string[0], SagaMemoryScopeKind.Global, null)]
     [InlineData(new[] { "--scope", "unresolved" }, SagaMemoryScopeKind.LegacyUnresolved, null)]
@@ -70,8 +73,10 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Equal(campaign, body.RootElement.GetProperty("campaignId").GetString());
 
-        // The content is never rendered, before the question or after it.
+        // The content is never rendered: not before the question, not in it, not after it.
         Assert.DoesNotContain("Rotate the vault key", prompt.BeforePrompt, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Rotate the vault key", prompt.Question ?? "", StringComparison.Ordinal);
 
         Assert.DoesNotContain("Rotate the vault key", result.Output + result.Error, StringComparison.Ordinal);
 
@@ -333,19 +338,30 @@ public sealed class MemoryErasureAdministrationCommandTests
         Assert.Contains(RelearnWarning, result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A lost key points the operator at status exactly once: the CLI adds the pointer only when the
+    /// host's own message does not already give it.
+    /// </summary>
     [Theory]
-    [InlineData("saga")]
-    [InlineData("lexicon")]
-    [InlineData("covenant")]
-    public async Task A_KeyLost_refusal_exits_one_and_points_to_erasure_status(string store)
+    [InlineData("saga", false)]
+    [InlineData("lexicon", false)]
+    [InlineData("covenant", false)]
+    [InlineData("saga", true)]
+    [InlineData("lexicon", true)]
+    [InlineData("covenant", true)]
+    public async Task A_KeyLost_refusal_exits_one_and_points_to_erasure_status_once(string store, bool hostNamesStatus)
     {
         using ContentFile file = new(SagaContent);
+
+        string message = hostNamesStatus
+            ? "The erasure key is lost. Run 'arcanum memory erasure status'."
+            : "The erasure key is lost.";
 
         AdministrationHandler handler = new()
         {
             Failures =
             {
-                [$"/api/memory/{store}/release"] = (HttpStatusCode.Conflict, new Error(ErrorCodes.MemoryErasure.KeyLost, "The erasure key is lost.")),
+                [$"/api/memory/{store}/release"] = (HttpStatusCode.Conflict, new Error(ErrorCodes.MemoryErasure.KeyLost, message)),
             },
         };
 
@@ -355,7 +371,7 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Contains("The erasure key is lost.", result.Error, StringComparison.Ordinal);
 
-        Assert.Contains("arcanum memory erasure status", result.Error, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(result.Error, Regex.Escape("arcanum memory erasure status")));
 
         Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
     }
@@ -450,6 +466,11 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Contains("Run 'arcanum memory erasure reset-key'", result.Output, StringComparison.Ordinal);
 
+        // Only the stores that hold fingerprints refuse their writers; a Lost key does not stop the others.
+        Assert.Contains("Automatic writes to each store listed with fingerprints", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("stay refused", result.Output, StringComparison.Ordinal);
+
         AdministrationHandler jsonHandler = new() { Status = handler.Status };
 
         CliTestResult json = await RunAsync(jsonHandler, ["memory", "erasure", "status", "--json"], new RecordingPrompt(jsonHandler, answer: false));
@@ -513,6 +534,40 @@ public sealed class MemoryErasureAdministrationCommandTests
         Assert.Contains("Erasure key: Unavailable", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Unverifiable counts are unknown while the erasure key cannot be read.", result.Output, StringComparison.Ordinal);
+
+        AssertKeyUnavailableRemedy(result.Output);
+    }
+
+    /// <summary>
+    /// With no evidence recorded, an unreadable key leaves nothing to verify, so the zeros are
+    /// measurements rather than unknowns; the operator is told how to recover the key.
+    /// </summary>
+    [Fact]
+    public async Task Status_with_an_unreadable_key_and_no_evidence_says_nothing_is_recorded_and_how_to_recover()
+    {
+        AdministrationHandler handler = new()
+        {
+            Status = new(
+                MemoryErasureKeyStatus.Unavailable,
+                [
+                    new(MemoryReviewStore.Covenant, 0, 0, 0),
+                    new(MemoryReviewStore.Saga, 0, 0, 0),
+                    new(MemoryReviewStore.Lexicon, 0, 0, 0),
+                ],
+                0),
+        };
+
+        CliTestResult result = await RunAsync(handler, ["memory", "erasure", "status"], new RecordingPrompt(handler, answer: false));
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        Assert.Contains("Erasure key: Unavailable", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Nothing is recorded, so there is nothing to verify.", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unknown", result.Output, StringComparison.Ordinal);
+
+        AssertKeyUnavailableRemedy(result.Output);
     }
 
     [Fact]
@@ -542,6 +597,23 @@ public sealed class MemoryErasureAdministrationCommandTests
         MemoryErasureScrubResultDto scrubbed = JsonSerializer.Deserialize(json.Output, ArcanumJsonContext.Default.MemoryErasureScrubResultDto)!;
 
         Assert.Equal((MemoryErasureWalCheckpointAttempt.Truncated, 1L, 0L), (scrubbed.WalCheckpointAttempt, scrubbed.Verified, scrubbed.StillPending));
+    }
+
+    [Fact]
+    public async Task Scrub_whose_checkpoint_could_not_run_says_so_and_to_run_it_again_later()
+    {
+        AdministrationHandler handler = new()
+        {
+            Scrub = new(MemoryErasureWalCheckpointAttempt.Unavailable, 0, 1),
+        };
+
+        CliTestResult result = await RunAsync(handler, ["memory", "erasure", "scrub"], new RecordingPrompt(handler, answer: false));
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        Assert.Contains("Scrub: the log checkpoint could not run, so run it again later.", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("connection", result.Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -578,6 +650,11 @@ public sealed class MemoryErasureAdministrationCommandTests
         Assert.Contains("Discarded 2 fingerprints and 2 receipts; created a new erasure key.", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ResentNote, result.Error, StringComparison.Ordinal);
+
+        // The token authorizes the irreversible apply; it travels in the request body and nowhere else.
+        Assert.DoesNotContain("reset-token", result.Output + result.Error + prompt.BeforePrompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -640,6 +717,9 @@ public sealed class MemoryErasureAdministrationCommandTests
         Assert.Contains("Erasure key: Lost", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("may be learned again by extraction or agent writes", result.Error, StringComparison.Ordinal);
+
+        // Neither the result document nor the preview carries the token.
+        Assert.DoesNotContain("reset-token", result.Output + result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -659,9 +739,12 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Equal(["POST /api/memory/erasure/reset-key/prepare"], handler.Events);
 
-        Assert.Contains("The erasure key could not be read.", result.Error, StringComparison.Ordinal);
+        // The CLI's own explanation replaces the host's, so the remedy is said once, with its caveats.
+        Assert.DoesNotContain("The erasure key could not be read.", result.Error, StringComparison.Ordinal);
 
-        Assert.Contains("OS credential tool", result.Error, StringComparison.Ordinal);
+        Assert.Contains("nothing was discarded", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        AssertKeyUnavailableRemedy(result.Error);
     }
 
     /// <summary>
@@ -672,10 +755,10 @@ public sealed class MemoryErasureAdministrationCommandTests
     [Theory]
     [InlineData(ErrorCodes.MemoryErasure.StalePlan, 409, "Run 'arcanum memory erasure reset-key' again")]
     [InlineData(ErrorCodes.MemoryErasure.InvalidPreflight, 400, "Run 'arcanum memory erasure reset-key' again")]
-    [InlineData(ErrorCodes.MemoryErasure.KeyUnavailable, 503, "OS credential tool")]
+    [InlineData(ErrorCodes.MemoryErasure.KeyUnavailable, 503, "unlock it and run this again")]
     [InlineData(ErrorCodes.MemoryErasure.Unavailable, 503, null)]
     [InlineData(ErrorCodes.Covenant.OperatorAuthorityUnavailable, 503, null)]
-    public async Task Reset_key_refusals_at_apply_exit_one_with_the_hosts_message_and_a_remedy(string code, int status, string? remedy)
+    public async Task Reset_key_refusals_at_apply_exit_one_with_one_explanation_and_a_remedy(string code, int status, string? remedy)
     {
         string message = $"The host refused the reset with {code}.";
 
@@ -688,13 +771,32 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains(message, result.Error, StringComparison.Ordinal);
-
         if (remedy is not null)
         {
+            // The CLI's explanation replaces the host's message, which says the same thing less exactly.
+            Assert.DoesNotContain(message, result.Error, StringComparison.Ordinal);
+
             Assert.Contains(remedy, result.Error, StringComparison.Ordinal);
 
             Assert.Contains("nothing was discarded", result.Error, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            Assert.Contains(message, result.Error, StringComparison.Ordinal);
+
+            // Only a refusal the CLI can account for says nothing was discarded.
+            Assert.DoesNotContain("nothing was discarded", result.Error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (code == ErrorCodes.MemoryErasure.StalePlan)
+        {
+            // A stale plan can follow the key the apply created before it re-measured.
+            Assert.Contains("a new erasure key may have been created", result.Error, StringComparison.Ordinal);
+        }
+
+        if (code == ErrorCodes.MemoryErasure.KeyUnavailable)
+        {
+            AssertKeyUnavailableRemedy(result.Error);
         }
 
         Assert.DoesNotContain("Discarded", result.Output, StringComparison.Ordinal);
@@ -764,7 +866,150 @@ public sealed class MemoryErasureAdministrationCommandTests
         Assert.Contains($"POST {path}", handler.Events);
 
         Assert.Equal(failure != "typed", result.Error.Contains(MayHaveApplied, StringComparison.Ordinal));
+
+        // An outcome nobody confirmed cannot be described as having discarded nothing.
+        Assert.DoesNotContain("nothing was discarded", result.Error, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// A release, scrub or key reset whose answer was cut off after its headers arrived is sent once more,
+    /// and the second answer describes only the second attempt — so the operator is told the first may
+    /// already have taken effect.
+    /// </summary>
+    [Theory]
+    [InlineData("release-saga", "release")]
+    [InlineData("release-lexicon", "release")]
+    [InlineData("release-covenant", "release")]
+    [InlineData("scrub", "scrub")]
+    [InlineData("reset-key", "key reset")]
+    public async Task An_answer_cut_off_and_resent_says_the_first_attempt_may_already_have_taken_effect(string verb, string operation)
+    {
+        using ContentFile file = new(SagaContent);
+
+        string path = MutationPath(verb);
+
+        AdministrationHandler handler = new() { CutOffOnce = { path } };
+
+        CliTestResult result = await RunAsync(handler, [.. VerbArgs(verb, file.Path), "--yes"], new RecordingPrompt(handler, answer: false));
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        Assert.Equal(2, handler.Events.Count(e => e == $"POST {path}"));
+
+        Assert.Contains($"The host's answer to this {operation} {ResentNote}.", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("The first attempt may already have taken effect", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("describe only the resend", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ResentNote, result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("release-saga")]
+    [InlineData("release-lexicon")]
+    [InlineData("release-covenant")]
+    [InlineData("scrub")]
+    [InlineData("reset-key")]
+    public async Task An_answer_received_whole_adds_no_resend_note(string verb)
+    {
+        using ContentFile file = new(SagaContent);
+
+        AdministrationHandler handler = new();
+
+        CliTestResult result = await RunAsync(handler, [.. VerbArgs(verb, file.Path), "--yes"], new RecordingPrompt(handler, answer: false));
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        Assert.Single(handler.Events, e => e == $"POST {MutationPath(verb)}");
+
+        Assert.DoesNotContain(ResentNote, result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A refusal under <c>--json</c> writes the CLI error envelope as the one stdout document, the way
+    /// every other direct verb's refusal does, with the message also on the diagnostic stream.
+    /// </summary>
+    [Theory]
+    [InlineData("release-saga", "/api/memory/saga/release")]
+    [InlineData("release-lexicon", "/api/memory/lexicon/release")]
+    [InlineData("release-covenant", "/api/memory/covenant/release")]
+    [InlineData("scrub", "/api/memory/erasure/scrub")]
+    [InlineData("reset-key", "/api/memory/erasure/reset-key/prepare")]
+    [InlineData("reset-key", "/api/memory/erasure/reset-key")]
+    [InlineData("status", "/api/memory/erasure")]
+    public async Task A_refusal_under_json_writes_one_error_envelope(string verb, string path)
+    {
+        using ContentFile file = new(SagaContent);
+
+        AdministrationHandler handler = new()
+        {
+            Failures = { [path] = (HttpStatusCode.ServiceUnavailable, new Error(ErrorCodes.MemoryErasure.Unavailable, "Erasure is not available yet.")) },
+        };
+
+        string[] args = verb == "status" ? ["memory", "erasure", "status"] : VerbArgs(verb, file.Path);
+
+        CliTestResult result = await RunAsync(handler, [.. args, "--json", "--yes"], new RecordingPrompt(handler, answer: false));
+
+        Assert.Equal(1, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal("Erasure is not available yet.", document.RootElement.GetProperty("error").GetString());
+
+        Assert.Equal(1, document.RootElement.GetProperty("exitCode").GetInt32());
+    }
+
+    [Fact]
+    public async Task An_input_error_under_json_writes_one_error_envelope()
+    {
+        using ContentFile file = new(SagaContent);
+
+        AdministrationHandler handler = new();
+
+        CliTestResult result = await RunAsync(
+            handler,
+            ["memory", "saga", "release", "--file", file.Path, "--scope", "orbit", "--json"],
+            new RecordingPrompt(handler, answer: false));
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.Empty(handler.Events);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Contains("global|campaign|unresolved|unclassified", document.RootElement.GetProperty("error").GetString(), StringComparison.Ordinal);
+
+        Assert.Equal(2, document.RootElement.GetProperty("exitCode").GetInt32());
+    }
+
+    /// <summary>
+    /// The remedy for a key that cannot be read: first the case that is no fault of the key, then removal
+    /// only for an item confirmed malformed, and what removal costs.
+    /// </summary>
+    private static void AssertKeyUnavailableRemedy(string text)
+    {
+        int unlock = text.IndexOf("If the credential store is locked or did not answer, unlock it and run this again.", StringComparison.Ordinal);
+
+        int remove = text.IndexOf("confirmed malformed", StringComparison.Ordinal);
+
+        Assert.True(unlock >= 0, text);
+
+        Assert.True(remove > unlock, text);
+
+        Assert.Contains("OS credential tool", text, StringComparison.Ordinal);
+
+        Assert.Contains("makes every erasure fingerprint unverifiable", text, StringComparison.Ordinal);
+
+        Assert.Contains("erased content could be learned again", text, StringComparison.Ordinal);
+    }
+
+    private static string MutationPath(string verb) => verb switch
+    {
+        "reset-key" => "/api/memory/erasure/reset-key",
+        "scrub" => "/api/memory/erasure/scrub",
+        _ => $"/api/memory/{verb["release-".Length..]}/release",
+    };
 
     private static string[] ReleaseArgs(string store, string file) => store switch
     {
@@ -850,6 +1095,9 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         internal Dictionary<string, Exception> Exceptions { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>Paths whose first answer arrives with its headers and then loses its body.</summary>
+        internal HashSet<string> CutOffOnce { get; } = new(StringComparer.Ordinal);
+
         internal MemoryErasureReleaseResultDto? Release { get; init; }
 
         internal MemoryErasureStatusDto Status { get; init; } = new(
@@ -894,6 +1142,11 @@ public sealed class MemoryErasureAdministrationCommandTests
                 throw exception;
             }
 
+            if (CutOffOnce.Remove(path))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new BrokenContent() };
+            }
+
             if (Failures.TryGetValue(path, out (HttpStatusCode Status, Error Error) failure))
             {
                 return Respond(failure.Status, JsonSerializer.Serialize(
@@ -928,6 +1181,13 @@ public sealed class MemoryErasureAdministrationCommandTests
             new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
     }
 
+    /// <summary>
+    /// Answers the question, having written it to the diagnostic stream exactly as the shipped prompt
+    /// does, so every assertion over what reached a stream covers the question as well.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="BeforePrompt"/> is everything the operator saw before answering, the question included.
+    /// </remarks>
     private sealed class RecordingPrompt(AdministrationHandler handler, bool answer) : IConfirmationPrompt
     {
         internal StringBuilder Rendered { get; } = new();
@@ -936,8 +1196,13 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         internal string? Question { get; private set; }
 
+        /// <summary>The dispatcher the run writes through, set when the run composes it.</summary>
+        internal IConsoleDispatcher? Dispatcher { get; set; }
+
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
         {
+            Dispatcher?.WriteDiagnostic($"{question} [y/N]");
+
             BeforePrompt = Rendered.ToString();
 
             Question = question;
@@ -948,8 +1213,21 @@ public sealed class MemoryErasureAdministrationCommandTests
         }
     }
 
-    private sealed class ObservingDispatcher(IConsoleDispatcher inner, RecordingPrompt prompt) : IConsoleDispatcher
+    private sealed class ObservingDispatcher : IConsoleDispatcher
     {
+        private readonly IConsoleDispatcher inner;
+
+        private readonly RecordingPrompt prompt;
+
+        internal ObservingDispatcher(IConsoleDispatcher inner, RecordingPrompt prompt)
+        {
+            this.inner = inner;
+
+            this.prompt = prompt;
+
+            prompt.Dispatcher = this;
+        }
+
         public void WritePayload(string value)
         {
             prompt.Rendered.Append(value).Append('\n');
@@ -971,6 +1249,51 @@ public sealed class MemoryErasureAdministrationCommandTests
         public void WriteJson(JsonElement value) => inner.WriteJson(value);
 
         public void BeginJsonStream() => inner.BeginJsonStream();
+    }
+
+    /// <summary>A response whose headers arrived and whose body the connection lost.</summary>
+    private sealed class BrokenContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            throw new IOException("The connection dropped mid-body.");
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new BrokenStream());
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+
+            return false;
+        }
+    }
+
+    private sealed class BrokenStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException("The connection dropped mid-body.");
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new IOException("The connection dropped mid-body."));
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class ForbiddenReader : TextReader
