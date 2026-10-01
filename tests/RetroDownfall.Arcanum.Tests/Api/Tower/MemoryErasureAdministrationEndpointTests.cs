@@ -152,6 +152,105 @@ public sealed class MemoryErasureAdministrationEndpointTests
         AssertStores(status.Stores, covenant: (0, 0, 0), saga: (1, 0, 1), lexicon: (1, 0, 1));
     }
 
+    /// <summary>
+    /// With no evidence, status asks only whether the item exists, which cannot tell a malformed item
+    /// from a key. Once a read has found the item malformed, status says so too, still without reading
+    /// the secret itself.
+    /// </summary>
+    [SkippableFact]
+    public async Task Status_without_evidence_reports_a_malformed_item_once_a_read_has_found_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        SecretAccessRecordingCredentialStore credentials = new(inner);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, credentials.Set(Service, Account, "not base64url").Status);
+
+        await using ArcanumWebApplicationFactory factory = Host(inner, credentials);
+
+        Assert.Equal(MemoryErasureKeyStatus.Present, (await StatusAsync(factory)).KeyStatus);
+
+        Assert.Equal(0, credentials.TryGetCount(Account));
+
+        string memory = await MemoryErasureRouteDriver.InsertSagaAsync(factory, Vault);
+
+        using (HttpResponseMessage refused = await PrepareSagaEraseAsync(factory, memory))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, refused.StatusCode);
+
+            Assert.Equal(ErrorCodes.MemoryErasure.KeyUnavailable, await MemoryErasureRouteDriver.ReadErrorCodeAsync(refused));
+        }
+
+        int reads = credentials.TryGetCount(Account);
+
+        MemoryErasureStatusDto status = await StatusAsync(factory);
+
+        Assert.Equal(MemoryErasureKeyStatus.Unavailable, status.KeyStatus);
+
+        AssertStores(status.Stores, covenant: (0, 0, 0), saga: (0, 0, 0), lexicon: (0, 0, 0));
+
+        Assert.Equal(reads, credentials.TryGetCount(Account));
+
+        Assert.Equal("not base64url", inner.TryGet(Service, Account).Value);
+    }
+
+    /// <summary>An item that is not a key, with rows to verify, reads as unavailable and its rows as unknown.</summary>
+    [SkippableFact]
+    public async Task Status_reports_a_malformed_item_with_rows_as_unavailable()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        SecretAccessRecordingCredentialStore credentials = new(inner);
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        await using (ArcanumWebApplicationFactory first = Host(inner, credentials, profile))
+        {
+            await ScribeAsync(first, Keeper);
+
+            _ = await new MemoryErasureRouteDriver(first.CreateClient()).EraseLexiconAsync(Keeper, null);
+        }
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, credentials.Set(Service, Account, "not base64url").Status);
+
+        await using ArcanumWebApplicationFactory factory = Host(inner, credentials, profile);
+
+        MemoryErasureStatusDto status = await StatusAsync(factory);
+
+        Assert.Equal(MemoryErasureKeyStatus.Unavailable, status.KeyStatus);
+
+        AssertStores(status.Stores, covenant: (0, 0, 0), saga: (0, 0, 0), lexicon: (1, 0, 1));
+    }
+
+    /// <summary>A store that cannot answer even whether the item exists reads as unavailable.</summary>
+    [SkippableFact]
+    public async Task Status_without_evidence_reports_an_unreadable_store_as_unavailable()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        SecretAccessRecordingCredentialStore credentials = new(inner);
+
+        credentials.FailAccount(Account, OsCredentialStoreStatus.Unavailable);
+
+        await using ArcanumWebApplicationFactory factory = Host(inner, credentials);
+
+        MemoryErasureStatusDto status = await StatusAsync(factory);
+
+        Assert.Equal(MemoryErasureKeyStatus.Unavailable, status.KeyStatus);
+
+        AssertStores(status.Stores, covenant: (0, 0, 0), saga: (0, 0, 0), lexicon: (0, 0, 0));
+
+        Assert.Equal(0, credentials.TryGetCount(Account));
+
+        Assert.Equal(1, credentials.ProbeCount(Account));
+    }
+
     [SkippableFact]
     public async Task Scrub_with_nothing_pending_reports_NotAttempted()
     {
@@ -180,6 +279,123 @@ public sealed class MemoryErasureAdministrationEndpointTests
         Assert.Equal(
             new MemoryErasureScrubResultDto(MemoryErasureWalCheckpointAttempt.NotAttempted, 0, 0),
             await MemoryErasureRouteDriver.ReadDataAsync(scrubbed, ArcanumJsonContext.Default.ApiResponseMemoryErasureScrubResultDto));
+    }
+
+    /// <summary>
+    /// The scrub finishes what an erase left pending on the log, through the routes and across a
+    /// restart: busy while a reader holds the log, then verified once the reader is gone.
+    /// </summary>
+    [SkippableFact]
+    public async Task Scrub_after_a_restart_verifies_a_receipt_a_held_reader_left_pending()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        SecretAccessRecordingCredentialStore credentials = new(inner);
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased;
+
+        await using (ArcanumWebApplicationFactory first = Host(inner, credentials, profile))
+        {
+            MemoryErasureRouteDriver driver = new(first.CreateClient());
+
+            string memory = await MemoryErasureRouteDriver.InsertSagaAsync(first, Vault);
+
+            await using (await MemoryErasureRouteDriver.HoldReaderAsync(first))
+            {
+                erased = await driver.EraseSagaAsync(memory);
+
+                Assert.Equal(
+                    new MemoryErasureScrubResultDto(MemoryErasureWalCheckpointAttempt.Busy, 0, 1),
+                    await ScrubAsync(first));
+            }
+
+            Assert.Equal(MemoryLocalErasureOutcome.RowsRemovedScrubPending, erased.Result.Local.Outcome);
+
+            Assert.Equal<MemoryErasureScrubPendingReason>([MemoryErasureScrubPendingReason.WalCheckpointPending], erased.Result.Local.PendingReasons);
+
+            Assert.Equal(MemoryErasureWalCheckpointAttempt.Busy, erased.Result.Local.WalCheckpointAttempt);
+        }
+
+        await using ArcanumWebApplicationFactory factory = Host(inner, credentials, profile);
+
+        Assert.Equal(1, (await StatusAsync(factory)).PendingScrubReceipts);
+
+        Assert.Equal(
+            new MemoryErasureScrubResultDto(MemoryErasureWalCheckpointAttempt.Truncated, 1, 0),
+            await ScrubAsync(factory));
+
+        Assert.Equal(0, (await StatusAsync(factory)).PendingScrubReceipts);
+
+        Assert.Equal(
+            2,
+            await ScalarAsync(
+                factory,
+                $"SELECT ScrubStateCode FROM memory_erasure_receipts WHERE MutationId = '{erased.Result.MutationId.ToString("D").ToUpperInvariant()}' AND ScrubPendingReasonMask = 0;"));
+
+        MemoryErasureResultDto replayed = await new MemoryErasureRouteDriver(factory.CreateClient()).ApplySagaAsync(erased.Apply);
+
+        Assert.True(replayed.Replayed);
+
+        Assert.Equal(MemoryLocalErasureOutcome.Verified, replayed.Local.Outcome);
+    }
+
+    /// <summary>
+    /// A reset whose counts went stale while the key was lost creates the key before its transaction
+    /// finds the counts changed (spec §5.7). The refusal discards nothing and the new key stays: the
+    /// rows now read as unverifiable under it, the writers stay refused, and a fresh reset finishes.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_count_stale_reset_on_a_lost_key_creates_the_key_refuses_and_a_fresh_reset_recovers()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        SecretAccessRecordingCredentialStore credentials = new(inner);
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        await LostKeySetupAsync(inner, credentials, profile);
+
+        await using ArcanumWebApplicationFactory factory = Host(inner, credentials, profile);
+
+        string stale = factory.Services
+            .GetRequiredService<IMemoryErasureTokenCodec>()
+            .IssueErasureKeyReset(new(MemoryErasureKeyStatus.Lost, 0, 5, 5, 0, 5, 5))
+            .Value
+            .Token;
+
+        await AssertRefusedAsync(factory, ResetPath, ResetBody(stale), HttpStatusCode.Conflict, ErrorCodes.MemoryErasure.StalePlan);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, inner.ProbePresence(Service, Account));
+
+        MemoryErasureStatusDto replaced = await StatusAsync(factory);
+
+        Assert.Equal(MemoryErasureKeyStatus.Present, replaced.KeyStatus);
+
+        AssertStores(replaced.Stores, covenant: (0, 0, 0), saga: (1, 1, 1), lexicon: (1, 1, 1));
+
+        Result<LexiconEntryDto> scribed = await ScribeResultAsync(factory, "Harbor Master");
+
+        Assert.True(scribed.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.KeyLost, scribed.Error.Code);
+
+        MemoryErasureKeyResetPreflightDto prepared = await PrepareAsync(factory);
+
+        Assert.Equal(MemoryErasureKeyStatus.Present, prepared.KeyStatus);
+
+        AssertStores(prepared.Stores, covenant: (0, 0, 0), saga: (1, 1, 1), lexicon: (1, 1, 1));
+
+        Assert.Equal(
+            new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, 2, 2, KeyCreated: false),
+            await ResetAsync(factory, prepared.PreflightToken));
+
+        AssertStores((await StatusAsync(factory)).Stores, covenant: (0, 0, 0), saga: (0, 0, 0), lexicon: (0, 0, 0));
     }
 
     /// <summary>
@@ -660,6 +876,35 @@ public sealed class MemoryErasureAdministrationEndpointTests
             Encoding.UTF8,
             "application/json");
 
+    private static async Task<MemoryErasureScrubResultDto> ScrubAsync(ArcanumWebApplicationFactory factory)
+    {
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsync(ScrubPath, content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        AssertProtectedTuple(response);
+
+        return await MemoryErasureRouteDriver.ReadDataAsync(response, ArcanumJsonContext.Default.ApiResponseMemoryErasureScrubResultDto);
+    }
+
+    /// <summary>Asks the Saga erase route to prepare one memory, as the CLI does after its show.</summary>
+    private static async Task<HttpResponseMessage> PrepareSagaEraseAsync(ArcanumWebApplicationFactory factory, string memoryId)
+    {
+        SagaMemoryDetail detail;
+
+        using (HttpResponseMessage shown = await factory.CreateAuthenticatedClient().GetAsync($"/api/memory/saga/{memoryId}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
+
+            detail = await MemoryErasureRouteDriver.ReadDataAsync(shown, ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+        }
+
+        return await new MemoryErasureRouteDriver(factory.CreateClient()).PostAsync(
+            "/api/memory/saga/erase/prepare",
+            new SagaErasePrepareRequest(memoryId, detail.ContentHash, detail.Claim?.CurrentVersionId, Guid.NewGuid()),
+            ArcanumJsonContext.Default.SagaErasePrepareRequest);
+    }
+
     /// <summary>Posts with the test API key and requires the refusal it names, with the protected tuple.</summary>
     private static async Task AssertRefusedAsync(
         ArcanumWebApplicationFactory factory,
@@ -690,16 +935,22 @@ public sealed class MemoryErasureAdministrationEndpointTests
             ],
             stores);
 
-    /// <summary>Scribes one Global entry through the host's own Lexicon service.</summary>
+    /// <summary>Scribes one Global entry through the host's own Lexicon service, and requires that it landed.</summary>
     private static async Task ScribeAsync(ArcanumWebApplicationFactory factory, string name)
+    {
+        Result<LexiconEntryDto> scribed = await ScribeResultAsync(factory, name);
+
+        Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : null);
+    }
+
+    /// <summary>The same scribe, reporting what the chokepoint decided.</summary>
+    private static async Task<Result<LexiconEntryDto>> ScribeResultAsync(ArcanumWebApplicationFactory factory, string name)
     {
         using IServiceScope scope = factory.Services.CreateScope();
 
-        Result<LexiconEntryDto> scribed = await scope.ServiceProvider
+        return await scope.ServiceProvider
             .GetRequiredService<ILexiconService>()
             .UpsertAsync(name, "Person", ["keeps the vault key"], LexiconScope.Global, CancellationToken.None);
-
-        Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : null);
     }
 
     /// <summary>One integer read from the host's Grimoire. Assertion-only.</summary>

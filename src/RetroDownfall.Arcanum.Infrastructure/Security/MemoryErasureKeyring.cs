@@ -44,9 +44,12 @@ internal interface IMemoryErasureKeyCreator
 /// asked for them at most once per process, and a failure is remembered rather than retried per call.
 /// Operator calls re-probe anything short of Present and publish what they find into the same latch,
 /// so a transient failure at the first automatic probe clears at the next operator status or erase.
-/// A Present latch is re-probed only by a reset. A second test home that overwrites the shared account
-/// therefore cannot swap the key under this process, and whatever that home records carries a key
-/// identifier this process can tell apart.</para>
+/// A Present latch is never re-probed: only <see cref="CreateForReset()"/> reads the account whatever is
+/// latched, and <c>reset-key</c> reaches it only after the latch read Absent. So once this process
+/// holds a key it keeps it until it restarts, even if the account is overwritten or deleted meanwhile:
+/// a second test home that overwrites the shared account cannot swap the key under this process, and
+/// whatever that home records carries a key identifier this process can tell apart. A deleted account
+/// is reported as lost only after a restart.</para>
 ///
 /// <para>Every read, write, and read-back runs under one lock, so concurrent first erasures create
 /// exactly one key. A create writes canonical unpadded base64url, reads it back, and compares in
@@ -170,8 +173,20 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
     }
 
     /// <inheritdoc/>
-    public MemoryErasureKeyOpenResult CreateForReset()
+    public MemoryErasureKeyOpenResult CreateForReset() => CreateForReset(out _);
+
+    /// <summary>
+    /// <see cref="CreateForReset()"/>, also saying whether this call wrote the key.
+    /// </summary>
+    /// <param name="created">
+    /// True only when this call found the account absent and wrote and read back a new key. A key it
+    /// found, perhaps written by another caller since the reset last read the account, was not created
+    /// here.
+    /// </param>
+    internal MemoryErasureKeyOpenResult CreateForReset(out bool created)
     {
+        created = false;
+
         lock (_gate)
         {
             if (_disposed)
@@ -181,9 +196,16 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
 
             (MemoryErasureKeyState state, byte[]? key) = Probe();
 
-            return state is MemoryErasureKeyState.Absent
-                ? Create()
-                : Publish(state, key);
+            if (state is not MemoryErasureKeyState.Absent)
+            {
+                return Publish(state, key);
+            }
+
+            MemoryErasureKeyOpenResult result = Create();
+
+            created = result.State is MemoryErasureKeyState.Present;
+
+            return result;
         }
     }
 

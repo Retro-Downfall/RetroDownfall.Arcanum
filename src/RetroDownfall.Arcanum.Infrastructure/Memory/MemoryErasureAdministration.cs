@@ -19,7 +19,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 /// <remarks>
 /// <para><b>Status</b> is a read. Below Core 13 there is no evidence (§5.4). With no evidence rows, the
 /// key's state comes from a metadata-only presence probe, so an installation that never erased anything
-/// is reported without the key's bytes being asked for. With rows, the key is re-probed as every operator
+/// is reported without the key's bytes being asked for; an item the probe finds is still reported as
+/// unavailable when this process's last read of it found it malformed or unreadable. With rows, the key is re-probed as every operator
 /// call re-probes it, and the rows are counted against it: a row the key did not record is unverifiable,
 /// and every row is unverifiable when the key is gone, which is a lost key. When the key cannot be read
 /// at all, nothing can be said about which rows it would verify, so their unverifiable counts read as
@@ -43,8 +44,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 /// <para><b>Why the key comes first.</b> The keychain is never touched inside a transaction, so the
 /// create and the delete cannot be one step. Creating first means a crash between them leaves a present
 /// key and rows it cannot verify: the same fail-closed state as a replaced key, which status reports and
-/// a later reset, or the same token while it lives, finishes. Deleting first would discard the evidence
-/// before the key that would let the installation record new evidence was known to exist.</para>
+/// a fresh prepare and apply finishes. The token does not survive a crash, because its key lives only in
+/// this process. The same state follows a reset that creates the key and then finds the counts changed:
+/// the new key stays, nothing is discarded, and the reset answers that its plan is stale. Deleting first
+/// would discard the evidence before the key that would let the installation record new evidence was
+/// known to exist.</para>
 ///
 /// <para>Every log line carries an attempt, a count or a flag, never a key, a key identifier, a
 /// fingerprint, a name or content.</para>
@@ -278,9 +282,9 @@ internal sealed class MemoryErasureAdministration(
                 return StalePlan;
             }
 
-            opened = keyring.CreateForReset();
-
-            created = opened.State is MemoryErasureKeyState.Present;
+            // Created is what the keyring wrote, not what it found: another caller may have written the
+            // key since the read above.
+            opened = keyring.CreateForReset(out created);
         }
 
         if (opened.State is not MemoryErasureKeyState.Present)
@@ -356,13 +360,21 @@ internal sealed class MemoryErasureAdministration(
     /// The key's state when no evidence exists, from the metadata-only probe where the store has one, so
     /// no secret is read. A store without one is asked through the operator re-probe instead.
     /// </summary>
+    /// <remarks>
+    /// That an item exists says nothing about whether it holds a key, so an item the probe finds is read
+    /// against the latch, which costs no I/O: when this process last read the item and found it
+    /// malformed or could not read it, that is still the answer. A newer probe that finds no item at all
+    /// overrides it, because the item has gone.
+    /// </remarks>
     private MemoryErasureKeyStatus ProbeWithoutEvidence()
     {
         if (keyring.ProbePresence() is { } presence)
         {
             return presence switch
             {
-                OsCredentialStoreStatus.Ok => MemoryErasureKeyStatus.Present,
+                OsCredentialStoreStatus.Ok => keyring.Latch.State is MemoryErasureKeyState.Malformed or MemoryErasureKeyState.Unavailable
+                    ? MemoryErasureKeyStatus.Unavailable
+                    : MemoryErasureKeyStatus.Present,
                 OsCredentialStoreStatus.NotFound => MemoryErasureKeyStatus.Absent,
                 _ => MemoryErasureKeyStatus.Unavailable,
             };

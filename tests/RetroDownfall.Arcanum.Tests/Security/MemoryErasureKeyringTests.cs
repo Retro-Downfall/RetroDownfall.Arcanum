@@ -788,6 +788,51 @@ public sealed class MemoryErasureKeyringTests
     }
 
     /// <summary>
+    /// The reset's create path says whether it wrote the key: only a proven absence is a creation, and a
+    /// key it finds, or an item it refuses, is not.
+    /// </summary>
+    [Fact]
+    public void CreateForReset_reports_whether_it_created_the_key()
+    {
+        InMemoryOsCredentialStore inner = new();
+
+        using (MemoryErasureKeyring absent = new(inner))
+        {
+            MemoryErasureKeyOpenResult created = absent.CreateForReset(out bool wrote);
+
+            using MemoryErasureKey? key = created.Key;
+
+            Assert.Equal(MemoryErasureKeyState.Present, created.State);
+
+            Assert.True(wrote);
+        }
+
+        using (MemoryErasureKeyring present = new(inner))
+        {
+            MemoryErasureKeyOpenResult found = present.CreateForReset(out bool wrote);
+
+            using MemoryErasureKey? key = found.Key;
+
+            Assert.Equal(MemoryErasureKeyState.Present, found.State);
+
+            Assert.False(wrote);
+        }
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, inner.Set(Service, Account, "not base64url").Status);
+
+        using (MemoryErasureKeyring malformed = new(inner))
+        {
+            MemoryErasureKeyOpenResult refused = malformed.CreateForReset(out bool wrote);
+
+            Assert.Equal(MemoryErasureKeyState.Malformed, refused.State);
+
+            Assert.False(wrote);
+        }
+
+        Assert.Equal("not base64url", inner.TryGet(Service, Account).Value);
+    }
+
+    /// <summary>
     /// The presence probe asks only whether the item exists: it reads no secret, never resolves or
     /// changes the latch, answers null for a store that cannot probe, and fails closed.
     /// </summary>

@@ -1,3 +1,6 @@
+using System.Buffers.Text;
+using System.Security.Cryptography;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -222,6 +225,87 @@ public sealed class MemoryErasureAdministrationTests
         Assert.Equal(0, credentials.SetCount(Account));
 
         Assert.Equal(1, credentials.ProbeCount(Account));
+    }
+
+    /// <summary>
+    /// A reset creates a key only when it writes one. Here another caller, such as a first erase on an
+    /// installation with no evidence, writes the key between the reset's own read and its create path,
+    /// so the reset finds that key, keeps it, and does not claim to have created it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_reset_that_finds_a_key_another_caller_created_does_not_report_creating_it()
+    {
+        InMemoryOsCredentialStore inner = new();
+
+        InterleavingCredentialStore store = new(inner);
+
+        using MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(store);
+
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true, keyring);
+
+        MemoryErasureAdministration admin = new(
+            harness.Context,
+            keyring,
+            new MemoryReviewTokenCodec(TimeProvider.System),
+            new MemoryErasureScrubber(FixtureOrdinaryConnectionFactory.For(harness.Context)),
+            NullLogger<MemoryErasureAdministration>.Instance);
+
+        Result<MemoryErasureKeyResetPreflightDto> prepared = await admin.PrepareKeyResetAsync(Token);
+
+        Assert.Equal(MemoryErasureKeyStatus.Absent, prepared.Value.KeyStatus);
+
+        string concurrent = Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
+
+        // The apply's own read still finds nothing; the read after it, the create path's, finds the key.
+        store.BeforeRead(store.Reads + 2, () => inner.Set(ArcanumCredentialIdentity.Service, Account, concurrent));
+
+        Result<MemoryErasureKeyResetResultDto> reset = await admin.ResetKeyAsync(new(prepared.Value.PreflightToken), Token);
+
+        Assert.True(reset.IsSuccess, reset.IsFailure ? reset.Error.Message : null);
+
+        Assert.Equal(new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, 0, 0, KeyCreated: false), reset.Value);
+
+        Assert.Equal(concurrent, inner.TryGet(ArcanumCredentialIdentity.Service, Account).Value);
+
+        Assert.Equal(0, store.Writes);
+    }
+
+    /// <summary>
+    /// Reads the in-memory store, running a step queued for one numbered read just before it, so a test
+    /// can place another caller's write between two reads the code under test makes.
+    /// </summary>
+    private sealed class InterleavingCredentialStore(InMemoryOsCredentialStore inner) : IOsCredentialStore
+    {
+        private readonly Dictionary<int, Action> _beforeRead = [];
+
+        internal int Reads { get; private set; }
+
+        internal int Writes { get; private set; }
+
+        public bool IsAvailable => true;
+
+        internal void BeforeRead(int read, Action step) => _beforeRead[read] = step;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            Reads++;
+
+            if (_beforeRead.Remove(Reads, out Action? step))
+            {
+                step();
+            }
+
+            return inner.TryGet(service, account);
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            Writes++;
+
+            return inner.Set(service, account, secret);
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account) => inner.Delete(service, account);
     }
 
     /// <summary>
