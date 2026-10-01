@@ -920,12 +920,12 @@ public sealed class CovenantEntryErasureServiceTests
 
     /// <summary>
     /// A <c>COMMIT</c> that persisted and then reported a failure leaves its transaction object
-    /// believing it is still open, so the rollback on disposal fails. That proves nothing about the
-    /// outcome, so the closure stays closed and the erase asks for manual recovery; the receipt it
-    /// committed answers any later retry.
+    /// believing it is still open, so the rollback on disposal fails too: the likeliest shape of an
+    /// erase that did commit. The receipt read back on a connection of its own proves it, so the erase
+    /// is reported and the scope reopens as committed.
     /// </summary>
     [Fact]
-    public async Task An_uncertain_commit_whose_rollback_fails_stays_closed_and_reports_manual_recovery()
+    public async Task An_uncertain_commit_whose_rollback_fails_but_whose_receipt_committed_reopens_committed()
     {
         await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
 
@@ -935,21 +935,73 @@ public sealed class CovenantEntryErasureServiceTests
 
         List<string> recorded = [];
 
+        CovenantEntryErasureService service = bed.Service(new DispositionRecordingGate(bed.Gate, recorded), commit: CommitThenReportFailureAsync);
+
+        Result<MemoryErasureResultDto> applied = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? $"{applied.Error.Code}: {applied.Error.Message}" : null);
+
+        Assert.False(applied.Value.Replayed);
+
+        Assert.Equal(preflight.EffectDigest, applied.Value.EffectDigest);
+
+        Assert.Equal(["complete:CommitAndReopen"], recorded);
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.False(await bed.EntryExistsAsync(entryId));
+
+        await using CovenantReadLease reopened = (await bed.Gate.AcquireReadAsync(EntryScope(), Token)).Value;
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// When the rollback after an uncertain <c>COMMIT</c> fails and the receipt read back does not
+    /// prove this request committed, nothing is proved: no receipt, another request's receipt, a read
+    /// that fails, or one that throws. The closure stays closed and the erase asks for manual recovery.
+    /// </summary>
+    /// <remarks>
+    /// The commit here did persist, so the read-back is replaced to give each answer that does not
+    /// prove it; the receipt the commit wrote still answers a later retry.
+    /// </remarks>
+    [Theory]
+    [InlineData("none")]
+    [InlineData("mismatched")]
+    [InlineData("fails")]
+    [InlineData("throws")]
+    public async Task An_uncertain_commit_whose_rollback_fails_stays_closed_and_reports_manual_recovery(string reread)
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        List<string> recorded = [];
+
+        MemoryErasureScrubber scrubber = new(new ScratchFreshConnections(bed.Fixture, null));
+
+        Func<Guid, CancellationToken, Task<Result<MemoryErasureReceiptRow?>>> unproved = reread switch
+        {
+            "none" => static (_, _) => Task.FromResult(Result<MemoryErasureReceiptRow?>.Success(null)),
+            "mismatched" => async (mutationId, cancellationToken) =>
+            {
+                Result<MemoryErasureReceiptRow?> read = await scrubber.ReadCommittedReceiptAsync(mutationId, cancellationToken);
+
+                Assert.NotNull(read.Value);
+
+                return Result<MemoryErasureReceiptRow?>.Success(read.Value with { RequestDigest = new byte[32] });
+            },
+            "fails" => static (_, _) => Task.FromResult(Result<MemoryErasureReceiptRow?>.Failure(
+                new Error(ErrorCodes.MemoryErasure.Unavailable, "The receipt could not be read back."))),
+            _ => static (_, _) => throw new NotSupportedException("A failure no storage filter names."),
+        };
+
         CovenantEntryErasureService service = bed.Service(
             new DispositionRecordingGate(bed.Gate, recorded),
-            commit: static async (transaction, cancellationToken) =>
-            {
-                await using (SqliteCommand commit = transaction.Connection!.CreateCommand())
-                {
-                    commit.Transaction = transaction;
-
-                    commit.CommandText = "COMMIT;";
-
-                    _ = await commit.ExecuteNonQueryAsync(cancellationToken);
-                }
-
-                throw new SqliteException("disk I/O error", 10);
-            });
+            commit: CommitThenReportFailureAsync,
+            reread: unproved);
 
         Result<MemoryErasureResultDto> applied = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
 
@@ -959,11 +1011,31 @@ public sealed class CovenantEntryErasureServiceTests
 
         Assert.Equal(["complete:KeepClosed"], recorded);
 
+        Assert.True((await bed.Gate.AcquireReadAsync(EntryScope(), Token)).IsFailure, "The scope reopened over an unproved commit.");
+
         Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
 
         Assert.False(await bed.EntryExistsAsync(entryId));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
+    }
+
+    /// <summary>
+    /// Commits through a statement of its own and then reports a failure, so the frame persists while
+    /// the transaction object still believes it is open and its rollback on disposal fails.
+    /// </summary>
+    private static async Task CommitThenReportFailureAsync(SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using (SqliteCommand commit = transaction.Connection!.CreateCommand())
+        {
+            commit.Transaction = transaction;
+
+            commit.CommandText = "COMMIT;";
+
+            _ = await commit.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        throw new SqliteException("disk I/O error", 10);
     }
 
     /// <summary>

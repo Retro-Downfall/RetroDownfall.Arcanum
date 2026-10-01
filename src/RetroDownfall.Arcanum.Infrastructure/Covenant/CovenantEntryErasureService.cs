@@ -69,9 +69,11 @@ internal interface ICovenantEntryErasurePreparer
 /// closed until the host restarts. A committed erase reopens as a commit and a proven refusal as a
 /// rollback. A <c>COMMIT</c> that fails is settled by reading the receipt back on a fresh connection
 /// after its transaction is disposed: a receipt there is the committed erase; none means nothing
-/// changed, a rollback, and a retryable refusal. The scope stays closed, and the erase asks for manual
-/// recovery, whenever that is not proved: a read that cannot be made or throws, or a rollback of the
-/// failed transaction that itself fails. The erase publishes no availability, generation or authority transition,
+/// changed, a rollback, and a retryable refusal. The read is made even when the rollback of the failed
+/// transaction itself fails, the likeliest shape of a commit that persisted, and this request's
+/// receipt still proves the commit. The scope stays closed, and the erase asks for manual recovery,
+/// whenever neither outcome is proved: a read that cannot be made or throws, or a failed rollback
+/// whose read finds no receipt of this request. The erase publishes no availability, generation or authority transition,
 /// so a commit needs no health publication before it reopens.</para>
 ///
 /// <para>The result is built from the receipt only after a commit that succeeded or whose receipt a fresh
@@ -548,11 +550,10 @@ internal sealed class CovenantEntryErasureService(
 
                 applied = CommitUnsettled;
 
-                // A rollback that failed proves nothing about the commit, and may have left the
-                // connection's own transaction in an unknown state, so nothing is read through it.
-                Result<MemoryErasureReceiptRow?> reread = uncertain.RollbackFailed
-                    ? Result<MemoryErasureReceiptRow?>.Failure(CommitUnsettled)
-                    : await ReReadReceiptAsync(target.MutationId).ConfigureAwait(false);
+                // The re-read runs on a connection of its own, so it is made even when the rollback
+                // failed: that is the likeliest shape of a commit that persisted before reporting its
+                // failure, and only this request's receipt read back can prove it.
+                Result<MemoryErasureReceiptRow?> reread = await ReReadReceiptAsync(target.MutationId).ConfigureAwait(false);
 
                 if (reread.IsFailure)
                 {
@@ -565,12 +566,16 @@ internal sealed class CovenantEntryErasureService(
 
                     applied = new Applied(persisted, Replayed: false);
                 }
-                else
+                else if (!uncertain.RollbackFailed)
                 {
                     disposition = CovenantExclusiveLeaseDisposition.RollbackAndReopen;
 
                     applied = CommitNotRecorded;
                 }
+
+                // A rollback that failed and a re-read that found no receipt of this request together
+                // prove nothing: the connection's own transaction may still be in an unknown state, so
+                // the closure stays closed.
             }
         }
         finally
