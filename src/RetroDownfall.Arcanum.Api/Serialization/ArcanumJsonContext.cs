@@ -496,6 +496,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(CovenantEraseHeadExpectation))]
 [JsonSerializable(typeof(CovenantErasePrepareRequest))]
 [JsonSerializable(typeof(CovenantEraseRequest))]
+[JsonSerializable(typeof(CovenantErasureReleaseRequest))]
 [JsonSerializable(typeof(ApiResponse<MemoryErasurePreflightDto>))]
 [JsonSerializable(typeof(ApiResponse<MemoryErasureResultDto>))]
 [JsonSerializable(typeof(ApiResponse<MemoryErasureReleaseResultDto>))]

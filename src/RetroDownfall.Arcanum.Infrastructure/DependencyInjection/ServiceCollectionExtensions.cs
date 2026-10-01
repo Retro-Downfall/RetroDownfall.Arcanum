@@ -1416,6 +1416,10 @@ public static class ServiceCollectionExtensions
                 provider.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
                 provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
 
+        // Host only, beside the erase services: release reads the key through the provider alone and
+        // never creates it, on the same DbContext connection the write chokepoints use.
+        services.AddScoped<IMemoryErasureRelease, MemoryErasureRelease>();
+
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
         services.AddScoped<LexiconService>();

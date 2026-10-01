@@ -48,11 +48,20 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         ("EraseLexiconEntry", "POST", "/api/memory/lexicon/erase", CovenantAuthorityRequirement.SensitivityRetentionPurge),
         ("PrepareCovenantErasure", "POST", "/api/memory/covenant/erase/prepare", CovenantAuthorityRequirement.LifecycleManage),
         ("EraseCovenantEntry", "POST", "/api/memory/covenant/erase", CovenantAuthorityRequirement.LifecycleManage),
+        ("ReleaseSagaErasure", "POST", "/api/memory/saga/release", CovenantAuthorityRequirement.LifecycleManage),
+        ("ReleaseLexiconErasure", "POST", "/api/memory/lexicon/release", CovenantAuthorityRequirement.LifecycleManage),
+        ("ReleaseCovenantErasure", "POST", "/api/memory/covenant/release", CovenantAuthorityRequirement.LifecycleManage),
     ];
 
     private const string LexiconName = "Mill Warden";
 
     private const string CovenantKey = "taint.covenant";
+
+    private const string ReleasedSaga = "The release stone lies under the bridge.";
+
+    private const string ReleasedLexiconName = "Bridge Warden";
+
+    private const string ReleasedCovenantKey = "taint.released";
 
     private static readonly Regex ErasurePath = new(
         "^/api/memory/(saga|lexicon|covenant)/(erase|release)",
@@ -194,8 +203,11 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         }
 
         // A genuine body, built while the installation is clean: a refusal of {} could never have
-        // changed anything, so it would prove nothing about this one.
-        (string body, Guid mutationId) = await GenuineBodyAsync(name, client, driver, memoryId);
+        // changed anything, so it would prove nothing about this one. A release body names a
+        // fingerprint an actual erase recorded, so it has something to remove.
+        (string body, Guid mutationId) = await GenuineBodyAsync(name, client, driver, memoryId, host);
+
+        long[] fingerprints = await FingerprintsAsync(host);
 
         taint.Tainted = true;
 
@@ -229,15 +241,19 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
 
         Assert.Equal(0, await ReceiptsAsync(host, mutationId));
 
-        foreach (MemoryReviewStore store in Enum.GetValues<MemoryReviewStore>())
-        {
-            Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(host, store));
-        }
+        Assert.Equal(fingerprints, await FingerprintsAsync(host));
 
         // The same body on the clean installation is accepted, so the refusal above is what stopped it.
         using (HttpResponseMessage accepted = await client.PostAsync(PathOf(name), Json(body)))
         {
             Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        }
+
+        if (ReleasedStore(name) is { } released)
+        {
+            Assert.Equal(
+                fingerprints[(int)released] - 1,
+                await MemoryErasureRouteDriver.FingerprintCountAsync(host, released));
         }
 
         using IServiceScope check = host.Services.CreateScope();
@@ -312,8 +328,14 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         string name,
         HttpClient client,
         MemoryErasureRouteDriver driver,
-        string sagaMemoryId)
+        string sagaMemoryId,
+        ArcanumWebApplicationFactory host)
     {
+        if (ReleasedStore(name) is { } store)
+        {
+            return (await GenuineReleaseBodyAsync(store, driver, host), Guid.NewGuid());
+        }
+
         if (name is "PrepareLexiconEntryErasure" or "EraseLexiconEntry")
         {
             return await GenuineLexiconBodyAsync(name, driver);
@@ -434,6 +456,66 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         return (JsonSerializer.Serialize(apply, ArcanumJsonContext.Default.CovenantEraseRequest), prepare.MutationId);
     }
 
+    /// <summary>
+    /// A release body naming a fingerprint an actual erase of a dedicated item just recorded, so the
+    /// items the other assertions show are left alone.
+    /// </summary>
+    private static async Task<string> GenuineReleaseBodyAsync(
+        MemoryReviewStore store,
+        MemoryErasureRouteDriver driver,
+        ArcanumWebApplicationFactory host)
+    {
+        switch (store)
+        {
+            case MemoryReviewStore.Saga:
+                _ = await driver.EraseSagaAsync(await MemoryErasureRouteDriver.InsertSagaAsync(host, ReleasedSaga));
+
+                return JsonSerializer.Serialize(
+                    new SagaErasureReleaseRequest(SagaMemoryScopeKind.Global, null, ReleasedSaga),
+                    ArcanumJsonContext.Default.SagaErasureReleaseRequest);
+
+            case MemoryReviewStore.Lexicon:
+                await ScribeLexiconAsync(host, ReleasedLexiconName);
+
+                _ = await driver.EraseLexiconAsync(ReleasedLexiconName, null);
+
+                return JsonSerializer.Serialize(
+                    new LexiconErasureReleaseRequest(new LexiconCurationScope(LexiconScopeKind.Global, null), ReleasedLexiconName),
+                    ArcanumJsonContext.Default.LexiconErasureReleaseRequest);
+
+            default:
+                _ = await driver.SetCovenantAsync(CovenantScope.Global, null, ReleasedCovenantKey, "Name the released key.");
+
+                _ = await driver.EraseCovenantAsync(CovenantScope.Global, null, ReleasedCovenantKey);
+
+                return JsonSerializer.Serialize(
+                    new CovenantErasureReleaseRequest(CovenantScope.Global, null, ReleasedCovenantKey),
+                    ArcanumJsonContext.Default.CovenantErasureReleaseRequest);
+        }
+    }
+
+    /// <summary>The store a release route releases from, or null for every other erasure route.</summary>
+    private static MemoryReviewStore? ReleasedStore(string name) => name switch
+    {
+        "ReleaseSagaErasure" => MemoryReviewStore.Saga,
+        "ReleaseLexiconErasure" => MemoryReviewStore.Lexicon,
+        "ReleaseCovenantErasure" => MemoryReviewStore.Covenant,
+        _ => null,
+    };
+
+    /// <summary>Every store's fingerprint count, indexed by store code.</summary>
+    private static async Task<long[]> FingerprintsAsync(ArcanumWebApplicationFactory host)
+    {
+        long[] counts = new long[(int)Enum.GetValues<MemoryReviewStore>().Max() + 1];
+
+        foreach (MemoryReviewStore store in Enum.GetValues<MemoryReviewStore>())
+        {
+            counts[(int)store] = await MemoryErasureRouteDriver.FingerprintCountAsync(host, store);
+        }
+
+        return counts;
+    }
+
     private static async Task<CovenantDetailDto> ShowCovenantAsync(MemoryErasureRouteDriver driver)
     {
         using HttpResponseMessage shown = await driver.PostAsync(
@@ -444,16 +526,17 @@ public sealed class MemoryErasureRouteInventoryTests(ArcanumWebApplicationFactor
         return await MemoryErasureRouteDriver.ReadDataAsync(shown, ArcanumJsonContext.Default.ApiResponseCovenantDetailDto);
     }
 
-    private static bool IsCovenantRoute(string name) => name is "PrepareCovenantErasure" or "EraseCovenantEntry";
+    private static bool IsCovenantRoute(string name) =>
+        name is "PrepareCovenantErasure" or "EraseCovenantEntry" or "ReleaseCovenantErasure";
 
-    /// <summary>Scribes the Global entry the Lexicon rows act on, through the host's own Lexicon service.</summary>
-    private static async Task ScribeLexiconAsync(ArcanumWebApplicationFactory host)
+    /// <summary>Scribes one Global entry through the host's own Lexicon service, the Lexicon rows' by default.</summary>
+    private static async Task ScribeLexiconAsync(ArcanumWebApplicationFactory host, string name = LexiconName)
     {
         using IServiceScope scope = host.Services.CreateScope();
 
         Result<LexiconEntryDto> scribed = await scope.ServiceProvider
             .GetRequiredService<ILexiconService>()
-            .UpsertAsync(LexiconName, "Place", ["guards the mill"], LexiconScope.Global, CancellationToken.None);
+            .UpsertAsync(name, "Place", ["guards the mill"], LexiconScope.Global, CancellationToken.None);
 
         Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : null);
     }

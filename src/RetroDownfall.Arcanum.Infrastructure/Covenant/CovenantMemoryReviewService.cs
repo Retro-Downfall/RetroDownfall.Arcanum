@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -16,6 +17,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// <summary>
 /// Reviews exact immutable Covenant versions through one generation-bound, scoped queue.
 /// </summary>
+/// <remarks>
+/// A <c>Correct</c> is an operator write of its key's Confirmed content, so it releases any erasure
+/// fingerprint still recorded for that exact scope and key in the review's own transaction, with the key
+/// the review read from the latch before <c>BEGIN</c>, and reports it on the item. Every other action, and
+/// every replay, releases nothing.
+/// </remarks>
 internal sealed class CovenantMemoryReviewService(
     ICovenantConnectionSource connections,
     ICovenantCompiler compiler,
@@ -500,7 +507,8 @@ internal sealed class CovenantMemoryReviewService(
         }
 
         // Read from the latch before BEGIN, never inside it, and disposed only after the transaction
-        // ends. Review decisions are operator intents, which the kernel never refuses through it.
+        // ends. Review decisions are operator intents, which the kernel never refuses through it; a
+        // correction reads its key to release the fingerprint of the identity it writes.
         using CovenantAgentErasureGate erasureGate = mutationKernel.CaptureErasureGate();
 
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
@@ -1334,6 +1342,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         Guid? resultingVersionId = null;
         long? autoAcknowledgedEventSequence = null;
+        bool? releasedErasureFingerprint = false;
         string outcome = Outcome(request.Action);
 
         switch (request.Action)
@@ -1380,6 +1389,17 @@ internal sealed class CovenantMemoryReviewService(
                     && resultingVersionId is null)
                 {
                     return IntegrityFailure;
+                }
+
+                if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
+                {
+                    releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                        transaction.Connection,
+                        transaction.Transaction,
+                        MemoryReviewStore.Covenant,
+                        MemoryErasureIdentity.ForCovenant(target.Scope, target.CampaignId, target.Key),
+                        erasureGate.Key,
+                        cancellationToken).ConfigureAwait(false);
                 }
 
                 if (resultingVersionId is { } correctedVersion)
@@ -1454,7 +1474,8 @@ internal sealed class CovenantMemoryReviewService(
             Canonical(target.EntryId),
             Canonical(target.VersionId),
             outcome,
-            resultingVersionId is { } resulting ? Canonical(resulting) : null);
+            resultingVersionId is { } resulting ? Canonical(resulting) : null,
+            releasedErasureFingerprint);
 
         return new AppliedDecision(ordinal, target, result, autoAcknowledgedEventSequence);
     }

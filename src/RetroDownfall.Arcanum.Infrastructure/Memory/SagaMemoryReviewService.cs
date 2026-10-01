@@ -29,6 +29,7 @@ internal sealed class SagaMemoryReviewService(
     IMemoryReviewTokenCodec tokenCodec,
     WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
+    IMemoryErasureKeyProvider erasureKeys,
     TimeProvider timeProvider) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
@@ -444,6 +445,12 @@ internal sealed class SagaMemoryReviewService(
             return Result<MemoryReviewBulkResultDto>.Failure(embeddings.Error);
         }
 
+        // Only a correction can make erased content live again, so only a correction needs the key. It is
+        // a copy of the latch, taken once before any transaction, never a credential read.
+        using MemoryErasureKey? erasureKey = preparedRequest.Action == MemoryReviewAction.Correct
+            ? erasureKeys.TryCopyLatched()
+            : null;
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -532,6 +539,7 @@ internal sealed class SagaMemoryReviewService(
                         targets[index],
                         preparedRequest.Decisions[index],
                         embeddings.Value[index],
+                        erasureKey,
                         changedAt,
                         cancellationToken).ConfigureAwait(false);
 
@@ -679,12 +687,15 @@ internal sealed class SagaMemoryReviewService(
         SagaReviewEvent target,
         SagaReviewDecision decision,
         float[] embedding,
+        MemoryErasureKey? erasureKey,
         DateTimeOffset changedAt,
         CancellationToken cancellationToken)
     {
         string? resultingVersionId = null;
 
         long? replacementEventSequence = null;
+
+        bool? releasedErasureFingerprint = false;
 
         string outcome = Outcome(action);
 
@@ -718,6 +729,16 @@ internal sealed class SagaMemoryReviewService(
                 {
                     return Result<AppliedDecision>.Failure(IntegrityFailure);
                 }
+
+                // An operator write, so never refused: when the replacement is content erased in this
+                // memory's own scope, it is live again and its fingerprint goes in this transaction.
+                releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                    (SqliteConnection)connection,
+                    (SqliteTransaction)transaction,
+                    MemoryReviewStore.Saga,
+                    RecreatedIdentity(target, decision.ReplacementContent!),
+                    erasureKey,
+                    cancellationToken).ConfigureAwait(false);
 
                 replacementEventSequence = await ReadReviewEventSequenceAsync(
                     connection,
@@ -779,7 +800,8 @@ internal sealed class SagaMemoryReviewService(
             target.SubjectId,
             target.VersionId,
             outcome,
-            resultingVersionId);
+            resultingVersionId,
+            releasedErasureFingerprint);
 
         return Result<AppliedDecision>.Success(
             new AppliedDecision(ordinal, target, result, replacementEventSequence));
@@ -842,6 +864,22 @@ internal sealed class SagaMemoryReviewService(
             sourceSessionId: null,
             cancellationToken,
             legacySchema: true).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The erasure identity a correction gives its replacement in the reviewed memory's scope, or null
+    /// when that scope and Campaign name no identity a fingerprint can describe.
+    /// </summary>
+    private static MemoryErasureIdentity? RecreatedIdentity(SagaReviewEvent target, string content)
+    {
+        try
+        {
+            return MemoryErasureIdentity.ForSaga(target.ScopeKind, target.CampaignId, content);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 
     private async Task<string?> RetireAsync(

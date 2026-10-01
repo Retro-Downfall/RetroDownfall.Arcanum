@@ -39,6 +39,26 @@ public sealed record CovenantEraseRequest(
 }
 
 /// <summary>
+/// Releases the erasure fingerprint of one Covenant key in one exact scope, so agents may author that key
+/// there again.
+/// </summary>
+/// <remarks>
+/// The key must already be well formed: the grammar is lower-case only, so a key in any other spelling is
+/// refused rather than folded into one that might name a different identity. A validated key is the
+/// normalized key the fingerprint was computed over.
+/// </remarks>
+public sealed record CovenantErasureReleaseRequest(
+    CovenantScope Scope,
+    Guid? CampaignId,
+    string Key)
+{
+    public Result Validate() =>
+        CovenantWireValidation.First(
+            CovenantWireValidation.ValidateOperationScope(Scope, CampaignId),
+            CovenantWireValidation.ValidateKey(Key));
+}
+
+/// <summary>
 /// The exact facts one prepared Covenant entry erasure was measured against, on the wire.
 /// </summary>
 /// <remarks>

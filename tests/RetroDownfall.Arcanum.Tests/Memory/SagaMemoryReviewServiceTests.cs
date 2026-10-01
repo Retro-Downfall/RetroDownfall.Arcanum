@@ -1055,6 +1055,7 @@ public sealed class SagaMemoryReviewServiceTests
             codec,
             new WeaveIndexAvailability(),
             Settings(),
+            MemoryErasureTestKeys.Isolated(),
             time);
 
         return new ReviewRuntime(service, codec, time);

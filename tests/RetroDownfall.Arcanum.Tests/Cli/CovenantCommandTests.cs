@@ -952,6 +952,97 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(planRoot.TryGetProperty("expiresAtUtc", out _));
     }
 
+    /// <summary>
+    /// A set that re-creates an erased key says so before the question is put: releasing the
+    /// fingerprint is what lets agents write the key in that scope again, so it is part of what the
+    /// operator approves.
+    /// </summary>
+    [Fact]
+    public async Task Set_preflight_names_the_fingerprint_release_before_the_prompt()
+    {
+        RecordingHandler handler = new() { ReleasesFingerprint = true, ReleasedFingerprint = true };
+
+        SnapshotConfirmation prompt = new();
+
+        CovenantCommands commands = Commands(handler, prompt, out RecordingDispatcher dispatcher);
+
+        prompt.Source = dispatcher;
+
+        int exitCode = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 0,
+            reactivate: false,
+            Token);
+
+        Assert.Equal(0, exitCode);
+
+        Assert.Contains(
+            "  Releases an erasure fingerprint: agents may write this key in this scope again.",
+            prompt.Shown,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Released an erasure fingerprint for this key.",
+            string.Join("\n", dispatcher.Payloads),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// When the server could not check the fingerprints, the screen says so and names the command that
+    /// can, rather than implying nothing would be released.
+    /// </summary>
+    [Fact]
+    public async Task Set_preflight_with_unverifiable_fingerprints_points_to_erasure_status()
+    {
+        RecordingHandler handler = new() { ReleasesFingerprint = null };
+
+        SnapshotConfirmation prompt = new();
+
+        CovenantCommands commands = Commands(handler, prompt, out RecordingDispatcher dispatcher);
+
+        prompt.Source = dispatcher;
+
+        _ = await commands.Set(
+            "preference.builds",
+            campaignId: null,
+            file: WriteTempFile("Run build commands from the repository root."),
+            expectedRevision: 0,
+            reactivate: false,
+            Token);
+
+        Assert.Contains(
+            "  Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.",
+            prompt.Shown,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Releases an erasure fingerprint", prompt.Shown, StringComparison.Ordinal);
+    }
+
+    /// <summary>Both structured documents carry the server's release flags, unchanged.</summary>
+    [Fact]
+    public async Task Set_json_carries_the_release_flags()
+    {
+        RecordingHandler handler = new() { ReleasesFingerprint = true, ReleasedFingerprint = true };
+
+        CliTestResult result = await RunCliAsync(handler, Invocation("set", approve: "--yes"));
+
+        Assert.Equal(0, result.ExitCode);
+
+        string planLine = Assert.Single(
+            result.Error.Split('\n'),
+            line => line.StartsWith('{'));
+
+        using JsonDocument plan = JsonDocument.Parse(planLine);
+
+        Assert.True(plan.RootElement.GetProperty("releasesErasureFingerprint").GetBoolean());
+
+        using JsonDocument committed = JsonDocument.Parse(result.Output);
+
+        Assert.True(committed.RootElement.GetProperty("releasedErasureFingerprint").GetBoolean());
+    }
+
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
 
     private string[] Invocation(string verb, string? approve)
@@ -1299,6 +1390,12 @@ public sealed class CovenantCommandTests : IDisposable
 
         internal CovenantPageTruncation ServerTruncationReason { get; init; } = CovenantPageTruncation.None;
 
+        /// <summary>What the stubbed set preflight says the commit would release.</summary>
+        internal bool? ReleasesFingerprint { get; init; } = false;
+
+        /// <summary>What the stubbed commit says it released.</summary>
+        internal bool? ReleasedFingerprint { get; init; } = false;
+
         private int _listCalls;
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -1328,7 +1425,7 @@ public sealed class CovenantCommandTests : IDisposable
                 // Echoed from the request, exactly as the service echoes it. A stub that reported its
                 // own expectation could never disagree with the head, which is the disagreement the
                 // confirmation path exists to catch.
-                body = Preflight(HeadRevision, ExpectedRevisionOf(Bodies[^1]));
+                body = Preflight(HeadRevision, ExpectedRevisionOf(Bodies[^1]), ReleasesFingerprint);
             }
             else if (path.EndsWith("list", StringComparison.Ordinal)
                 || path.EndsWith("query", StringComparison.Ordinal))
@@ -1347,7 +1444,7 @@ public sealed class CovenantCommandTests : IDisposable
             }
             else
             {
-                body = Mutation();
+                body = Mutation(ReleasedFingerprint);
             }
 
             return new HttpResponseMessage(HttpStatusCode.OK)
@@ -1485,7 +1582,7 @@ public sealed class CovenantCommandTests : IDisposable
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
 
-        private static string Preflight(long headRevision, long expectedRevision) =>
+        private static string Preflight(long headRevision, long expectedRevision, bool? releasesFingerprint) =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantMutationPreflightDto>.FromResult(
                     Result<CovenantMutationPreflightDto>.Success(new CovenantMutationPreflightDto(
@@ -1512,14 +1609,15 @@ public sealed class CovenantCommandTests : IDisposable
                             false,
                             false,
                             "22",
-                            "33"),
+                            "33",
+                            releasesFingerprint),
                         DateTimeOffset.UtcNow,
                         DateTimeOffset.UtcNow.AddMinutes(5),
                         "token")),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto);
 
-        private static string Mutation() =>
+        private static string Mutation(bool? releasedFingerprint) =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantMutationResultDto>.FromResult(
                     Result<CovenantMutationResultDto>.Success(new CovenantMutationResultDto(
@@ -1535,7 +1633,8 @@ public sealed class CovenantCommandTests : IDisposable
                         1,
                         "44",
                         "55",
-                        false)),
+                        false,
+                        releasedFingerprint)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
 
@@ -1594,6 +1693,21 @@ public sealed class CovenantCommandTests : IDisposable
     {
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken) =>
             Task.FromResult(answer);
+    }
+
+    /// <summary>Approves, after recording everything the operator had been shown when asked.</summary>
+    private sealed class SnapshotConfirmation : IConfirmationPrompt
+    {
+        internal RecordingDispatcher? Source { get; set; }
+
+        internal string Shown { get; private set; } = string.Empty;
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Shown = string.Join("\n", Source!.Payloads);
+
+            return Task.FromResult(true);
+        }
     }
 
     private sealed class FixedInvocationContext : ICliInvocationContext

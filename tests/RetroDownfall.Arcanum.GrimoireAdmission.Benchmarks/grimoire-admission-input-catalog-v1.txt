@@ -348,6 +348,7 @@ R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerInfo.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerState.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerTransport.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureKeyProvider.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureRelease.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureServices.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryReviewTokenCodec.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryDtos.cs
@@ -790,6 +791,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyClaimStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureGuard.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureKeyWarmup.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureLabels.cs
@@ -1607,6 +1609,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/TrustedMcpWorkspaceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/TrustedStructuredToolResult.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureExposure.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureProtocol.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureTokens.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewTokenCodec.cs

@@ -42,6 +42,13 @@ public sealed class CovenantCommands(
     private const int PageSize = 50;
 
     /// <summary>
+    /// What an operator is told when the host holds erasure fingerprints it could not check, so whether
+    /// a write released one is unknown: the command that can say is named rather than guessed at.
+    /// </summary>
+    private const string UncheckedFingerprints =
+        "Erasure fingerprints could not be checked; run 'arcanum memory erasure status'.";
+
+    /// <summary>
     /// Writes one standing preference the operator wants honored.
     /// </summary>
     /// <remarks>
@@ -943,6 +950,24 @@ public sealed class CovenantCommands(
 
             }
 
+            // Releasing a fingerprint is the unsafe direction, so it is part of what is approved.
+            switch (preflight.Effect.ReleasesErasureFingerprint)
+            {
+
+                case true:
+
+                    dispatcher.WritePayload("  Releases an erasure fingerprint: agents may write this key in this scope again.");
+
+                    break;
+
+                case null:
+
+                    dispatcher.WritePayload($"  {UncheckedFingerprints}");
+
+                    break;
+
+            }
+
         }
 
         return await confirmationPrompt
@@ -981,7 +1006,8 @@ public sealed class CovenantCommands(
                     preflight.Effect.AffectedCampaignCount,
                     preflight.Effect.ExamplesTruncated,
                     preflight.Effect.AppliesToFutureCampaigns,
-                    preflight.ExpiresAtUtc),
+                    preflight.ExpiresAtUtc,
+                    preflight.Effect.ReleasesErasureFingerprint),
                 CliJsonContext.Default.CovenantMutationPlanPayload));
 
     private int WriteMutation(Result<CovenantMutationResultDto> committed)
@@ -1007,7 +1033,8 @@ public sealed class CovenantCommands(
                     committed.Value.NormalizedKey,
                     committed.Value.Lane,
                     committed.Value.ResultingLaneRevision,
-                    committed.Value.Replayed),
+                    committed.Value.Replayed,
+                    committed.Value.ReleasedErasureFingerprint),
                 CliJsonContext.Default.CovenantMutationResultPayload);
 
             return (int)CliExitCode.Success;
@@ -1017,6 +1044,23 @@ public sealed class CovenantCommands(
         dispatcher.WritePayload(committed.Value.Replayed
             ? $"Already applied: '{committed.Value.NormalizedKey}' is at revision {committed.Value.ResultingLaneRevision}."
             : $"{committed.Value.Outcome}: '{committed.Value.NormalizedKey}' is now revision {committed.Value.ResultingLaneRevision}.");
+
+        switch (committed.Value.ReleasedErasureFingerprint)
+        {
+
+            case true:
+
+                dispatcher.WritePayload("Released an erasure fingerprint for this key.");
+
+                break;
+
+            case null:
+
+                dispatcher.WritePayload(UncheckedFingerprints);
+
+                break;
+
+        }
 
         return (int)CliExitCode.Success;
 

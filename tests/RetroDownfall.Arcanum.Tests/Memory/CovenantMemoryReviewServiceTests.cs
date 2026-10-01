@@ -496,6 +496,114 @@ public sealed class CovenantMemoryReviewServiceTests
         Assert.Equal(ErrorCodes.MemoryReview.IntegrityFailure, corruptReplay.Error.Code);
     }
 
+    /// <summary>
+    /// A review correction is an operator write of an identity's Confirmed content. When a fingerprint
+    /// for its exact scope and key is still recorded, as a re-creation made while no key was latched
+    /// leaves one, the correction releases it in the review's own transaction with the key the review
+    /// captured before <c>BEGIN</c>, and says so on the item. Without a latched key it cannot check, and
+    /// says that instead. A replay answers from its receipt and released nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_review_correction_of_a_fingerprinted_key_releases_it_only_with_a_latched_key(bool keyLatched)
+    {
+        const string key = "response.detail";
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(withErasureEvidence: true);
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            key,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Use moderate detail.",
+            Token);
+
+        MemoryErasureIdentity identity = MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, CampaignOne, key);
+
+        // A latched key is the review's to use; one created and read by another keyring leaves this
+        // process's latch unresolved.
+        using (MemoryErasureKey erasureKey = keyLatched
+            ? runtime.Fixture.ErasureKeys.OpenOrCreate(evidenceRowsExist: false).Key!
+            : MemoryErasureTestKeys.CreateKey(runtime.Fixture.Credentials))
+        {
+            await MemoryErasureTestKeys.SeedFingerprintAsync(runtime.Fixture.Connection, erasureKey, identity, Token);
+        }
+
+        CovenantReviewPageDto page;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            page = (await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value;
+        }
+
+        CovenantReviewItemDto observed = Assert.Single(page.Items);
+
+        CovenantReviewBulkPrepareRequest correction = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            MemoryReviewAction.Correct,
+            [new CovenantReviewDecision(observed.ObservationToken, "Use concise detail.")]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            plan = (await runtime.Service.PrepareAsync(correction, prepareLease, Token)).Value;
+        }
+
+        MemoryReviewBulkResultDto first;
+
+        await using (CovenantWriteLease writeLease = runtime.WriteLease())
+        {
+            Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(
+                new CovenantReviewBulkApplyRequest(correction, plan.PreparedPlanToken),
+                writeLease,
+                Token);
+
+            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+            first = applied.Value;
+        }
+
+        MemoryReviewBulkItemResultDto corrected = Assert.Single(first.Items);
+
+        Assert.Equal("Corrected", corrected.Outcome);
+
+        Assert.Equal(keyLatched ? true : null, corrected.ReleasedErasureFingerprint);
+
+        Assert.Equal(
+            keyLatched ? 0L : 1L,
+            await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM memory_erasure_fingerprints;"));
+
+        await using CovenantWriteLease replayLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> replayed = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(correction, plan.PreparedPlanToken),
+            replayLease,
+            Token);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : string.Empty);
+
+        Assert.True(replayed.Value.Replayed);
+
+        Assert.False(Assert.Single(replayed.Value.Items).ReleasedErasureFingerprint);
+    }
+
     [Fact]
     public async Task Identical_correction_is_acknowledged_as_no_change_without_a_replacement()
     {
@@ -1354,9 +1462,15 @@ public sealed class CovenantMemoryReviewServiceTests
 
         private Guid DatasetGeneration { get; }
 
-        internal static async Task<ReviewRuntime> CreateAsync()
+        /// <param name="withErasureEvidence">
+        /// Gives the catalog the erasure fingerprint table and builds the kernel over the fixture's own
+        /// keyring, so the review captures the latch the suite drives.
+        /// </param>
+        internal static async Task<ReviewRuntime> CreateAsync(bool withErasureEvidence = false)
         {
-            CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+            CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
+                Token,
+                withErasureEvidence: withErasureEvidence);
             Guid dataset = await fixture.ReadDatasetGenerationAsync(Token);
             FakeTimeProvider time = new();
             MemoryReviewTokenCodec codec = new(time);
@@ -1365,7 +1479,9 @@ public sealed class CovenantMemoryReviewServiceTests
                 new FixedCovenantConnectionSource(fixture.Connection),
                 new CovenantCompiler(),
                 codec,
-                new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
+                new CovenantMutationKernel(
+                    new CovenantQuotaGuard(),
+                    withErasureEvidence ? fixture.ErasureKeys : MemoryErasureTestKeys.Isolated()),
                 new CovenantCurationKernel(),
                 time);
 

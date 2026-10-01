@@ -177,7 +177,8 @@ public sealed record CovenantMutationPlanPayload(
     long AffectedCampaignCount,
     bool ExamplesTruncated,
     bool AppliesToFutureCampaigns,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc,
+    bool? ReleasesErasureFingerprint = false);
 
 /// <summary>The durable outcome of one committed Covenant mutation.</summary>
 public sealed record CovenantMutationResultPayload(
@@ -189,7 +190,8 @@ public sealed record CovenantMutationResultPayload(
     string Key,
     CovenantLane Lane,
     long? Revision,
-    bool Replayed);
+    bool Replayed,
+    bool? ReleasedErasureFingerprint = false);
 
 /// <summary>What <c>arcanum memory covenant doctor</c> found, and what it would do about it.</summary>
 public sealed record CovenantDoctorPayload(

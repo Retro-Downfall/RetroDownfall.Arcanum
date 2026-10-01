@@ -132,15 +132,26 @@ public sealed class CovenantErasureSuppressionTests
     /// An approved agent retirement is agent authorship too. The operator's own write that re-created
     /// the key after the erasure does not make the erased identity the agent's to retire.
     /// </summary>
+    /// <remarks>
+    /// A live head and its fingerprint coexist when the operator re-created the key while this process's
+    /// latch held no erasure key: the set cannot release what it cannot check, so it commits and leaves
+    /// the fingerprint. An operator re-probe then latches the key, and the agent write meets it.
+    /// </remarks>
     [Fact]
     public async Task An_approved_agent_retirement_of_a_fingerprinted_key_is_refused()
     {
 
         await using CovenantServiceHarness harness = await StartAsync();
 
-        await harness.SeedCovenantFingerprintAsync(CovenantScope.Campaign, CampaignOne, Key, Token);
+        await SeedFingerprintWithoutLatchingAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
 
         await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "Build from the root.", Token);
+
+        Assert.Equal(1, await ScalarAsync(harness, "SELECT COUNT(*) FROM memory_erasure_fingerprints;"));
+
+        harness.Fixture.ErasureKeys.OpenExisting(MemoryErasureKeyProbe.Reprobe).Key?.Dispose();
+
+        Assert.Equal(MemoryErasureKeyState.Present, harness.Fixture.ErasureKeys.Latch.State);
 
         CovenantMutationKernel kernel = Kernel(harness);
 
@@ -384,11 +395,14 @@ public sealed class CovenantErasureSuppressionTests
     }
 
     /// <summary>
-    /// Operator writes are never refused, with a key in hand or without one, and never consult the gate.
+    /// Operator writes are never refused, with a key in hand or without one. The production commit path
+    /// re-creating an erased key releases its fingerprint in the same transaction when its gate holds the
+    /// key, and otherwise commits, keeps the fingerprint and says it could not check.
     /// </summary>
     /// <remarks>
-    /// The fingerprint survives the write: releasing it on re-creation is a separate step, and this
-    /// write authority is not where it happens.
+    /// The kernel itself never consults the gate for an operator intent: the release is the commit
+    /// path's own step, read from the gate it captured before <c>BEGIN</c> and handed to the kernel. A
+    /// commit path that handed the kernel any other gate would leave the fingerprint behind.
     /// </remarks>
     [Theory]
     [InlineData(true)]
@@ -398,30 +412,35 @@ public sealed class CovenantErasureSuppressionTests
 
         await using CovenantServiceHarness harness = await StartAsync();
 
-        await harness.SeedCovenantFingerprintAsync(CovenantScope.Campaign, CampaignOne, Key, Token);
+        if (keyInHand)
+        {
 
-        CovenantMutationKernel kernel = Kernel(harness);
+            await harness.SeedCovenantFingerprintAsync(CovenantScope.Campaign, CampaignOne, Key, Token);
 
-        long keyEpoch = (await ProbeAsync(harness, harness.Fixture.Store, CovenantLane.Confirmed, Key)).KeyEpoch;
+        }
+        else
+        {
 
-        using CovenantAgentErasureGate gate = keyInHand ? kernel.CaptureErasureGate() : CovenantAgentErasureGate.None;
+            await SeedFingerprintWithoutLatchingAsync(harness, CovenantScope.Campaign, CampaignOne, Key);
 
-        Assert.Equal(keyInHand, gate.Key is not null);
+        }
 
-        Applied applied = await ApplyAsync(
-            harness,
-            kernel,
-            gate,
-            CovenantMutationFixture.OperatorSet(
-                CovenantOperationScope.ForCampaign(CampaignOne),
-                Key,
-                "Build from the root.",
-                expectedRevision: 0,
-                expectedKeyEpoch: keyEpoch));
+        using (MemoryErasureKey? latched = harness.Fixture.ErasureKeys.TryCopyLatched())
+        {
 
-        AssertApplied(applied);
+            Assert.Equal(keyInHand, latched is not null);
 
-        Assert.Equal(1, await ScalarAsync(harness, "SELECT COUNT(*) FROM memory_erasure_fingerprints;"));
+        }
+
+        CovenantMutationResultDto result = await OperatorSetAsync(harness, Key, "Build from the root.");
+
+        Assert.Equal(CovenantMutationOutcome.Applied, result.Outcome);
+
+        Assert.False(result.Replayed);
+
+        Assert.Equal(keyInHand ? true : null, result.ReleasedErasureFingerprint);
+
+        Assert.Equal(keyInHand ? 0 : 1, await ScalarAsync(harness, "SELECT COUNT(*) FROM memory_erasure_fingerprints;"));
 
     }
 
@@ -592,6 +611,70 @@ public sealed class CovenantErasureSuppressionTests
 
     private static CovenantMutationKernel Kernel(CovenantServiceHarness harness) =>
         new(new CovenantQuotaGuard(), harness.Fixture.ErasureKeys);
+
+    /// <summary>
+    /// Records one Covenant fingerprint under the installation's key, created and read by a keyring of
+    /// its own, so the fixture's latch is left unresolved: the state of a process that has not read the
+    /// key since the erase recorded it.
+    /// </summary>
+    private static async Task SeedFingerprintWithoutLatchingAsync(
+        CovenantServiceHarness harness,
+        CovenantScope scope,
+        Guid? campaignId,
+        string key)
+    {
+
+        using MemoryErasureKey erasureKey = MemoryErasureTestKeys.CreateKey(harness.Fixture.Credentials);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            harness.Fixture.Connection,
+            erasureKey,
+            MemoryErasureIdentity.ForCovenant(scope, campaignId, key),
+            Token);
+
+        Assert.Equal(MemoryErasureKeyState.Unresolved, harness.Fixture.ErasureKeys.Latch.State);
+
+    }
+
+    /// <summary>Sets one Campaign key through the production prepare-and-commit path and returns the result.</summary>
+    private static async Task<CovenantMutationResultDto> OperatorSetAsync(CovenantServiceHarness harness, string key, string content)
+    {
+
+        CovenantOperationScope scope = CovenantOperationScope.ForCampaign(CampaignOne);
+
+        CovenantSetPrepareRequest prepare = new(CovenantScope.Campaign, CampaignOne, key, content, 0, Guid.CreateVersion7(), false);
+
+        Result<CovenantMutationPreflightDto> prepared;
+
+        await using (ICovenantSnapshotReadLease read = (await harness.Gate.AcquireReadAsync(scope, Token)).Value)
+        {
+
+            prepared = await harness.Service.PrepareSetAsync(prepare, read, Token);
+
+        }
+
+        Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
+
+        await using CovenantWriteLease write = (await harness.Gate.AcquireWriteAsync(scope, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await harness.Service.SetAsync(
+            new CovenantSetRequest(
+                prepare.Scope,
+                prepare.CampaignId,
+                prepare.Key,
+                prepare.Content,
+                prepare.ExpectedRevision,
+                prepare.MutationId,
+                prepare.Reactivate,
+                prepared.Value.PreflightToken),
+            write,
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
+
+        return committed.Value;
+
+    }
 
     /// <summary>
     /// Applies one batch in its own serializable transaction and measures, inside that transaction,

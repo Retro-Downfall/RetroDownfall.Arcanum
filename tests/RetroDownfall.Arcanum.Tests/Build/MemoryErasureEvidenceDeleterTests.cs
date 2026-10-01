@@ -20,32 +20,61 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// <para>The receipt table's update guard stops every update but two, and nothing else: a replace
 /// deletes the old row, which cascades to its subjects and never fires an update trigger, and a
 /// fingerprint or subject row can be updated in place. So no source may replace or upsert evidence,
-/// and only the evidence store may update it, and only its receipts.</para>
+/// whether through <c>INSERT OR REPLACE</c>, <c>REPLACE INTO</c>, <c>UPDATE OR REPLACE</c> or a
+/// table-level <c>ON CONFLICT REPLACE</c>, and only the evidence store may update it, and only its
+/// receipts.</para>
 /// </remarks>
 public sealed class MemoryErasureEvidenceDeleterTests
 {
     private const string Owner = "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs";
 
     /// <summary>
-    /// Closed. Release and operator re-creation, reset-key, and restore staging add themselves when they
-    /// exist. Nothing else.
+    /// Closed. Release and every operator re-creation delete through the one fingerprint-release file;
+    /// reset-key and restore staging add themselves when they exist. Nothing else.
     /// </summary>
-    internal static readonly string[] AllowedCallers = [];
+    internal static readonly string[] AllowedCallers =
+    [
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs",
+    ];
 
     /// <summary>
     /// One evidence table as SQLite accepts it: optionally schema-qualified (<c>main.</c>,
-    /// <c>"main".</c>, <c>[main].</c>, <c>temp.</c>), and bare or quoted with double quotes, brackets or
-    /// backticks. Group 1 is the table's suffix.
+    /// <c>"main".</c>, <c>[main].</c>, <c>'main'.</c>, <c>temp.</c>), and bare or quoted with double
+    /// quotes, brackets, backticks or single quotes, which SQLite's legacy rule reads as an identifier
+    /// wherever one is expected. Group 1 is the table's suffix.
     /// </summary>
     private const string EvidenceTable =
-        @"(?:(?:""\w+""|\[\w+\]|`\w+`|\w+)\s*\.\s*)?[""\[`]?memory_erasure_(fingerprints|receipts|receipt_subjects)\b";
+        @"(?:(?:""\w+""|\[\w+\]|`\w+`|'\w+'|\w+)\s*\.\s*)?[""\[`']?memory_erasure_(fingerprints|receipts|receipt_subjects)\b";
+
+    /// <summary>The six files that create the evidence tables: each table's head file and its V13 step.</summary>
+    private static readonly string[] EvidenceTableDdl =
+    [
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/memory_erasure_fingerprints.sql",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/memory_erasure_receipt_subjects.sql",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/memory_erasure_receipts.sql",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/010_memory_erasure_fingerprints.sql",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/020_memory_erasure_receipts.sql",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V13/030_memory_erasure_receipt_subjects.sql",
+    ];
 
     private static readonly Regex EvidenceDelete = new(
         @"DELETE\s+FROM\s+" + EvidenceTable,
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// Every statement that rewrites an evidence row by deleting it: <c>INSERT OR REPLACE</c>,
+    /// <c>REPLACE INTO</c>, and <c>UPDATE OR REPLACE</c>, which takes no <c>INTO</c>.
+    /// </summary>
     private static readonly Regex EvidenceReplace = new(
-        @"\b(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\s+" + EvidenceTable,
+        @"\b(?:(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO|UPDATE\s+OR\s+REPLACE)\s+" + EvidenceTable,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex EvidenceTableCreate = new(
+        @"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?" + EvidenceTable,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex ConflictReplace = new(
+        @"\bON\s+CONFLICT\s+REPLACE\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex EvidenceUpdate = new(
@@ -68,20 +97,28 @@ public sealed class MemoryErasureEvidenceDeleterTests
         Assert.Contains(EvidenceDelete.Matches(OwnerText()), static match => match.Groups[1].Value == "receipts");
     }
 
+    /// <summary>
+    /// The deleting members, named through their class wherever a fluent chain breaks the line: house
+    /// style writes <c>await MemoryErasureEvidence</c> on one line and <c>.DeleteFingerprintAsync(</c> on
+    /// the next, and a caller written that way is a caller.
+    /// </summary>
+    private static readonly Regex EvidenceDeleterCall = new(
+        @"\bMemoryErasureEvidence\s*\.\s*(?:DeleteFingerprintAsync|DeleteUnverifiableAsync|ReplaceAllAsync)\b",
+        RegexOptions.CultureInvariant);
+
     [Fact]
     public void Evidence_deleter_callers_are_a_closed_allow_list()
     {
-        string[] members =
-        [
-            "MemoryErasureEvidence.DeleteFingerprintAsync",
-            "MemoryErasureEvidence.DeleteUnverifiableAsync",
-            "MemoryErasureEvidence.ReplaceAllAsync",
-        ];
+        Assert.Matches(EvidenceDeleterCall, "MemoryErasureEvidence.DeleteFingerprintAsync(connection, transaction, fingerprint, ct)");
+
+        Assert.Matches(EvidenceDeleterCall, "await MemoryErasureEvidence\n                .DeleteUnverifiableAsync(connection, transaction, keyId, ct)");
+
+        Assert.DoesNotMatch(EvidenceDeleterCall, "MemoryErasureEvidence.DeleteFingerprintAsyncLater(connection)");
 
         string[] callers =
         [
             .. ProductionSourceInventory.Sources()
-                .Where(source => !source.IsExactOwner(Owner) && members.Any(source.Names))
+                .Where(source => !source.IsExactOwner(Owner) && EvidenceDeleterCall.IsMatch(source.Text))
                 .Select(static source => source.RelativePath)
                 .Order(StringComparer.Ordinal),
         ];
@@ -96,6 +133,8 @@ public sealed class MemoryErasureEvidenceDeleterTests
         Assert.Matches(EvidenceReplace, "INSERT OR REPLACE INTO memory_erasure_receipts (MutationId) VALUES ($m)");
 
         Assert.Matches(EvidenceReplace, "REPLACE INTO \"memory_erasure_fingerprints\" (Fingerprint) VALUES ($f)");
+
+        Assert.Matches(EvidenceReplace, "UPDATE OR REPLACE memory_erasure_receipts SET KeyId = KeyId WHERE 0;");
 
         Assert.Matches(
             EvidenceUpsert,
@@ -120,6 +159,8 @@ public sealed class MemoryErasureEvidenceDeleterTests
     [InlineData("[main].[memory_erasure_fingerprints]", "fingerprints")]
     [InlineData("temp.\"memory_erasure_receipt_subjects\"", "receipt_subjects")]
     [InlineData("`main`.`memory_erasure_receipts`", "receipts")]
+    [InlineData("'memory_erasure_fingerprints'", "fingerprints")]
+    [InlineData("main.'memory_erasure_receipts'", "receipts")]
     public void Every_pin_recognizes_every_legal_spelling_of_an_evidence_table(string table, string suffix)
     {
         AssertCaught(EvidenceDelete, $"DELETE FROM {table} WHERE 0;", suffix);
@@ -127,6 +168,8 @@ public sealed class MemoryErasureEvidenceDeleterTests
         AssertCaught(EvidenceReplace, $"INSERT OR REPLACE INTO {table} (KeyId) VALUES ($k);", suffix);
 
         AssertCaught(EvidenceReplace, $"REPLACE INTO {table} (KeyId) VALUES ($k);", suffix);
+
+        AssertCaught(EvidenceReplace, $"UPDATE OR REPLACE {table} SET KeyId = KeyId WHERE 0;", suffix);
 
         AssertCaught(EvidenceUpdate, $"UPDATE {table} SET KeyId = KeyId WHERE 0;", suffix);
 
@@ -153,6 +196,29 @@ public sealed class MemoryErasureEvidenceDeleterTests
         Assert.Equal(owner, FilesMatching(EvidenceUpdate));
 
         Assert.All(EvidenceUpdate.Matches(OwnerText()), static match => Assert.Equal("receipts", match.Groups[1].Value));
+    }
+
+    /// <summary>
+    /// A table-level <c>ON CONFLICT REPLACE</c> turns a colliding insert or update into a delete that no
+    /// statement names and no update guard sees, so no evidence table, head or transition, declares one.
+    /// </summary>
+    [Fact]
+    public void No_evidence_table_declares_a_replace_conflict_clause()
+    {
+        Assert.Matches(ConflictReplace, "Fingerprint BLOB NOT NULL PRIMARY KEY ON CONFLICT REPLACE CHECK (length(Fingerprint) = 32),");
+
+        Assert.DoesNotMatch(ConflictReplace, "INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = excluded.a;");
+
+        ProductionSource[] ddl =
+        [
+            .. SqlSources()
+                .Where(static source => EvidenceTableCreate.IsMatch(source.Text))
+                .OrderBy(static source => source.RelativePath, StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(EvidenceTableDdl, ddl.Select(static source => source.RelativePath));
+
+        Assert.All(ddl, static source => Assert.DoesNotMatch(ConflictReplace, source.Text));
     }
 
     private static void AssertCaught(Regex pattern, string statement, string suffix)

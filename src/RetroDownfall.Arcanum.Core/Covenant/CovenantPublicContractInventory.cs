@@ -102,6 +102,8 @@ public static class CovenantPublicContractInventory
 
     private const string EntryErasure = "RetroDownfall.Arcanum.Core.Memory." + nameof(ICovenantEntryErasureService);
 
+    private const string ErasureRelease = "RetroDownfall.Arcanum.Core.Memory." + nameof(IMemoryErasureRelease);
+
     /// <summary>Every service port a public Covenant shape crosses.</summary>
     public static ImmutableArray<CovenantServicePort> Ports { get; } =
     [
@@ -127,6 +129,10 @@ public static class CovenantPublicContractInventory
         new(EntryErasure,
             "One port for preparing and applying a Covenant entry's hard erasure, which drains covered "
             + "turns through its own exclusive closure and never shares a path with release."),
+
+        new(ErasureRelease,
+            "One store-neutral release port, so Saga, Lexicon and Covenant fingerprints are lifted by one "
+            + "operator-only path that never creates the erasure key."),
     ];
 
     /// <summary>
@@ -333,6 +339,10 @@ public static class CovenantPublicContractInventory
 
         new(Namespace + nameof(CovenantEraseRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, EntryErasure,
             "Repeats the prepared fields beside the bound token, with the mutation id as the sole replay key."),
+
+        // Erasure release.
+        new(Namespace + nameof(CovenantErasureReleaseRequest), CovenantContractSurface.OperatorApi, CovenantContractDirection.Request, ErasureRelease,
+            "Names one exact scope and an already well-formed key, so a release lifts exactly the identity an erase recorded and folds nothing."),
 
         // Durable recovery payloads. These cross no port and belong to Infrastructure.
         new(InfrastructureNamespace + "CovenantIndexRebuildCheckpointV1", CovenantContractSurface.RecoveryCheckpoint, CovenantContractDirection.Checkpoint, "",

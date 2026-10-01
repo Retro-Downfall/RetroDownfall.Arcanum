@@ -256,6 +256,7 @@ public sealed class SagaAnnalsProtectedErasureTests
                         Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 },
                     },
                 }),
+            MemoryErasureTestKeys.Isolated(),
             time);
 
         Result<SagaReviewPageDto> page = await review.ListAsync(

@@ -29,6 +29,10 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// <para><b>No memory item owns a managed file, and erase is its own verb.</b> A Saga or Lexicon erase
 /// is one database transaction, so neither kind may acquire a managed-file executor or reach the
 /// managed-file tables. Erase is never offered as a search action or a review action.</para>
+///
+/// <para><b>No agent tool reaches erase or release.</b> Both are operator-only: release is the unsafe
+/// direction, because it lets agents write an erased identity again, so no agent tool may name the
+/// erase, release or administration services.</para>
 /// </remarks>
 public sealed class MemoryErasureStructuralTests
 {
@@ -59,6 +63,8 @@ public sealed class MemoryErasureStructuralTests
         "Lexicon/LexiconService.Erasure.cs",
         "Data/Covenant/CovenantEntryErasurePlan.cs",
         "Covenant/CovenantEntryErasureService.cs",
+        "Memory/MemoryErasureRelease.cs",
+        "Data/MemoryErasureFingerprintRelease.cs",
     ];
 
     private const string InfrastructureRoot = "src/RetroDownfall.Arcanum.Infrastructure";
@@ -101,6 +107,14 @@ public sealed class MemoryErasureStructuralTests
         "Fact",
         "Facts",
     };
+
+    /// <summary>
+    /// The erase, release and administration services, ports and helpers. The ordinary store ports an
+    /// agent tool does use, such as <c>ILexiconService</c> and <c>ISagaMemoryStore</c>, are not here.
+    /// </summary>
+    private static readonly Regex ForbiddenAgentToolReference = new(
+        @"\b(IMemoryErasure\w*|ISagaMemoryErasureService|ILexiconErasureService|ICovenantEntryErasureService|MemoryErasureRelease|MemoryErasureFingerprintRelease|MemoryErasureAdministration|SagaMemoryErasureService|CovenantEntryErasureService)\b",
+        RegexOptions.CultureInvariant);
 
     private static readonly Regex Placeholder = new(
         @"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(?:[,:][^}]*)?\}",
@@ -257,6 +271,53 @@ public sealed class MemoryErasureStructuralTests
 
         Assert.Equal(["Confirm", "Correct", "Retire", "Pin", "Unpin"], Enum.GetNames<MemoryReviewAction>());
     }
+
+    /// <summary>
+    /// Erase and release are operator-only, so no agent tool partial names the services that do them
+    /// (spec §19.3).
+    /// </summary>
+    [Fact]
+    public void No_agent_tool_references_the_erase_or_release_services()
+    {
+        string[] files =
+        [
+            .. Sources("ArcanumInternalToolServer*.cs")
+                .Select(static source => source.Path)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Contains("src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs", files);
+
+        Assert.Contains("src/RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs", files);
+
+        // The fifteen partials present when this pin was written; a new one joins the scan by its name.
+        Assert.True(files.Length >= 15, $"Only {files.Length} agent tool partials were found.");
+
+        Assert.Empty(
+            Sources("ArcanumInternalToolServer*.cs")
+                .Where(static source => ForbiddenAgentToolReference.IsMatch(source.Text))
+                .Select(static source => source.Path));
+    }
+
+    /// <summary>The agent-tool pin is only as good as its pattern, so each forbidden name is shown to be caught.</summary>
+    [Theory]
+    [InlineData("IMemoryErasureRelease release,")]
+    [InlineData("IMemoryErasureKeyProvider keys,")]
+    [InlineData("IMemoryErasureAdministration administration,")]
+    [InlineData("ISagaMemoryErasureService erase,")]
+    [InlineData("ILexiconErasureService erase,")]
+    [InlineData("ICovenantEntryErasureService erase,")]
+    [InlineData("MemoryErasureRelease release = new(db, keys, logger);")]
+    [InlineData("_ = await MemoryErasureFingerprintRelease.DeleteCandidatesAsync(connection, transaction, key, candidates, ct);")]
+    [InlineData("MemoryErasureAdministration administration,")]
+    [InlineData("SagaMemoryErasureService erase,")]
+    [InlineData("CovenantEntryErasureService erase,")]
+    public void The_agent_tool_pattern_recognizes_each_service_name(string line) =>
+        Assert.Matches(ForbiddenAgentToolReference, line);
+
+    [Fact]
+    public void The_agent_tool_pattern_ignores_the_ordinary_store_ports() =>
+        Assert.DoesNotMatch(ForbiddenAgentToolReference, "ILexiconService lexicon, ISagaMemoryStore saga");
 
     /// <summary>
     /// Authorization kind 12 opens every canonical delete guard an entry erasure needs, so exactly one

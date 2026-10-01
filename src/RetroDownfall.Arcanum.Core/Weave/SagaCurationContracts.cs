@@ -108,7 +108,15 @@ public enum SagaCurationOutcomeKind
 }
 
 /// <summary>One curation verb's outcome, and the lifecycle that resulted when it applied.</summary>
-public sealed record SagaCurationOutcome(SagaCurationOutcomeKind Kind, SagaMemoryLifecycle? Lifecycle);
+/// <param name="ReleasedErasureFingerprint">
+/// Whether a correction deleted the erasure fingerprint of its new content in the memory's own scope:
+/// <see langword="null"/> when the store holds fingerprints the latched key could not check, and
+/// <see langword="false"/> for every other verb and outcome.
+/// </param>
+public sealed record SagaCurationOutcome(
+    SagaCurationOutcomeKind Kind,
+    SagaMemoryLifecycle? Lifecycle,
+    bool? ReleasedErasureFingerprint = false);
 
 /// <summary>What one curation verb did, and the memory it left behind.</summary>
 /// <remarks>
@@ -128,8 +136,17 @@ public sealed record SagaCurationOutcome(SagaCurationOutcomeKind Kind, SagaMemor
 /// reports how many memories it retired must be able to leave out the ones that were already retired —
 /// which it can only do by reading <paramref name="Outcome"/> rather than by counting calls that
 /// returned without an error.</para>
+///
+/// <para><paramref name="ReleasedErasureFingerprint"/> is <see langword="true"/> when a correction made
+/// erased content live again in the memory's own scope and deleted its fingerprint in the same
+/// transaction, so extraction may write that content there again; <see langword="false"/> when there was
+/// nothing to release; and <see langword="null"/> when the store holds fingerprints this host could not
+/// check, so the operator runs <c>memory erasure status</c>.</para>
 /// </remarks>
-public sealed record SagaCurationResult(SagaCurationOutcomeKind Outcome, SagaMemoryDetail Detail);
+public sealed record SagaCurationResult(
+    SagaCurationOutcomeKind Outcome,
+    SagaMemoryDetail Detail,
+    bool? ReleasedErasureFingerprint = false);
 
 /// <summary>Whether a write actually landed, or was refused because the operator retired or erased it.</summary>
 public enum SagaMemoryWriteOutcome

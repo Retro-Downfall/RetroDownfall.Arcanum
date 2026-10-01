@@ -132,6 +132,7 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(CovenantEraseHeadExpectation))]
     [InlineData(typeof(CovenantErasePrepareRequest))]
     [InlineData(typeof(CovenantEraseRequest))]
+    [InlineData(typeof(CovenantErasureReleaseRequest))]
     [InlineData(typeof(ApiResponse<MemoryErasurePreflightDto>))]
     [InlineData(typeof(ApiResponse<MemoryErasureResultDto>))]
     [InlineData(typeof(ApiResponse<MemoryErasureReleaseResultDto>))]

@@ -334,6 +334,54 @@ internal sealed class MemoryErasureRouteDriver
     internal Task<MemoryErasureResultDto> ApplyCovenantAsync(CovenantEraseRequest request, CancellationToken ct = default) =>
         ApplyAsync("/api/memory/covenant/erase", request, ArcanumJsonContext.Default.CovenantEraseRequest, ct);
 
+    /// <summary>Releases one Saga fingerprint through its route, requiring 200.</summary>
+    internal async Task<MemoryErasureReleaseResultDto> ReleaseSagaAsync(
+        SagaErasureReleaseRequest request,
+        CancellationToken ct = default)
+    {
+        using HttpResponseMessage released = await PostAsync(
+            "/api/memory/saga/release",
+            request,
+            ArcanumJsonContext.Default.SagaErasureReleaseRequest,
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, released.StatusCode);
+
+        return await ReadDataAsync(released, ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto);
+    }
+
+    /// <summary>Releases one Lexicon fingerprint through its route, requiring 200.</summary>
+    internal async Task<MemoryErasureReleaseResultDto> ReleaseLexiconAsync(
+        LexiconErasureReleaseRequest request,
+        CancellationToken ct = default)
+    {
+        using HttpResponseMessage released = await PostAsync(
+            "/api/memory/lexicon/release",
+            request,
+            ArcanumJsonContext.Default.LexiconErasureReleaseRequest,
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, released.StatusCode);
+
+        return await ReadDataAsync(released, ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto);
+    }
+
+    /// <summary>Releases one Covenant fingerprint through its route, requiring 200.</summary>
+    internal async Task<MemoryErasureReleaseResultDto> ReleaseCovenantAsync(
+        CovenantErasureReleaseRequest request,
+        CancellationToken ct = default)
+    {
+        using HttpResponseMessage released = await PostAsync(
+            "/api/memory/covenant/release",
+            request,
+            ArcanumJsonContext.Default.CovenantErasureReleaseRequest,
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, released.StatusCode);
+
+        return await ReadDataAsync(released, ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto);
+    }
+
     /// <summary>
     /// Sets one scoped Covenant key as the operator, through the set prepare and commit routes the CLI
     /// uses, at whatever revision the key's Confirmed lane holds now.

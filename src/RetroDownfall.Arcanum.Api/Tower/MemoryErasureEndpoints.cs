@@ -19,8 +19,8 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 namespace RetroDownfall.Arcanum.Api.Tower;
 
 /// <summary>
-/// The selective-erasure routes: per-store prepare and apply, each an authenticated static POST with a
-/// typed body under exactly one operator authority.
+/// The selective-erasure routes: per-store prepare and apply, and per-store release, each an
+/// authenticated static POST with a typed body under exactly one operator authority.
 /// </summary>
 /// <remarks>
 /// <para>Every route declares its authority as metadata, so the pre-binding middleware issues the
@@ -33,6 +33,11 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// house invalid-body envelope rather than an empty minimal-API 400. Each handler validates the body's
 /// shape before the service sees it, and only the endpoint maps a result onto an envelope and a
 /// status.</para>
+///
+/// <para>Every release route requires <see cref="CovenantAuthorityRequirement.LifecycleManage"/>, whatever
+/// its store: release is the unsafe direction, because it lets extraction and agents write an erased
+/// identity again. A release takes no mutation id and is naturally idempotent. Its handler refuses a
+/// missing body or member as an invalid body, and the release port validates the rest.</para>
 /// </remarks>
 internal static class MemoryErasureEndpoints
 {
@@ -63,6 +68,18 @@ internal static class MemoryErasureEndpoints
         api.MapPost("/memory/covenant/erase", HandleCovenantEraseAsync)
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
             .WithName("EraseCovenantEntry");
+
+        api.MapPost("/memory/saga/release", HandleSagaReleaseAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("ReleaseSagaErasure");
+
+        api.MapPost("/memory/lexicon/release", HandleLexiconReleaseAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("ReleaseLexiconErasure");
+
+        api.MapPost("/memory/covenant/release", HandleCovenantReleaseAsync)
+            .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage)
+            .WithName("ReleaseCovenantErasure");
 
         return api;
     }
@@ -294,6 +311,81 @@ internal static class MemoryErasureEndpoints
 
         return Respond(context, applied, typeInfo);
     }
+
+    private static async Task<IResult> HandleSagaReleaseAsync(IMemoryErasureRelease release, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        (SagaErasureReleaseRequest? request, IResult? error) = await ReadBodyAsync(
+            context,
+            ArcanumJsonContext.Default.SagaErasureReleaseRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request?.Content is null)
+        {
+            return RespondRelease(context, InvalidReleaseBody("A Saga release names a scopeKind, a campaignId when the scope is Campaign, and content."));
+        }
+
+        return RespondRelease(
+            context,
+            await release.ReleaseSagaAsync(request, context.RequestAborted).ConfigureAwait(false));
+    }
+
+    private static async Task<IResult> HandleLexiconReleaseAsync(IMemoryErasureRelease release, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        (LexiconErasureReleaseRequest? request, IResult? error) = await ReadBodyAsync(
+            context,
+            ArcanumJsonContext.Default.LexiconErasureReleaseRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request?.Scope is null || request.Name is null)
+        {
+            return RespondRelease(context, InvalidReleaseBody("A Lexicon release names a scope and a name."));
+        }
+
+        return RespondRelease(
+            context,
+            await release.ReleaseLexiconAsync(request, context.RequestAborted).ConfigureAwait(false));
+    }
+
+    private static async Task<IResult> HandleCovenantReleaseAsync(IMemoryErasureRelease release, HttpContext context)
+    {
+        CovenantProtectedResponseHeaders.Apply(context.Response);
+
+        (CovenantErasureReleaseRequest? request, IResult? error) = await ReadBodyAsync(
+            context,
+            ArcanumJsonContext.Default.CovenantErasureReleaseRequest).ConfigureAwait(false);
+
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request?.Key is null)
+        {
+            return RespondRelease(context, InvalidReleaseBody("A Covenant release names a scope, a campaignId when the scope is Campaign, and a key."));
+        }
+
+        return RespondRelease(
+            context,
+            await release.ReleaseCovenantAsync(request, context.RequestAborted).ConfigureAwait(false));
+    }
+
+    private static Result<MemoryErasureReleaseResultDto> InvalidReleaseBody(string message) =>
+        Result<MemoryErasureReleaseResultDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, message));
+
+    private static IResult RespondRelease(HttpContext context, Result<MemoryErasureReleaseResultDto> result) =>
+        Respond(context, result, ArcanumJsonContext.Default.ApiResponseMemoryErasureReleaseResultDto);
 
     /// <summary>
     /// A recognized scope with its Campaign exactly when it is Campaign scope and no Proposed head for a

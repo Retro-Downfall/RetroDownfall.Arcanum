@@ -200,7 +200,10 @@ internal sealed class SagaCurationService(
 
         }
 
-        return Result<SagaCurationResult>.Success(new SagaCurationResult(outcome.Kind, detail.Value));
+        // A correction that re-created erased content says what it did to that content's fingerprint;
+        // every other verb and outcome carries the store's own false.
+        return Result<SagaCurationResult>.Success(
+            new SagaCurationResult(outcome.Kind, detail.Value, outcome.ReleasedErasureFingerprint));
 
     }
 

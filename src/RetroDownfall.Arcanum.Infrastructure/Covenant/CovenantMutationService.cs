@@ -4,9 +4,13 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Memory;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -25,6 +29,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// receipt the kernel already wrote, before token expiry, key version, revision, or epoch are looked
 /// at, so a client that lost the response to a network failure gets its committed answer back rather
 /// than a stale-token refusal for work that already happened.</para>
+///
+/// <para>A write of the Confirmed content re-creates its scoped key, so it releases that identity's
+/// erasure fingerprint in the mutation's own transaction, and prepare discloses it first (spec §5.6). Both
+/// read only the key the process has latched; neither reads the OS credential store, and an operator
+/// write is never refused over a fingerprint. A retirement, and a replay, release nothing.</para>
 /// </remarks>
 internal sealed partial class CovenantMutationService(
     ICovenantStore store,
@@ -250,6 +259,28 @@ internal sealed partial class CovenantMutationService(
             ? detail.Value.ConfirmedHead?.LaneRevision
             : detail.Value.ProposedHead?.LaneRevision) ?? 0;
 
+        bool? releasesErasureFingerprint = false;
+
+        if (operation is CovenantOperation.Set)
+        {
+
+            // The kernel's one capture, taken here for the disclosure only. It copies the latch and is
+            // never credential I/O, so taking it while the read lease is held is harmless. The answer is
+            // not bound into the token: an operator write is never refused over a fingerprint.
+            using CovenantAgentErasureGate erasureGate = kernel.CaptureErasureGate();
+
+            releasesErasureFingerprint = await MemoryErasureFingerprintRelease
+                .WouldReleaseAsync(
+                    await connections.GetOpenCoreConnectionAsync(cancellationToken).ConfigureAwait(false),
+                    null,
+                    MemoryReviewStore.Covenant,
+                    ErasureIdentity(scope, normalizedKey),
+                    erasureGate.Key,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
         CovenantDigest requestDigest = RequestDigest(
             scope,
             normalizedKey,
@@ -313,7 +344,7 @@ internal sealed partial class CovenantMutationService(
             currentRevision,
             expectedRevision,
             effect.Value.KeyEpoch,
-            EffectDto(effect.Value, scope, compiled),
+            EffectDto(effect.Value, scope, compiled, releasesErasureFingerprint),
             issuedAt,
             expiresAt,
             token.Value);
@@ -510,7 +541,8 @@ internal sealed partial class CovenantMutationService(
     {
 
         // Every batch carries the gate its caller read from the latch before BEGIN, this operator path
-        // included. Operator intents never consult it, so an operator write is never refused by it.
+        // included. Operator intents never consult it, so an operator write is never refused by it; this
+        // path reads its key to release the fingerprint of the identity the write re-creates.
         using CovenantAgentErasureGate erasureGate = kernel.CaptureErasureGate();
 
         SqliteConnection connection = await connections
@@ -545,9 +577,23 @@ internal sealed partial class CovenantMutationService(
 
         }
 
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
         CovenantMutationReceipt receipt = applied.Value[0];
+
+        // Inside the mutation's transaction, after the kernel accepted it, so a refused write releases
+        // nothing and a committed one cannot leave the fingerprint behind.
+        bool? releasedErasureFingerprint = receipt.Kind is CovenantMutationKind.OperatorSet && !receipt.Replayed
+            ? await MemoryErasureFingerprintRelease
+                .ReleaseForOperatorWriteAsync(
+                    connection,
+                    transaction,
+                    MemoryReviewStore.Covenant,
+                    ErasureIdentity(scope, normalizedKey),
+                    erasureGate.Key,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : false;
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return new CovenantMutationResultDto(
             receipt.MutationId,
@@ -564,7 +610,8 @@ internal sealed partial class CovenantMutationService(
             receipt.ResultingLaneRevision,
             Hex(receipt.RequestIdempotencyDigest),
             Hex(receipt.ResponseReceiptDigest),
-            receipt.Replayed);
+            receipt.Replayed,
+            releasedErasureFingerprint);
 
     }
 
@@ -752,6 +799,13 @@ internal sealed partial class CovenantMutationService(
             ? CovenantOperationScope.Global
             : CovenantOperationScope.ForCampaign(id);
 
+    /// <summary>The erasure identity a write to this exact scope and key re-creates.</summary>
+    private static MemoryErasureIdentity ErasureIdentity(CovenantOperationScope scope, string normalizedKey) =>
+        MemoryErasureIdentity.ForCovenant(
+            scope.CampaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
+            scope.CampaignId,
+            normalizedKey);
+
     /// <summary>
     /// The identity of what this mutation would do.
     /// </summary>
@@ -766,7 +820,8 @@ internal sealed partial class CovenantMutationService(
     private static CovenantMutationEffectDto EffectDto(
         CovenantMutationEffectSnapshot effect,
         CovenantOperationScope scope,
-        CovenantCompiledContent? compiled) =>
+        CovenantCompiledContent? compiled,
+        bool? releasesErasureFingerprint) =>
         new(
             effect.LocalDecision,
             effect.AffectedCampaignCount,
@@ -783,7 +838,8 @@ internal sealed partial class CovenantMutationService(
             ProposedRemainsReviewOnly: effect.Lane is CovenantLane.Proposed
                 && effect.LocalDecision is not CovenantEffectDecision.ProposedBecomesEligible,
             Hex(effect.DependentHeadVectorDigest),
-            Hex(EffectDigest(effect)));
+            Hex(EffectDigest(effect)),
+            releasesErasureFingerprint);
 
     private static string Hex(CovenantDigest digest) => Convert.ToHexStringLower(digest.Bytes);
 

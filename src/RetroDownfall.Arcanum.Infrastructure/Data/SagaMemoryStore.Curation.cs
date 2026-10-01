@@ -2,9 +2,12 @@ using System.Data.Common;
 using System.Globalization;
 using System.Security.Cryptography;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
@@ -479,7 +482,13 @@ internal sealed partial class SagaMemoryStore
             cancellationToken);
     }
 
-    public Task<SagaCurationOutcome> CorrectAsync(
+    /// <remarks>
+    /// A correction is an operator write, so the erasure chokepoint never refuses it. When its new content
+    /// is content the operator erased in this memory's own scope, the write makes that identity live
+    /// again and releases its fingerprint in the same transaction (spec §5.6). The key is a copy of the
+    /// latch taken before the transaction, never a credential read.
+    /// </remarks>
+    public async Task<SagaCurationOutcome> CorrectAsync(
         string id,
         byte[] expectedContentDigest,
         string content,
@@ -504,7 +513,9 @@ internal sealed partial class SagaMemoryStore
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to avoid corrupting the vec0 index.""");
         }
 
-        return SqliteBusyRetry.ExecuteAsync(
+        using MemoryErasureKey? erasureKey = erasureKeys.TryCopyLatched();
+
+        return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -598,6 +609,27 @@ internal sealed partial class SagaMemoryStore
                     _ = await contentCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
+                // The identity the new content takes in this row's own stored scope. A stored Campaign
+                // no fingerprint can name is an identity this write cannot check, never a loose match.
+                MemoryErasureIdentity? recreated;
+
+                try
+                {
+                    recreated = SagaErasureWriteGate.SagaIdentity(scopeKind, campaignId, content);
+                }
+                catch (FormatException)
+                {
+                    recreated = null;
+                }
+
+                bool? released = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                    (SqliteConnection)connection,
+                    (SqliteTransaction)transaction,
+                    MemoryReviewStore.Saga,
+                    recreated,
+                    erasureKey,
+                    cancellationToken).ConfigureAwait(false);
+
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
 
                 await using (DbCommand embeddingCmd = connection.CreateCommand())
@@ -680,9 +712,12 @@ internal sealed partial class SagaMemoryStore
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
+                return new SagaCurationOutcome(
+                    SagaCurationOutcomeKind.Applied,
+                    new SagaMemoryLifecycle(null, pinnedAtUtc),
+                    released);
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     public Task<SagaCurationOutcome> SetPinAsync(

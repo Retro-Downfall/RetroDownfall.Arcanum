@@ -261,12 +261,20 @@ public sealed record MemoryReviewBulkPlanDto(
     DateTimeOffset ExpiresAtUtc,
     string PreparedPlanToken);
 
+/// <summary>One decision's outcome in a bulk review.</summary>
+/// <param name="ReleasedErasureFingerprint">
+/// Whether a <c>Correct</c> deleted the erasure fingerprint of its replacement in the item's own scope:
+/// <see langword="true"/> when it did, <see langword="false"/> when there was nothing to release, and
+/// <see langword="null"/> when the store holds fingerprints this host could not check. Every other
+/// action, and every replayed item, reports <see langword="false"/>.
+/// </param>
 public sealed record MemoryReviewBulkItemResultDto(
     long EventSequence,
     string SubjectId,
     string VersionId,
     string Outcome,
-    string? ResultingVersionId);
+    string? ResultingVersionId,
+    bool? ReleasedErasureFingerprint = false);
 
 public sealed record MemoryReviewBulkResultDto(
     MemoryReviewStore Store,

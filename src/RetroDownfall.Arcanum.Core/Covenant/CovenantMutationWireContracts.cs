@@ -28,6 +28,14 @@ public sealed record CovenantMutationEffectExampleDto(
 /// the Section's ceiling invited exactly one reading: that a preference well under the ceiling is
 /// therefore safe to write. Whether a Section has room is settled where it can be enforced, by the
 /// quota guard refusing the mutation.</para>
+///
+/// <para><paramref name="ReleasesErasureFingerprint"/> says what the commit would do to an erasure
+/// fingerprint for this exact scope and key: <see langword="true"/> when one is recorded and the commit
+/// would delete it, which lets agents write the key in this scope again; <see langword="false"/> when
+/// there is nothing to release; <see langword="null"/> when the store holds fingerprints this host
+/// cannot check, because no erasure key is latched or they were recorded under another one. It is read
+/// for a write of the Confirmed content and is <see langword="false"/> for a retirement. It is not bound
+/// into the token, because an operator write is never refused over a fingerprint.</para>
 /// </remarks>
 public sealed record CovenantMutationEffectDto(
     CovenantEffectDecision LocalDecision,
@@ -39,7 +47,8 @@ public sealed record CovenantMutationEffectDto(
     bool ProposedBecomesEligible,
     bool ProposedRemainsReviewOnly,
     string DependentHeadVectorDigest,
-    string EffectDigest);
+    string EffectDigest,
+    bool? ReleasesErasureFingerprint = false);
 
 /// <summary>
 /// The server-authoritative plan for one operator mutation, and the token that binds it.
@@ -86,6 +95,12 @@ public sealed record CovenantMutationPreflightDto(
 /// and <paramref name="Replayed"/> distinguishes a repeat from a first commit. Reporting only the
 /// mutations that changed something would make a replay of a deliberate no-op indistinguishable from
 /// a mutation that never arrived.
+///
+/// <para><paramref name="ReleasedErasureFingerprint"/> is <see langword="true"/> when this commit
+/// deleted the erasure fingerprint of its exact scope and key in its own transaction,
+/// <see langword="false"/> when there was nothing to release, and <see langword="null"/> when the store
+/// holds fingerprints this host could not check, so the operator runs <c>memory erasure status</c>. A
+/// replay released nothing and reports <see langword="false"/>.</para>
 /// </remarks>
 public sealed record CovenantMutationResultDto(
     Guid MutationId,
@@ -100,7 +115,8 @@ public sealed record CovenantMutationResultDto(
     long? ResultingLaneRevision,
     string RequestDigest,
     string ResponseReceiptDigest,
-    bool Replayed);
+    bool Replayed,
+    bool? ReleasedErasureFingerprint = false);
 
 /// <summary>
 /// A prepared operator <c>Set</c>: every canonical field the commit will carry, so preflight can
