@@ -1090,6 +1090,60 @@ public sealed class SagaErasureEndpointTests
     }
 
     /// <summary>
+    /// A <c>COMMIT</c> that SQLite answers busy left nothing persisted and is not an uncertain outcome:
+    /// the busy retry rolls the attempt back and runs the erase again, which commits once.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_busy_commit_is_retried_and_commits_the_erase_once()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        int commits = 0;
+
+        UseSeamedService(
+            factory,
+            commit: async (transaction, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref commits) == 1)
+                {
+                    throw new SqliteException("database is locked", 5);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+            });
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
+
+        MemoryErasurePreflightDto preflight = await PrepareOkAsync(driver, prepare);
+
+        MemoryErasureResultDto result = await driver.ApplySagaAsync(Apply(prepare, preflight));
+
+        Assert.Equal(2, Volatile.Read(ref commits));
+
+        Assert.False(result.Replayed);
+
+        Assert.Equal(prepare.MutationId, result.MutationId);
+
+        Assert.Equal(preflight.EffectDigest, result.EffectDigest);
+
+        Assert.Equal(preflight.Plan.RowsToRemove, result.Local.RemovedRowCount);
+
+        await AssertShowRefusedAsync(client, target, HttpStatusCode.NotFound, ErrorCodes.Saga.NotFound);
+
+        Assert.Equal(1, await ReceiptsAsync(factory, prepare.MutationId));
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
     /// The twin seek binds the Campaign in every spelling a writer has produced, and each one is erased.
     /// </summary>
     /// <remarks>
@@ -1143,7 +1197,8 @@ public sealed class SagaErasureEndpointTests
     /// <remarks>
     /// No writer has ever produced a mixed-case Campaign, and the version-5 guard refuses one, so the
     /// guard is lifted to plant it. The cross-check that catches it counts the scope with the
-    /// normalised comparison, which reads every spelling.
+    /// normalised comparison, which reads every spelling. The planted spelling is asserted to be none
+    /// of the four the seek binds, so the test cannot pass or fail because the seek found the twin.
     /// </remarks>
     [SkippableFact]
     public async Task A_twin_under_a_campaign_spelling_the_seek_misses_fails_closed()
@@ -1154,15 +1209,25 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
-        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+        (Guid campaignA, Guid sessionA, string mixedCase) = await MixedCaseCampaignAsync(factory, client);
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
         string hidden = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
-        string canonical = campaignA.ToString("D").ToUpperInvariant();
+        Assert.Equal(campaignA, Guid.Parse(mixedCase));
 
-        await RewriteCampaignSpellingAsync(factory, hidden, canonical[..8].ToLowerInvariant() + canonical[8..]);
+        Assert.DoesNotContain(
+            mixedCase,
+            (string[])
+            [
+                campaignA.ToString("D").ToUpperInvariant(),
+                campaignA.ToString("D"),
+                campaignA.ToString("N").ToUpperInvariant(),
+                campaignA.ToString("N"),
+            ]);
+
+        await RewriteCampaignSpellingAsync(factory, hidden, mixedCase);
 
         SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
 
@@ -1537,6 +1602,48 @@ public sealed class SagaErasureEndpointTests
         Assert.True(session.IsSuccess, session.IsFailure ? session.Error.Message : null);
 
         return (campaign.Id, session.Value);
+    }
+
+    /// <summary>
+    /// A bound Campaign whose id has a <see cref="MixedCaseSpelling"/>, registering another when a
+    /// random id has none.
+    /// </summary>
+    private static async Task<(Guid Campaign, Guid Session, string MixedCase)> MixedCaseCampaignAsync(
+        ArcanumWebApplicationFactory factory,
+        HttpClient client)
+    {
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            (Guid campaign, Guid session) = await BoundSessionAsync(factory, client, $"mixed-{attempt}");
+
+            if (MixedCaseSpelling(campaign) is { } mixedCase)
+            {
+                return (campaign, session, mixedCase);
+            }
+        }
+
+        throw new InvalidOperationException("Eight Campaign ids in a row had fewer than two hex letters.");
+    }
+
+    /// <summary>
+    /// An id spelled in lower case except for its first hex letter: a dashed spelling that is neither
+    /// of the two the seek binds, or null for an id with fewer than two letters.
+    /// </summary>
+    /// <remarks>
+    /// With no letter that spelling would be the lower-case one, and with one it would be the canonical
+    /// upper-case one. A random id has fewer than two letters about once in a hundred thousand.
+    /// </remarks>
+    private static string? MixedCaseSpelling(Guid id)
+    {
+        char[] letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+
+        string lower = id.ToString("D");
+
+        int first = lower.IndexOfAny(letters);
+
+        return first >= 0 && lower.IndexOfAny(letters, first + 1) >= 0
+            ? lower[..first] + char.ToUpperInvariant(lower[first]) + lower[(first + 1)..]
+            : null;
     }
 
     /// <summary>Labels one memory through the one production writer of sensitivity labels.</summary>
