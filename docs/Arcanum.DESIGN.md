@@ -253,6 +253,8 @@ The actual global initializer also explicitly requires cleanup completion if a s
 
 `LexiconCurationEndpoints` composes six static authenticated POSTs over `ILexiconCurationService`; `MemoryEndpoints` owns legacy effective lookup, persisted operator inspection, next-turn explanation, and hard deletion. Requests, exact targets, evidence arms, details, outcomes, and envelopes use `ArcanumJsonContext`. Endpoints alone map domain results into HTTP envelopes/statuses and transfer protected read/write lease ownership to the response serializer (§10.6.3; API §8.33).
 
+`MemoryErasureEndpoints` composes the selective-erasure routes: per-store `prepare` and apply as authenticated static POSTs, each declaring exactly one operator authority so every response carries the protected header tuple, over the store's erasure service port (API §8.35).
+
 **MSBuild:** `IsAotCompatible`, `EnableRequestDelegateGenerator` (essential for Minimal API endpoints in a referenced class library), and `EnableConfigurationBindingGenerator`.
 
 ### 4.4 `RetroDownfall.Arcanum.Cli` (console executable)

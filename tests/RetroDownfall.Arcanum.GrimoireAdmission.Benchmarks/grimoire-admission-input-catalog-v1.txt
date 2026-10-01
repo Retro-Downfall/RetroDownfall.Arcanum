@@ -790,6 +790,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureGuard.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureKeyWarmup.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureLabels.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryScopeResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.Designer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.cs
@@ -799,6 +800,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaExtractionCursorResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryScopeClassifier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaRetirementSuppression.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaSuppressionKeyStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SanctumBreachRepository.cs
@@ -1605,6 +1607,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureProtocol.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureTokens.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewTokenCodec.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryErasureService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ApprenticeRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/AttachmentPromotionRecoveryHandler.cs

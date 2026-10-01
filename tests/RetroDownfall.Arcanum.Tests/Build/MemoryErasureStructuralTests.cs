@@ -4,6 +4,10 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -21,6 +25,10 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// content, name or key would copy it into application logs, which an erase never reaches.
 /// <see cref="ContentFreeLogFiles"/> is closed: every later erasure task appends its new source files
 /// to it.</para>
+///
+/// <para><b>No memory item owns a managed file, and erase is its own verb.</b> A Saga or Lexicon erase
+/// is one database transaction, so neither kind may acquire a managed-file executor or reach the
+/// managed-file tables. Erase is never offered as a search action or a review action.</para>
 /// </remarks>
 public sealed class MemoryErasureStructuralTests
 {
@@ -45,6 +53,9 @@ public sealed class MemoryErasureStructuralTests
         "Memory/MemoryErasureScrubber.cs",
         "Memory/MemoryErasureExposure.cs",
         "Memory/MemoryErasureProtocol.cs",
+        "Data/SagaRetirementSuppression.cs",
+        "Data/MemoryErasureLabels.cs",
+        "Memory/SagaMemoryErasureService.cs",
     ];
 
     private const string InfrastructureRoot = "src/RetroDownfall.Arcanum.Infrastructure";
@@ -190,7 +201,57 @@ public sealed class MemoryErasureStructuralTests
         Assert.False(NamesSagaStore(unrelated));
     }
 
-        [Fact]
+    /// <summary>
+    /// A Saga memory and a Lexicon entry are database rows only: their erase is one transaction, and no
+    /// managed workspace file or erasure work item belongs to either (spec §2, §19.3).
+    /// </summary>
+    [Fact]
+    public void No_memory_item_owns_a_managed_file()
+    {
+        Assert.Equal(
+            CovenantArtifactPurgeExecutor.DatabaseTransaction,
+            CovenantSensitiveArtifactPurgePolicy.Resolve(SensitiveArtifactKind.Saga).Value.Executor);
+
+        Assert.Equal(
+            CovenantArtifactPurgeExecutor.DatabaseTransaction,
+            CovenantSensitiveArtifactPurgePolicy.Resolve(SensitiveArtifactKind.Lexicon).Value.Executor);
+
+        Assert.Equal(
+            [SensitiveArtifactKind.ManagedWorkspaceFile],
+            CovenantSensitiveArtifactPurgePolicy.All
+                .Where(static rule => rule.Executor == CovenantArtifactPurgeExecutor.ManagedFileKernel)
+                .Select(static rule => rule.Kind));
+
+        string[] managedFileTables = ["managed_file_write_intents", "local_erasure_work_items"];
+
+        foreach (SensitiveArtifactKind kind in (SensitiveArtifactKind[])[SensitiveArtifactKind.Saga, SensitiveArtifactKind.Lexicon])
+        {
+            CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(kind);
+
+            string[] tables =
+            [
+                .. plan.Projections.Select(static projection => projection.Table),
+                .. plan.Artifact is { } artifact ? [artifact.Table] : Array.Empty<string>(),
+            ];
+
+            Assert.NotEmpty(tables);
+
+            Assert.Empty(tables.Intersect(managedFileTables, StringComparer.Ordinal));
+        }
+
+        Assert.Empty(CovenantCanonicalContentTables.InDeletionOrder.Intersect(managedFileTables, StringComparer.Ordinal));
+    }
+
+    /// <summary>Erase is its own verb: never a search action and never a review action (spec §17.2).</summary>
+    [Fact]
+    public void Erase_is_not_a_search_or_review_action()
+    {
+        Assert.Equal(["ShowSagaMemory", "ShowLexiconEntry"], Enum.GetNames<MemorySearchActionKind>());
+
+        Assert.Equal(["Confirm", "Correct", "Retire", "Pin", "Unpin"], Enum.GetNames<MemoryReviewAction>());
+    }
+
+    [Fact]
     public void New_erasure_log_templates_are_content_free()
     {
         string root = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), InfrastructureRoot);

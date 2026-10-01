@@ -206,10 +206,10 @@ internal sealed partial class SagaMemoryStore
                     // The stored scope is canonicalized; the digest above is not, and the asymmetry is
                     // deliberate. The digest binds the spelling this memory row holds now and cannot be
                     // recomputed once the retired content is gone, so a reader of it has to ask for
-                    // whichever spellings it might carry - SuppressionDigests is where that pair is
-                    // decided. The column is a governed stored identity and is written as one: the
-                    // memory row this reads from may not have been swept yet, and a suppression left
-                    // holding that spelling would be invisible to a selection binding the canonical
+                    // whichever spellings it might carry - SagaRetirementSuppression.Digests is where
+                    // that pair is decided. The column is a governed stored identity and is written as
+                    // one: the memory row this reads from may not have been swept yet, and a suppression
+                    // left holding that spelling would be invisible to a selection binding the canonical
                     // form.
                     AddParameter(
                         suppressionCmd,
@@ -431,13 +431,13 @@ internal sealed partial class SagaMemoryStore
                     // merely tolerant: the digest binds content-and-scope, and the two renderings are one
                     // Campaign, so they are two records of the same rejection.
                     //
-                    // The pair is canonicalized inside SuppressionDigests rather than here, and that is
-                    // the part this once got wrong. campaignId below is read out of the memory row, which
-                    // the version-5 sweep may not have reached; handing that on unchanged made the pair
-                    // one digest twice and released nothing at all whenever the two ends of the digest
-                    // disagreed about the spelling.
+                    // The pair is canonicalized inside SagaRetirementSuppression.Digests rather than
+                    // here, and that is the part this once got wrong. campaignId below is read out of the
+                    // memory row, which the version-5 sweep may not have reached; handing that on
+                    // unchanged made the pair one digest twice and released nothing at all whenever the
+                    // two ends of the digest disagreed about the spelling.
                     (byte[] suppressionDigest, byte[] legacySuppressionDigest) =
-                        SuppressionDigests(suppressionKey, scopeKind, campaignId, content);
+                        SagaRetirementSuppression.Digests(suppressionKey, scopeKind, campaignId, content);
 
                     await using DbCommand releaseCmd = connection.CreateCommand();
 

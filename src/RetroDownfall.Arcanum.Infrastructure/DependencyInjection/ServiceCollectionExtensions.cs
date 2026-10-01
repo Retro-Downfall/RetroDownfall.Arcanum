@@ -1381,6 +1381,20 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryReviewService, SagaMemoryReviewService>();
 
+        // Host only: the erase creates the erasure key on first use, and only the host may. Scoped with
+        // the store, because it runs on the same DbContext connection the insert chokepoint uses.
+        services.AddScoped<ISagaMemoryErasureService>(static provider =>
+            new SagaMemoryErasureService(
+                provider.GetRequiredService<ArcanumDbContext>(),
+                provider.GetRequiredService<IMemoryErasureKeyCreator>(),
+                provider.GetRequiredService<IMemoryErasureKeyProvider>(),
+                provider.GetRequiredService<IMemoryErasureTokenCodec>(),
+                provider.GetRequiredService<MemoryErasureScrubber>(),
+                provider.GetRequiredService<ICovenantOperationGate>(),
+                provider.GetRequiredService<IOperatorAuthorityContextIssuer>(),
+                provider.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+
         services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
 
         services.AddScoped<LexiconService>();
