@@ -1,12 +1,20 @@
 using System.Text.Json;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -29,7 +37,8 @@ public sealed class CovenantCommands(
     ArcanumApiClient apiClient,
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext,
+    IOptions<ArcanumSettings> settings)
 {
 
     /// <summary>
@@ -1165,6 +1174,161 @@ public sealed class CovenantCommands(
         return (int)CliExitCode.Success;
 
     }
+
+    /// <summary>
+    /// Erases one Covenant entry — every version in both lanes — in exactly one scope.
+    /// </summary>
+    /// <remarks>
+    /// The entry and both lane heads come off <c>show</c> and are forwarded unchanged, so the erase is
+    /// a statement about the entry the host just reported rather than about whatever is current when
+    /// the apply lands. A key with no entry in that scope stops here: there is nothing to prepare, and
+    /// a prepare would only be refused.
+    ///
+    /// <para>The preflight is rendered, then the external disclosure, then the drain and key-reclaim
+    /// costs the plan carries, all before the question. Under <c>--json</c> every one of those lines
+    /// goes to the diagnostic stream and stdout carries exactly one document: the result, the
+    /// cancellation payload, or the error envelope.</para>
+    /// </remarks>
+    public async Task<int> Erase(
+        string key,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        CovenantScope scope = campaignId is null ? CovenantScope.Global : CovenantScope.Campaign;
+
+        Result<CovenantDetailDto> detail = await apiClient
+            .ShowCovenantAsync(new CovenantDetailRequest(scope, campaignId, key), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (detail.IsFailure)
+        {
+
+            return Fail(detail.Error, (CliExitCode)CliFailureExit.ExitCode(detail.Error));
+
+        }
+
+        if (detail.Value.EntryId is not { } entryId)
+        {
+
+            return Fail(
+                new Error(ErrorCodes.Covenant.NotFound, $"Covenant key '{key}' has no entry to erase in this scope."),
+                CliExitCode.GenericError);
+
+        }
+
+        Guid mutationId = Guid.CreateVersion7();
+
+        CovenantErasePrepareRequest request = new(
+            detail.Value.Scope,
+            detail.Value.CampaignId,
+            detail.Value.Key,
+            entryId,
+            Expectation(detail.Value.Confirmed),
+            Expectation(detail.Value.Proposed),
+            mutationId);
+
+        Result<MemoryErasurePreflightDto> prepared = await apiClient
+            .PrepareCovenantErasureAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (prepared.IsFailure)
+        {
+
+            return Fail(prepared.Error, (CliExitCode)CliFailureExit.ExitCode(prepared.Error));
+
+        }
+
+        MemoryErasureRenderer.WritePreflight(dispatcher, prepared.Value, invocationContext.Options.Json);
+
+        DisclosureWriter.WriteErasure(prepared.Value.External);
+
+        string scopeText = campaignId is { } campaign ? $"Campaign {campaign:D}" : "Global";
+
+        if (!invocationContext.Options.Yes
+            && !await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Erase every version in both lanes of '{key}' in the {scopeText} scope? This cannot be undone.",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+
+            dispatcher.WriteDiagnostic($"{MemoryReviewStore.Covenant} erasure cancelled.");
+
+            if (invocationContext.Options.Json)
+            {
+
+                dispatcher.WriteJson(
+                    new MemoryErasureCancellationPayload("erase", MemoryReviewStore.Covenant, mutationId, Cancelled: true),
+                    CliJsonContext.Default.MemoryErasureCancellationPayload);
+
+            }
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        Result<MemoryErasureResultDto> erased = await apiClient
+            .EraseCovenantEntryAsync(
+                new CovenantEraseRequest(
+                    request.Scope,
+                    request.CampaignId,
+                    request.Key,
+                    request.EntryId,
+                    request.Confirmed,
+                    request.Proposed,
+                    request.MutationId,
+                    prepared.Value.PreflightToken),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (erased.IsFailure)
+        {
+
+            CliExitCode exitCode = (CliExitCode)CliFailureExit.ExitCode(erased.Error);
+
+            int failed = Fail(erased.Error, exitCode);
+
+            if (exitCode is CliExitCode.NetworkError)
+            {
+
+                MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
+
+            }
+
+            return failed;
+
+        }
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(erased.Value, ArcanumJsonContext.Default.MemoryErasureResultDto);
+
+        }
+        else
+        {
+
+            MemoryErasureRenderer.WriteResult(dispatcher, erased.Value);
+
+        }
+
+        return (int)CliExitCode.Success;
+
+    }
+
+    /// <summary>The exact lane head an erase requires still to be current, or none for an empty lane.</summary>
+    private static CovenantEraseHeadExpectation? Expectation(CovenantHeadDto? head) =>
+        head is null ? null : new CovenantEraseHeadExpectation(head.VersionId, head.LaneRevision);
+
+    /// <summary>
+    /// The shared disclosure writer, built from this command's own dispatcher and settings.
+    /// </summary>
+    /// <remarks>
+    /// Built here rather than injected: the writer is internal and this class is public, so a
+    /// constructor parameter of the writer's type would not compile.
+    /// </remarks>
+    private CovenantExternalRetentionDisclosureWriter DisclosureWriter => new(dispatcher, settings);
 
     private int Fail(Error error, CliExitCode exitCode)
     {

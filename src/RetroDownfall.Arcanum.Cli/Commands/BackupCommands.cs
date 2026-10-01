@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
 using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -531,16 +533,7 @@ internal sealed class BackupCommands(
         dispatcher.WriteDiagnostic(
             DescribeExposure(plan.DestinationDisclosure ?? BackupRestoreDisclosureExposure.None));
 
-        foreach (CovenantRetentionHelpTarget target in
-                 CovenantExternalRetentionDisclosure.ResolveHelpTargets(settings.Value.Providers ?? []))
-        {
-
-            dispatcher.WriteDiagnostic(
-                target.Provider.Length == 0
-                    ? $"  Retention guidance: {target.Uri}"
-                    : $"  Retention guidance ({target.Provider}): {target.Uri}");
-
-        }
+        new CovenantExternalRetentionDisclosureWriter(dispatcher, settings).WriteHelpTargets();
 
         return await confirmationPrompt
             .PromptForConfirmationAsync(

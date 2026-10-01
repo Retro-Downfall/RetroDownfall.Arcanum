@@ -4,11 +4,13 @@ using System.Text.Json;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -73,7 +75,8 @@ public sealed class MemoryReviewCommandTests
             apiClient,
             themePalette: null!,
             dispatcher,
-            new FixedConfirmation(confirmed: false));
+            new FixedConfirmation(confirmed: false),
+            Options.Create(new ArcanumSettings()));
 
         string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
 
@@ -195,7 +198,8 @@ public sealed class MemoryReviewCommandTests
             apiClient,
             themePalette: null!,
             new ConsoleDispatcher(output, error, options),
-            new FixedConfirmation(confirmed: false));
+            new FixedConfirmation(confirmed: false),
+            Options.Create(new ArcanumSettings()));
     }
 
     private static void AssertJsonInputError(

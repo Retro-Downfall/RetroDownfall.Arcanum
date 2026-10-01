@@ -180,6 +180,27 @@ internal static partial class CliCommandTree
 
         AddLexiconMutation(lexicon, "unpin", "Release an exact Lexicon entry's protection from automatic retention pruning.", handler.LexiconUnpin);
 
+        Command lexiconErase = new(
+            "erase",
+            "Erase one exact Lexicon entry for good, so extraction and agents cannot write its name again in that scope.");
+
+        Argument<string> eraseName = new("name") { Description = "Lexicon entity name." };
+
+        Option<Guid?> eraseCampaign = LexiconCampaignOption();
+
+        lexiconErase.Add(eraseName);
+
+        lexiconErase.Add(eraseCampaign);
+
+        lexiconErase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconErase(
+                    pr.GetValue(eraseName)!,
+                    pr.GetValue(eraseCampaign),
+                    ct).ConfigureAwait(false));
+
+        lexicon.Add(lexiconErase);
+
         memory.Add(status);
 
         memory.Add(sources);
@@ -356,9 +377,35 @@ internal static partial class CliCommandTree
 
         saga.Add(reinstate);
 
+        Command erase = new(
+            "erase",
+            "Erase one Saga memory and its identical-content twins for good, so extraction cannot write that content again in its scope.");
+
+        Argument<string> eraseId = SagaMemoryIdArgument();
+
+        // Optional here, unlike on correct: omitted, the hash show just reported is sent, which still
+        // binds the erase to the text the host holds.
+        Option<string?> eraseHash = new("--expected-content-hash")
+        {
+            Description = "The content hash 'memory saga show' printed for the text you read. Omit to use the hash shown now.",
+        };
+
+        erase.Add(eraseId);
+
+        erase.Add(eraseHash);
+
+        erase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.SagaErase(
+                    pr.GetValue(eraseId)!,
+                    pr.GetValue(eraseHash),
+                    ct).ConfigureAwait(false));
+
         saga.Add(pin);
 
         saga.Add(unpin);
+
+        saga.Add(erase);
 
         saga.Add(BuildSagaReview(handler));
 

@@ -93,6 +93,20 @@ public sealed record MemoryReviewCancellationPayload(
     MemoryReviewAction Action,
     bool Cancelled);
 
+/// <summary>
+/// The one document a declined erasure-family operation writes under <c>--json</c>.
+/// </summary>
+/// <remarks>
+/// <paramref name="Operation"/> is <c>erase</c>, <c>release</c> or <c>reset-key</c>. The store and
+/// mutation identity are present when the declined operation had them, so a script can tell which
+/// prepared erase was turned down; nothing about the item itself is carried.
+/// </remarks>
+public sealed record MemoryErasureCancellationPayload(
+    string Operation,
+    MemoryReviewStore? Store,
+    Guid? MutationId,
+    bool Cancelled);
+
 public sealed record SessionShowPayload(
     Guid Id,
     Guid? CampaignId,
@@ -1056,6 +1070,7 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(CliTextPayload))]
 [JsonSerializable(typeof(CliErrorPayload))]
 [JsonSerializable(typeof(MemoryReviewCancellationPayload))]
+[JsonSerializable(typeof(MemoryErasureCancellationPayload))]
 [JsonSerializable(typeof(CliContextStatusPayload))]
 [JsonSerializable(typeof(CliContextMutationResult))]
 [JsonSerializable(typeof(SessionShowPayload))]

@@ -425,13 +425,15 @@ public sealed class MemoryCommandTests
         Assert.Equal("/api/memory/lexicon/Operator", request.RequestUri!.AbsolutePath);
     }
 
-    [Fact]
+    [Theory]
+    [InlineData("delete")]
+    [InlineData("erase")]
 
-    public void Memory_has_no_generic_delete_command()
+    public void Memory_has_no_generic_delete_command(string verb)
     {
         RecordingHandler handler = new();
 
-        CliTestResult result = RunCommand(handler, ["memory", "delete", "anything"]);
+        CliTestResult result = RunCommand(handler, ["memory", verb, "anything"]);
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 

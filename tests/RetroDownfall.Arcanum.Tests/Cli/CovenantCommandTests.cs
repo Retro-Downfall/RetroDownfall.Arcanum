@@ -10,6 +10,8 @@ using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands.Tower;
@@ -17,6 +19,8 @@ using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -1323,7 +1327,8 @@ public sealed class CovenantCommandTests : IDisposable
             provider.GetRequiredService<ArcanumApiClient>(),
             dispatcher,
             prompt,
-            new FixedInvocationContext());
+            new FixedInvocationContext(),
+            provider.GetRequiredService<IOptions<ArcanumSettings>>());
     }
 
     private sealed class FixedSecretStore : ISecretStore

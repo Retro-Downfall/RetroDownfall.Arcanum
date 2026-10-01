@@ -313,7 +313,7 @@ public sealed class CliSurfaceTests
 
         string reference = File.ReadAllText(CommandReferencePath());
 
-        Assert.Equal(10, directVerbs);
+        Assert.Equal(11, directVerbs);
 
         Assert.Equal(
             ["apply", "list"],
@@ -380,6 +380,8 @@ public sealed class CliSurfaceTests
             9 => "nine",
 
             10 => "ten",
+
+            11 => "eleven",
 
             _ => value.ToString(global::System.Globalization.CultureInfo.InvariantCulture),
         };

@@ -111,6 +111,7 @@
         "context sources",
         "context tools",
         "memory covenant correct",
+        "memory covenant erase",
         "memory covenant list",
         "memory covenant mask",
         "memory covenant pin",
@@ -122,6 +123,7 @@
         "memory covenant unmask",
         "memory covenant unpin",
         "memory lexicon correct",
+        "memory lexicon erase",
         "memory lexicon pin",
         "memory lexicon reinstate",
         "memory lexicon retire",
@@ -3087,6 +3089,40 @@
               "commands": []
             },
             {
+              "path": "memory covenant erase",
+              "name": "erase",
+              "description": "Erase one preference entry for good, every version in both lanes, so agents cannot propose its key again in that scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "key",
+                  "description": "The preference key.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Scope to one Campaign by identity. Omit for the installation-wide Global scope.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory covenant erase preference.builds --campaign 5b2e9c41-08d3-4a7f-b6e5-2c1908fa4d77"
+              ],
+              "commands": []
+            },
+            {
               "path": "memory covenant pin",
               "name": "pin",
               "description": "Mark one preference durable, so the agent may not write over it or retire it.",
@@ -3760,6 +3796,40 @@
                 "arcanum memory lexicon unpin Operator"
               ],
               "commands": []
+            },
+            {
+              "path": "memory lexicon erase",
+              "name": "erase",
+              "description": "Erase one exact Lexicon entry for good, so extraction and agents cannot write its name again in that scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "name",
+                  "description": "Lexicon entity name.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--campaign",
+                  "aliases": [
+                    "-C"
+                  ],
+                  "description": "Exact Campaign GUID. Omit for exact Global scope; saved and active context are never used.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                }
+              ],
+              "examples": [
+                "arcanum memory lexicon erase Operator"
+              ],
+              "commands": []
             }
           ]
         },
@@ -3937,6 +4007,37 @@
               "options": [],
               "examples": [
                 "arcanum memory saga unpin mem-01j9x8"
+              ],
+              "commands": []
+            },
+            {
+              "path": "memory saga erase",
+              "name": "erase",
+              "description": "Erase one Saga memory and its identical-content twins for good, so extraction cannot write that content again in its scope.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "id",
+                  "description": "Saga memory ID.",
+                  "required": true,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-content-hash",
+                  "aliases": [],
+                  "description": "The content hash \u0027memory saga show\u0027 printed for the text you read. Omit to use the hash shown now.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum memory saga erase 7c9e6679-7425-40de-944b-e07fc1f90ae7"
               ],
               "commands": []
             },

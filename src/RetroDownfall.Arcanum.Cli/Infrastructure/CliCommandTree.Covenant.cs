@@ -274,6 +274,25 @@ internal static partial class CliCommandTree
 
         covenant.Add(retire);
 
+        Command erase = new(
+            "erase",
+            "Erase one preference entry for good, every version in both lanes, so agents cannot propose its key again in that scope.");
+
+        Argument<string> eraseKey = new("key") { Description = "The preference key." };
+
+        erase.Add(eraseKey);
+
+        erase.Add(campaign);
+
+        erase.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Erase(
+                    pr.GetValue(eraseKey)!,
+                    pr.GetValue(campaign),
+                    ct).ConfigureAwait(false));
+
+        covenant.Add(erase);
+
         covenant.Add(CurationCommand(
             handler,
             CovenantCurationKind.Pin,
