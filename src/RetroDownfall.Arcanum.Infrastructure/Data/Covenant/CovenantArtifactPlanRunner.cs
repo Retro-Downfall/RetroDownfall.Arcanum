@@ -12,7 +12,12 @@ internal enum CovenantArtifactPlanMode
     /// <summary>Counts each target's rows with the predicate <see cref="Delete"/> would remove them by.</summary>
     Count = 1,
 
-    /// <summary>Removes each target's rows and reports how many went.</summary>
+    /// <summary>
+    /// Removes each target's rows and reports how many each statement removed directly. Rows a
+    /// foreign-key action removes with them, such as a corrected claim's later versions, are gone but not
+    /// counted, because SQLite counts only a statement's own changes; a caller that reports what it
+    /// erased reports the <see cref="Count"/> it measured and then proved absent.
+    /// </summary>
     Delete = 2,
 }
 
@@ -20,8 +25,9 @@ internal enum CovenantArtifactPlanMode
 /// <param name="Targets">
 /// Every projection in plan order, then the artifact table when the plan has one, each table exactly
 /// once. A target the run skipped — gated off by the Core version, or a conditional mirror that is
-/// absent or unreachable — reports zero. The sum is the whole count; no consumer appends the artifact
-/// table again.
+/// absent or unreachable — reports zero. In <see cref="CovenantArtifactPlanMode.Count"/> mode the sum is
+/// the whole count, and no consumer appends the artifact table again; in
+/// <see cref="CovenantArtifactPlanMode.Delete"/> mode it omits cascaded rows.
 /// </param>
 /// <param name="VectorMirror">The plan's one conditional mirror as the catalog shows it, or absent.</param>
 /// <param name="ArtifactRows">

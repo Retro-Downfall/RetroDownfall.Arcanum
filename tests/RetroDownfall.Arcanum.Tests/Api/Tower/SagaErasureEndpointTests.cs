@@ -1439,6 +1439,62 @@ public sealed class SagaErasureEndpointTests
         + "(SELECT Sequence FROM annal_review_events WHERE SubjectStoreCode = 1 AND SubjectId IN ({0}))";
 
     /// <summary>
+    /// A corrected memory's claim is a chain: its later version names the first as its predecessor, and
+    /// goes with it by cascade. The erase still reports every row it removed, the receipt records the
+    /// same count, and a replay reports it again.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_corrected_memory_reports_every_removed_row()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        using (HttpResponseMessage corrected = await client.PostAsync(
+            $"/api/memory/saga/{target}/correct",
+            JsonContent.Create(new SagaCorrectRequest(Hash(T), Other), ArcanumJsonContext.Default.SagaCorrectRequest)))
+        {
+            Assert.Equal(HttpStatusCode.OK, corrected.StatusCode);
+        }
+
+        Assert.Equal(
+            2,
+            await CountForIdsAsync(
+                factory,
+                "SELECT count(*) FROM annal_versions WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId IN ({0}))",
+                [target]));
+
+        long before = await PlanRowsAsync(factory, [target]);
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
+
+        Assert.Equal(before, erased.Preflight.Plan.RowsToRemove);
+
+        Assert.Equal(erased.Preflight.Plan.RowsToRemove, erased.Result.Local.RemovedRowCount);
+
+        Assert.Equal(
+            erased.Result.Local.RemovedRowCount,
+            await ScalarAsync(
+                factory,
+                "SELECT RemovedRowCount FROM memory_erasure_receipts WHERE MutationId = $mutation;",
+                [("$mutation", erased.Apply.MutationId.ToString("D").ToUpperInvariant())]));
+
+        MemoryErasureResultDto replayed = await driver.ApplySagaAsync(erased.Apply with { PreflightToken = "x" });
+
+        Assert.True(replayed.Replayed);
+
+        Assert.Equal(erased.Result.Local.RemovedRowCount, replayed.Local.RemovedRowCount);
+
+        Assert.Equal(0, await PlanRowsAsync(factory, [target], requireRows: false));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
     /// Replaces the host's erase service with the production one carrying test seams, built from the
     /// host's own registrations.
     /// </summary>

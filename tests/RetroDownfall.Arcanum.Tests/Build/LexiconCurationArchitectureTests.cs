@@ -64,6 +64,8 @@ public sealed class LexiconCurationArchitectureTests
         { Erasure, "ErasureEntryExistsAsync", 0, "count(*)" },
         { Erasure, "GlobalEntryExistsAsync", 0, "count(*)" },
         { Erasure, "FullTextSecureDeleteIsOnAsync", 0, "v" },
+        { Erasure, "ReadErasureRowIdAsync", 0, "rowid" },
+        { Erasure, "FullTextRowCountAsync", 0, "count(*)" },
         { Projection, "VerifyInspectionAuthorityAsync", 0, "OrphanLabels" },
         { Projection, "VerifyInspectionAuthorityAsync", 2, EvidenceColumns },
         { Projection, "StreamInspectionAsync", 0, "InvalidFacts" },

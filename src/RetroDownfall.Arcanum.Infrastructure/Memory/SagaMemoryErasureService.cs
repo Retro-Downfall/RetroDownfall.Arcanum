@@ -524,7 +524,12 @@ internal sealed class SagaMemoryErasureService(
             return StalePlan;
         }
 
-        long removedRows = 0;
+        // The rows removed are the rows just measured across the class, which the absence proof below
+        // shows are gone. The delete's own tally cannot say it: a corrected claim's later versions go by
+        // their predecessor's cascade, and SQLite does not count a cascaded row as the statement's
+        // change. The per-member sum counts no row twice, because the only Annals edges written join two
+        // versions of one claim, and prepare reports the same sum as the plan's rows to remove.
+        long removedRows = erasing.Facts.Targets.Sum(static table => table.Rows);
 
         bool legacyMirror = false;
 
@@ -533,8 +538,6 @@ internal sealed class SagaMemoryErasureService(
             CovenantArtifactPlanTally removed = await CovenantArtifactPlanRunner
                 .RunAsync(connection, transaction, SensitiveArtifactKind.Saga, member.Key, CovenantArtifactPlanMode.Delete, cancellationToken)
                 .ConfigureAwait(false);
-
-            removedRows += removed.Targets.Sum(static table => table.Rows);
 
             legacyMirror |= removed.VectorMirror is SagaVectorMirrorKind.LegacyVirtualTable;
         }

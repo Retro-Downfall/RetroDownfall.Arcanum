@@ -70,8 +70,8 @@ internal static class LexiconDaemonStateNames
 /// <c>BEGIN IMMEDIATE</c>; an entry already gone takes none, and the transaction answers it. Inside the
 /// transaction the receipt is probed again and the subject checked, the full-text index is made to
 /// scrub what it deletes, the target is compared, labels are proved, the effect is re-measured, and only
-/// then are the rows and label deleted, the fingerprint and receipt recorded, and absence proved before
-/// the commit. The result is built from the receipt only after a commit that succeeded, or one whose
+/// then are the rows and label deleted, the fingerprint and receipt recorded, and absence proved,
+/// the entry's full-text row included, before the commit. The result is built from the receipt only after a commit that succeeded, or one whose
 /// receipt a fresh connection can read back.</para>
 ///
 /// <para>Like every Lexicon write it runs under a raw <c>BEGIN</c> on the scoped connection, so the
@@ -602,6 +602,13 @@ internal sealed partial class LexiconService : ILexiconErasureService
             return ErasureStalePlan;
         }
 
+        // Read before the delete: the entry's full-text row is keyed by this rowid, and it is removed
+        // only by the content table's delete trigger, so the absence proof has to look for it by key.
+        if (await ReadErasureRowIdAsync(connection, target.EntryId, cancellationToken).ConfigureAwait(false) is not { } rowId)
+        {
+            return ErasureEntryNotFound;
+        }
+
         _ = await CovenantArtifactPlanRunner
             .RunAsync(connection, null, SensitiveArtifactKind.Lexicon, CovenantIdentitySql.Key(target.EntryId), CovenantArtifactPlanMode.Delete, cancellationToken)
             .ConfigureAwait(false);
@@ -660,7 +667,7 @@ internal sealed partial class LexiconService : ILexiconErasureService
             .InsertReceiptAsync(connection, null, receipt, [ErasureSubject(key, target)], cancellationToken)
             .ConfigureAwait(false);
 
-        if (!await ProveErasureAbsentAsync(connection, target.EntryId, cancellationToken).ConfigureAwait(false))
+        if (!await ProveErasureAbsentAsync(connection, target.EntryId, rowId, cancellationToken).ConfigureAwait(false))
         {
             return ErasureNotAbsent;
         }
@@ -744,13 +751,28 @@ internal sealed partial class LexiconService : ILexiconErasureService
 
     /// <summary>
     /// The authoritative absence proof: every planned row counted again, inside the erase's own
-    /// transaction, with the predicates that deleted it, and no label left.
+    /// transaction, with the predicates that deleted it, no label left, and no full-text row left for
+    /// the entry.
     /// </summary>
+    /// <remarks>
+    /// The full-text row holds the entry's tokens, so it is a planned row too, even though no plan
+    /// statement deletes it: the content table's delete trigger does. FTS5 keeps one
+    /// <c>lexicon_fts_docsize</c> row for every row it indexes, keyed by the content rowid, so that row's
+    /// absence is the exact and cheap proof that the index no longer holds the entry. A retired entry
+    /// has none to begin with. An index that has fallen out of step with its rows fails here, and the
+    /// erase rolls back rather than reporting an erase the index contradicts.
+    /// </remarks>
     private static async Task<bool> ProveErasureAbsentAsync(
         SqliteConnection connection,
         Guid entryId,
+        long rowId,
         CancellationToken cancellationToken)
     {
+        if (await FullTextRowCountAsync(connection, rowId, cancellationToken).ConfigureAwait(false) != 0)
+        {
+            return false;
+        }
+
         CovenantArtifactPlanTally left = await CovenantArtifactPlanRunner
             .RunAsync(connection, null, SensitiveArtifactKind.Lexicon, CovenantIdentitySql.Key(entryId), CovenantArtifactPlanMode.Count, cancellationToken)
             .ConfigureAwait(false);
@@ -809,6 +831,42 @@ internal sealed partial class LexiconService : ILexiconErasureService
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is not null and not DBNull && Convert.ToInt64(value, CultureInfo.InvariantCulture) == 1;
+    }
+
+    /// <summary>The content rowid of the one row holding the entry's id, or null when none does.</summary>
+    private static async Task<long?> ReadErasureRowIdAsync(
+        SqliteConnection connection,
+        Guid entryId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            $"""
+            SELECT rowid FROM lexicon_entries
+            WHERE {CovenantIdentitySql.Keyed("Id", "$id")};
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", CovenantIdentitySql.Key(entryId));
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rowId ? rowId : null;
+    }
+
+    /// <summary>How many rows the full-text index still sizes for one content rowid: one while it is indexed.</summary>
+    private static async Task<long> FullTextRowCountAsync(
+        SqliteConnection connection,
+        long rowId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT count(*) FROM lexicon_fts_docsize WHERE id = $rowid;";
+
+        _ = command.Parameters.AddWithValue("$rowid", rowId);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rows
+            ? rows
+            : throw new InvalidDataException("The full-text absence count did not return an integer.");
     }
 
     /// <summary>Whether a row still holds the entry's id, in any spelling the plan would delete.</summary>

@@ -18,10 +18,13 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -229,6 +232,105 @@ public sealed class LexiconErasureEndpointTests
         Assert.Equal(0, await LabelCountAsync(factory, entry.Id));
 
         await AssertShowRefusedAsync(driver, Name, null, HttpStatusCode.NotFound, ErrorCodes.Lexicon.NotFound);
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// A labelled Campaign entry is erased under the write lease over that Campaign: the lease, its
+    /// exact-scope check and the label's owner are all the Campaign's, not the installation's.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_labelled_campaign_entry_is_erased_under_that_campaigns_write_lease()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(
+            new InMemoryOsCredentialStore(),
+            covenant: true,
+            configure: static settings => settings.Features.Annals = false);
+
+        (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        Guid campaign = await RegisterCampaignAsync(factory, client);
+
+        LexiconEntryDto global = await ScribeAsync(factory, Name, null, ["the installation's warden"]);
+
+        LexiconEntryDto entry = await ScribeAsync(factory, Name, campaign, ["the campaign's warden"]);
+
+        await LabelAsync(factory, entry);
+
+        MemoryErasureRoundTrip<LexiconEraseRequest> erased = await driver.EraseLexiconAsync(Name, campaign);
+
+        Assert.True(erased.Apply.Target.SensitivityLabel.IsPresent);
+
+        Assert.Equal(LexiconScopeKind.Campaign, erased.Apply.Target.Scope.Kind);
+
+        Assert.Equal(1, erased.Preflight.Plan.LabelsToRemove);
+
+        Assert.Equal(1, erased.Result.Local.RemovedLabelCount);
+
+        Assert.Equal(0, await LabelCountAsync(factory, entry.Id));
+
+        await AssertShowRefusedAsync(driver, Name, campaign, HttpStatusCode.NotFound, ErrorCodes.Lexicon.NotFound);
+
+        Assert.Equal(global.Id, (await ShowAsync(driver, Name, null)).Entry.Id);
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// The full-text row is a planned row like any other: an index that still holds the entry after its
+    /// row is deleted fails the absence proof, and the erase removes nothing.
+    /// </summary>
+    /// <remarks>
+    /// Dropping the content table's delete trigger stands in for an index that has fallen out of step
+    /// with its rows. No production writer leaves one, which is why the proof has to be exercised this
+    /// way. The trigger is put back from the shipped schema file afterwards.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_index_that_still_holds_the_entry_fails_the_absence_proof()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (_, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        LexiconEntryDto entry = await ScribeAsync(factory, Name, null, ["guards the mill"]);
+
+        LexiconCurationTarget target = (await ShowAsync(driver, Name, null)).Target;
+
+        LexiconErasePrepareRequest prepare = new(target, Guid.NewGuid());
+
+        MemoryErasurePreflightDto preflight = await PrepareOkAsync(driver, prepare);
+
+        await ExecuteAsync(factory, "DROP TRIGGER lexicon_entries_ad;");
+
+        await AssertApplyRefusedAsync(
+            driver,
+            new(target, prepare.MutationId, preflight.PreflightToken),
+            HttpStatusCode.InternalServerError,
+            ErrorCodes.MemoryErasure.ErasureIncomplete);
+
+        await ExecuteAsync(factory, File.ReadAllText(Path.Combine(
+            NativeSqlCipherTestPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure",
+            "Data",
+            "Schema",
+            "Triggers",
+            "lexicon_entries_ad.sql")));
+
+        Assert.Equal(0, await ReceiptsAsync(factory, prepare.MutationId));
+
+        Assert.Equal(0, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Lexicon));
+
+        Assert.Equal(target, (await ShowAsync(driver, Name, null)).Target);
+
+        Assert.Equal(1, await ScalarAsync(factory, "SELECT count(*) FROM lexicon_fts WHERE lexicon_fts MATCH 'warden';"));
+
+        Assert.Equal(1, await ScalarAsync(factory, "SELECT count(*) FROM annal_claims WHERE SubjectStoreCode = 2 AND SubjectId = $id;", Id(entry)));
 
         await AssertNoOrphanClaimsAsync(factory);
     }
@@ -590,6 +692,24 @@ public sealed class LexiconErasureEndpointTests
         HttpClient client = factory.CreateAuthenticatedClient();
 
         return (client, new MemoryErasureRouteDriver(client));
+    }
+
+    /// <summary>Registers one Campaign through its route, so the Covenant gate knows the scope it leases.</summary>
+    private static async Task<Guid> RegisterCampaignAsync(ArcanumWebApplicationFactory factory, HttpClient client)
+    {
+        string path = Path.Combine(factory.TempHome, "erasure-campaign");
+
+        Directory.CreateDirectory(path);
+
+        using HttpResponseMessage registered = await client.PostAsync(
+            "/api/campaigns",
+            JsonContent.Create(
+                new RegisterCampaignRequest("Lexicon erasure", path, WorkspaceType.Campaign, null),
+                ArcanumJsonContext.Default.RegisterCampaignRequest));
+
+        Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
+
+        return (await MemoryErasureRouteDriver.ReadDataAsync(registered, ArcanumJsonContext.Default.ApiResponseCampaignDto)).Id;
     }
 
     /// <summary>One attachment source, so a scribe records current fact provenance for its facts.</summary>

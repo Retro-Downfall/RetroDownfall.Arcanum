@@ -43,6 +43,8 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 {
     private const string Sentinel = "xqzsentinelerase";
 
+    private const string LiveSentinel = "yqzlivesentinel";
+
     private const string DaemonStateRefusal =
         "Unseen Servant daemon_state entries are managed by their daemon job and cannot be erased.";
 
@@ -120,6 +122,11 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
     /// An index whose secure delete was switched off still holds a corrected fact's tokens. The erase
     /// turns it back on, merges the residue away, reads the setting back, and only then deletes.
     /// </summary>
+    /// <remarks>
+    /// Two sentinels, each sharing no first letter with any other token: one in the fact the correction
+    /// superseded, which only the merge can clear, and one in the live fact, which only the erase's own
+    /// delete can clear, and only while secure delete is on.
+    /// </remarks>
     [SkippableFact]
     public async Task With_secure_delete_off_at_start_the_erase_enables_it_merges_and_then_deletes()
     {
@@ -139,7 +146,7 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 
         Result<LexiconCurationResult> corrected = await lexicon.CorrectAsync(
             (await ShowAsync(lexicon, Global, "Mill Warden")).Target,
-            new("Place", ["guards the gate"]),
+            new("Place", [$"{LiveSentinel} guards the gate"]),
             null,
             Token);
 
@@ -147,9 +154,13 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 
         Assert.True(await SentinelBlocksAsync(harness.Connection) > 0);
 
+        Assert.True(await SentinelBlocksAsync(harness.Connection, LiveSentinel) > 0);
+
         (_, MemoryErasureResultDto result) = await harness.EraseAsync(corrected.Value.Entry.Target);
 
         Assert.Equal(0, await SentinelBlocksAsync(harness.Connection));
+
+        Assert.Equal(0, await SentinelBlocksAsync(harness.Connection, LiveSentinel));
 
         Assert.Equal(1L, await ScalarAsync(harness.Connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
 
@@ -531,11 +542,11 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
         Assert.Equal(version, result.Core.SchemaVersion);
     }
 
-    /// <summary>The <c>lexicon_fts_data</c> blocks that still carry the sentinel. Assertion-only.</summary>
-    private static async Task<long> SentinelBlocksAsync(SqliteConnection connection) =>
+    /// <summary>The <c>lexicon_fts_data</c> blocks that still carry a sentinel. Assertion-only.</summary>
+    private static async Task<long> SentinelBlocksAsync(SqliteConnection connection, string sentinel = Sentinel) =>
         (long)(await ScalarAsync(
             connection,
-            $"SELECT count(*) FROM lexicon_fts_data WHERE instr(block, CAST('{Sentinel}' AS BLOB)) > 0;"))!;
+            $"SELECT count(*) FROM lexicon_fts_data WHERE instr(block, CAST('{sentinel}' AS BLOB)) > 0;"))!;
 
     private static async Task<long> FingerprintCountAsync(SqliteConnection connection) =>
         (long)(await ScalarAsync(connection, "SELECT count(*) FROM memory_erasure_fingerprints WHERE StoreCode = 3;"))!;
