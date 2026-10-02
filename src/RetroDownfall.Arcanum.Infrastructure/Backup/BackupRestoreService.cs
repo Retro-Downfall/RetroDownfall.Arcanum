@@ -1667,8 +1667,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         if (joinsErasureEvidence)
         {
 
-            // Before the Covenant arm, the safety backup and the commit: a drain that cannot finish
-            // leaves nothing displaced and nothing reconciled.
+            // Before the staged Covenant reconcile, the safety backup and the commit: a drain that cannot
+            // finish leaves nothing displaced and nothing reconciled. The operator cancelling it leaves as
+            // a cancellation, exactly as one during the migration above does.
             Result<BackupRestoreSchemaDrainReceipt> drained = await BackupRestoreSchemaDrain
                 .DrainAsync(
                     connection,

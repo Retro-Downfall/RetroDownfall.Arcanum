@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -271,6 +272,22 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
             installer ?? GrimoireSchemaTestInstaller.Create(),
             new MemoryErasureKeyring(credentials ?? Credentials),
             options);
+
+    /// <summary>
+    /// The Covenant arm a restore runs with the gate on, behind <paramref name="gate"/> and over this
+    /// profile's keychain, for <see cref="BackupRestoreServiceOptions.RestoreStaging"/>.
+    /// </summary>
+    internal CovenantRestoreStagingServices CovenantStaging(ICovenantOperationGate gate) =>
+        new(
+            gate,
+            new CovenantRestoreStagingTests.RecordingRestoreMarkerLifecycle(),
+            new BackupRestoreJournalAnchorStore(
+                Credentials,
+                new BackupRestoreJournalKeyProvider(Credentials),
+                new BackupRestoreJournalInstallationIdentityProvider(Credentials)),
+            new BackupRestoreJournalInstallationIdentityProvider(Credentials),
+            new BackupRestoreJournalKeyProvider(Credentials),
+            new BackupRestoreEffectDigestCalculator());
 
     public async ValueTask DisposeAsync()
     {
