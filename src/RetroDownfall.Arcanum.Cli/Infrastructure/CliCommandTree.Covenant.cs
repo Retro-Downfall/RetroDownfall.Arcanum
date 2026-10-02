@@ -220,13 +220,13 @@ internal static partial class CliCommandTree
 
         Option<Guid> targetVersion = new("--target-version")
         {
-            Description = "The version identity being corrected, as `show --history` reports it.",
+            Description = "The version identity being corrected, as `show` reports it.",
             Required = true,
         };
 
         Option<string> targetHash = new("--target-hash")
         {
-            Description = "The compiled hash of the version being corrected, as `show` reports it.",
+            Description = "The rendered hash of the version being corrected, as `show` reports it.",
             Required = true,
         };
 
@@ -383,7 +383,7 @@ internal static partial class CliCommandTree
 
         Option<long> expectedRevision = new("--expected-revision")
         {
-            Description = "The curation revision this change expects to replace. Zero is an uncurated subject.",
+            Description = "The curation revision `show` reports for this lane. Zero is an uncurated subject.",
         };
 
         command.Add(key);

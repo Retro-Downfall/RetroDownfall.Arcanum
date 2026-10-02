@@ -203,8 +203,11 @@ public static class CovenantPublicContractInventory
         new(Namespace + nameof(CovenantSourcesDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
             "Complete by construction, with the recomputed digest returned beside the stored one."),
 
+        new(Namespace + nameof(CovenantCurationStateDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
+            "One lane's pin, mask and curation revision at the key's binding epoch; an uncurated lane reads as none."),
+
         new(Namespace + nameof(CovenantDetailDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
-            "Both lane heads plus the key epoch a later mutation has to match."),
+            "Both lane heads, the key epoch, and each lane's curation state; never content."),
 
         new(Namespace + nameof(CovenantExplainSectionDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
             "Rendered content only under the existing showContent gate plus clean read authority."),

@@ -784,6 +784,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(CovenantSourceDto))]
 [JsonSerializable(typeof(CovenantSourceDto[]))]
 [JsonSerializable(typeof(CovenantSourcesDto))]
+[JsonSerializable(typeof(CovenantCurationStateDto))]
 [JsonSerializable(typeof(CovenantDetailDto))]
 [JsonSerializable(typeof(CovenantExplainSectionDto))]
 [JsonSerializable(typeof(CovenantExplainSectionDto[]))]

@@ -210,12 +210,12 @@ internal sealed class CovenantCurationKernel
         // The subject's current state is joined on the key's current binding epoch, not on the epoch
         // the receipt stored. The receipt keeps the dependency epoch its request digest bound, which
         // has usually moved by the time a replay arrives, and a head is never recorded under it.
-        command.CommandText = """
+        command.CommandText = $"""
             WITH receipt AS (
                 SELECT r.RequestIdempotencyDigest, r.FinalMutationDigest, r.ResponseReceiptDigest,
                        r.CurationKindCode, r.OutcomeCode, r.ResultingVersionId, r.ResultingRevision,
                        r.CampaignId, r.NormalizedKey, r.LaneCode,
-                       COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = r.NormalizedKey), 0) AS BindingEpoch
+                       {CovenantStoreSql.BindingEpoch("r.NormalizedKey")} AS BindingEpoch
                 FROM covenant_curation_receipts r
                 WHERE r.MutationId = $mutation
             )

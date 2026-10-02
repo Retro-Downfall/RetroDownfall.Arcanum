@@ -323,7 +323,11 @@ public sealed class CovenantErasureEndpointTests
 
         await CurateAsync(driver, CovenantCurationKind.Pin, CovenantScope.Campaign, campaign, Key);
 
-        CovenantErasePrepareRequest prepare = Prepare(CovenantScope.Campaign, campaign, await DetailAsync(driver, CovenantScope.Campaign, campaign, Key));
+        CovenantDetailDto pinned = await DetailAsync(driver, CovenantScope.Campaign, campaign, Key);
+
+        Assert.Equal(new CovenantCurationStateDto(true, false, 1), pinned.ConfirmedCuration);
+
+        CovenantErasePrepareRequest prepare = Prepare(CovenantScope.Campaign, campaign, pinned);
 
         MemoryErasurePreflightDto preflight = await PrepareOkAsync(driver, prepare);
 
@@ -380,6 +384,20 @@ public sealed class CovenantErasureEndpointTests
         Assert.Equal([MemoryErasureNote.OtherScopesUnaffected, MemoryErasureNote.CovenantDrainsInFlightTurns], result.Notes);
 
         Assert.NotNull((await DetailAsync(driver, CovenantScope.Global, null, Key)).EntryId);
+
+        // The erased subject's curation reads exactly as a key never written in that scope reads, so the
+        // detail route's curation state says nothing about an erasure having happened.
+        CovenantDetailDto erased = await DetailAsync(driver, CovenantScope.Campaign, campaign, Key);
+
+        CovenantDetailDto neverWritten = await DetailAsync(driver, CovenantScope.Campaign, campaign, "erasure.never-written");
+
+        Assert.Null(erased.EntryId);
+
+        Assert.Equal(CovenantCurationStateDto.None, erased.ConfirmedCuration);
+
+        Assert.Equal(neverWritten.ConfirmedCuration, erased.ConfirmedCuration);
+
+        Assert.Equal(neverWritten.ProposedCuration, erased.ProposedCuration);
 
         await AssertNoOrphanClaimsAsync(host);
     }

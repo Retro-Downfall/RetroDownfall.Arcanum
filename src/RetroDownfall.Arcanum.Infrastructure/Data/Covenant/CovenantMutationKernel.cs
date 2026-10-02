@@ -443,11 +443,11 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
     {
         await using SqliteCommand command = transaction.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT COALESCE(MAX(IsPinned), 0)
             FROM covenant_curation_heads
             WHERE CampaignId IS $campaign AND NormalizedKey = $key AND LaneCode = $lane
-              AND KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0);
+              AND KeyEpoch = {CovenantStoreSql.BindingEpoch("$key")};
             """;
 
         Bind(

@@ -147,7 +147,8 @@ public sealed record CovenantEntryPayload(
     long ByteCost,
     CovenantEffectiveShadowState Shadow,
     CovenantEffectiveMaterialization Materialization,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    string? RenderedHash = null);
 
 /// <summary>One page of Covenant entries, with the cursor a follow-up call would send.</summary>
 public sealed record CovenantListPayload(
@@ -167,7 +168,9 @@ public sealed record CovenantShowPayload(
     CovenantEntryPayload? Confirmed,
     CovenantEntryPayload? Proposed,
     long KeyEpoch,
-    CovenantVersionDto[] History);
+    CovenantVersionDto[] History,
+    CovenantCurationStateDto? ConfirmedCuration = null,
+    CovenantCurationStateDto? ProposedCuration = null);
 
 /// <summary>
 /// The server-authoritative plan a mutation is confirmed against.
@@ -1120,6 +1123,8 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(FullInstallationResetExternalRemediationAttestation))]
 
 [JsonSerializable(typeof(FullInstallationResetRequest))]
+
+[JsonSerializable(typeof(CovenantCurationStateDto))]
 
 [JsonSerializable(typeof(CovenantEntryPayload))]
 

@@ -101,7 +101,8 @@ public sealed record CovenantListQuery(
 public sealed record CovenantDetailQuery(CovenantOperationScope Scope, string NormalizedKey);
 
 /// <summary>
-/// One scoped key with both lane heads and the current provenance of each.
+/// One scoped key with both lane heads, the current provenance of each, and each lane's curation
+/// state, all read in one snapshot.
 /// </summary>
 public sealed record CovenantDetail(
     CovenantOperationScope Scope,
@@ -111,7 +112,9 @@ public sealed record CovenantDetail(
     CovenantHeadItem? ProposedHead,
     long KeyEpoch,
     Guid DatasetGeneration,
-    long CanonicalSearchSequence);
+    long CanonicalSearchSequence,
+    CovenantCurationStateDto ConfirmedCuration,
+    CovenantCurationStateDto ProposedCuration);
 
 /// <summary>
 /// A descending page of one entry lane's immutable versions.

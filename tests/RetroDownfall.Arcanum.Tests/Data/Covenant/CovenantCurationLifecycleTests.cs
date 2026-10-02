@@ -127,6 +127,146 @@ public sealed class CovenantCurationLifecycleTests
     }
 
     /// <summary>
+    /// Covenant detail reports each lane's own curation at the key's binding epoch, in the scope it
+    /// was asked about.
+    /// </summary>
+    /// <remarks>
+    /// A Campaign mask over a Global key is the case where the Campaign holds no entry and no head for
+    /// the key, so the curation has to be reported without one. The lanes are read separately: a
+    /// detail that handed one lane's row to both would report the operator's Proposed pin as a
+    /// Confirmed one, or a Confirmed mask on a lane nobody masked.
+    /// </remarks>
+    [Fact]
+    public async Task Detail_reports_each_lanes_curation_at_the_binding_epoch()
+    {
+
+        const string PinnedKey = "detail.pinned";
+
+        const string MaskedKey = "detail.masked";
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, PinnedKey, "Build from the root.", Token);
+
+        Assert.True((await harness.CurateAsync(CovenantCurationKind.Pin, CovenantScope.Global, null, PinnedKey, Token)).IsSuccess);
+
+        CovenantDetail pinned = await ReadDetailAsync(harness, CovenantScope.Global, null, PinnedKey);
+
+        Assert.NotNull(pinned.ConfirmedHead);
+
+        Assert.Equal(new CovenantCurationStateDto(true, false, 1), pinned.ConfirmedCuration);
+
+        Assert.Equal(CovenantCurationStateDto.None, pinned.ProposedCuration);
+
+        await harness.SetAsync(CovenantScope.Global, null, MaskedKey, "Build from tools.", Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        Assert.True((await harness.CurateAsync(CovenantCurationKind.Mask, CovenantScope.Campaign, CampaignOne, MaskedKey, Token)).IsSuccess);
+
+        CovenantDetail masked = await ReadDetailAsync(harness, CovenantScope.Campaign, CampaignOne, MaskedKey);
+
+        Assert.Null(masked.EntryId);
+
+        Assert.Null(masked.ConfirmedHead);
+
+        Assert.Equal(new CovenantCurationStateDto(false, true, 1), masked.ConfirmedCuration);
+
+        Assert.Equal(CovenantCurationStateDto.None, masked.ProposedCuration);
+
+        // The mask belongs to the Campaign, so the Global key it suppresses there reports none.
+        CovenantDetail global = await ReadDetailAsync(harness, CovenantScope.Global, null, MaskedKey);
+
+        Assert.Equal(CovenantCurationStateDto.None, global.ConfirmedCuration);
+
+        Assert.Equal(CovenantCurationStateDto.None, global.ProposedCuration);
+
+        // A second lane curated in the same scope is reported on its own lane, beside the first.
+        Assert.True(
+            (await harness.CurateAsync(
+                CovenantCurationKind.Pin,
+                CovenantScope.Campaign,
+                CampaignOne,
+                MaskedKey,
+                Token,
+                lane: CovenantLane.Proposed)).IsSuccess);
+
+        CovenantDetail both = await ReadDetailAsync(harness, CovenantScope.Campaign, CampaignOne, MaskedKey);
+
+        Assert.Equal(new CovenantCurationStateDto(false, true, 1), both.ConfirmedCuration);
+
+        Assert.Equal(new CovenantCurationStateDto(true, false, 1), both.ProposedCuration);
+
+    }
+
+    /// <summary>
+    /// A pin recorded before the key had any head is still reported once the first operator set
+    /// creates the key.
+    /// </summary>
+    /// <remarks>
+    /// The pin is recorded under the binding epoch a missing key row reads as, and the first head
+    /// creates the row at that binding epoch while its dependency epoch moves. A detail that joined
+    /// the dependency epoch would report the pin as gone the moment there was something to pin.
+    /// </remarks>
+    [Fact]
+    public async Task Detail_reports_a_keyless_pin_after_the_first_operator_set()
+    {
+
+        const string KeylessKey = "detail.keyless";
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        Assert.True((await harness.CurateAsync(CovenantCurationKind.Pin, CovenantScope.Global, null, KeylessKey, Token)).IsSuccess);
+
+        await harness.SetAsync(CovenantScope.Global, null, KeylessKey, "Build from the root.", Token);
+
+        CovenantDetail detail = await ReadDetailAsync(harness, CovenantScope.Global, null, KeylessKey);
+
+        Assert.NotNull(detail.ConfirmedHead);
+
+        Assert.Equal(new CovenantCurationStateDto(true, false, 1), detail.ConfirmedCuration);
+
+        Assert.Equal(CovenantCurationStateDto.None, detail.ProposedCuration);
+
+    }
+
+    /// <summary>
+    /// On a key that existed before the binding epoch did, detail reads the key row's own nonzero
+    /// binding epoch, and the pin is still reported after a later write moves the dependency epoch.
+    /// </summary>
+    /// <remarks>
+    /// Every key created from canonical version 6 on binds epoch 0, so the two tests above cannot tell
+    /// a detail that reads the key row from one that assumes zero. On an upgraded installation nonzero
+    /// is the ordinary case.
+    /// </remarks>
+    [Fact]
+    public async Task Detail_reports_curation_of_a_key_with_a_nonzero_binding_epoch()
+    {
+
+        const string UpgradedKey = "detail.upgraded";
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.SeedUpgradedKeyAsync(UpgradedKey, epoch: 3, Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, UpgradedKey, "Build from the root.", Token);
+
+        Assert.True((await harness.CurateAsync(CovenantCurationKind.Pin, CovenantScope.Global, null, UpgradedKey, Token)).IsSuccess);
+
+        await harness.CorrectAsync(CovenantScope.Global, null, UpgradedKey, "Build from tools.", Token);
+
+        CovenantDetail detail = await ReadDetailAsync(harness, CovenantScope.Global, null, UpgradedKey);
+
+        // The correction moved the dependency epoch past the binding epoch the pin was recorded under.
+        Assert.Equal(5, detail.KeyEpoch);
+
+        Assert.Equal(new CovenantCurationStateDto(true, false, 1), detail.ConfirmedCuration);
+
+        Assert.Equal(CovenantCurationStateDto.None, detail.ProposedCuration);
+
+    }
+
+    /// <summary>
     /// The three tables are protected Covenant content, so every surface that counts protected state
     /// counts them. The inspector's list is the canonical content list itself, which the retention
     /// inventory also reads directly.
@@ -140,6 +280,29 @@ public sealed class CovenantCurationLifecycleTests
         Assert.Contains("covenant_curation_heads", BackupRestoreProtectedStateInspector.CanonicalContentTables);
 
         Assert.Contains("covenant_curation_receipts", BackupRestoreProtectedStateInspector.CanonicalContentTables);
+
+    }
+
+    /// <summary>Reads one scoped key's detail through the production store, under the lease a route takes.</summary>
+    private static async Task<CovenantDetail> ReadDetailAsync(
+        CovenantServiceHarness harness,
+        CovenantScope scope,
+        Guid? campaignId,
+        string key)
+    {
+
+        await using ICovenantSnapshotReadLease read = await harness.AcquireReadAsync(scope, campaignId, Token);
+
+        Result<CovenantDetail> detail = await harness.Fixture.Store.ReadDetailAsync(
+            new CovenantDetailQuery(
+                campaignId is { } campaign ? CovenantOperationScope.ForCampaign(campaign) : CovenantOperationScope.Global,
+                key),
+            read,
+            Token);
+
+        Assert.True(detail.IsSuccess, detail.IsFailure ? detail.Error.Message : string.Empty);
+
+        return detail.Value;
 
     }
 

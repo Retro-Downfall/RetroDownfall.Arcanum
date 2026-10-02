@@ -662,7 +662,9 @@ public sealed class CovenantCommands(
                     detail.Value.Confirmed is null ? null : Project(detail.Value.Confirmed),
                     detail.Value.Proposed is null ? null : Project(detail.Value.Proposed),
                     detail.Value.KeyEpoch,
-                    [.. versions]),
+                    [.. versions],
+                    detail.Value.ConfirmedCuration,
+                    detail.Value.ProposedCuration),
                 CliJsonContext.Default.CovenantShowPayload);
 
             return (int)CliExitCode.Success;
@@ -674,13 +676,26 @@ public sealed class CovenantCommands(
 
             dispatcher.WritePayload($"No Covenant entry under '{key}' in that scope.");
 
+            // A scope can curate a key it holds no entry for: a Campaign mask over a Global key is
+            // exactly that, and stopping at "no entry" would hide the one fact the operator came to
+            // check. A key nobody curated here still answers with the one line.
+            if (detail.Value.ConfirmedCuration != CovenantCurationStateDto.None
+                || detail.Value.ProposedCuration != CovenantCurationStateDto.None)
+            {
+
+                WriteHead("Confirmed", null, detail.Value.ConfirmedCuration);
+
+                WriteHead("Proposed", null, detail.Value.ProposedCuration);
+
+            }
+
             return (int)CliExitCode.Success;
 
         }
 
-        WriteHead("Confirmed", detail.Value.Confirmed);
+        WriteHead("Confirmed", detail.Value.Confirmed, detail.Value.ConfirmedCuration);
 
-        WriteHead("Proposed", detail.Value.Proposed);
+        WriteHead("Proposed", detail.Value.Proposed, detail.Value.ProposedCuration);
 
         if (!history)
         {
@@ -738,9 +753,10 @@ public sealed class CovenantCommands(
     /// </summary>
     /// <remarks>
     /// Operation, origin, and mutation identity are printed beside the revision because those are the
-    /// three fields that answer "who changed this preference, and when". The authored content is not
-    /// printed and is not in the payload: a history is a record of changes, not a second way to read
-    /// what a key says.
+    /// three fields that answer "who changed this preference, and when". Each version's identity and
+    /// rendered hash are printed too, because they are what <c>correct</c> names. The authored content
+    /// is not printed and is not in the payload: a history is a record of changes, not a second way to
+    /// read what a key says.
     /// </remarks>
     private async Task<int> WriteHistoryAsync(
         Guid entryId,
@@ -765,9 +781,9 @@ public sealed class CovenantCommands(
         {
 
             dispatcher.WritePayload(
-                $"  revision {version.LaneRevision}  {version.Operation}  {version.Origin}  "
-                + $"{version.CompiledByteCost} bytes  mutation {version.MutationId}  "
-                + $"{version.CreatedAtUtc:u}");
+                $"  revision {version.LaneRevision}  version {version.VersionId:D}  {version.Operation}  "
+                + $"{version.Origin}  {version.CompiledByteCost} bytes  hash {version.RenderedHash ?? "none"}  "
+                + $"mutation {version.MutationId}  {version.CreatedAtUtc:u}");
 
         }
 
@@ -823,15 +839,32 @@ public sealed class CovenantCommands(
 
     }
 
-    private void WriteHead(string label, CovenantHeadDto? head)
+    /// <summary>
+    /// Prints one lane: its exact head identity, then its curation.
+    /// </summary>
+    /// <remarks>
+    /// The version identity and rendered hash are what <c>correct</c> names, so an operator reads them
+    /// here rather than having to ask for a history. Nothing a key says is printed: <c>show</c> is a
+    /// record of what exists, not a way to read it.
+    ///
+    /// <para>The curation line is printed whether or not the lane has a head, because a lane can be
+    /// curated with nothing written to it — a Campaign mask over a Global key has no head in that
+    /// Campaign — and its curation revision is what a curation verb's <c>--expected-revision</c>
+    /// names.</para>
+    /// </remarks>
+    private void WriteHead(string label, CovenantHeadDto? head, CovenantCurationStateDto curation)
     {
 
         // An absent lane is reported, not skipped. "There is no Proposed entry" and "I did not look"
         // are different answers, and silence would read as the second.
         dispatcher.WritePayload(head is null
             ? $"{label}: none"
-            : $"{label}: revision {head.LaneRevision}, {head.CompiledByteCost} bytes, {head.Origin}, "
-                + $"updated {head.UpdatedAtUtc:u}");
+            : $"{label}: version {head.VersionId:D}, revision {head.LaneRevision}, {head.Lifecycle}, {head.Origin}, "
+                + $"{head.CompiledByteCost} bytes, hash {head.RenderedHash ?? "none"}, updated {head.UpdatedAtUtc:u}");
+
+        dispatcher.WritePayload(
+            $"  Curation: {(curation.IsPinned ? "pinned" : "not pinned")}, "
+            + $"{(curation.IsMasked ? "masked" : "not masked")}, curation revision {curation.Revision}");
 
     }
 
@@ -845,8 +878,9 @@ public sealed class CovenantCommands(
     /// promised <c>revision</c> and <c>byteCost</c> — close enough to look right and wrong at every
     /// member a caller reads.
     ///
-    /// <para>The authored hashes, provenance counts and creation timestamp are wire detail the CLI
-    /// payload does not carry. What survives is what the reference lists.</para>
+    /// <para>The rendered hash is carried, because it is what <c>correct --target-hash</c> names. The
+    /// authored hash, provenance counts and creation timestamp are wire detail the CLI payload does
+    /// not carry. What survives is what the reference lists.</para>
     /// </remarks>
     private static CovenantEntryPayload Project(CovenantHeadDto head) =>
         new(
@@ -862,7 +896,8 @@ public sealed class CovenantCommands(
             head.CompiledByteCost,
             head.Shadow,
             head.Materialization,
-            head.UpdatedAtUtc);
+            head.UpdatedAtUtc,
+            head.RenderedHash);
 
     /// <summary>
     /// Refuses a write the commit would refuse, before the operator is asked to approve it.

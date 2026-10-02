@@ -610,7 +610,11 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
     public ValueTask DisposeAsync() => _fixture.DisposeAsync();
 
-    private async Task<ICovenantSnapshotReadLease> AcquireReadAsync(
+    /// <summary>
+    /// Acquires the read lease a route takes for one scope: the installation read capability for
+    /// Global, and a scoped read lease for one Campaign.
+    /// </summary>
+    internal async Task<ICovenantSnapshotReadLease> AcquireReadAsync(
         CovenantScope scope,
         Guid? campaignId,
         CancellationToken cancellationToken) =>

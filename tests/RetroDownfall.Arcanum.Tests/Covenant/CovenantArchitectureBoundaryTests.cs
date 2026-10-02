@@ -548,6 +548,48 @@ public sealed class CovenantArchitectureBoundaryTests
             writers);
     }
 
+    /// <summary>
+    /// The key's binding epoch is written once, in <c>CovenantStoreSql.BindingEpoch</c>, and every
+    /// pin and mask read calls it.
+    /// </summary>
+    /// <remarks>
+    /// The rule it spells, that a missing key row reads as binding epoch 0, is what keeps a keyless pin
+    /// bound when the first head creates the key. A copy that drifted from it, by joining the moving
+    /// dependency epoch or dropping the <c>COALESCE</c>, would lapse a pin or a mask on one path and
+    /// keep it on another, and every one of those paths answers the same operator question.
+    /// </remarks>
+    [Fact]
+    public void The_binding_epoch_expression_has_one_source()
+    {
+        const string Owner = "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStoreSql.cs";
+
+        const string Expression = "SELECT IncarnationEpoch FROM covenant_key_epochs";
+
+        const string InlineRule = "COALESCE((SELECT IncarnationEpoch";
+
+        IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
+
+        string[] files = [.. sources
+            .Where(static source => source.Names(Expression))
+            .Select(static source => source.RelativePath)
+            .Order(StringComparer.Ordinal)];
+
+        Assert.Equal([Owner], files);
+
+        ProductionSource owner = sources.Single(static source => source.IsExactOwner(Owner));
+
+        Assert.Equal(1, owner.Occurrences(Expression));
+
+        Assert.Equal(1, sources.Sum(static source => source.Occurrences(InlineRule)));
+
+        // The one occurrence is the definition itself, not a statement that happens to live beside it.
+        MethodDeclarationSyntax definition = Assert.Single(
+            CSharpSyntaxTree.ParseText(owner.Text).GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(),
+            static method => method.Identifier.ValueText == "BindingEpoch");
+
+        Assert.Contains(InlineRule, definition.ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Every_persistence_component_is_registered_exactly_once()
     {

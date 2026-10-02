@@ -211,8 +211,31 @@ public sealed record CovenantSourcesDto(
     bool DigestMatches);
 
 /// <summary>
-/// Both lane heads of one scoped key, plus the key epoch a mutation has to match.
+/// What the operator's curation says about one lane of one scoped key.
 /// </summary>
+/// <remarks>
+/// A lane nobody curated reports <see cref="None"/> rather than an absent value: "never curated" and
+/// "curated back to nothing" are the same answer to every reader, and a curation change against
+/// either expects revision zero or the revision reported here.
+/// </remarks>
+public sealed record CovenantCurationStateDto(bool IsPinned, bool IsMasked, long Revision)
+{
+
+    /// <summary>The state of a lane nobody has curated.</summary>
+    public static CovenantCurationStateDto None { get; } = new(false, false, 0);
+
+}
+
+/// <summary>
+/// Both lane heads of one scoped key, the key epoch a mutation has to match, and each lane's curation
+/// state.
+/// </summary>
+/// <remarks>
+/// Content-free by rule: each head carries its identity, revision, lifecycle, origin, hashes and byte
+/// cost, and never the authored text. Each lane's curation is read at the key's binding epoch in the
+/// same read snapshot as the heads, and a lane can be curated with no head at all — a Campaign mask
+/// over a Global key is curation in a Campaign that holds no entry for it.
+/// </remarks>
 public sealed record CovenantDetailDto(
     CovenantScope Scope,
     Guid? CampaignId,
@@ -222,7 +245,9 @@ public sealed record CovenantDetailDto(
     CovenantHeadDto? Proposed,
     long KeyEpoch,
     CovenantSourcesDto? ConfirmedSources,
-    CovenantSourcesDto? ProposedSources);
+    CovenantSourcesDto? ProposedSources,
+    CovenantCurationStateDto ConfirmedCuration,
+    CovenantCurationStateDto ProposedCuration);
 
 /// <summary>
 /// One rendered section of a diagnostic plan.

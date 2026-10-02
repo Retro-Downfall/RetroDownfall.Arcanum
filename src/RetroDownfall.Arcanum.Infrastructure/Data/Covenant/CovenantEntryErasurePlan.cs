@@ -162,9 +162,6 @@ internal static class CovenantEntryErasurePlan
 
     private const int OutcomeNoChange = 2;
 
-    /// <summary>The key's binding epoch, the one a pin or a mask records, or 0 while it has no epoch row.</summary>
-    private const string BindingEpoch = "COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)";
-
     /// <summary>Every target in the order the plan reports it, before the reclaimed key's epoch row.</summary>
     private static readonly string[] OrderedTargets =
     [
@@ -435,7 +432,7 @@ internal static class CovenantEntryErasurePlan
                       AND NormalizedKey = $key
                       AND LaneCode = 1
                       AND IsMasked = 1
-                      AND KeyEpoch = {BindingEpoch});
+                      AND KeyEpoch = {CovenantStoreSql.BindingEpoch("$key")});
                 """);
 
             _ = command.Parameters.AddWithValue("$campaign", CovenantIdentitySql.Key(campaignId!.Value));
@@ -712,7 +709,7 @@ internal static class CovenantEntryErasurePlan
         await using (SqliteCommand command = Command(
             connection,
             transaction,
-            $"SELECT EXISTS(SELECT 1 FROM covenant_curation_heads WHERE {SubjectScopePredicate(subject)} AND IsPinned = 1 AND KeyEpoch = {BindingEpoch});"))
+            $"SELECT EXISTS(SELECT 1 FROM covenant_curation_heads WHERE {SubjectScopePredicate(subject)} AND IsPinned = 1 AND KeyEpoch = {CovenantStoreSql.BindingEpoch("$key")});"))
         {
             Bind(command, subject, []);
 
@@ -1090,11 +1087,11 @@ internal static class CovenantEntryErasurePlan
 
         // Kept: the Campaign's Confirmed mask at the key's binding epoch, the versions of its chain, and
         // the receipts that produced them.
-        string retainedVersions = $"LaneCode = 1 AND KeyEpoch = {BindingEpoch}";
+        string retainedVersions = $"LaneCode = 1 AND KeyEpoch = {CovenantStoreSql.BindingEpoch("$key")}";
 
         return table switch
         {
-            CurationHeads => $"{scoped} AND NOT (LaneCode = 1 AND KeyEpoch = {BindingEpoch} AND IsMasked = 1)",
+            CurationHeads => $"{scoped} AND NOT (LaneCode = 1 AND KeyEpoch = {CovenantStoreSql.BindingEpoch("$key")} AND IsMasked = 1)",
             CurationVersions => $"{scoped} AND NOT ({retainedVersions})",
             CurationReceipts => $"""
                 {scoped} AND (ResultingVersionId IS NULL OR lower(replace(ResultingVersionId, '-', '')) NOT IN (

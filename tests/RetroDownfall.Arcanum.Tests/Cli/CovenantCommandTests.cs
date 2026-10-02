@@ -727,11 +727,119 @@ public sealed class CovenantCommandTests : IDisposable
             ["POST /api/memory/covenant/detail", "POST /api/memory/covenant/versions"],
             handler.Requests);
 
-        string rendered = string.Join("\n", dispatcher.Payloads);
+        CovenantVersionDto version = RecordingHandler.HistoryVersion;
 
-        Assert.Contains("revision 2", rendered, StringComparison.Ordinal);
+        Assert.Equal(
+            $"  revision 2  version {version.VersionId:D}  Set  Operator  64 bytes  hash {version.RenderedHash}  "
+                + $"mutation {version.MutationId}  {version.CreatedAtUtc:u}",
+            Assert.Single(dispatcher.Payloads, static line => line.StartsWith("  revision ", StringComparison.Ordinal)));
+    }
 
-        Assert.Contains("Operator", rendered, StringComparison.Ordinal);
+    /// <summary>
+    /// History names each version by identity and rendered hash, the two things <c>correct</c> asks for.
+    /// </summary>
+    [Fact]
+    public async Task History_prints_each_versions_identity_and_hash()
+    {
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", campaignId: null, history: true, Token));
+
+        CovenantVersionDto v = RecordingHandler.HistoryVersion;
+
+        string line = Assert.Single(dispatcher.Payloads, static payload => payload.StartsWith("  revision ", StringComparison.Ordinal));
+
+        Assert.Contains($"version {v.VersionId:D}", line, StringComparison.Ordinal);
+
+        Assert.Contains($"hash {v.RenderedHash}", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Plain <c>show</c> prints each lane's exact head identity and its curation, and nothing a key
+    /// says.
+    /// </summary>
+    /// <remarks>
+    /// The version identity and rendered hash are what <c>correct</c> requires, so an operator no longer
+    /// needs <c>--history</c> to name the version in front of them. The curation line is printed for a
+    /// lane with no head too, because a lane can be curated with nothing written to it.
+    /// </remarks>
+    [Fact]
+    public async Task Show_prints_version_lifecycle_hash_and_curation()
+    {
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", campaignId: null, history: false, Token));
+
+        CovenantHeadDto head = RecordingHandler.DetailHead;
+
+        string output = string.Join("\n", dispatcher.Payloads);
+
+        Assert.Contains(
+            $"Confirmed: version {head.VersionId:D}, revision {head.LaneRevision}, {head.Lifecycle}, {head.Origin}, "
+                + $"{head.CompiledByteCost} bytes, hash {head.RenderedHash}, updated {head.UpdatedAtUtc:u}",
+            output,
+            StringComparison.Ordinal);
+
+        Assert.Contains("  Curation: pinned, not masked, curation revision 2", output, StringComparison.Ordinal);
+
+        Assert.Contains("Proposed: none", output, StringComparison.Ordinal);
+
+        Assert.Contains("  Curation: not pinned, not masked, curation revision 0", output, StringComparison.Ordinal);
+
+        // Each curation line sits under its own lane.
+        Assert.Equal(
+            [
+                "  Curation: pinned, not masked, curation revision 2",
+                "Proposed: none",
+                "  Curation: not pinned, not masked, curation revision 0",
+            ],
+            dispatcher.Payloads.Skip(1));
+    }
+
+    /// <summary>
+    /// A key with no entry in the asked scope still reports the curation that scope holds for it.
+    /// </summary>
+    /// <remarks>
+    /// A Campaign mask over a Global key is curation in a Campaign that holds no entry for that key, so
+    /// stopping at "no entry" hid the one fact the operator came to check. A key nobody curated still
+    /// answers with the single line it always did.
+    /// </remarks>
+    [Fact]
+    public async Task Show_reports_the_curation_of_a_key_with_no_entry_in_that_scope()
+    {
+        RecordingHandler masked = new()
+        {
+            DetailWithoutEntry = true,
+            EntrylessCuration = new CovenantCurationStateDto(false, true, 1),
+        };
+
+        CovenantCommands commands = Commands(masked, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", MaskCampaignId, history: true, Token));
+
+        Assert.Equal(["POST /api/memory/covenant/detail"], masked.Requests);
+
+        Assert.Equal(
+            [
+                "No Covenant entry under 'preference.builds' in that scope.",
+                "Confirmed: none",
+                "  Curation: not pinned, masked, curation revision 1",
+                "Proposed: none",
+                "  Curation: not pinned, not masked, curation revision 0",
+            ],
+            dispatcher.Payloads);
+
+        RecordingHandler uncurated = new() { DetailWithoutEntry = true };
+
+        CovenantCommands plain = Commands(uncurated, confirm: true, out RecordingDispatcher plainDispatcher);
+
+        Assert.Equal(0, await plain.Show("preference.builds", MaskCampaignId, history: false, Token));
+
+        Assert.Equal(["No Covenant entry under 'preference.builds' in that scope."], plainDispatcher.Payloads);
     }
 
     /// <summary>
@@ -907,6 +1015,18 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(root.TryGetProperty("history", out JsonElement history));
 
         Assert.Equal(1, history.GetArrayLength());
+
+        Assert.Equal(RecordingHandler.DetailHead.RenderedHash, confirmed.GetProperty("renderedHash").GetString());
+
+        Assert.True(root.TryGetProperty("confirmedCuration", out JsonElement confirmedCuration));
+
+        Assert.True(confirmedCuration.GetProperty("isPinned").GetBoolean());
+
+        Assert.Equal(2, confirmedCuration.GetProperty("revision").GetInt64());
+
+        Assert.True(root.TryGetProperty("proposedCuration", out JsonElement proposedCuration));
+
+        Assert.False(proposedCuration.GetProperty("isPinned").GetBoolean());
     }
 
     /// <summary>
@@ -1379,6 +1499,12 @@ public sealed class CovenantCommandTests : IDisposable
 
         internal bool EmptyList { get; init; }
 
+        /// <summary>Whether the stubbed detail is a Campaign key with no entry, carrying only curation.</summary>
+        internal bool DetailWithoutEntry { get; init; }
+
+        /// <summary>The Confirmed curation the entryless detail reports.</summary>
+        internal CovenantCurationStateDto EntrylessCuration { get; init; } = CovenantCurationStateDto.None;
+
         /// <summary>The revision the stubbed head sits at, as the preflight would report it.</summary>
         internal long HeadRevision { get; init; }
 
@@ -1479,47 +1605,72 @@ public sealed class CovenantCommandTests : IDisposable
                 CovenantEffectiveShadowState.NotEvaluated,
                 CovenantEffectiveMaterialization.NotEvaluated);
 
-        private static string Detail() =>
+        private string Detail() =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantDetailDto>.FromResult(
-                    Result<CovenantDetailDto>.Success(new CovenantDetailDto(
-                        CovenantScope.Global,
-                        null,
-                        "preference.builds",
-                        DetailEntryId,
-                        Head("preference.builds"),
-                        null,
-                        1,
-                        null,
-                        null)),
+                    Result<CovenantDetailDto>.Success(DetailWithoutEntry
+                        ? new CovenantDetailDto(
+                            CovenantScope.Campaign,
+                            MaskCampaignId,
+                            "preference.builds",
+                            null,
+                            null,
+                            null,
+                            1,
+                            null,
+                            null,
+                            ConfirmedCuration: EntrylessCuration,
+                            ProposedCuration: CovenantCurationStateDto.None)
+                        : new CovenantDetailDto(
+                            CovenantScope.Global,
+                            null,
+                            "preference.builds",
+                            DetailEntryId,
+                            DetailHead,
+                            null,
+                            1,
+                            null,
+                            null,
+                            ConfirmedCuration: new CovenantCurationStateDto(true, false, 2),
+                            ProposedCuration: CovenantCurationStateDto.None)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantDetailDto);
 
         internal static readonly Guid DetailEntryId = new("44444444-4444-4444-8444-444444444444");
 
+        /// <summary>The Confirmed head the stubbed detail reports, fixed so a rendering can be compared to it.</summary>
+        internal static readonly CovenantHeadDto DetailHead = Head("preference.builds") with
+        {
+            EntryId = DetailEntryId,
+            VersionId = new Guid("66666666-6666-4666-8666-666666666666"),
+            RenderedHash = RenderedHash,
+            UpdatedAtUtc = new DateTimeOffset(2026, 9, 1, 12, 30, 15, TimeSpan.Zero),
+        };
+
+        /// <summary>The one version the stubbed history page reports.</summary>
+        internal static readonly CovenantVersionDto HistoryVersion = new(
+            new Guid("77777777-7777-4777-8777-777777777777"),
+            DetailEntryId,
+            CovenantLane.Confirmed,
+            2,
+            CovenantOperation.Set,
+            CovenantOrigin.Operator,
+            "99",
+            "cc33dd44ee55ff66",
+            64,
+            1,
+            1,
+            null,
+            new Guid("88888888-8888-4888-8888-888888888888"),
+            0,
+            "bb",
+            new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero));
+
         private static string Versions() =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantVersionPageDto>.FromResult(
                     Result<CovenantVersionPageDto>.Success(new CovenantVersionPageDto(
-                        [
-                            new CovenantVersionDto(
-                                Guid.NewGuid(),
-                                DetailEntryId,
-                                CovenantLane.Confirmed,
-                                2,
-                                CovenantOperation.Set,
-                                CovenantOrigin.Operator,
-                                "99",
-                                "aa",
-                                64,
-                                1,
-                                1,
-                                null,
-                                Guid.NewGuid(),
-                                0,
-                                "bb",
-                                DateTimeOffset.UtcNow),
-                        ],
+                        [HistoryVersion],
                         NextCursor: null,
                         "cc",
                         Truncated: false)),

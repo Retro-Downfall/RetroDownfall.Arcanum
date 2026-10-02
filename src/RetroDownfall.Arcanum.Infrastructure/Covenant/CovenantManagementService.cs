@@ -271,7 +271,9 @@ internal sealed class CovenantManagementService(
             // sources route reports their leaves. Folding an unbounded read into a lookup would make
             // one key's detail cost depend on how much the agent attached to it.
             ConfirmedSources: null,
-            ProposedSources: null);
+            ProposedSources: null,
+            detail.Value.ConfirmedCuration,
+            detail.Value.ProposedCuration);
 
     }
 

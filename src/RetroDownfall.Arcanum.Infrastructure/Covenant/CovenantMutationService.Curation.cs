@@ -355,7 +355,7 @@ internal sealed partial class CovenantMutationService
 
         await using SqliteCommand command = connection.CreateCommand();
 
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT r.RequestIdempotencyDigest, r.ResponseReceiptDigest, r.OutcomeCode,
                    r.ResultingVersionId, r.ResultingRevision,
                    COALESCE(h.IsPinned, 0), COALESCE(h.IsMasked, 0),
@@ -364,7 +364,7 @@ internal sealed partial class CovenantMutationService
             LEFT JOIN covenant_curation_heads h
                 ON h.CampaignId IS r.CampaignId AND h.NormalizedKey = r.NormalizedKey
                    AND h.LaneCode = r.LaneCode
-                   AND h.KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = r.NormalizedKey), 0)
+                   AND h.KeyEpoch = {CovenantStoreSql.BindingEpoch("r.NormalizedKey")}
             WHERE r.MutationId = $mutation;
             """;
 

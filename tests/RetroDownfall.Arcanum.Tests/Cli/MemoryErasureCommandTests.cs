@@ -1112,7 +1112,9 @@ public sealed class MemoryErasureCommandTests
             Head(ProposedVersion, CovenantLane.Proposed, 1),
             KeyEpoch: 1,
             ConfirmedSources: null,
-            ProposedSources: null);
+            ProposedSources: null,
+            ConfirmedCuration: CovenantCurationStateDto.None,
+            ProposedCuration: CovenantCurationStateDto.None);
 
         internal List<string> Events { get; } = [];
 

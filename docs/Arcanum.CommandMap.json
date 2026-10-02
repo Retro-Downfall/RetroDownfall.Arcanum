@@ -2836,7 +2836,7 @@
                 {
                   "name": "--target-version",
                   "aliases": [],
-                  "description": "The version identity being corrected, as \u0060show --history\u0060 reports it.",
+                  "description": "The version identity being corrected, as \u0060show\u0060 reports it.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -2845,7 +2845,7 @@
                 {
                   "name": "--target-hash",
                   "aliases": [],
-                  "description": "The compiled hash of the version being corrected, as \u0060show\u0060 reports it.",
+                  "description": "The rendered hash of the version being corrected, as \u0060show\u0060 reports it.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3203,7 +3203,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3258,7 +3258,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3313,7 +3313,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,
@@ -3368,7 +3368,7 @@
                 {
                   "name": "--expected-revision",
                   "aliases": [],
-                  "description": "The curation revision this change expects to replace. Zero is an uncurated subject.",
+                  "description": "The curation revision \u0060show\u0060 reports for this lane. Zero is an uncurated subject.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,

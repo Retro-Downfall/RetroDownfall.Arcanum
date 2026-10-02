@@ -443,6 +443,32 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
             }
         }
 
+        // Read inside the same transaction, before it ends, so the curation describes the snapshot the
+        // heads came from. A lane with no row at the binding epoch reads as never curated: a row at any
+        // other epoch was recorded against a key this installation no longer has.
+        CovenantCurationStateDto confirmedCuration = CovenantCurationStateDto.None;
+
+        CovenantCurationStateDto proposedCuration = CovenantCurationStateDto.None;
+
+        command.CommandText = CovenantStoreSql.DetailCuration(query.Scope.Kind == CovenantScope.Campaign);
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                CovenantCurationStateDto state = new(reader.GetInt32(1) == 1, reader.GetInt32(2) == 1, reader.GetInt64(3));
+
+                if ((CovenantLane)reader.GetInt32(0) == CovenantLane.Confirmed)
+                {
+                    confirmedCuration = state;
+                }
+                else
+                {
+                    proposedCuration = state;
+                }
+            }
+        }
+
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return new CovenantDetail(
@@ -453,7 +479,9 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
             proposed,
             keyEpoch,
             datasetGeneration,
-            canonicalSequence);
+            canonicalSequence,
+            confirmedCuration,
+            proposedCuration);
     }
 
     public async ValueTask<Result<CovenantVersionPage>> ReadVersionPageAsync(

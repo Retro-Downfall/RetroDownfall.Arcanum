@@ -11,9 +11,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// decoration: a plan test that reconstructed similar SQL of its own would keep passing after the
 /// store's real query lost an index.
 ///
-/// <para>Nothing here interpolates a caller value. The only interpolation is a choice between fixed
+/// <para>Nothing here interpolates a caller value. The interpolations are a choice between fixed
 /// literal predicates, because a partial index is usable only when the query's Campaign predicate
-/// matches the index's own <c>WHERE</c> clause; a single <c>OR</c> spanning both would force a scan.
+/// matches the index's own <c>WHERE</c> clause and a single <c>OR</c> spanning both would force a scan,
+/// and <see cref="BindingEpoch"/>, which every caller hands a fixed parameter name or column.
 /// </para>
 /// </remarks>
 internal static class CovenantStoreSql
@@ -71,6 +72,21 @@ internal static class CovenantStoreSql
         """;
 
     /// <summary>
+    /// The key's binding epoch, the epoch a pin or a mask is recorded under, as one scalar expression.
+    /// </summary>
+    /// <remarks>
+    /// The one place the rule is written. The binding epoch is the key row's
+    /// <c>IncarnationEpoch</c>, and a key with no row reads as 0, which is what keeps a pin recorded
+    /// before the key's first head bound once that head creates the row. Every pin and mask read joins
+    /// through this expression, so no path can lapse a pin or a mask that another path still honours.
+    ///
+    /// <para><paramref name="normalizedKey"/> is SQL, never a value: the <c>$key</c> parameter, or a
+    /// column such as <c>h.NormalizedKey</c> when one statement reads many keys.</para>
+    /// </remarks>
+    internal static string BindingEpoch(string normalizedKey) =>
+        $"COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = {normalizedKey}), 0)";
+
+    /// <summary>
     /// One live retirement target: its identity, the fragment a Ward shows, and the two facts the
     /// broader-scope sentence turns on.
     /// </summary>
@@ -84,10 +100,10 @@ internal static class CovenantStoreSql
     /// joined on the binding epoch, which is what a curation head records and what no ordinary write
     /// to the key moves.</para>
     /// </remarks>
-    internal static string RetirementTarget() => """
+    internal static string RetirementTarget() => $"""
         WITH epoch(Dependency, Binding) AS (
             SELECT COALESCE((SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0),
-                   COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+                   {BindingEpoch("$key")}
         )
         SELECT h.EntryId, h.CurrentVersionId, h.CurrentLaneRevision, h.CurrentOperationCode,
                v.CompiledContent, v.RenderedHash,
@@ -124,13 +140,13 @@ internal static class CovenantStoreSql
     /// binding epoch and not the dependency epoch, because a mask is policy about the key: correcting
     /// or retiring the Global entry is an ordinary write, and the mask has to outlive it.</para>
     /// </remarks>
-    internal static string CampaignMasks() => """
+    internal static string CampaignMasks() => $"""
         SELECT h.NormalizedKey
         FROM covenant_curation_heads h
         WHERE h.CampaignId = $campaign
           AND h.IsMasked = 1
           AND h.LaneCode = 1
-          AND h.KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = h.NormalizedKey), 0);
+          AND h.KeyEpoch = {BindingEpoch("h.NormalizedKey")};
         """;
 
     /// <summary>
@@ -156,7 +172,7 @@ internal static class CovenantStoreSql
         LEFT JOIN covenant_curation_heads c
             ON {(campaignScoped ? "c.CampaignId = $campaign" : "c.CampaignId IS NULL")}
                AND c.NormalizedKey = $key AND c.LaneCode = $lane
-               AND c.KeyEpoch = COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+               AND c.KeyEpoch = {BindingEpoch("$key")}
         LIMIT 1;
         """;
 
@@ -345,6 +361,24 @@ internal static class CovenantStoreSql
         WHERE st.StateKey = 1;
         """;
 
+    /// <summary>
+    /// Each curated lane of one scoped key at the key's binding epoch, for the detail read.
+    /// </summary>
+    /// <remarks>
+    /// Issued inside the detail's own read transaction, after <see cref="Detail"/>, so the heads and
+    /// the curation describe one snapshot. A lane nobody curated has no row and is reported as
+    /// <see cref="CovenantCurationStateDto.None"/>, the same answer <see cref="CurationEffectFacts"/>
+    /// gives a preflight. The join is the binding epoch rather than the dependency epoch the detail
+    /// reports, because that is the epoch a curation head is recorded under and no ordinary write to
+    /// the key moves it.
+    /// </remarks>
+    internal static string DetailCuration(bool campaignScoped) => $"""
+        SELECT ch.LaneCode, ch.IsPinned, ch.IsMasked, ch.CurrentRevision
+        FROM covenant_curation_heads ch
+        WHERE ch.CampaignId IS {(campaignScoped ? "$campaign" : "NULL")} AND ch.NormalizedKey = $key
+          AND ch.KeyEpoch = {BindingEpoch("$key")};
+        """;
+
     internal static string VersionPage(bool continued) => $"""
         SELECT st.DatasetGeneration, st.CanonicalSearchSequence, page.*
         FROM covenant_state st
@@ -450,7 +484,7 @@ internal static class CovenantStoreSql
         return $"""
             WITH epoch(Dependency, Binding) AS (
                 SELECT COALESCE((SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0),
-                       COALESCE((SELECT IncarnationEpoch FROM covenant_key_epochs WHERE NormalizedKey = $key), 0)
+                       {BindingEpoch("$key")}
             )
             SELECT st.DatasetGeneration,
                    st.KeyReclamationEpoch,
