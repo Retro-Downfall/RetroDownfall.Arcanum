@@ -75,10 +75,13 @@ internal static class CovenantStoreSql
     /// The key's binding epoch, the epoch a pin or a mask is recorded under, as one scalar expression.
     /// </summary>
     /// <remarks>
-    /// The one place the rule is written. The binding epoch is the key row's
-    /// <c>IncarnationEpoch</c>, and a key with no row reads as 0, which is what keeps a pin recorded
-    /// before the key's first head bound once that head creates the row. Every pin and mask read joins
-    /// through this expression, so no path can lapse a pin or a mask that another path still honours.
+    /// The one join expression for the rule. The binding epoch is the key row's <c>IncarnationEpoch</c>,
+    /// and a key with no row reads as 0, which is what keeps a pin recorded before the key's first head
+    /// bound once that head creates the row. Every pin and mask read joins through this expression, so
+    /// no path can lapse a pin or a mask that another path still honours. The one other place the
+    /// column is read is <see cref="CovenantKeyEpochs.ReadAsync"/>, which reads both of a key's epochs
+    /// into C# for the curation writers to record under, applying the same missing-row rule with an
+    /// aggregate.
     ///
     /// <para><paramref name="normalizedKey"/> is SQL, never a value: the <c>$key</c> parameter, or a
     /// column such as <c>h.NormalizedKey</c> when one statement reads many keys.</para>
@@ -370,12 +373,16 @@ internal static class CovenantStoreSql
     /// <see cref="CovenantCurationStateDto.None"/>, the same answer <see cref="CurationEffectFacts"/>
     /// gives a preflight. The join is the binding epoch rather than the dependency epoch the detail
     /// reports, because that is the epoch a curation head is recorded under and no ordinary write to
-    /// the key moves it.
+    /// the key moves it; an inert head an upgrade left under an earlier epoch is not read.
+    ///
+    /// <para>The Campaign predicate is an equality, because the Campaign subject index is partial on a
+    /// non-null Campaign and only an equality implies that. An <c>IS</c> comparison would walk every
+    /// curation head the Campaign holds, and detail runs for every search hit.</para>
     /// </remarks>
     internal static string DetailCuration(bool campaignScoped) => $"""
         SELECT ch.LaneCode, ch.IsPinned, ch.IsMasked, ch.CurrentRevision
         FROM covenant_curation_heads ch
-        WHERE ch.CampaignId IS {(campaignScoped ? "$campaign" : "NULL")} AND ch.NormalizedKey = $key
+        WHERE {(campaignScoped ? "ch.CampaignId = $campaign" : "ch.CampaignId IS NULL")} AND ch.NormalizedKey = $key
           AND ch.KeyEpoch = {BindingEpoch("$key")};
         """;
 

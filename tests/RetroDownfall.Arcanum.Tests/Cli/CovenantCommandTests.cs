@@ -6,6 +6,8 @@ using System.Text;
 
 using System.Text.Json;
 
+using System.Text.Json.Nodes;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -470,6 +472,11 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.Equal(
             nameof(CovenantPageTruncation.FallbackCandidateCapReached),
             document.RootElement.GetProperty("truncationReason").GetString());
+
+        // A search hit is the same entry shape as a listed one, rendered hash included.
+        Assert.Equal(
+            "88",
+            Assert.Single(document.RootElement.GetProperty("entries").EnumerateArray()).GetProperty("renderedHash").GetString());
     }
 
     [Fact]
@@ -843,6 +850,41 @@ public sealed class CovenantCommandTests : IDisposable
     }
 
     /// <summary>
+    /// A host older than the curation members leaves them out, and <c>show</c> reads that as uncurated
+    /// rather than failing.
+    /// </summary>
+    /// <remarks>
+    /// The source-generated reader leaves an absent constructor member null, so a CLI upgraded while an
+    /// older <c>serve</c> process is still running would otherwise throw on every key that has an
+    /// entry.
+    /// </remarks>
+    [Fact]
+    public async Task Show_reads_a_detail_without_curation_as_uncurated()
+    {
+        RecordingHandler handler = new() { OmitCuration = true };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        Assert.Equal(0, await commands.Show("preference.builds", campaignId: null, history: false, Token));
+
+        Assert.Equal(
+            [
+                "  Curation: not pinned, not masked, curation revision 0",
+                "Proposed: none",
+                "  Curation: not pinned, not masked, curation revision 0",
+            ],
+            dispatcher.Payloads.Skip(1));
+
+        RecordingHandler entryless = new() { OmitCuration = true, DetailWithoutEntry = true };
+
+        CovenantCommands plain = Commands(entryless, confirm: true, out RecordingDispatcher plainDispatcher);
+
+        Assert.Equal(0, await plain.Show("preference.builds", MaskCampaignId, history: false, Token));
+
+        Assert.Equal(["No Covenant entry under 'preference.builds' in that scope."], plainDispatcher.Payloads);
+    }
+
+    /// <summary>
     /// Without <c>--history</c> the version route is not touched at all.
     /// </summary>
     /// <remarks>
@@ -973,6 +1015,11 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(entries[0].TryGetProperty("revision", out _));
 
         Assert.True(entries[0].TryGetProperty("byteCost", out _));
+
+        // Every listed entry carries the rendered hash its head reported, the value correct names.
+        Assert.All(
+            entries.EnumerateArray(),
+            static entry => Assert.Equal("88", entry.GetProperty("renderedHash").GetString()));
     }
 
     /// <summary>
@@ -1505,6 +1552,9 @@ public sealed class CovenantCommandTests : IDisposable
         /// <summary>The Confirmed curation the entryless detail reports.</summary>
         internal CovenantCurationStateDto EntrylessCuration { get; init; } = CovenantCurationStateDto.None;
 
+        /// <summary>Whether the stubbed detail omits both curation members, as a host older than them does.</summary>
+        internal bool OmitCuration { get; init; }
+
         /// <summary>The revision the stubbed head sits at, as the preflight would report it.</summary>
         internal long HeadRevision { get; init; }
 
@@ -1571,7 +1621,7 @@ public sealed class CovenantCommandTests : IDisposable
             }
             else if (path.EndsWith("detail", StringComparison.Ordinal))
             {
-                body = Detail();
+                body = OmitCuration ? WithoutCuration(Detail()) : Detail();
             }
             else
             {
@@ -1635,6 +1685,21 @@ public sealed class CovenantCommandTests : IDisposable
                             ProposedCuration: CovenantCurationStateDto.None)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantDetailDto);
+
+        /// <summary>The same detail envelope with the two curation members removed, as an older host writes it.</summary>
+        private static string WithoutCuration(string envelope)
+        {
+            JsonObject root = JsonNode.Parse(envelope)!.AsObject();
+
+            JsonObject data = root["data"]!.AsObject();
+
+            if (!data.Remove("confirmedCuration") || !data.Remove("proposedCuration"))
+            {
+                throw new InvalidOperationException("The stubbed detail no longer carries the curation members it removes.");
+            }
+
+            return root.ToJsonString();
+        }
 
         internal static readonly Guid DetailEntryId = new("44444444-4444-4444-8444-444444444444");
 

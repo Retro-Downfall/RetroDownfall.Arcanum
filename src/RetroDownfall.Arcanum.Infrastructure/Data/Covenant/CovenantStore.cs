@@ -445,7 +445,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
 
         // Read inside the same transaction, before it ends, so the curation describes the snapshot the
         // heads came from. A lane with no row at the binding epoch reads as never curated: a row at any
-        // other epoch was recorded against a key this installation no longer has.
+        // other epoch is inert curation an upgrade left under an earlier epoch of the key.
         CovenantCurationStateDto confirmedCuration = CovenantCurationStateDto.None;
 
         CovenantCurationStateDto proposedCuration = CovenantCurationStateDto.None;

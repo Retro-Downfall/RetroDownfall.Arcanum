@@ -626,6 +626,13 @@ public sealed class CovenantCommands(
 
         }
 
+        // A host older than the curation members leaves them out, and the source-generated reader
+        // leaves an absent member null. The human rendering reads that as uncurated rather than failing
+        // on every key; the JSON payload passes the absence through, because its members are optional.
+        CovenantCurationStateDto confirmedCuration = detail.Value.ConfirmedCuration ?? CovenantCurationStateDto.None;
+
+        CovenantCurationStateDto proposedCuration = detail.Value.ProposedCuration ?? CovenantCurationStateDto.None;
+
         if (invocationContext.Options.Json)
         {
 
@@ -679,13 +686,13 @@ public sealed class CovenantCommands(
             // A scope can curate a key it holds no entry for: a Campaign mask over a Global key is
             // exactly that, and stopping at "no entry" would hide the one fact the operator came to
             // check. A key nobody curated here still answers with the one line.
-            if (detail.Value.ConfirmedCuration != CovenantCurationStateDto.None
-                || detail.Value.ProposedCuration != CovenantCurationStateDto.None)
+            if (confirmedCuration != CovenantCurationStateDto.None
+                || proposedCuration != CovenantCurationStateDto.None)
             {
 
-                WriteHead("Confirmed", null, detail.Value.ConfirmedCuration);
+                WriteHead("Confirmed", null, confirmedCuration);
 
-                WriteHead("Proposed", null, detail.Value.ProposedCuration);
+                WriteHead("Proposed", null, proposedCuration);
 
             }
 
@@ -693,9 +700,9 @@ public sealed class CovenantCommands(
 
         }
 
-        WriteHead("Confirmed", detail.Value.Confirmed, detail.Value.ConfirmedCuration);
+        WriteHead("Confirmed", detail.Value.Confirmed, confirmedCuration);
 
-        WriteHead("Proposed", detail.Value.Proposed, detail.Value.ProposedCuration);
+        WriteHead("Proposed", detail.Value.Proposed, proposedCuration);
 
         if (!history)
         {

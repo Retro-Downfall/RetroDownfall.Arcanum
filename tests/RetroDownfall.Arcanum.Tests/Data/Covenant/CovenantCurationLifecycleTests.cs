@@ -267,6 +267,92 @@ public sealed class CovenantCurationLifecycleTests
     }
 
     /// <summary>
+    /// A curation head recorded against an earlier binding epoch of the key is inert, and detail
+    /// reports the lane as uncurated until the operator curates the key the installation has now.
+    /// </summary>
+    /// <remarks>
+    /// An upgraded installation can hold such a head. Before canonical version 6, curation was
+    /// recorded under the key's moving epoch, and the upgrade binds each key at the epoch it had then,
+    /// so a head recorded under any earlier epoch stays where it is and applies to nothing. A detail
+    /// that reported it would tell the operator the agent may not write a lane it may, and name a
+    /// curation revision the next change is refused for, because the curation preflight reads the
+    /// binding epoch and finds revision zero.
+    /// </remarks>
+    [Fact]
+    public async Task Detail_reports_a_head_at_a_stale_binding_epoch_as_uncurated()
+    {
+
+        const string StaleKey = "detail.stale";
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.AddCampaignAsync(CampaignOne, Token);
+
+        await harness.SeedUpgradedKeyAsync(StaleKey, epoch: 5, Token);
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, StaleKey, "Build from the root.", Token);
+
+        await ExecuteAsync(harness, StalePinSql(CampaignOne, StaleKey, staleEpoch: 2));
+
+        Assert.Equal(
+            1,
+            await ScalarAsync(harness, $"SELECT COUNT(*) FROM covenant_curation_heads WHERE NormalizedKey = '{StaleKey}' AND KeyEpoch = 2 AND IsPinned = 1;"));
+
+        CovenantDetail stale = await ReadDetailAsync(harness, CovenantScope.Campaign, CampaignOne, StaleKey);
+
+        Assert.NotNull(stale.ConfirmedHead);
+
+        Assert.Equal(CovenantCurationStateDto.None, stale.ConfirmedCuration);
+
+        Assert.Equal(CovenantCurationStateDto.None, stale.ProposedCuration);
+
+        // The revision detail reported is the one the production preflight expects.
+        Assert.True((await harness.CurateAsync(CovenantCurationKind.Pin, CovenantScope.Campaign, CampaignOne, StaleKey, Token)).IsSuccess);
+
+        CovenantDetail live = await ReadDetailAsync(harness, CovenantScope.Campaign, CampaignOne, StaleKey);
+
+        Assert.Equal(new CovenantCurationStateDto(true, false, 1), live.ConfirmedCuration);
+
+    }
+
+    /// <summary>
+    /// A lane curated back to nothing keeps its curation revision, which the next change must name.
+    /// </summary>
+    /// <remarks>
+    /// Only a lane with no curation row reads as <see cref="CovenantCurationStateDto.None"/>. An unpin
+    /// appends a version, so the lane reads unpinned and unmasked at revision 2, and a curation change
+    /// that expected zero would be refused.
+    /// </remarks>
+    [Fact]
+    public async Task Detail_reports_a_lane_curated_back_to_nothing_at_its_curation_revision()
+    {
+
+        const string UnpinnedKey = "detail.unpinned";
+
+        await using CovenantServiceHarness harness = await CovenantServiceHarness.StartAsync(Token);
+
+        await harness.SetAsync(CovenantScope.Global, null, UnpinnedKey, "Build from the root.", Token);
+
+        Assert.True((await harness.CurateAsync(CovenantCurationKind.Pin, CovenantScope.Global, null, UnpinnedKey, Token)).IsSuccess);
+
+        Assert.True(
+            (await harness.CurateAsync(
+                CovenantCurationKind.Unpin,
+                CovenantScope.Global,
+                null,
+                UnpinnedKey,
+                Token,
+                expectedRevision: 1)).IsSuccess);
+
+        CovenantDetail detail = await ReadDetailAsync(harness, CovenantScope.Global, null, UnpinnedKey);
+
+        Assert.Equal(new CovenantCurationStateDto(false, false, 2), detail.ConfirmedCuration);
+
+        Assert.NotEqual(CovenantCurationStateDto.None, detail.ConfirmedCuration);
+
+    }
+
+    /// <summary>
     /// The three tables are protected Covenant content, so every surface that counts protected state
     /// counts them. The inspector's list is the canonical content list itself, which the retention
     /// inventory also reads directly.
@@ -305,6 +391,29 @@ public sealed class CovenantCurationLifecycleTests
         return detail.Value;
 
     }
+
+    /// <summary>
+    /// One Campaign Confirmed pin, its version and its head, recorded under an earlier epoch of the key:
+    /// the inert curation an upgraded installation keeps.
+    /// </summary>
+    /// <remarks>
+    /// Raw, because no version 6 writer records curation at any epoch but the key's binding epoch.
+    /// </remarks>
+    private static string StalePinSql(Guid campaignId, string key, long staleEpoch) =>
+        $"""
+        INSERT INTO covenant_curation_versions (
+            CurationVersionId, ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch, CurationKindCode,
+            Revision, PredecessorVersionId, MutationId, RequestIdempotencyDigest, AuthorizationDigest,
+            FinalMutationDigest, CreatedAtUtc)
+        VALUES (
+            'stale-pin', 2, '{campaignId:D}', '{key}', 1, {staleEpoch}, 1,
+            1, NULL, 'stale-pin-mutation', randomblob(32), randomblob(32),
+            randomblob(32), '2026-01-01T00:00:00.0000000Z');
+        INSERT INTO covenant_curation_heads (
+            ScopeCode, CampaignId, NormalizedKey, LaneCode, KeyEpoch, IsPinned, IsMasked, CurrentVersionId,
+            CurrentRevision, UpdatedAtUtc)
+        VALUES (2, '{campaignId:D}', '{key}', 1, {staleEpoch}, 1, 0, 'stale-pin', 1, '2026-01-01T00:00:00.0000000Z');
+        """;
 
     private static async Task<long> ScalarAsync(CovenantServiceHarness harness, string sql)
     {

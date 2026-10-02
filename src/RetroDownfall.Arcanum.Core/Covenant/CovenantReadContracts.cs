@@ -214,9 +214,9 @@ public sealed record CovenantSourcesDto(
 /// What the operator's curation says about one lane of one scoped key.
 /// </summary>
 /// <remarks>
-/// A lane nobody curated reports <see cref="None"/> rather than an absent value: "never curated" and
-/// "curated back to nothing" are the same answer to every reader, and a curation change against
-/// either expects revision zero or the revision reported here.
+/// A lane with no curation row reports <see cref="None"/>, revision zero, rather than an absent value.
+/// A lane curated back to nothing is not <see cref="None"/>: an unpin or an unmask appends a version,
+/// so the lane keeps its revision, and the next curation change must name the revision reported here.
 /// </remarks>
 public sealed record CovenantCurationStateDto(bool IsPinned, bool IsMasked, long Revision)
 {
