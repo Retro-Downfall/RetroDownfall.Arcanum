@@ -80,4 +80,15 @@ internal sealed class BackupRestoreServiceOptions
     /// </remarks>
     internal Action<string>? BeforeStagedEntryComposeForTests { get; init; }
 
+    /// <summary>
+    /// Invoked with true once the handle that reads this installation's erasure evidence is open, and
+    /// with false once it is closed again.
+    /// </summary>
+    /// <remarks>
+    /// The seam that lets a suite prove the erasure key is never read while that handle, and the
+    /// snapshot it holds, is open: a keychain read can sit behind a prompt for as long as the operator
+    /// leaves it there, and none runs inside a SQLite transaction.
+    /// </remarks>
+    internal Action<bool>? DestinationEvidenceHandleForTests { get; init; }
+
 }

@@ -5,7 +5,9 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -44,6 +46,15 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
     private const string NewProfileRootWarning =
         "This installation's erasure evidence is not applied to a new profile root; items erased here can reappear there.";
+
+    private const string NewProfileRootUndeterminedWarning =
+        "Whether this installation holds an erasure key could not be determined; its erasure evidence is not applied "
+        + "to a new profile root, so items erased here can reappear there.";
+
+    /// <summary>An item in the key's slot that is not canonical key material.</summary>
+    private const string NotAKey = "not-a-key";
+
+    private const string Keeper = "Vault Keeper";
 
     private static CancellationToken Token => CancellationToken.None;
 
@@ -107,8 +118,15 @@ public sealed class BackupRestoreErasureEvidenceReadTests
         Assert.Equal(new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.Refused, 1, 0, 0, 1), plan.DestinationErasureEvidence);
     }
 
-    [SkippableFact]
-    public async Task An_erased_destination_with_an_unavailable_keychain_refuses_as_key_unavailable()
+    /// <summary>
+    /// A keychain that cannot answer, or whose key slot holds something that is not a key, cannot prove
+    /// rows the Grimoire holds: both refuse as unavailable, never as "nothing was erased".
+    /// </summary>
+    /// <param name="keychain">The credential store fails every call, or the key's item is not a key.</param>
+    [SkippableTheory]
+    [InlineData("unavailable")]
+    [InlineData("malformed")]
+    public async Task An_erased_destination_with_an_unavailable_keychain_refuses_as_key_unavailable(string keychain)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -116,16 +134,43 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
         string archive = await ArchiveThenEraseAsync(harness);
 
-        CountingOsCredentialStore keychain = new(harness.Credentials)
-        {
-            FailWith = OsCredentialStoreStatus.Unavailable,
-        };
-
-        BackupRestorePlan plan = await PlanAsync(harness, archive, keychain);
+        BackupRestorePlan plan = await PlanAsync(harness, archive, Keychain(harness, keychain));
 
         Assert.Equal("backup.restore_erasure_key_unavailable", Assert.Single(plan.Blockers).Code);
 
         Assert.Equal(new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.Refused, 1, 0, 0, 1), plan.DestinationErasureEvidence);
+    }
+
+    /// <summary>
+    /// Every row must be recorded by the current key, not just some. An erase prepares against foreign
+    /// fingerprints in its own store only, so after the key is replaced a Lexicon erase records under the
+    /// new key beside a Saga fingerprint the old key recorded. The new key proves the Lexicon row and
+    /// cannot prove the Saga one, so the destination cannot prove what it erased.
+    /// </summary>
+    [SkippableFact]
+    public async Task Rows_recorded_partly_under_a_replaced_key_refuse_as_key_missing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, harness.Credentials.Set(Service, Account, NewKey()).Status);
+
+        harness.StartHost();
+
+        await ScribeAsync(harness.Host, Keeper);
+
+        _ = await new MemoryErasureRouteDriver(harness.Host.CreateClient()).EraseLexiconAsync(Keeper, null);
+
+        await harness.StopHostAsync();
+
+        BackupRestorePlan plan = await PlanAsync(harness, archive, new CountingOsCredentialStore(harness.Credentials));
+
+        Assert.Equal("backup.restore_erasure_key_missing", Assert.Single(plan.Blockers).Code);
+
+        Assert.Equal(new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.Refused, 1, 1, 0, 2), plan.DestinationErasureEvidence);
     }
 
     /// <summary>
@@ -208,14 +253,18 @@ public sealed class BackupRestoreErasureEvidenceReadTests
     /// A Grimoire that cannot answer while a key exists, or while the keychain cannot say whether one does,
     /// may hold erasures nobody can see, so the restore refuses rather than overwrite them.
     /// </summary>
+    /// <param name="absent">The database is moved aside, or else its secret is withheld.</param>
+    /// <param name="key">The key is present, the credential store fails every call, or the key's item is not a key.</param>
     [SkippableTheory]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
+    [InlineData(true, "present")]
+    [InlineData(true, "unavailable")]
+    [InlineData(true, "malformed")]
+    [InlineData(false, "present")]
+    [InlineData(false, "unavailable")]
+    [InlineData(false, "malformed")]
     public async Task A_missing_or_unreadable_destination_with_a_present_or_unavailable_key_refuses_as_evidence_unavailable(
         bool absent,
-        bool keychainUnavailable)
+        string key)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -223,12 +272,7 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
         string archive = await ArchiveThenEraseAsync(harness);
 
-        CountingOsCredentialStore keychain = new(harness.Credentials)
-        {
-            FailWith = keychainUnavailable ? OsCredentialStoreStatus.Unavailable : null,
-        };
-
-        BackupRestorePlan plan = await PlanWithUnanswerableGrimoireAsync(harness, archive, keychain, absent);
+        BackupRestorePlan plan = await PlanWithUnanswerableGrimoireAsync(harness, archive, Keychain(harness, key), absent);
 
         Assert.Equal(
             "backup.restore_erasure_evidence_unavailable",
@@ -285,6 +329,11 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
         Assert.Equal("backup.restore_erasure_evidence_unavailable", Assert.Single(result.Issues).Code);
 
+        // The result reports what the execute-time read found, not what the plan had proven before it.
+        Assert.Equal(
+            new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.Refused, 0, 0, 0, 0),
+            result.Plan.DestinationErasureEvidence);
+
         Assert.DoesNotContain(result.Phases, static p => p.Phase == BackupRestorePhase.Stage);
 
         File.Move(aside, sidecar);
@@ -294,6 +343,21 @@ public sealed class BackupRestoreErasureEvidenceReadTests
         Assert.Empty(Directory.GetDirectories(Path.GetDirectoryName(harness.InstallationRoot)!, ".arcanum-restore-*"));
     }
 
+    /// <summary>
+    /// Every refusal names a way out that can work in the state it describes, and none carries content.
+    /// </summary>
+    /// <remarks>
+    /// <para>A key that is missing, replaced or unreadable leaves three ways out: make the key readable and
+    /// retry, reset the erasure key, or reset the installation.</para>
+    ///
+    /// <para>An item that is not a key needs one more step before a reset can run, because the reset
+    /// refuses such an item rather than overwrite it. The message keeps the order that cannot cost a valid
+    /// key: unlock and retry first, and remove the item with the OS credential tool only if it is
+    /// confirmed invalid, knowing that removal makes every fingerprint unverifiable.</para>
+    ///
+    /// <para>An unreadable Grimoire cannot be reset through the host, which cannot open it, so that refusal
+    /// offers only what can work: make the Grimoire readable and retry, or reset the installation.</para>
+    /// </remarks>
     [SkippableFact]
     public async Task Every_erasure_refusal_names_its_ways_out_and_carries_no_content()
     {
@@ -307,35 +371,42 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
         string replacement = NewKey();
 
-        List<BackupVerifyIssue> refusals = [];
-
         Assert.Equal(OsCredentialStoreStatus.Ok, harness.Credentials.Set(Service, Account, replacement).Status);
 
-        refusals.Add(ErasureRefusal(await PlanAsync(harness, archive, harness.Credentials), "backup.restore_erasure_key_missing"));
+        BackupVerifyIssue missing = ErasureRefusal(
+            await PlanAsync(harness, archive, harness.Credentials),
+            "backup.restore_erasure_key_missing");
 
         Assert.Equal(OsCredentialStoreStatus.Ok, harness.Credentials.Set(Service, Account, original).Status);
 
-        refusals.Add(ErasureRefusal(
-            await PlanAsync(harness, archive, new CountingOsCredentialStore(harness.Credentials) { FailWith = OsCredentialStoreStatus.Unavailable }),
-            "backup.restore_erasure_key_unavailable"));
+        BackupVerifyIssue unavailable = ErasureRefusal(
+            await PlanAsync(harness, archive, Keychain(harness, "unavailable")),
+            "backup.restore_erasure_key_unavailable");
 
-        refusals.Add(ErasureRefusal(
+        BackupVerifyIssue unreadable = ErasureRefusal(
             await PlanWithUnanswerableGrimoireAsync(harness, archive, harness.Credentials, absent: false),
-            "backup.restore_erasure_evidence_unavailable"));
+            "backup.restore_erasure_evidence_unavailable");
+
+        BackupVerifyIssue malformed = ErasureRefusal(
+            await PlanAsync(harness, archive, Keychain(harness, "malformed")),
+            "backup.restore_erasure_key_unavailable");
 
         string[] forbidden =
         [
             Erased,
             Account,
+            NotAKey,
             .. KeyIdSpellings(original),
             .. KeyIdSpellings(replacement),
         ];
 
-        Assert.All(refusals, refusal =>
+        BackupVerifyIssue[] every = [missing, unavailable, unreadable, malformed];
+
+        BackupVerifyIssue[] resettable = [missing, unavailable, malformed];
+
+        Assert.All(every, refusal =>
         {
             Assert.Contains("retry", refusal.Message, StringComparison.Ordinal);
-
-            Assert.Contains("arcanum memory erasure reset-key", refusal.Message, StringComparison.Ordinal);
 
             Assert.Contains("full installation reset", refusal.Message, StringComparison.Ordinal);
 
@@ -346,6 +417,68 @@ public sealed class BackupRestoreErasureEvidenceReadTests
                 Assert.DoesNotContain(text, refusal.Path ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             });
         });
+
+        Assert.All(resettable, refusal =>
+            Assert.Contains("'arcanum memory erasure reset-key' on this installation", refusal.Message, StringComparison.Ordinal));
+
+        Assert.DoesNotContain("reset-key", unreadable.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("OS credential tool", unavailable.Message, StringComparison.Ordinal);
+
+        Assert.Contains("unlock it and retry", malformed.Message, StringComparison.Ordinal);
+
+        Assert.Contains("remove it with the OS credential tool", malformed.Message, StringComparison.Ordinal);
+
+        Assert.Contains("makes every erasure fingerprint unverifiable", malformed.Message, StringComparison.Ordinal);
+
+        Assert.True(
+            malformed.Message.IndexOf("unlock it and retry", StringComparison.Ordinal)
+            < malformed.Message.IndexOf("remove it with the OS credential tool", StringComparison.Ordinal),
+            "Unlocking and retrying comes before removing the item, so a locked store never costs a valid key.");
+    }
+
+    /// <summary>
+    /// The erasure key is asked for only once the handle that read the destination's evidence is closed,
+    /// so no keychain call, which can sit behind a prompt, ever runs inside that snapshot.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_erasure_key_is_read_only_after_the_destination_handle_is_closed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        bool handleOpen = false;
+
+        int handlesOpened = 0;
+
+        HandleWatchingCredentialStore keychain = new(harness.Credentials, () => handleOpen);
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            keychain,
+            options: new BackupRestoreServiceOptions
+            {
+                DestinationEvidenceHandleForTests = open =>
+                {
+                    handleOpen = open;
+
+                    handlesOpened += open ? 1 : 0;
+                },
+            });
+
+        BackupRestorePlan plan = await service.PlanAsync(ReplaceRequest(archive), MemoryErasureRestoreHarness.Passphrase.AsMemory(), Token);
+
+        Assert.Equal(BackupRestoreErasureEvidenceStatus.Present, plan.DestinationErasureEvidence?.Status);
+
+        Assert.Equal(1, handlesOpened);
+
+        Assert.False(handleOpen);
+
+        Assert.True(keychain.Calls > 0, "The rows were proven by the key, so the keychain was asked.");
+
+        Assert.Equal(0, keychain.CallsWhileHandleOpen);
     }
 
     [SkippableFact]
@@ -365,9 +498,11 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
         string newRoot = Path.Combine(harness.Profile.TempHome, "new-profile-root");
 
-        BackupRestorePlan before = await PlanNewProfileRootAsync(harness, archive, newRoot);
+        BackupRestorePlan before = await PlanNewProfileRootAsync(harness, archive, newRoot, harness.Credentials);
 
         Assert.DoesNotContain(NewProfileRootWarning, before.Warnings);
+
+        Assert.DoesNotContain(NewProfileRootUndeterminedWarning, before.Warnings);
 
         harness.StartHost();
 
@@ -375,11 +510,42 @@ public sealed class BackupRestoreErasureEvidenceReadTests
 
         await harness.StopHostAsync();
 
-        BackupRestorePlan after = await PlanNewProfileRootAsync(harness, archive, newRoot);
+        BackupRestorePlan after = await PlanNewProfileRootAsync(harness, archive, newRoot, harness.Credentials);
 
         Assert.Contains(NewProfileRootWarning, after.Warnings);
 
+        Assert.DoesNotContain(NewProfileRootUndeterminedWarning, after.Warnings);
+
         Assert.Null(after.DestinationErasureEvidence);
+    }
+
+    /// <summary>
+    /// A keychain that cannot answer, or whose key slot holds something that is not a key, cannot say
+    /// whether this installation erased anything, and a new-profile-root plan says so rather than nothing.
+    /// </summary>
+    /// <param name="keychain">The credential store fails every call, or the key's item is not a key.</param>
+    [SkippableTheory]
+    [InlineData("unavailable")]
+    [InlineData("malformed")]
+    public async Task A_new_profile_root_plan_says_so_when_the_keychain_cannot_tell_whether_an_erasure_key_exists(string keychain)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveOneMemoryAsync(harness);
+
+        BackupRestorePlan plan = await PlanNewProfileRootAsync(
+            harness,
+            archive,
+            Path.Combine(harness.Profile.TempHome, "new-profile-root"),
+            Keychain(harness, keychain));
+
+        Assert.Contains(NewProfileRootUndeterminedWarning, plan.Warnings);
+
+        Assert.DoesNotContain(NewProfileRootWarning, plan.Warnings);
+
+        Assert.Null(plan.DestinationErasureEvidence);
     }
 
     [SkippableFact]
@@ -491,9 +657,10 @@ public sealed class BackupRestoreErasureEvidenceReadTests
     private static Task<BackupRestorePlan> PlanNewProfileRootAsync(
         MemoryErasureRestoreHarness harness,
         string archive,
-        string destinationRoot) =>
+        string destinationRoot,
+        IOsCredentialStore keychain) =>
         harness
-            .CreateRestoreService()
+            .CreateRestoreService(keychain)
             .PlanAsync(
                 new BackupRestoreRequest(archive, BackupRestoreConflictMode.NewProfileRoot, destinationRoot),
                 MemoryErasureRestoreHarness.Passphrase.AsMemory(),
@@ -513,6 +680,39 @@ public sealed class BackupRestoreErasureEvidenceReadTests
         return refusal;
     }
 
+    /// <summary>
+    /// The keychain a restore reads: the profile's own, one that fails every call, or the profile's own
+    /// after the key's item was overwritten with something that is not a key.
+    /// </summary>
+    private static IOsCredentialStore Keychain(MemoryErasureRestoreHarness harness, string state)
+    {
+        switch (state)
+        {
+            case "present":
+                return harness.Credentials;
+            case "unavailable":
+                return new CountingOsCredentialStore(harness.Credentials) { FailWith = OsCredentialStoreStatus.Unavailable };
+            case "malformed":
+                Assert.Equal(OsCredentialStoreStatus.Ok, harness.Credentials.Set(Service, Account, NotAKey).Status);
+
+                return harness.Credentials;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(state), state, "Not a keychain state this suite builds.");
+        }
+    }
+
+    /// <summary>Writes one Global Lexicon entry through the service's upsert, and requires that it landed.</summary>
+    private static async Task ScribeAsync(ArcanumWebApplicationFactory factory, string name)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        Result<LexiconEntryDto> scribed = await scope.ServiceProvider
+            .GetRequiredService<ILexiconService>()
+            .UpsertAsync(name, "Person", ["keeps the vault key"], LexiconScope.Global, Token);
+
+        Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : null);
+    }
+
     /// <summary>Thirty-two random bytes as canonical unpadded base64url: a key, just not this one.</summary>
     private static string NewKey() => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
 
@@ -522,5 +722,53 @@ public sealed class BackupRestoreErasureEvidenceReadTests
         string hex = Convert.ToHexString(MemoryErasureDigestGrammar.KeyId(Base64Url.DecodeFromChars(storedKey)));
 
         return [hex, hex.ToLowerInvariant()];
+    }
+
+    /// <summary>
+    /// Counts every credential call, and every one made while the destination's evidence handle was open.
+    /// </summary>
+    private sealed class HandleWatchingCredentialStore(IOsCredentialStore inner, Func<bool> handleOpen) : IOsCredentialStore
+    {
+        internal int Calls { get; private set; }
+
+        internal int CallsWhileHandleOpen { get; private set; }
+
+        public bool IsAvailable
+        {
+            get
+            {
+                Watch();
+
+                return inner.IsAvailable;
+            }
+        }
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            Watch();
+
+            return inner.TryGet(service, account);
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            Watch();
+
+            return inner.Set(service, account, secret);
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+            Watch();
+
+            return inner.Delete(service, account);
+        }
+
+        private void Watch()
+        {
+            Calls++;
+
+            CallsWhileHandleOpen += handleOpen() ? 1 : 0;
+        }
     }
 }

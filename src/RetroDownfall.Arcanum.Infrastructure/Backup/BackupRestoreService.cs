@@ -698,10 +698,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             // A new profile root is outside every erasure arm: nothing this installation erased is
             // removed from the generation it installs there.
-            if (HoldsErasureKey())
+            if (NewProfileRootErasureWarningFor() is { } erasureWarning)
             {
 
-                warnings.Add(NewProfileRootErasureWarning);
+                warnings.Add(erasureWarning);
 
             }
 
@@ -948,10 +948,13 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
                 erasure = await ReadDestinationErasureEvidenceAsync(cancellationToken).ConfigureAwait(false);
 
+                // The result reports what this read found, not what the plan had proven before it.
+                effectivePlan = plan with { DestinationErasureEvidence = erasure.ToSummary() };
+
                 if (erasure.Refusal is { } refusal)
                 {
 
-                    return Rejected(operationId, plan, phases, [refusal]);
+                    return Rejected(operationId, effectivePlan, phases, [refusal]);
 
                 }
 
@@ -980,7 +983,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (extraction.Manifest is null)
             {
 
-                return Rejected(operationId, plan, phases, extraction.Issues);
+                return Rejected(operationId, effectivePlan, phases, extraction.Issues);
 
             }
 
@@ -997,7 +1000,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (protectedState.IsRefusal)
             {
 
-                return Rejected(operationId, plan, phases, [protectedState.Blocker!]);
+                return Rejected(operationId, effectivePlan, phases, [protectedState.Blocker!]);
 
             }
 
@@ -1010,7 +1013,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (placement.Length > 0)
             {
 
-                return Rejected(operationId, plan, phases, placement);
+                return Rejected(operationId, effectivePlan, phases, placement);
 
             }
 
@@ -1041,7 +1044,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 if (begun.IsFailure)
                 {
 
-                    return Rejected(operationId, plan, phases, [Issue(begun.Error)]);
+                    return Rejected(operationId, effectivePlan, phases, [Issue(begun.Error)]);
 
                 }
 
@@ -1053,7 +1056,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 request,
                 extractRoot,
                 stagedRoot,
-                plan,
+                effectivePlan,
                 phases,
                 covenant,
                 maintenance,
@@ -1066,7 +1069,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (staged.Issues.Length > 0)
             {
 
-                return Rejected(operationId, plan, phases, staged.Issues);
+                return Rejected(operationId, effectivePlan, phases, staged.Issues);
 
             }
 

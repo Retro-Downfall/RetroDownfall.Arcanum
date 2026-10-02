@@ -16,15 +16,19 @@ internal sealed partial class BackupRestoreService
         "This installation's erasure evidence is not applied to a new profile root; items erased here can "
         + "reappear there.";
 
+    private const string NewProfileRootUndeterminedErasureWarning =
+        "Whether this installation holds an erasure key could not be determined; its erasure evidence is not "
+        + "applied to a new profile root, so items erased here can reappear there.";
+
     /// <summary>
     /// Reads the destination's fingerprints, receipts and receipt subjects as values, and proves them
     /// against the erasure key.
     /// </summary>
     /// <remarks>
-    /// <para>The Grimoire is read first, in one <c>BEGIN DEFERRED</c> on a read-only handle that is closed
-    /// before anything else happens, so a destination that never erased anything is planned without a
-    /// single credential call, and no keychain call ever runs inside a transaction. The key is consulted
-    /// only when the Grimoire holds rows, or when it cannot say whether it does.</para>
+    /// <para>The Grimoire is read first, by <see cref="ReadDestinationErasureRowsAsync"/>, which owns the
+    /// handle and has closed it before it returns. So a destination that never erased anything is
+    /// planned without a single credential call, and no keychain call can run inside the snapshot. The
+    /// key is consulted only when the Grimoire holds rows, or when it cannot say whether it does.</para>
     ///
     /// <para>The key is the anchor. With rows, only the key that recorded every one of them proves them; a
     /// missing or replaced key, or a keychain that cannot answer, refuses. Without a readable Grimoire,
@@ -37,56 +41,73 @@ internal sealed partial class BackupRestoreService
     /// The key is always disposed here; only its identifier travels on.</para>
     /// </remarks>
     private async Task<BackupRestoreErasureEvidence> ReadDestinationErasureEvidenceAsync(
+        CancellationToken cancellationToken) =>
+        await ReadDestinationErasureRowsAsync(cancellationToken).ConfigureAwait(false) is { } rows
+            ? ProveRows(rows)
+            : ProveNothingCommitted();
+
+    /// <summary>
+    /// The destination's evidence rows, read in one <c>BEGIN DEFERRED</c> on a read-only handle that is
+    /// closed before this returns.
+    /// </summary>
+    /// <returns>
+    /// The rows, which are empty for a catalog that cannot hold evidence; or null when the Grimoire is
+    /// absent or cannot be read.
+    /// </returns>
+    private async Task<MemoryErasureEvidenceSnapshot?> ReadDestinationErasureRowsAsync(
         CancellationToken cancellationToken)
     {
-        bool readable = false;
-
-        MemoryErasureEvidenceSnapshot? snapshot = null;
-
-        if (File.Exists(_paths.DatabasePath))
+        if (!File.Exists(_paths.DatabasePath))
         {
-            try
-            {
-                SecretStoreReadResult secret = await _secretStore
-                    .GetGrimoireEncryptionSecretReadResultAsync()
-                    .ConfigureAwait(false);
-
-                if (secret.Status == SecretStoreReadStatus.Ok && !string.IsNullOrEmpty(secret.Value))
-                {
-                    await using SqliteConnection connection = await BackupRestoreDatabaseWorker
-                        .OpenAsync(_paths.DatabasePath, secret.Value, readOnly: true, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
-
-                    snapshot = await MemoryErasureEvidence
-                        .ReadSnapshotAsync(connection, transaction, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    readable = true;
-                }
-            }
-            // The same list as the Campaign read: opening the destination starts at its key-derivation
-            // sidecar, so a missing, malformed or unsupported sidecar is "this Grimoire cannot answer" too.
-            catch (Exception exception) when (
-                exception is SqliteException
-                    or InvalidDataException
-                    or IOException
-                    or UnauthorizedAccessException
-                    or NotSupportedException
-                    or FormatException
-                    or System.Text.Json.JsonException
-                    or System.Security.Cryptography.CryptographicException)
-            {
-                readable = false;
-
-                snapshot = null;
-            }
+            return null;
         }
 
-        return readable
-            ? ProveRows(snapshot ?? MemoryErasureEvidenceSnapshot.Empty)
-            : ProveNothingCommitted();
+        try
+        {
+            SecretStoreReadResult secret = await _secretStore
+                .GetGrimoireEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
+
+            if (secret.Status != SecretStoreReadStatus.Ok || string.IsNullOrEmpty(secret.Value))
+            {
+                return null;
+            }
+
+            try
+            {
+                await using SqliteConnection connection = await BackupRestoreDatabaseWorker
+                    .OpenAsync(_paths.DatabasePath, secret.Value, readOnly: true, cancellationToken)
+                    .ConfigureAwait(false);
+
+                _options.DestinationEvidenceHandleForTests?.Invoke(true);
+
+                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
+
+                return await MemoryErasureEvidence
+                    .ReadSnapshotAsync(connection, transaction, cancellationToken)
+                    .ConfigureAwait(false)
+                    ?? MemoryErasureEvidenceSnapshot.Empty;
+            }
+            finally
+            {
+                // After the transaction and the connection are disposed, at the end of the block above.
+                _options.DestinationEvidenceHandleForTests?.Invoke(false);
+            }
+        }
+        // The same list as the Campaign read: opening the destination starts at its key-derivation
+        // sidecar, so a missing, malformed or unsupported sidecar is "this Grimoire cannot answer" too.
+        catch (Exception exception) when (
+            exception is SqliteException
+                or InvalidDataException
+                or IOException
+                or UnauthorizedAccessException
+                or NotSupportedException
+                or FormatException
+                or System.Text.Json.JsonException
+                or System.Security.Cryptography.CryptographicException)
+        {
+            return null;
+        }
     }
 
     /// <summary>A readable Grimoire's rows, proven by the key that recorded them or refused.</summary>
@@ -111,7 +132,7 @@ internal sealed partial class BackupRestoreService
                 BackupRestoreErasureEvidence.Present(key.KeyId.ToArray(), rows),
             MemoryErasureKeyState.Present or MemoryErasureKeyState.Absent =>
                 BackupRestoreErasureEvidence.Refused(BackupRestoreErasureCodes.KeyMissing, rows),
-            _ => BackupRestoreErasureEvidence.Refused(BackupRestoreErasureCodes.KeyUnavailable, rows),
+            _ => BackupRestoreErasureEvidence.Refused(BackupRestoreErasureCodes.KeyUnavailable, rows, opened.State),
         };
     }
 
@@ -130,14 +151,23 @@ internal sealed partial class BackupRestoreService
             : BackupRestoreErasureEvidence.Refused(BackupRestoreErasureCodes.EvidenceUnavailable, null);
     }
 
-    /// <summary>Whether this installation holds an erasure key, which it has once anything was erased here.</summary>
-    private bool HoldsErasureKey()
+    /// <summary>
+    /// What a new-profile-root plan says about erasures it does not apply: a warning when this
+    /// installation holds an erasure key, which it has once anything was erased here; a different one
+    /// when the keychain cannot say whether it does; nothing when the key is proven absent.
+    /// </summary>
+    private string? NewProfileRootErasureWarningFor()
     {
         MemoryErasureKeyOpenResult opened = _erasureKeys.OpenExisting(MemoryErasureKeyProbe.Reprobe);
 
         opened.Key?.Dispose();
 
-        return opened.State is MemoryErasureKeyState.Present;
+        return opened.State switch
+        {
+            MemoryErasureKeyState.Present => NewProfileRootErasureWarning,
+            MemoryErasureKeyState.Absent => null,
+            _ => NewProfileRootUndeterminedErasureWarning,
+        };
     }
 
     private static bool RecordedBy(MemoryErasureEvidenceSnapshot rows, MemoryErasureKey key) =>

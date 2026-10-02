@@ -47,8 +47,7 @@ internal enum BackupRestoreErasureEvidenceKind
 ///
 /// <para>Content-free throughout. The rows are keyed digests and counts, the key identifier is a
 /// truncated keyed hash of the key and never the key, and every refusal message names only what could
-/// not be proven and the three ways out: restore readability and retry, reset the erasure key on this
-/// installation, or reset the installation.</para>
+/// not be proven and the ways out that can work in that state.</para>
 /// </remarks>
 internal sealed record BackupRestoreErasureEvidence(
     BackupRestoreErasureEvidenceKind Kind,
@@ -56,6 +55,11 @@ internal sealed record BackupRestoreErasureEvidence(
     MemoryErasureEvidenceSnapshot Rows,
     BackupVerifyIssue? Refusal)
 {
+    /// <summary>The middle of every refusal: what the operator cannot rely on, and that nothing changed.</summary>
+    private const string Unchanged =
+        " The restore cannot prove which archived items were erased here, so it stopped and the current "
+        + "installation is unchanged. ";
+
     /// <summary>A destination with nothing to keep from returning.</summary>
     internal static BackupRestoreErasureEvidence None { get; } =
         new(BackupRestoreErasureEvidenceKind.None, [], MemoryErasureEvidenceSnapshot.Empty, null);
@@ -73,12 +77,19 @@ internal sealed record BackupRestoreErasureEvidence(
     /// <summary>A destination that could not prove what it erased.</summary>
     /// <param name="code">One of the three destination-read codes in <see cref="BackupRestoreErasureCodes"/>.</param>
     /// <param name="rows">What the Grimoire yielded before the key refused it, or null when it could not be read.</param>
-    internal static BackupRestoreErasureEvidence Refused(string code, MemoryErasureEvidenceSnapshot? rows) =>
+    /// <param name="keyState">
+    /// What the keychain answered, when it shapes the way out: an item that is not a key has to be removed
+    /// before the erasure key can be reset.
+    /// </param>
+    internal static BackupRestoreErasureEvidence Refused(
+        string code,
+        MemoryErasureEvidenceSnapshot? rows,
+        MemoryErasureKeyState? keyState = null) =>
         new(
             BackupRestoreErasureEvidenceKind.Refused,
             [],
             rows ?? MemoryErasureEvidenceSnapshot.Empty,
-            new BackupVerifyIssue(code, MessageFor(code)));
+            new BackupVerifyIssue(code, MessageFor(code, keyState)));
 
     /// <summary>The status and per-store counts a plan reports.</summary>
     internal BackupRestoreErasureEvidenceSummary ToSummary() =>
@@ -97,30 +108,43 @@ internal sealed record BackupRestoreErasureEvidence(
 
     private long Fingerprints(MemoryReviewStore store) => Rows.Fingerprints.Count(row => row.Store == store);
 
-    private static string MessageFor(string code) =>
-        code switch
+    /// <summary>The content-free refusal message for one code, shaped by what the keychain answered.</summary>
+    /// <remarks>
+    /// Every message says what could not be proven and that nothing changed, then the ways out that can
+    /// work in that state. A key that is missing, replaced or unreadable leaves three: make the key
+    /// readable and retry, reset the erasure key, or reset the installation. An item that is not a key
+    /// has to be removed before a reset can run, because the reset never overwrites one, and the message
+    /// keeps the order that cannot cost a valid key: unlock and retry first, remove only an item confirmed
+    /// invalid. An unreadable Grimoire cannot be reset through the host, which cannot open it, so that
+    /// message offers only readability and a full reset.
+    /// </remarks>
+    private static string MessageFor(string code, MemoryErasureKeyState? keyState) =>
+        (code, keyState) switch
         {
-            BackupRestoreErasureCodes.KeyMissing => Compose(
+            (BackupRestoreErasureCodes.KeyMissing, _) =>
                 "This installation's Grimoire records erasures that the erasure key now in its OS credential "
-                + "store did not record: the key that did is missing or was replaced.",
-                "Put the original erasure key back"),
-            BackupRestoreErasureCodes.KeyUnavailable => Compose(
+                + "store did not record: the key that did is missing or was replaced." + Unchanged
+                + "Put the original erasure key back and retry, run 'arcanum memory erasure reset-key' on this "
+                + "installation, which discards the erasures it cannot prove, or perform a full installation reset.",
+            (BackupRestoreErasureCodes.KeyUnavailable, MemoryErasureKeyState.Malformed) =>
+                "This installation's Grimoire records erasures, and the erasure key item in its OS credential "
+                + "store is not a valid key." + Unchanged
+                + "If the credential store is locked or did not answer, unlock it and retry. Only if the item is "
+                + "confirmed malformed, remove it with the OS credential tool and run 'arcanum memory erasure "
+                + "reset-key' on this installation: removing a key makes every erasure fingerprint unverifiable, "
+                + "and the reset discards them, so erased content could be learned again. Otherwise perform a "
+                + "full installation reset.",
+            (BackupRestoreErasureCodes.KeyUnavailable, _) =>
                 "This installation's Grimoire records erasures, and its OS credential store could not provide "
-                + "the erasure key that proves them.",
-                "Make the OS credential store readable"),
-            BackupRestoreErasureCodes.EvidenceUnavailable => Compose(
-                "This installation's Grimoire could not be read, and its OS credential store does not show that "
-                + "it never erased anything.",
-                "Make the Grimoire's database, key-derivation sidecar and secret readable again"),
+                + "the erasure key that proves them." + Unchanged
+                + "Make the OS credential store readable and retry; once it answers, 'arcanum memory erasure "
+                + "reset-key' on this installation discards the erasures its key cannot prove; or perform a full "
+                + "installation reset.",
+            (BackupRestoreErasureCodes.EvidenceUnavailable, _) =>
+                "This installation's Grimoire is missing or could not be read, and its OS credential store does "
+                + "not show that it never erased anything." + Unchanged
+                + "Make the Grimoire's database, key-derivation sidecar and secret readable again and retry, or "
+                + "perform a full installation reset.",
             _ => throw new ArgumentOutOfRangeException(nameof(code), code, "Not a destination erasure evidence refusal."),
         };
-
-    /// <summary>What could not be proven, then the three ways out every erasure refusal names.</summary>
-    private static string Compose(string cause, string readability) =>
-        cause
-        + " The restore cannot prove which archived items were erased here, so it stopped and the current "
-        + "installation is unchanged. "
-        + readability
-        + " and retry, run 'arcanum memory erasure reset-key' on this installation, which discards the "
-        + "erasures it cannot prove, or perform a full installation reset.";
 }
