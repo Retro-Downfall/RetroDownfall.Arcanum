@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json.Serialization.Metadata;
 
 using Microsoft.Data.Sqlite;
 
@@ -118,6 +120,70 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
     /// <summary>Erases one Saga memory through the routes, which creates the key on a first erase.</summary>
     internal Task<MemoryErasureRoundTrip<SagaEraseRequest>> EraseSagaAsync(string memoryId) =>
         new MemoryErasureRouteDriver(Host.CreateClient()).EraseSagaAsync(memoryId);
+
+    /// <summary>Erases one exact Lexicon entry through the routes.</summary>
+    internal Task<MemoryErasureRoundTrip<LexiconEraseRequest>> EraseLexiconAsync(string name, Guid? campaignId) =>
+        new MemoryErasureRouteDriver(Host.CreateClient()).EraseLexiconAsync(name, campaignId);
+
+    /// <summary>Erases one scoped Covenant key's entry through the routes.</summary>
+    internal Task<MemoryErasureRoundTrip<CovenantEraseRequest>> EraseCovenantAsync(CovenantScope scope, Guid? campaignId, string key) =>
+        new MemoryErasureRouteDriver(Host.CreateClient()).EraseCovenantAsync(scope, campaignId, key);
+
+    /// <summary>Sets one scoped Covenant key as the operator, through the set prepare and commit routes.</summary>
+    internal Task<CovenantMutationResultDto> SetCovenantAsync(CovenantScope scope, Guid? campaignId, string key, string content) =>
+        new MemoryErasureRouteDriver(Host.CreateClient()).SetCovenantAsync(scope, campaignId, key, content);
+
+    /// <summary>Releases one Saga fingerprint through its route.</summary>
+    internal Task<MemoryErasureReleaseResultDto> ReleaseSagaAsync(SagaErasureReleaseRequest request) =>
+        new MemoryErasureRouteDriver(Host.CreateClient()).ReleaseSagaAsync(request);
+
+    /// <summary>Posts one typed body to the running host, authenticated, and hands back the raw response.</summary>
+    internal Task<HttpResponseMessage> PostAsync<TRequest>(string path, TRequest body, JsonTypeInfo<TRequest> info) =>
+        new MemoryErasureRouteDriver(Host.CreateClient()).PostAsync(path, body, info);
+
+    /// <summary>
+    /// Every fingerprint, receipt and receipt-subject row the database holds, column by column and sorted,
+    /// so two evidence sets compare equal exactly when they hold the same rows. Assertion-only.
+    /// </summary>
+    internal static async Task<string> EvidenceHexAsync(SqliteConnection connection)
+    {
+        List<string> rows = [];
+
+        foreach (string table in (string[])["memory_erasure_fingerprints", "memory_erasure_receipts", "memory_erasure_receipt_subjects"])
+        {
+            if (!await BackupRestoreDatabaseWorker.TableExistsAsync(connection, table, CancellationToken.None))
+            {
+                continue;
+            }
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = $"SELECT * FROM {table};";
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+            while (await reader.ReadAsync())
+            {
+                string[] values = new string[reader.FieldCount];
+
+                for (int ordinal = 0; ordinal < reader.FieldCount; ordinal++)
+                {
+                    values[ordinal] = reader.GetValue(ordinal) switch
+                    {
+                        byte[] bytes => Convert.ToHexString(bytes),
+                        DBNull => "null",
+                        object value => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
+                    };
+                }
+
+                rows.Add(table + ":" + string.Join('|', values));
+            }
+        }
+
+        rows.Sort(StringComparer.Ordinal);
+
+        return string.Join('\n', rows);
+    }
 
     /// <summary>Archives this installation through the production backup service, with no host running.</summary>
     /// <returns>The archive's path.</returns>
@@ -257,12 +323,19 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
     /// The production restore service over this installation, reading the erasure key from
     /// <paramref name="credentials"/> or the profile's keychain through a fresh keyring of its own.
     /// </summary>
+    /// <param name="erasureKeys">Replaces the keyring, for a case about what the restore does with the key it holds.</param>
+    /// <param name="covenantStaging">
+    /// Whether the restore runs the Covenant arm, behind a recording gate, as an installation with the gate
+    /// on does. The test seams <paramref name="options"/> carries are kept.
+    /// </param>
     internal BackupRestoreService CreateRestoreService(
         IOsCredentialStore? credentials = null,
         ISecretStore? secrets = null,
         BackupRestoreServiceOptions? options = null,
         GrimoireSchemaInstaller? installer = null,
-        Func<IBackupService>? safetyBackups = null) =>
+        Func<IBackupService>? safetyBackups = null,
+        bool covenantStaging = false,
+        IMemoryErasureKeyProvider? erasureKeys = null) =>
         new(
             Paths(),
             Codec(),
@@ -270,8 +343,15 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
             safetyBackups,
             TimeProvider.System,
             installer ?? GrimoireSchemaTestInstaller.Create(),
-            new MemoryErasureKeyring(credentials ?? Credentials),
-            options);
+            erasureKeys ?? new MemoryErasureKeyring(credentials ?? Credentials),
+            covenantStaging
+                ? new BackupRestoreServiceOptions
+                {
+                    RestoreStaging = CovenantStaging(new CovenantRestoreStagingTests.RecordingExclusiveGate()),
+                    BeforePhaseForTests = options?.BeforePhaseForTests,
+                    AfterErasurePurgeForTests = options?.AfterErasurePurgeForTests,
+                }
+                : options);
 
     /// <summary>
     /// The Covenant arm a restore runs with the gate on, behind <paramref name="gate"/> and over this

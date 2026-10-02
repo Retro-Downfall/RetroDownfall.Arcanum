@@ -454,10 +454,12 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
         await SeedDisclosureReceiptAsync();
 
+        // The disclosure join is the erasure-evidence step's, and it commits before the Covenant arm runs.
+        await JoinDisclosureAsTheEvidenceStepDoesAsync([Bucket(count: 12, CovenantDisclosureCountKind.LowerBound)]);
+
         Result<BackupCovenantRestoreReconciliationReceipt> receipt = await ReconcileAsync(
             purgeProtectedState: true,
-            destinationAuthority: Tainted(DestinationIdentity, epoch: 7),
-            disclosure: [Bucket(count: 12, CovenantDisclosureCountKind.LowerBound)]);
+            destinationAuthority: Tainted(DestinationIdentity, epoch: 7));
 
         Assert.True(receipt.IsSuccess, Describe(receipt));
 
@@ -692,6 +694,29 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         await transaction.CommitAsync(CancellationToken.None);
 
         return receipt;
+
+    }
+
+    /// <summary>
+    /// Joins the destination's buckets into staging in a transaction of its own, as the restore's
+    /// erasure-evidence step does before the Covenant arm.
+    /// </summary>
+    private async Task JoinDisclosureAsTheEvidenceStepDoesAsync(IReadOnlyList<CovenantDisclosureState> disclosure)
+    {
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await _staged.Connection.BeginTransactionAsync(CancellationToken.None);
+
+        Result<int> joined = await CovenantDisclosureStateJoiner.JoinIntoStagedAsync(
+            _staged.Connection,
+            transaction,
+            disclosure,
+            TimeProvider.System,
+            CancellationToken.None);
+
+        Assert.True(joined.IsSuccess, joined.IsFailure ? joined.Error.Message : null);
+
+        await transaction.CommitAsync(CancellationToken.None);
 
     }
 

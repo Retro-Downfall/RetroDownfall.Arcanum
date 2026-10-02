@@ -1013,10 +1013,26 @@ internal static class CovenantEntryErasurePlan
     private static string EntryPredicate(string column) => CovenantIdentitySql.Keyed(column, "$entry");
 
     /// <summary>Rows naming one of the captured version ids, compared normalised, or none when there are none.</summary>
-    private static string VersionPredicate(string column, IReadOnlyList<Guid> versionIds) =>
-        versionIds.Count == 0
-            ? "0"
-            : $"lower(replace({column}, '-', '')) IN ({string.Join(", ", Enumerable.Range(0, versionIds.Count).Select(static index => $"$v{index}"))})";
+    /// <remarks>
+    /// Built with a plain loop rather than a generated range: restore staging runs this plan from a hosted
+    /// producer root, and every library call on that path is one the producer analysis has reviewed.
+    /// </remarks>
+    private static string VersionPredicate(string column, IReadOnlyList<Guid> versionIds)
+    {
+        if (versionIds.Count == 0)
+        {
+            return "0";
+        }
+
+        List<string> parameters = new(versionIds.Count);
+
+        for (int index = 0; index < versionIds.Count; index++)
+        {
+            parameters.Add($"$v{index}");
+        }
+
+        return $"lower(replace({column}, '-', '')) IN ({string.Join(", ", parameters)})";
+    }
 
     private static string ReviewEventPredicate(IReadOnlyList<Guid> versionIds) => VersionPredicate("VersionId", versionIds);
 
@@ -1111,9 +1127,13 @@ internal static class CovenantEntryErasurePlan
 
         _ = command.Parameters.AddWithValue("$created", subject.CreatedAtUtc);
 
-        for (int index = 0; index < versionIds.Count; index++)
+        int index = 0;
+
+        foreach (Guid versionId in versionIds)
         {
-            _ = command.Parameters.AddWithValue($"$v{index}", CovenantIdentitySql.Key(versionIds[index]));
+            _ = command.Parameters.AddWithValue($"$v{index}", CovenantIdentitySql.Key(versionId));
+
+            index++;
         }
     }
 

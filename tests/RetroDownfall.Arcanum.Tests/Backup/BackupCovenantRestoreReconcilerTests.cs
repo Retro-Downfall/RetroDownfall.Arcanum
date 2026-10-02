@@ -205,8 +205,13 @@ public sealed class BackupCovenantRestoreReconcilerTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The disclosure join is the evidence step's, not this reconciliation's: it runs earlier, in both gate
+    /// states, so a restore with the gate off keeps this machine's disclosure accounting too. Handed the
+    /// destination's buckets, the Covenant reconciliation leaves the archive's bucket exactly as staged.
+    /// </summary>
     [Fact]
-    public async Task Destination_disclosure_evidence_is_joined_rather_than_replaced()
+    public async Task The_covenant_reconciliation_leaves_disclosure_joining_to_the_evidence_step()
     {
 
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
@@ -229,19 +234,10 @@ public sealed class BackupCovenantRestoreReconcilerTests : IAsyncLifetime
 
         Assert.True(receipt.IsSuccess, Describe(receipt));
 
-        Assert.Equal(1, receipt.Value.JoinedDisclosureBuckets);
-
-        // A join is allowed to overstate and never to understate, so the larger count survives.
         Assert.Equal(
-            5,
+            2,
             await _staged.ScalarLongAsync(
                 "SELECT JoinedCount FROM external_disclosure_state;",
-                CancellationToken.None));
-
-        Assert.Equal(
-            1,
-            await _staged.ScalarLongAsync(
-                "SELECT EverOccurred FROM external_disclosure_state;",
                 CancellationToken.None));
 
     }

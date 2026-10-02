@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -38,8 +40,9 @@ internal sealed class BackupRestoreServiceOptions
     /// </summary>
     /// <remarks>
     /// Absent is the pre-Covenant full restore: no exclusive owner is acquired, no authenticated
-    /// journal is published, and the staged snapshot is adopted exactly as the archive carried it.
-    /// Present means a replace-installation restore closes admission under one owner, strips the
+    /// journal is published, and the staged snapshot is adopted as the archive carried it, less what the
+    /// erasure-evidence step removes and joins, which runs with the gate off too (§10.19.9). Present
+    /// means a replace-installation restore closes admission under one owner, strips the
     /// archive's managed-file authority, reissues this dataset's identities, commits its Campaign
     /// marker children before the first displacement, and reopens admission exactly once (§10.19.9).
     /// </remarks>
@@ -90,5 +93,15 @@ internal sealed class BackupRestoreServiceOptions
     /// leaves it there, and none runs inside a SQLite transaction.
     /// </remarks>
     internal Action<bool>? DestinationEvidenceHandleForTests { get; init; }
+
+    /// <summary>
+    /// Invoked inside the staged erasure-evidence transaction after the purge and the evidence replacement,
+    /// before any post-condition is proven.
+    /// </summary>
+    /// <remarks>
+    /// The seam that lets a suite put back what a purge removed, and so prove that the post-conditions,
+    /// and not the purge alone, are what stand between a staged generation and its commit.
+    /// </remarks>
+    internal Func<SqliteConnection, SqliteTransaction, CancellationToken, Task>? AfterErasurePurgeForTests { get; init; }
 
 }

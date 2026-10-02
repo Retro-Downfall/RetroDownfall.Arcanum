@@ -85,7 +85,9 @@ internal sealed record MemoryErasureEvidenceSnapshot(
 /// nothing, which is what keeps writes flowing during a live upgrade while an earlier sweep drains.
 /// The two inserts refuse instead, since recording evidence a catalog cannot hold would be a lie about
 /// what it suppresses. A catalog that has the fingerprint table but missing or malformed version
-/// metadata throws, so a catalog that could hold evidence but cannot say what it is fails closed.</para>
+/// metadata throws, so a catalog that could hold evidence but cannot say what it is fails closed. The
+/// one exception is restore staging's <see cref="ReplaceAllAsync"/>, which goes by the tables rather than
+/// the recorded version, so no archived row survives it to become visible after a later upgrade.</para>
 ///
 /// <para>These are the only statements in the product that delete, update, or insert evidence rows,
 /// and an architecture test pins that: a later operation that needs a new evidence write adds a member
@@ -749,6 +751,133 @@ internal static class MemoryErasureEvidence
         _ = receipts.Parameters.AddWithValue("$keyId", currentKeyId);
 
         return (fingerprints, await receipts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Makes <paramref name="destination"/>'s evidence the catalog's whole evidence, row for row: restore
+    /// staging's destination-authoritative join.
+    /// </summary>
+    /// <remarks>
+    /// <para>Not a union. Every staged subject, receipt and fingerprint is deleted, in that order and
+    /// explicitly rather than by relying on <c>PRAGMA foreign_keys</c>, and the destination's rows are then
+    /// inserted verbatim, each receipt before its subjects. A union would keep an archived fingerprint this
+    /// installation has since released, and so undo the release; it would also keep rows recorded under
+    /// another installation's key, which this installation can never verify.</para>
+    ///
+    /// <para>It goes by the tables rather than the recorded Core version. A staged catalog without the
+    /// fingerprint table holds no evidence, so with nothing to insert this is a no-op; with rows to insert
+    /// it refuses, because the destination's evidence would be lost. A catalog that has the table is
+    /// emptied whatever its metadata says, so no archived row survives to become visible later.</para>
+    /// </remarks>
+    /// <returns>
+    /// The archive rows dropped: staged fingerprints and receipts whose primary key the destination does
+    /// not hold, whether recorded under another key or released here since. Subjects are not counted.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// The catalog has no evidence tables, or cannot record evidence, and the destination holds rows.
+    /// </exception>
+    internal static async Task<long> ReplaceAllAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        MemoryErasureEvidenceSnapshot destination,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        ArgumentNullException.ThrowIfNull(destination);
+
+        bool holdsRows = destination.HasRows || destination.Subjects.Count > 0;
+
+        await using (SqliteCommand probe = Command(
+            connection,
+            transaction,
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_erasure_fingerprints');"))
+        {
+            if (!await ExistsAsync(probe, cancellationToken).ConfigureAwait(false))
+            {
+                return holdsRows
+                    ? throw new InvalidOperationException("The catalog has no evidence tables to take the destination's erasure evidence.")
+                    : 0;
+            }
+        }
+
+        HashSet<string> keptFingerprints = [.. destination.Fingerprints.Select(static row => Convert.ToHexString(row.Fingerprint))];
+
+        HashSet<string> keptReceipts = [.. destination.Receipts.Select(static row => Governed(row.MutationId))];
+
+        long dropped = 0;
+
+        await using (SqliteCommand fingerprints = Command(connection, transaction, "SELECT Fingerprint FROM memory_erasure_fingerprints;"))
+        {
+            await using SqliteDataReader reader = await fingerprints.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.IsDBNull(0) || reader.GetValue(0) is not byte[] fingerprint || !keptFingerprints.Contains(Convert.ToHexString(fingerprint)))
+                {
+                    dropped++;
+                }
+            }
+        }
+
+        await using (SqliteCommand receipts = Command(connection, transaction, "SELECT MutationId FROM memory_erasure_receipts;"))
+        {
+            await using SqliteDataReader reader = await receipts.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                // Compared by the identity, not the stored text: an archive is somebody else's database.
+                if (reader.IsDBNull(0)
+                    || !Guid.TryParse(reader.GetString(0), out Guid mutationId)
+                    || !keptReceipts.Contains(Governed(mutationId)))
+                {
+                    dropped++;
+                }
+            }
+        }
+
+        foreach (string table in (string[])["memory_erasure_receipt_subjects", "memory_erasure_receipts", "memory_erasure_fingerprints"])
+        {
+            await using SqliteCommand delete = Command(connection, transaction, $"DELETE FROM {table};");
+
+            _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (MemoryErasureFingerprintRow row in destination.Fingerprints)
+        {
+            if (!await InsertFingerprintAsync(connection, transaction, row.Fingerprint, row.Store, row.KeyId, cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("The destination's evidence names one fingerprint twice.");
+            }
+        }
+
+        Dictionary<Guid, List<byte[]>> subjects = [];
+
+        foreach (MemoryErasureReceiptRow receipt in destination.Receipts)
+        {
+            subjects[receipt.MutationId] = [];
+        }
+
+        foreach (MemoryErasureReceiptSubjectRow subject in destination.Subjects)
+        {
+            if (!subjects.TryGetValue(subject.MutationId, out List<byte[]>? digests))
+            {
+                throw new InvalidOperationException("The destination's evidence names a receipt subject without its receipt.");
+            }
+
+            digests.Add(subject.SubjectDigest);
+        }
+
+        foreach (MemoryErasureReceiptRow receipt in destination.Receipts)
+        {
+            await InsertReceiptAsync(connection, transaction, receipt, subjects[receipt.MutationId], cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return dropped;
     }
 
     private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction? transaction, string sql)

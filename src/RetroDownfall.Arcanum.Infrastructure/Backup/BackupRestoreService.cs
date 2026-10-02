@@ -1022,14 +1022,22 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 BackupRestorePhase.Stage,
                 $"Staged {extraction.Entries} entries beneath a protected root.");
 
+            // The extraction is the archive exactly as it was, erased items included, and nothing reads its
+            // database once the staged tree exists. A selective import still reads it, so only a replacement
+            // removes it here (§10.19.9).
+            bool extractedDatabaseDeleted =
+                request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
+                && DeleteExtractedDatabase(extractRoot);
+
+            // Read for every replacement, with the gate on or off: the evidence step joins the destination's
+            // disclosure buckets in both, and only the Covenant arm needs the authority row.
             BackupCovenantRestoreDestinationState destination =
-                BackupCovenantRestoreDestinationState.None;
+                request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
+                    ? await ReadDestinationCovenantStateAsync(cancellationToken).ConfigureAwait(false)
+                    : BackupCovenantRestoreDestinationState.None;
 
             if (ReconcilesProtectedState(request) && maintenance is not null)
             {
-
-                destination = await ReadDestinationCovenantStateAsync(cancellationToken)
-                    .ConfigureAwait(false);
 
                 Result<BackupRestoreCovenantSession> begun = await _covenant!.BeginAsync(
                     maintenance,
@@ -1292,6 +1300,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 staged.GrimoireSecret,
                 staged.EmbeddingsToRebuild,
                 staged.PendingOperationsCleared,
+                staged.Erasure is { } applied
+                    ? new StagedErasure(erasure, applied, extractedDatabaseDeleted)
+                    : null,
                 cancellationToken).ConfigureAwait(false);
 
             Record(
@@ -1498,10 +1509,11 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// <remarks>
     /// Only a restore that runs the Covenant arm inventories anything. With the feature gate off there
     /// is no staged Covenant tier to preserve or remove and the default authorizes no effect, so the
-    /// whole path collapses to <see cref="BackupRestoreProtectedStateInventory.None"/> and a restore is
-    /// byte-for-byte what it was before this slice. A new-profile restore is outside the arm for the same
-    /// reason it is outside §10.19.9: it displaces nothing, and the plan already warns that such a
-    /// generation has to be adopted through a replace-installation restore — which is where the
+    /// whole path collapses to <see cref="BackupRestoreProtectedStateInventory.None"/>; the staged
+    /// generation is then adopted as the archive carried it, less what the erasure-evidence step removes
+    /// and joins, which runs with the gate off too (§10.19.9). A new-profile restore is outside the arm
+    /// for the same reason it is outside §10.19.9: it displaces nothing, and the plan already warns that
+    /// such a generation has to be adopted through a replace-installation restore — which is where the
     /// enforcement applies — before it is used.
     /// </remarks>
     private async Task<BackupRestoreProtectedStateDecision> EvaluateProtectedStateAsync(
@@ -1605,7 +1617,16 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         if (!File.Exists(stagedDatabase))
         {
 
-            return new StageResult(plan, grimoireSecret, 0, 0, []);
+            // Nothing staged, so nothing to reconcile: a replacement reports that it applied nothing.
+            return new StageResult(
+                plan,
+                grimoireSecret,
+                0,
+                0,
+                [],
+                request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
+                    ? BackupRestoreErasureApplicationReceipt.None
+                    : null);
 
         }
 
@@ -1712,9 +1733,41 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 ? "The snapshot already matches this build's declarative schema."
                 : $"Converged {beforeSchema} to {afterSchema} through the authoritative schema installer.");
 
+        // After the drain and before the Covenant arm, in both gate states: what the arm then preserves or
+        // purges is already free of everything this installation erased, and the evidence is already this
+        // installation's (§10.19.9).
+        BackupRestoreErasureApplicationReceipt? erasureReceipt = null;
+
+        if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
+        {
+
+            Result<BackupRestoreErasureApplicationReceipt> applied = await ReconcileStagedMemoryEvidenceAsync(
+                connection,
+                erasure,
+                destination.DisclosureBuckets,
+                cancellationToken).ConfigureAwait(false);
+
+            if (applied.IsFailure)
+            {
+
+                return StageResult.Failed(Issue(applied.Error));
+
+            }
+
+            erasureReceipt = applied.Value;
+
+            Record(
+                phases,
+                BackupRestorePhase.Migrate,
+                $"Applied destination erasure evidence: removed {erasureReceipt.SagaMemoriesRemoved} Saga, "
+                + $"{erasureReceipt.LexiconEntriesRemoved} Lexicon and {erasureReceipt.CovenantEntriesRemoved} "
+                + "Covenant items.");
+
+        }
+
         // Immediately after the three tiers converge and before any staged validation or destination
         // opener exists. Sanitation strips the archive's managed-file authority, the reconciliation
-        // reissues this dataset's identities and joins the destination's evidence, and the marker
+        // reissues this dataset's identities and joins the destination's authority evidence, and the marker
         // children commit in the same staged transaction — all against a candidate that has never
         // been published as live (§10.19.9).
         if (covenant is not null)
@@ -1842,7 +1895,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             grimoireSecret,
             embeddings,
             pending,
-            []);
+            [],
+            erasureReceipt);
 
     }
 
@@ -2360,22 +2414,42 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             ? secret
             : string.Empty;
 
+    /// <param name="erasure">
+    /// The staged erasure-evidence step, for a replacement that ran it; null otherwise, which reports no
+    /// erasure application.
+    /// </param>
+    /// <remarks>
+    /// When the destination held evidence, the committed generation is matched against it again on the
+    /// connection this already opens: an erased item found there, or a key no longer in hand, makes the
+    /// restore require an operator rather than report itself complete (§10.19.9).
+    /// </remarks>
     private async Task<BackupRestoreReconciliation> ReconcileAsync(
         BackupRestoreRequest request,
         string destinationRoot,
         string grimoireSecret,
         long embeddingsToRebuild,
         long pendingCleared,
+        StagedErasure? erasure,
         CancellationToken cancellationToken)
     {
 
         string databasePath = Path.Combine(destinationRoot, "arcanum.db");
 
+        bool proves = erasure is { Destination.Kind: BackupRestoreErasureEvidenceKind.Present };
+
         if (request.ConflictMode == BackupRestoreConflictMode.NewProfileRoot
             || !File.Exists(databasePath))
         {
 
-            return new BackupRestoreReconciliation(0, 0, 0, 0, embeddingsToRebuild, pendingCleared, []);
+            return new BackupRestoreReconciliation(
+                0,
+                0,
+                0,
+                0,
+                embeddingsToRebuild,
+                pendingCleared,
+                [],
+                erasure is null ? null : ErasureApplication(erasure, committedClean: !proves));
 
         }
 
@@ -2390,6 +2464,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 .ReconcileAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
 
+            bool committedClean = !proves
+                || await ProveCommittedAbsenceAsync(connection, erasure!.Destination, cancellationToken)
+                    .ConfigureAwait(false);
+
             return new BackupRestoreReconciliation(
                 counts.Attachments,
                 counts.StaleAttachmentSources,
@@ -2397,7 +2475,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 counts.BatchFiles,
                 embeddingsToRebuild,
                 pendingCleared,
-                []);
+                committedClean ? [] : [CommittedMatchIssue],
+                erasure is null ? null : ErasureApplication(erasure, committedClean));
 
         }
         catch (Exception exception) when (
@@ -2417,7 +2496,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 [
                     "The restored generation is committed but could not be re-opened for "
                     + "post-commit reconciliation.",
-                ]);
+                ],
+                erasure is null ? null : ErasureApplication(erasure, committedClean: !proves));
 
         }
 
@@ -2849,12 +2929,17 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         bool Restored,
         string? Diagnostics);
 
+    /// <param name="Erasure">
+    /// What the staged erasure-evidence step did, for a replacement; null for every other mode, which
+    /// never runs it.
+    /// </param>
     private sealed record StageResult(
         BackupRestorePlan Plan,
         string GrimoireSecret,
         long EmbeddingsToRebuild,
         long PendingOperationsCleared,
-        BackupVerifyIssue[] Issues)
+        BackupVerifyIssue[] Issues,
+        BackupRestoreErasureApplicationReceipt? Erasure = null)
     {
 
         public static StageResult Failed(BackupVerifyIssue issue) =>

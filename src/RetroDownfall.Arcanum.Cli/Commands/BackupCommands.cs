@@ -812,6 +812,13 @@ internal sealed class BackupCommands(
                 + $"{FormatCount(reconciliation.EmbeddingsToRebuild)} embeddings to rebuild, "
                 + $"{FormatCount(reconciliation.PendingOperationsCleared)} pending operations cleared");
 
+            if (reconciliation.ErasureApplication is { } erasure)
+            {
+
+                dispatcher.WritePayload(DescribeErasureApplication(erasure));
+
+            }
+
             foreach (string issue in reconciliation.Issues)
             {
 
@@ -1202,6 +1209,19 @@ internal sealed class BackupCommands(
         value.ToString("N0", CultureInfo.InvariantCulture);
 
     /// <summary>
+    /// States what a restore did with this installation's erasure evidence, in counts only, and whether the
+    /// local scrub behind it is proven.
+    /// </summary>
+    private static string DescribeErasureApplication(BackupRestoreErasureApplication erasure) =>
+        $"Erasure applied: removed {FormatCount(erasure.SagaMemoriesRemoved)} Saga memories, "
+        + $"{FormatCount(erasure.LexiconEntriesRemoved)} Lexicon entries, "
+        + $"{FormatCount(erasure.CovenantEntriesRemoved)} Covenant entries and "
+        + $"{FormatCount(erasure.RetirementPairsRemoved)} retirement pairs; "
+        + $"joined {FormatCount(erasure.FingerprintsJoined)} fingerprints and {FormatCount(erasure.ReceiptsJoined)} receipts; "
+        + $"dropped {FormatCount(erasure.ArchiveRowsDropped)} archive rows; "
+        + $"local scrub {BackupCliCatalog.Format(erasure.Scrub)}";
+
+    /// <summary>
     /// States what the destination's erasure evidence means for this restore, in counts only.
     /// </summary>
     /// <remarks>
@@ -1367,6 +1387,15 @@ internal static class BackupCliCatalog
             BackupRestoreErasureEvidenceStatus.None => "none",
             BackupRestoreErasureEvidenceStatus.Present => "present",
             BackupRestoreErasureEvidenceStatus.Refused => "could not be proven",
+            _ => status.ToString(),
+        };
+
+    public static string Format(BackupRestoreErasureScrubStatus status) =>
+        status switch
+        {
+            BackupRestoreErasureScrubStatus.Verified => "verified",
+            BackupRestoreErasureScrubStatus.ScrubPending => "pending",
+            BackupRestoreErasureScrubStatus.NotApplicable => "not applicable",
             _ => status.ToString(),
         };
 

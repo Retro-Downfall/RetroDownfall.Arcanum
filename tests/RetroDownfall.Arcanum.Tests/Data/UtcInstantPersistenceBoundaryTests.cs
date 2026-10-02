@@ -488,6 +488,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         [
             "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AExternalSpendLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupCovenantRestoreReconciler.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreProtectedStatePurger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/RestoreStagingManagedAuthoritySanitizationSession.cs",

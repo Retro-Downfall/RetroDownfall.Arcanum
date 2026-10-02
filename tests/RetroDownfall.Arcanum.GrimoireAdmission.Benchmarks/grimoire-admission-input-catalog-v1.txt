@@ -579,6 +579,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinat
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreDatabaseWorker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreDurablePublication.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidence.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournal.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalAnchorStore.FullResetTerminal.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalAnchorStore.cs

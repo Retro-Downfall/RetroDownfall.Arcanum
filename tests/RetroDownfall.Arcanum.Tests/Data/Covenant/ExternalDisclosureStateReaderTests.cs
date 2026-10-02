@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Covenant;
@@ -219,6 +220,12 @@ public sealed class ExternalDisclosureStateReaderTests
         /// <summary>A receipt numbered past its unfolded subject's last allocated ordinal.</summary>
         StrayPastAllocation,
 
+        /// <summary>
+        /// A database restore staging wrote: a pre-fold backlog folded by the staged fold, the
+        /// destination's bucket joined in, and a live receipt folded on top after the restore.
+        /// </summary>
+        RestoreStaged,
+
     }
 
     /// <summary>
@@ -233,6 +240,7 @@ public sealed class ExternalDisclosureStateReaderTests
     [InlineData(DisclosureHistory.PartiallyFolded, 2, CovenantDisclosureCountKind.LowerBound)]
     [InlineData(DisclosureHistory.UnparseableInstant, 2, CovenantDisclosureCountKind.LowerBound)]
     [InlineData(DisclosureHistory.StrayPastAllocation, 3, CovenantDisclosureCountKind.LowerBound)]
+    [InlineData(DisclosureHistory.RestoreStaged, 4, CovenantDisclosureCountKind.LowerBound)]
     public async Task Exposure_is_the_nonrevocable_sum_of_the_effective_buckets(
         DisclosureHistory history,
         long expectedAttempts,
@@ -380,6 +388,58 @@ public sealed class ExternalDisclosureStateReaderTests
                     await ScalarAsync(
                         fixture,
                         "SELECT COUNT(*) FROM disclosure_subject_state WHERE LastFoldedOrdinal = 0 AND LastAllocatedOrdinal = 2;"));
+
+                return;
+
+            }
+
+            case DisclosureHistory.RestoreStaged:
+            {
+
+                await BacklogAsync(fixture, SubjectA, 2);
+
+                // Exactly the staged evidence step's disclosure half: fold every unfolded tail as a lower
+                // bound, then join the destination's effective bucket, in one transaction.
+                await using (SqliteTransaction staging = fixture.Connection.BeginTransaction(deferred: false))
+                {
+
+                    Assert.Equal(
+                        1,
+                        await ExternalDisclosureStateFold.FoldAllUnfoldedAsync(
+                            fixture.Connection,
+                            staging,
+                            ExternalDisclosureFoldOrigin.RestoreStaging,
+                            Token));
+
+                    Result<int> joined = await CovenantDisclosureStateJoiner.JoinIntoStagedAsync(
+                        fixture.Connection,
+                        staging,
+                        [
+                            new CovenantDisclosureState(
+                                CovenantEgressDestination.Provider,
+                                CovenantDisclosureRevocability.Nonrevocable,
+                                CovenantDisclosureCountKind.Exact,
+                                everOccurred: true,
+                                count: 3,
+                                maximumTimestamp: 1_700_000_000_000,
+                                CovenantDisclosureStateAlgebra.CreateEvidenceBloom(CovenantTask6Fixture.D(90))),
+                        ],
+                        TimeProvider.System,
+                        Token);
+
+                    Assert.True(joined.IsSuccess, joined.IsFailure ? joined.Error.Message : null);
+
+                    await staging.CommitAsync(Token);
+
+                }
+
+                Assert.Equal(
+                    0,
+                    await ScalarAsync(
+                        fixture,
+                        "SELECT COUNT(*) FROM disclosure_subject_state WHERE LastFoldedOrdinal < LastAllocatedOrdinal;"));
+
+                await AcknowledgeAsync(fixture, Draft(SubjectC, 1, 1_700_000_180_000));
 
                 return;
 

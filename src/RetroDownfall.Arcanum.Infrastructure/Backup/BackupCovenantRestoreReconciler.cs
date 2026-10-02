@@ -81,7 +81,6 @@ internal sealed record BackupCovenantRestoreReconciliationReceipt(
     ulong RetainedLabels,
     ulong UnresolvedCampaignPaths,
     ulong TerminalizedTurnClaims,
-    int JoinedDisclosureBuckets,
     CovenantHostToolsState HostToolsState,
     BackupRestoreProtectedStatePurgeReceipt? ProtectedStatePurge = null);
 
@@ -124,9 +123,14 @@ internal static class BackupCovenantRestoreReconciler
     private const long EpochCeiling = long.MaxValue;
 
     /// <summary>
-    /// Reissues this generation's identities, joins the destination's authority and disclosure
-    /// evidence into it, and retires everything the source machine left in flight.
+    /// Reissues this generation's identities, joins the destination's authority evidence into it, and
+    /// retires everything the source machine left in flight.
     /// </summary>
+    /// <remarks>
+    /// The destination's disclosure buckets are not joined here. The erasure-evidence step that runs
+    /// before this phase, in both gate states, folds the archive's disclosure tails and joins them, so a
+    /// restore with the gate off keeps this machine's disclosure accounting too (§10.19.3).
+    /// </remarks>
     /// <param name="purgeProtectedState">
     /// Whether this restore is a <c>PurgeProtectedState</c> one. The decision itself belongs to
     /// <see cref="BackupRestoreProtectedStatePolicy"/> and was already made — before the staged tree
@@ -184,22 +188,11 @@ internal static class BackupCovenantRestoreReconciler
             return authority.Error;
         }
 
-        Result<int> disclosure = await JoinDisclosureAsync(
-            staged,
-            transaction,
-            destination.DisclosureBuckets,
-            timeProvider,
-            cancellationToken).ConfigureAwait(false);
-
-        if (disclosure.IsFailure)
-        {
-            return disclosure.Error;
-        }
-
-        // After both joins and before the reissue. The joins are what carry this machine's own taint and
-        // its nonrevocable disclosure counts into the generation it is about to adopt, and a purge that
-        // ran before them would have nothing to preserve; one that ran after the reissue would leave the
-        // fresh generation stamped onto rows that are about to be deleted anyway.
+        // After both joins and before the reissue. The joins, the authority one above and the disclosure
+        // one the evidence step already committed, are what carry this machine's own taint and its
+        // nonrevocable disclosure counts into the generation it is about to adopt, and a purge that ran
+        // before them would have nothing to preserve; one that ran after the reissue would leave the fresh
+        // generation stamped onto rows that are about to be deleted anyway.
         BackupRestoreProtectedStatePurgeReceipt? purged = null;
 
         if (purgeProtectedState)
@@ -255,7 +248,6 @@ internal static class BackupCovenantRestoreReconciler
                 : labels.Value - Math.Min(labels.Value, purged.RemovedLabels),
             unresolved,
             claims,
-            disclosure.Value,
             authority.Value,
             purged);
     }
@@ -442,29 +434,6 @@ internal static class BackupCovenantRestoreReconciler
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         return joined.Value.HostToolsState;
-    }
-
-    private static async Task<Result<int>> JoinDisclosureAsync(
-        SqliteConnection staged,
-        SqliteTransaction transaction,
-        IReadOnlyList<CovenantDisclosureState> destinationBuckets,
-        TimeProvider timeProvider,
-        CancellationToken cancellationToken)
-    {
-        if (destinationBuckets.Count == 0
-            || !await BackupRestoreDatabaseWorker
-                .TableExistsAsync(staged, "external_disclosure_state", cancellationToken, transaction)
-                .ConfigureAwait(false))
-        {
-            return 0;
-        }
-
-        return await CovenantDisclosureStateJoiner.JoinIntoStagedAsync(
-            staged,
-            transaction,
-            destinationBuckets,
-            timeProvider,
-            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

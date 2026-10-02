@@ -263,7 +263,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     }
 
     [Fact]
-    public async Task A_restore_that_never_enabled_the_gate_behaves_exactly_as_it_always_did()
+    /// <summary>
+    /// With the gate off no Covenant owner is ever acquired. The restore still applies this installation's
+    /// erasure evidence and joins its disclosure accounting, because neither belongs to the Covenant arm.
+    /// </summary>
+    public async Task A_restore_that_never_enabled_the_gate_acquires_no_covenant_owner()
     {
 
         Harness harness = await CreateHarnessAsync(covenant: false);

@@ -1,8 +1,12 @@
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -170,7 +174,164 @@ internal sealed partial class BackupRestoreService
         };
     }
 
+    /// <summary>The issue a post-commit match adds to the reconciliation, which makes it require an operator.</summary>
+    private const string CommittedMatchIssue =
+        BackupRestoreErasureCodes.VerificationFailed + ": an erased item is present in the committed generation.";
+
+    /// <summary>
+    /// Applies this installation's erasure evidence to the staged generation in one <c>BEGIN IMMEDIATE</c>,
+    /// commits it, and truncates the staged write-ahead log (§10.19.9).
+    /// </summary>
+    /// <remarks>
+    /// <para>Runs for every replace-installation restore with a staged Grimoire, with the Covenant gate on or
+    /// off, after the drain and before the Covenant arm, so what the arm then preserves or purges is already
+    /// free of everything this installation erased.</para>
+    ///
+    /// <para>The key is the one this restore's destination read already latched in this provider, so taking
+    /// a copy is no keychain I/O and happens before <c>BEGIN</c>; a latched key that is not the one that
+    /// recorded the evidence refuses. The transaction runs under family maintenance and the retention-purge
+    /// authorization, never the entry-erasure kind, which an older staged canonical tier does not know.</para>
+    /// </remarks>
+    private async Task<Result<BackupRestoreErasureApplicationReceipt>> ReconcileStagedMemoryEvidenceAsync(
+        SqliteConnection staged,
+        BackupRestoreErasureEvidence destination,
+        IReadOnlyList<CovenantDisclosureState> destinationDisclosure,
+        CancellationToken cancellationToken)
+    {
+        bool present = destination.Kind is BackupRestoreErasureEvidenceKind.Present;
+
+        using MemoryErasureKey? key = present ? _erasureKeys.TryCopyLatched() : null;
+
+        if (present && (key is null || !key.HasKeyId(destination.KeyId)))
+        {
+            BackupVerifyIssue missing = BackupRestoreErasureEvidence.Refused(BackupRestoreErasureCodes.KeyMissing, null).Refusal!;
+
+            return new Error(missing.Code, missing.Message);
+        }
+
+        Result<BackupRestoreErasureApplicationReceipt> applied;
+
+        using (CovenantSqliteConnectionInitializer.Instance.Authorize(staged, CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance))
+        using (CovenantSqliteConnectionInitializer.Instance.Authorize(staged, CovenantSqliteAuthorizationKind.SensitivityRetentionPurge))
+        {
+            await using SqliteTransaction transaction = staged.BeginTransaction(deferred: false);
+
+            applied = await BackupRestoreErasureEvidenceApplier
+                .ApplyAsync(
+                    staged,
+                    transaction,
+                    destination,
+                    key,
+                    destinationDisclosure,
+                    _timeProvider,
+                    _options.AfterErasurePurgeForTests,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (applied.IsFailure)
+            {
+                return applied.Error;
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        Result<CovenantWalCheckpointOutcome> checkpoint = await GrimoireWalCheckpoint
+            .TruncateAsync(staged, cancellationToken)
+            .ConfigureAwait(false);
+
+        return applied.Value with { CheckpointTruncated = checkpoint.IsSuccess && checkpoint.Value.IsTruncated };
+    }
+
+    /// <summary>
+    /// Deletes the archive's extracted database, and its write-ahead log and shared memory, the moment the
+    /// staged tree no longer needs them, and checks that none of the three remains.
+    /// </summary>
+    /// <remarks>
+    /// The extraction holds the archive exactly as it was, erased items included, and nothing after the
+    /// staged tree is composed reads it; only the recovery material beside it is still read, after commit.
+    /// A file that cannot be removed is not a refusal: the result's scrub status reports it instead.
+    /// </remarks>
+    /// <returns>Whether all three files are gone.</returns>
+    private static bool DeleteExtractedDatabase(string extractRoot)
+    {
+        string database = Path.Combine(
+            extractRoot,
+            BackupArchivePaths.GrimoireDatabase.Replace('/', Path.DirectorySeparatorChar));
+
+        string[] files = [database, database + "-wal", database + "-shm"];
+
+        foreach (string file in files)
+        {
+            try
+            {
+                File.Delete(file);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return files.All(static file => !File.Exists(file));
+    }
+
+    /// <summary>
+    /// Proves the committed generation holds nothing this installation erased, on a connection the caller
+    /// already has open, with the key this restore latched.
+    /// </summary>
+    /// <returns>False when an archived row matches, when the match cannot be made, or when no key is in hand.</returns>
+    private async Task<bool> ProveCommittedAbsenceAsync(
+        SqliteConnection committed,
+        BackupRestoreErasureEvidence destination,
+        CancellationToken cancellationToken)
+    {
+        using MemoryErasureKey? key = _erasureKeys.TryCopyLatched();
+
+        if (key is null || !key.HasKeyId(destination.KeyId))
+        {
+            return false;
+        }
+
+        Result<BackupRestoreErasureMatches> matches = await BackupRestoreErasureEvidenceApplier
+            .FindMatchesAsync(committed, null, key, destination.Rows, cancellationToken)
+            .ConfigureAwait(false);
+
+        return matches.IsSuccess && matches.Value.IsEmpty;
+    }
+
+    /// <summary>What a restore reports it did with the destination's erasure evidence, scrub status included.</summary>
+    /// <param name="committedClean">Whether the post-commit proof held, or had nothing to prove.</param>
+    private static BackupRestoreErasureApplication ErasureApplication(StagedErasure erasure, bool committedClean)
+    {
+        BackupRestoreErasureApplicationReceipt receipt = erasure.Receipt;
+
+        BackupRestoreErasureScrubStatus scrub = !receipt.Touched
+            ? BackupRestoreErasureScrubStatus.NotApplicable
+            : receipt.FullTextVerified && receipt.CheckpointTruncated && erasure.ExtractedDatabaseDeleted && committedClean
+                ? BackupRestoreErasureScrubStatus.Verified
+                : BackupRestoreErasureScrubStatus.ScrubPending;
+
+        return new BackupRestoreErasureApplication(
+            receipt.SagaMemoriesRemoved,
+            receipt.LexiconEntriesRemoved,
+            receipt.CovenantEntriesRemoved,
+            receipt.RetirementPairsRemoved,
+            receipt.FingerprintsJoined,
+            receipt.ReceiptsJoined,
+            receipt.ArchiveRowsDropped,
+            scrub);
+    }
+
     private static bool RecordedBy(MemoryErasureEvidenceSnapshot rows, MemoryErasureKey key) =>
         rows.Fingerprints.All(row => key.HasKeyId(row.KeyId))
         && rows.Receipts.All(row => key.HasKeyId(row.KeyId));
+
+    /// <summary>
+    /// The staged evidence step as the post-commit reconciliation needs it: the destination read it applied,
+    /// its receipt, and whether the extracted archive database was removed.
+    /// </summary>
+    private sealed record StagedErasure(
+        BackupRestoreErasureEvidence Destination,
+        BackupRestoreErasureApplicationReceipt Receipt,
+        bool ExtractedDatabaseDeleted);
 }

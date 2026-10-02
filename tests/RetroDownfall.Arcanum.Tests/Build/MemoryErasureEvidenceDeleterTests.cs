@@ -34,11 +34,12 @@ public sealed class MemoryErasureEvidenceDeleterTests
 
     /// <summary>
     /// Closed. Release and every operator re-creation delete through the one fingerprint-release file,
-    /// and reset-key is the one caller of the unverifiable-row delete; restore staging adds itself when
-    /// it exists. Nothing else.
+    /// reset-key is the one caller of the unverifiable-row delete, and restore staging's evidence step is
+    /// the one caller of the destination-authoritative replacement. Nothing else.
     /// </summary>
     internal static readonly string[] AllowedCallers =
     [
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs",
         "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs",
         "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureAdministration.cs",
     ];

@@ -2007,11 +2007,11 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupRestoreService.PrepareStagedGenerationAsync(13)", 0)),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "ReconcileAsync(6)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(databasePath,grimoireSecret,readOnly:true,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "ReconcileAsync(7)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(databasePath,grimoireSecret,readOnly:true,cancellationToken)"),
             GrimoirePathAuthority.RestoreOrCompactionStaging,
             GrimoireAcquisitionKind.StagingOrArchive,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
-            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupRestoreService.ReconcileAsync(6)", 0)),
+            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupRestoreService.ReconcileAsync(7)", 0)),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "ReadDestinationSchemaAsync(1)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(_paths.DatabasePath,secret.Value,readOnly:true,cancellationToken)"),

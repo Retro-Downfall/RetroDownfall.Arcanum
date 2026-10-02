@@ -70,6 +70,7 @@ public sealed class MemoryErasureStructuralTests
         "Data/Covenant/ExternalDisclosureStateReader.cs",
         "Data/Covenant/ExternalDisclosureStateStore.cs",
         "Backup/BackupRestoreErasureEvidence.cs",
+        "Backup/BackupRestoreErasureEvidenceApplier.cs",
         "Backup/BackupRestoreService.ErasureEvidence.cs",
         "Backup/BackupRestoreSchemaDrain.cs",
     ];
