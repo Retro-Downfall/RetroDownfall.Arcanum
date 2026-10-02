@@ -44,6 +44,32 @@ internal sealed record MemoryErasureEvidenceCounts(
     long PendingScrubReceipts,
     IReadOnlyList<long> UnverifiableStoreReceipts);
 
+/// <summary>One erasure fingerprint, column for column.</summary>
+internal sealed record MemoryErasureFingerprintRow(byte[] Fingerprint, MemoryReviewStore Store, byte[] KeyId);
+
+/// <summary>One subject an erasure receipt names, column for column.</summary>
+internal sealed record MemoryErasureReceiptSubjectRow(Guid MutationId, byte[] SubjectDigest);
+
+/// <summary>Every evidence row an installation holds, read as values in one snapshot.</summary>
+/// <remarks>
+/// Values rather than a handle, so a restore can carry a destination's evidence across work on another
+/// database without holding the destination open. Each list is in primary-key order.
+/// </remarks>
+internal sealed record MemoryErasureEvidenceSnapshot(
+    IReadOnlyList<MemoryErasureFingerprintRow> Fingerprints,
+    IReadOnlyList<MemoryErasureReceiptRow> Receipts,
+    IReadOnlyList<MemoryErasureReceiptSubjectRow> Subjects)
+{
+    /// <summary>A catalog that holds no evidence.</summary>
+    internal static MemoryErasureEvidenceSnapshot Empty { get; } = new([], [], []);
+
+    /// <summary>
+    /// Whether any fingerprint or receipt exists. A receipt alone counts: its fingerprint may have been
+    /// released while the record of the erasure was kept.
+    /// </summary>
+    internal bool HasRows => Fingerprints.Count > 0 || Receipts.Count > 0;
+}
+
 /// <summary>
 /// The only reader and writer of the erasure evidence tables: fingerprints, receipts, and receipt
 /// subjects.
@@ -403,29 +429,7 @@ internal static class MemoryErasureEvidence
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            return null;
-        }
-
-        return new MemoryErasureReceiptRow(
-            Guid.ParseExact(reader.GetString(0), "D"),
-            (MemoryReviewStore)reader.GetInt32(1),
-            (byte[])reader.GetValue(2),
-            (byte[])reader.GetValue(3),
-            (byte[])reader.GetValue(4),
-            reader.GetInt32(5),
-            reader.GetInt64(6),
-            reader.GetInt32(7),
-            reader.GetInt32(8),
-            (MemoryExternalEvidence)reader.GetInt32(9),
-            (MemoryExternalEvidence)reader.GetInt32(10),
-            (MemoryExternalEvidence)reader.GetInt32(11),
-            (MemoryExternalEvidence)reader.GetInt32(12),
-            (MemoryExternalEvidence)reader.GetInt32(13),
-            reader.GetInt32(14),
-            reader.GetInt32(15),
-            reader.GetInt32(16));
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadReceiptRow(reader) : null;
     }
 
     /// <summary>Whether any receipt records this subject as erased.</summary>
@@ -631,6 +635,83 @@ internal static class MemoryErasureEvidence
         return pending;
     }
 
+    /// <summary>Reads every fingerprint, receipt and receipt subject as values, each in primary-key order.</summary>
+    /// <remarks>
+    /// Three statements, so they are one snapshot only inside the caller's transaction: a restore reads
+    /// its destination under one <c>BEGIN DEFERRED</c>, and a read outside one could see a receipt
+    /// without the subjects committed beside it.
+    /// </remarks>
+    /// <returns>The rows, or null when the catalog cannot hold evidence.</returns>
+    internal static async Task<MemoryErasureEvidenceSnapshot?> ReadSnapshotAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        List<MemoryErasureFingerprintRow> fingerprints = [];
+
+        await using (SqliteCommand command = Command(
+            connection,
+            transaction,
+            "SELECT Fingerprint, StoreCode, KeyId FROM memory_erasure_fingerprints ORDER BY Fingerprint;"))
+        {
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                fingerprints.Add(new MemoryErasureFingerprintRow(
+                    (byte[])reader.GetValue(0),
+                    (MemoryReviewStore)reader.GetInt32(1),
+                    (byte[])reader.GetValue(2)));
+            }
+        }
+
+        List<MemoryErasureReceiptRow> receipts = [];
+
+        await using (SqliteCommand command = Command(
+            connection,
+            transaction,
+            """
+            SELECT MutationId, StoreCode, KeyId, RequestDigest, EffectDigest,
+                   ErasedItemCount, RemovedRowCount, RemovedLabelCount, RemovedRetirementSuppressionCount,
+                   AuthorshipEvidenceCode, ContextEvidenceCode, EmbeddingEvidenceCode, BackupEvidenceCode,
+                   OtherExternalEvidenceCode, RetainedCopiesMask, ScrubStateCode, ScrubPendingReasonMask
+            FROM memory_erasure_receipts
+            ORDER BY MutationId;
+            """))
+        {
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                receipts.Add(ReadReceiptRow(reader));
+            }
+        }
+
+        List<MemoryErasureReceiptSubjectRow> subjects = [];
+
+        await using (SqliteCommand command = Command(
+            connection,
+            transaction,
+            "SELECT MutationId, SubjectDigest FROM memory_erasure_receipt_subjects ORDER BY MutationId, SubjectDigest;"))
+        {
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                subjects.Add(new MemoryErasureReceiptSubjectRow(
+                    Guid.ParseExact(reader.GetString(0), "D"),
+                    (byte[])reader.GetValue(1)));
+            }
+        }
+
+        return new MemoryErasureEvidenceSnapshot(fingerprints, receipts, subjects);
+    }
+
     /// <summary>
     /// Discards every fingerprint and receipt recorded under a key other than
     /// <paramref name="currentKeyId"/>. The discarded receipts' subjects go with them.
@@ -680,6 +761,27 @@ internal static class MemoryErasureEvidence
 
         return command;
     }
+
+    /// <summary>The receipt on the reader's current row, whose columns are in <see cref="MemoryErasureReceiptRow"/>'s order.</summary>
+    private static MemoryErasureReceiptRow ReadReceiptRow(SqliteDataReader reader) =>
+        new(
+            Guid.ParseExact(reader.GetString(0), "D"),
+            (MemoryReviewStore)reader.GetInt32(1),
+            (byte[])reader.GetValue(2),
+            (byte[])reader.GetValue(3),
+            (byte[])reader.GetValue(4),
+            reader.GetInt32(5),
+            reader.GetInt64(6),
+            reader.GetInt32(7),
+            reader.GetInt32(8),
+            (MemoryExternalEvidence)reader.GetInt32(9),
+            (MemoryExternalEvidence)reader.GetInt32(10),
+            (MemoryExternalEvidence)reader.GetInt32(11),
+            (MemoryExternalEvidence)reader.GetInt32(12),
+            (MemoryExternalEvidence)reader.GetInt32(13),
+            reader.GetInt32(14),
+            reader.GetInt32(15),
+            reader.GetInt32(16));
 
     /// <summary>Reads an <c>EXISTS</c>, refusing anything but 0 or 1 rather than reading it as absence.</summary>
     private static async Task<bool> ExistsAsync(SqliteCommand command, CancellationToken cancellationToken) =>

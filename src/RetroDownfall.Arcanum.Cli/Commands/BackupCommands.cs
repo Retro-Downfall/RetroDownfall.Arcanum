@@ -728,6 +728,13 @@ internal sealed class BackupCommands(
 
         }
 
+        if (plan.DestinationErasureEvidence is BackupRestoreErasureEvidenceSummary erasure)
+        {
+
+            dispatcher.WritePayload(DescribeErasureEvidence(erasure));
+
+        }
+
         foreach (BackupComponent component in plan.Components)
         {
 
@@ -1194,6 +1201,27 @@ internal sealed class BackupCommands(
     private static string FormatCount(long value) =>
         value.ToString("N0", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// States what the destination's erasure evidence means for this restore, in counts only.
+    /// </summary>
+    /// <remarks>
+    /// Present evidence is spelled out as what it does, because a rehearsal is the operator's chance to
+    /// learn that archived items will not all come back. A refusal is spelled out as what it stops; its
+    /// blocker, printed with the others, names the ways out.
+    /// </remarks>
+    private static string DescribeErasureEvidence(BackupRestoreErasureEvidenceSummary erasure) =>
+        "Erasure evidence: "
+        + BackupCliCatalog.Format(erasure.Status)
+        + erasure.Status switch
+        {
+            BackupRestoreErasureEvidenceStatus.Present =>
+                $" ({FormatCount(erasure.SagaFingerprints)} Saga, {FormatCount(erasure.LexiconFingerprints)} Lexicon, "
+                + $"{FormatCount(erasure.CovenantFingerprints)} Covenant fingerprints; "
+                + $"{FormatCount(erasure.Receipts)} receipts); archived items that match are removed before commit",
+            BackupRestoreErasureEvidenceStatus.Refused => "; this restore is blocked",
+            _ => string.Empty,
+        };
+
 }
 
 internal static class BackupCliCatalog
@@ -1332,6 +1360,15 @@ internal static class BackupCliCatalog
 
     public static string Format(BackupProtectedStateMode mode) =>
         ProtectedStateModes.FirstOrDefault(pair => pair.Value == mode).Key ?? mode.ToString();
+
+    public static string Format(BackupRestoreErasureEvidenceStatus status) =>
+        status switch
+        {
+            BackupRestoreErasureEvidenceStatus.None => "none",
+            BackupRestoreErasureEvidenceStatus.Present => "present",
+            BackupRestoreErasureEvidenceStatus.Refused => "could not be proven",
+            _ => status.ToString(),
+        };
 
     public static string Format(BackupRestoreStatus status) =>
         status switch

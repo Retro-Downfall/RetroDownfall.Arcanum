@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.Memory;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -30,7 +32,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// a process death has exactly three possible outcomes: the old tree, the new tree, or a journal
 /// naming which one to finish. Never a mixture.
 /// </remarks>
-internal sealed class BackupRestoreService : IBackupRestoreService
+internal sealed partial class BackupRestoreService : IBackupRestoreService
 {
 
     private readonly BackupStatePaths _paths;
@@ -47,6 +49,12 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     private readonly GrimoireSchemaInstaller _schemaInstaller;
 
+    /// <summary>
+    /// The read-only port onto this installation's erasure key: a restore reads the destination's key to
+    /// prove its evidence and never creates one.
+    /// </summary>
+    private readonly IMemoryErasureKeyProvider _erasureKeys;
+
     private readonly InstallationMaintenanceCoordination? _maintenanceCoordination;
 
     /// <summary>
@@ -62,6 +70,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         Func<IBackupService>? safetyBackupFactory,
         TimeProvider timeProvider,
         GrimoireSchemaInstaller schemaInstaller,
+        IMemoryErasureKeyProvider erasureKeys,
         BackupRestoreServiceOptions? options = null,
         InstallationMaintenanceCoordination? maintenanceCoordination = null)
     {
@@ -78,6 +87,9 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         _schemaInstaller = schemaInstaller
             ?? throw new ArgumentNullException(nameof(schemaInstaller));
+
+        _erasureKeys = erasureKeys
+            ?? throw new ArgumentNullException(nameof(erasureKeys));
 
         _options = options ?? new BackupRestoreServiceOptions();
 
@@ -636,6 +648,29 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         string destinationSchema = await ReadDestinationSchemaAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        // Only a replacement displaces this installation's Grimoire, and with it the record of what was
+        // erased here, so only a replacement reads that record. The maintenance lock gates it for the same
+        // reason it gates the Campaign read above: the read opens the live database. A destination that
+        // cannot prove its erasures is a blocker, never a plan that proceeds as if there were none.
+        BackupRestoreErasureEvidenceSummary? destinationErasure = null;
+
+        if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation && maintenanceAcquired)
+        {
+
+            BackupRestoreErasureEvidence erasure = await ReadDestinationErasureEvidenceAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (erasure.Refusal is { } refusal)
+            {
+
+                blockers.Add(refusal);
+
+            }
+
+            destinationErasure = erasure.ToSummary();
+
+        }
+
         bool safetyBackupPlanned =
             request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
             && request.CreateSafetyBackup
@@ -660,6 +695,15 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 "A new-profile restore installs data only. Local secret protection is not written for "
                 + "another root, so adopt this generation with a replace-installation restore before "
                 + "using it.");
+
+            // A new profile root is outside every erasure arm: nothing this installation erased is
+            // removed from the generation it installs there.
+            if (HoldsErasureKey())
+            {
+
+                warnings.Add(NewProfileRootErasureWarning);
+
+            }
 
         }
 
@@ -704,7 +748,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             [.. warnings.Distinct(StringComparer.Ordinal)],
             [.. blockers],
             request.ProtectedStateMode,
-            exposure);
+            exposure,
+            destinationErasure);
 
     }
 
@@ -891,6 +936,31 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         {
 
             _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.Stage);
+
+            // Read again rather than trusted from the plan, and before any extraction directory exists:
+            // evidence that changed or became unreadable since the plan is caught here, while there is
+            // still nothing to undo. A Present latch is never re-probed, so the key this read holds is the
+            // one the plan proved.
+            BackupRestoreErasureEvidence erasure = BackupRestoreErasureEvidence.None;
+
+            if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
+            {
+
+                erasure = await ReadDestinationErasureEvidenceAsync(cancellationToken).ConfigureAwait(false);
+
+                if (erasure.Refusal is { } refusal)
+                {
+
+                    return Rejected(operationId, plan, phases, [refusal]);
+
+                }
+
+                Record(
+                    phases,
+                    BackupRestorePhase.Stage,
+                    $"Destination erasure evidence: {erasure.ToSummary().Status}.");
+
+            }
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagedRoot);
 

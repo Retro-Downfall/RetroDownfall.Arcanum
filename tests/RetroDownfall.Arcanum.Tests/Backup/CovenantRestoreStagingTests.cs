@@ -707,6 +707,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 safetyBackupFactory: null,
                 TimeProvider.System,
                 GrimoireSchemaTestInstaller.Create(),
+                new MemoryErasureKeyring(credentials),
                 options);
 
         }

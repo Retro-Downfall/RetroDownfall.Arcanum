@@ -1993,6 +1993,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.NegativeNonDatabaseProof, "BackupRestoreJournalAnchorStore.OpenEnvelope(3)", 0)),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.ErasureEvidence.cs", "BackupRestoreService", "ReadDestinationErasureEvidenceAsync(1)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(_paths.DatabasePath,secret.Value,readOnly:true,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "PrepareStagedGenerationAsync(12)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(stagedDatabase,grimoireSecret,readOnly:false,cancellationToken)"),
             GrimoirePathAuthority.RestoreOrCompactionStaging,
             GrimoireAcquisitionKind.StagingOrArchive,

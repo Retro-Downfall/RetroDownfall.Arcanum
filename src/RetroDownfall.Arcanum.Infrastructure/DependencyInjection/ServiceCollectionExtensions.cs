@@ -699,6 +699,10 @@ public static class ServiceCollectionExtensions
                 serviceProvider.GetRequiredService<IBackupService>,
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<GrimoireSchemaInstaller>(),
+
+                // The read-only port alone: a restore reads the destination's erasure key and never
+                // creates one, and it is resolved whether or not the Covenant arm is composed below.
+                serviceProvider.GetRequiredService<IMemoryErasureKeyProvider>(),
                 new BackupRestoreServiceOptions
                 {
                     EmbeddingDimensions = ArcanumSettingClamps.EmbeddingsDimensions(

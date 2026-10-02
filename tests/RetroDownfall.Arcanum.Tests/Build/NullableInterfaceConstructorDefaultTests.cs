@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Memory;
 
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -354,6 +356,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
         typeof(LexiconService),
         typeof(CovenantMutationKernel),
         typeof(CovenantStore),
+        typeof(BackupRestoreService),
     };
 
     /// <summary>

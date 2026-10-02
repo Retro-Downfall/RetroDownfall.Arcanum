@@ -262,9 +262,52 @@ public sealed record BackupRestoreDisclosureExposure(
 }
 
 /// <summary>
+/// What a replace-installation restore found when it read this installation's erasure evidence.
+/// </summary>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupRestoreErasureEvidenceStatus>))]
+public enum BackupRestoreErasureEvidenceStatus
+{
+
+    /// <summary>This installation holds no erasure evidence, or provably none it could have committed.</summary>
+    None = 1,
+
+    /// <summary>
+    /// This installation holds erasure evidence and the key that recorded it, so archived items it
+    /// erased can be recognized.
+    /// </summary>
+    Present = 2,
+
+    /// <summary>
+    /// This installation's Grimoire or keychain could not prove what it erased, so the restore is blocked.
+    /// </summary>
+    Refused = 3,
+
+}
+
+/// <summary>
+/// The destination's erasure evidence as a restore plan reports it: a status and content-free counts.
+/// </summary>
+/// <remarks>
+/// Counts only, never a fingerprint or a key identifier, so a plan can be printed, logged, or handed to
+/// automation without becoming a way to test a guess about what was erased. A
+/// <see cref="BackupRestoreErasureEvidenceStatus.Refused"/> summary carries whatever counts the Grimoire
+/// yielded before the key refused them, or zeros when the Grimoire could not be read at all.
+/// </remarks>
+public sealed record BackupRestoreErasureEvidenceSummary(
+    BackupRestoreErasureEvidenceStatus Status,
+    long SagaFingerprints,
+    long LexiconFingerprints,
+    long CovenantFingerprints,
+    long Receipts);
+
+/// <summary>
 /// Everything a restore learned before it was allowed to mutate anything. <c>--dry-run</c> returns
 /// exactly this plan, so a rehearsal and a real restore agree on scope, capacity, and refusals.
 /// </summary>
+/// <param name="DestinationErasureEvidence">
+/// This installation's erasure evidence, for a replace-installation plan that held the maintenance lock;
+/// null for every other plan, which never reads it.
+/// </param>
 public sealed record BackupRestorePlan(
     DateTimeOffset GeneratedAt,
     string ArchivePath,
@@ -287,7 +330,8 @@ public sealed record BackupRestorePlan(
     string[] Warnings,
     BackupVerifyIssue[] Blockers,
     BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
-    BackupRestoreDisclosureExposure? DestinationDisclosure = null);
+    BackupRestoreDisclosureExposure? DestinationDisclosure = null,
+    BackupRestoreErasureEvidenceSummary? DestinationErasureEvidence = null);
 
 /// <summary>Post-commit reconciliation counts. Nothing here is allowed to silently skip a file.</summary>
 /// <param name="EmbeddingsToRebuild">
