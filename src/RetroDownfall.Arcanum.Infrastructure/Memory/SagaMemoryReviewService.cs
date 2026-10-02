@@ -169,6 +169,10 @@ internal sealed class SagaMemoryReviewService(
 
                 SagaReviewItemDto[] items = new SagaReviewItemDto[rows.Count];
 
+                // Read once, so every item on one page is judged under the same retrieval policy: the
+                // gate retrieval reads, which decides whether unresolved ownership withholds a memory.
+                bool campaignScopingEnforced = options.CurrentValue.Features.CampaignScopedMemory;
+
                 for (int index = 0; index < rows.Count; index++)
                 {
                     SagaReviewEvent row = rows[index];
@@ -177,6 +181,7 @@ internal sealed class SagaMemoryReviewService(
                         connection,
                         transaction,
                         row.SubjectId,
+                        campaignScopingEnforced,
                         cancellationToken).ConfigureAwait(false);
 
                     if (current?.Claim is not { } claim
@@ -1922,6 +1927,7 @@ internal sealed class SagaMemoryReviewService(
         DbConnection connection,
         DbTransaction transaction,
         string subjectId,
+        bool campaignScopingEnforced,
         CancellationToken cancellationToken)
     {
         SagaMemoryDto memory;
@@ -2003,7 +2009,8 @@ internal sealed class SagaMemoryReviewService(
         SagaMemoryLifecycle lifecycle = new(memory.RetiredAtUtc, memory.PinnedAtUtc);
 
         SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
-            new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding));
+            new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding),
+            campaignScopingEnforced);
 
         return new SagaReviewCurrentDto(
             memory,

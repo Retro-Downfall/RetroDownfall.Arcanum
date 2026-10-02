@@ -1286,14 +1286,17 @@ internal static class MemoryEndpoints
             }
 
             // Per memory, so a result set spanning scopes is readable: the row says which Campaign owns
-            // it, and the block on it says which scope this search drew from.
+            // it, and the block on it says which scope this search drew from. An unresolved row is listed
+            // only while Campaign scoping is off -- the listing narrows by the ownership a turn ranks by
+            // whenever scoping is on -- and a turn then ranks it like any other, so the text says when it
+            // would be withheld rather than claiming it is withheld now.
             provenance += memory.ScopeKind switch
             {
                 SagaMemoryScopeKind.Campaign => $"; campaign {memory.ScopeCampaignId:D}",
 
                 SagaMemoryScopeKind.Global => "; installation-scoped",
 
-                SagaMemoryScopeKind.LegacyUnresolved => "; ownership unresolved, retrievable nowhere",
+                SagaMemoryScopeKind.LegacyUnresolved => "; ownership unresolved, withheld from turns while Campaign scoping is on",
 
                 _ => "; ownership not yet classified",
             };
@@ -1317,7 +1320,7 @@ internal static class MemoryEndpoints
                     MemorySearchActionKind.ShowSagaMemory,
                     Saga: new MemorySagaTargetDto(memory.Id)),
                 SagaLifecycle: row.Lifecycle,
-                SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row)));
+                SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row, scope.IsEnforced)));
         }
     }
 

@@ -18,7 +18,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal sealed class SagaCurationService(
     ISagaMemoryStore store,
     IWeaveService weave,
-    IAnnalsStore annals) : ISagaCurationService
+    IAnnalsStore annals,
+    IMemoryScopeResolver scopes) : ISagaCurationService
 {
 
     /// <summary><see cref="AnnalContentDigest.ForSagaMemory"/> is a SHA-256 binding: always 32 bytes.</summary>
@@ -211,7 +212,10 @@ internal sealed class SagaCurationService(
         string id, SagaMemoryCurationRow row, CancellationToken cancellationToken)
     {
 
-        SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(row);
+        // The gate retrieval itself reads, through the seam every memory surface resolves scope with:
+        // whether unresolved ownership withholds a memory depends on whether Campaign scoping is on.
+        SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
+            row, scopes.IsCampaignScopingEnabled);
 
         AnnalClaimHead? claim = await annals
             .GetClaimAsync(AnnalSubjectStore.Saga, id, cancellationToken).ConfigureAwait(false);

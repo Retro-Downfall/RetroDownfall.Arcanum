@@ -9,26 +9,28 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// Whether a memory is currently something retrieval can hand back to a turn.
 /// </summary>
 /// <remarks>
-/// <see cref="Eligible"/> — retrievable now: not retired, its owning Session's binding resolved, and an
-/// embedding still on file.
+/// <see cref="Eligible"/> — retrievable now: not retired, an embedding still on file, and — while
+/// Campaign scoping is on — its owning Session's binding resolved.
 ///
 /// <para><see cref="Retired"/> — an operator retired this memory. That is a deliberate curation act
 /// (<c>RetiredAtUtc</c> is set), reversible by reinstating it, and unrelated to whether the row or its
 /// embedding is otherwise intact.</para>
 ///
-/// <para><see cref="OwnershipUnresolved"/> — the owning Session's binding never resolved, mirroring
-/// <see cref="SagaMemoryScopeKind.LegacyUnresolved"/>: the row supplies no scope authority, so it is
-/// retrievable in no scope at all until an operator resolves the binding. That is a different thing
-/// from <see cref="Retired"/> — nobody chose to withhold this memory, it never had standing to be
-/// reached — and a different thing from <see cref="EmbeddingMissing"/>, which is a data defect rather
-/// than a scope one.</para>
+/// <para><see cref="OwnershipUnresolved"/> — Campaign scoping is on and the owning Session's binding
+/// never resolved, mirroring <see cref="SagaMemoryScopeKind.LegacyUnresolved"/>: the row supplies no
+/// scope authority, so it is retrievable in no scope at all until an operator resolves the binding. That
+/// is a different thing from <see cref="Retired"/> — nobody chose to withhold this memory, it never had
+/// standing to be reached — and a different thing from <see cref="EmbeddingMissing"/>, which is a data
+/// defect rather than a scope one. With Campaign scoping off, retrieval does not filter by ownership,
+/// so the same memory is reported by its other rungs and is <see cref="Eligible"/> when embedded.</para>
 ///
 /// <para><see cref="EmbeddingMissing"/> — the row survives but <c>saga_memory_embeddings</c> no longer
 /// has a matching entry, so no similarity search can surface it even though nothing about its scope or
 /// curation state says it should be hidden.</para>
 ///
-/// <para>Written on the wire as its name, never its number, and a number is refused on input: a client
-/// matching <c>"Retired"</c> keeps meaning what it read if the members are ever reordered.</para>
+/// <para>Written on the wire as its name, never its number, and a number is refused when a response is
+/// read back: a client matching <c>"Retired"</c> keeps meaning what it read if the members are ever
+/// reordered.</para>
 /// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<SagaRetrievalEligibility>))]
 public enum SagaRetrievalEligibility
@@ -41,8 +43,9 @@ public enum SagaRetrievalEligibility
     Retired = 2,
 
     /// <summary>
-    /// The owning Session's binding never resolved. Retrievable in no scope at all until an operator
-    /// resolves it — not retired, and not broken.
+    /// Campaign scoping is on and the owning Session's binding never resolved. Retrievable in no scope at
+    /// all until an operator resolves it — not retired, and not broken. Never reported while scoping is
+    /// off, because retrieval then ranks the memory like any other.
     /// </summary>
     OwnershipUnresolved = 3,
 
@@ -69,7 +72,8 @@ public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifec
 /// The detail route, the review queue, and search all report eligibility, and every one of them asks
 /// here. Two ladders that agree today are two ladders that disagree after the first edit to one of
 /// them, and the disagreement would land on an operator trying to understand why a memory is not being
-/// recalled.
+/// recalled. Each caller passes the retrieval policy it reads, so the answer is the one retrieval would
+/// give under that policy rather than under one this class assumes.
 /// </remarks>
 public static class SagaRetrievalEligibilityClassifier
 {
@@ -80,7 +84,15 @@ public static class SagaRetrievalEligibilityClassifier
     /// <see cref="SagaRetrievalEligibility.EmbeddingMissing"/> would describe the wrong problem to an
     /// operator trying to understand why a memory is not being recalled.
     /// </summary>
-    public static SagaRetrievalEligibility Classify(SagaMemoryCurationRow row)
+    /// <param name="row">The memory, its lifecycle, and whether it still has an embedding.</param>
+    /// <param name="campaignScopingEnforced">
+    /// Whether retrieval filters by ownership at all — the Campaign-scoped-memory gate, read where the
+    /// caller reads every other scope decision (<see cref="MemoryScope.IsEnforced"/>,
+    /// <see cref="IMemoryScopeResolver.IsCampaignScopingEnabled"/>). Ownership is a rung only while it is
+    /// on: with it off a turn ranks unresolved memories like any other, and calling one
+    /// <see cref="SagaRetrievalEligibility.OwnershipUnresolved"/> would contradict what retrieval does.
+    /// </param>
+    public static SagaRetrievalEligibility Classify(SagaMemoryCurationRow row, bool campaignScopingEnforced)
     {
 
         ArgumentNullException.ThrowIfNull(row);
@@ -94,9 +106,12 @@ public static class SagaRetrievalEligibilityClassifier
 
         // Unclassified (an upgrade has not reached this row yet) and LegacyUnresolved (the owning
         // Session's binding never resolved, or the Session is gone) both mean the same thing to an
-        // operator: retrievable in no scope at all until someone resolves it. Global and Campaign are
-        // the only two scopes that supply real authority.
-        if (row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
+        // operator while Campaign scoping is on: retrievable in no scope at all until someone resolves
+        // it, because Global and Campaign are the only two scopes that supply real authority. With
+        // scoping off a turn ranks every embedded memory whoever owns it, so ownership withholds nothing
+        // and the memory falls through to the embedding check like any other.
+        if (campaignScopingEnforced
+            && row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
         {
 
             return SagaRetrievalEligibility.OwnershipUnresolved;

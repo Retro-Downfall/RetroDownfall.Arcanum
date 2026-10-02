@@ -226,6 +226,108 @@ public sealed class MemoryEndpointTests
         }
     }
 
+    /// <summary>
+    /// A memory whose row survives but whose embedding does not is something no turn can rank, and
+    /// both explain and search have to say so, while status keeps counting the row.
+    /// </summary>
+    /// <remarks>
+    /// Retiring a memory removes its embedding in the same transaction, so the retirement cases cannot
+    /// tell "retired" from "embedding gone"; this case removes only the embedding. It does so through
+    /// the restore worker that drops vectors taken under another width, which is how a real
+    /// installation reaches this state, rather than by deleting a row on the test's own account.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Explain_and_search_report_a_Saga_memory_whose_embedding_is_gone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        await SeedSagaMemoryAsync(factory, "mem-unembedded", "operator likes tea", sessionId: null);
+
+        Assert.True(await SagaExplainEligibleAsync(client, sessionId: null));
+
+        await DropSagaEmbeddingsTakenUnderAnotherWidthAsync(factory);
+
+        Assert.False(await SagaExplainEligibleAsync(client, sessionId: null));
+
+        using HttpResponseMessage statusResponse = await client.GetAsync("/api/memory/status");
+
+        ApiResponse<MemoryStatusDto>? status = await ReadAsync(
+            statusResponse,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.Equal(1, Assert.Single(status!.Data!.Stores, static store => store.Name == "Saga").Count);
+
+        MemorySearchResultDto hit = Assert.Single(await SearchSagaAsync(client, "tea"));
+
+        Assert.Equal("mem-unembedded", hit.SourceId);
+
+        Assert.Equal(SagaRetrievalEligibility.EmbeddingMissing, hit.SagaEligibility);
+
+        Assert.Null(hit.SagaLifecycle!.RetiredAtUtc);
+    }
+
+    /// <summary>
+    /// Whether a memory nobody resolved the ownership of can be recalled depends on whether Campaign
+    /// scoping is on, and every surface has to give the answer retrieval would.
+    /// </summary>
+    /// <remarks>
+    /// With scoping off a turn ranks every embedded memory whoever owns it, so the memory is
+    /// <c>Eligible</c> on the detail route and in search, and explain counts it. With scoping on it is
+    /// retrievable nowhere: the detail route says <c>OwnershipUnresolved</c>, search, which lists by the
+    /// same ownership a turn ranks by, does not return it, and explain does not count it.
+    ///
+    /// <para>The Session exists with no binding row, which is the state the scope classifier reads as
+    /// "ownership never resolved"; the memory is written through the store's own insert.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unresolved_ownership_is_reported_the_way_retrieval_treats_it(bool campaignScopedMemory)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory(campaignScopedMemory);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid unbound = await SeedUnboundSessionAsync(factory);
+
+        await SeedSagaMemoryAsync(factory, "mem-unresolved", "operator likes tea", unbound);
+
+        using HttpResponseMessage shown = await client.GetAsync("/api/memory/saga/mem-unresolved");
+
+        ApiResponse<SagaMemoryDetail>? detail = await ReadAsync(shown, ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
+
+        Assert.Equal(SagaMemoryScopeKind.LegacyUnresolved, detail!.Data!.Memory.ScopeKind);
+
+        MemorySearchResultDto[] hits = await SearchSagaAsync(client, "tea");
+
+        if (campaignScopedMemory)
+        {
+            Assert.Equal(SagaRetrievalEligibility.OwnershipUnresolved, detail.Data.Eligibility);
+
+            Assert.DoesNotContain(hits, static hit => hit.SourceId == "mem-unresolved");
+
+            Assert.False(await SagaExplainEligibleAsync(client, sessionId: null));
+        }
+        else
+        {
+            Assert.Equal(SagaRetrievalEligibility.Eligible, detail.Data.Eligibility);
+
+            MemorySearchResultDto hit = Assert.Single(hits);
+
+            Assert.Equal(SagaRetrievalEligibility.Eligible, hit.SagaEligibility);
+
+            Assert.DoesNotContain("retrievable nowhere", hit.Provenance, StringComparison.Ordinal);
+
+            Assert.True(await SagaExplainEligibleAsync(client, sessionId: null));
+        }
+    }
+
     [SkippableTheory]
     [InlineData(false, "purged")]
     [InlineData(true, "purged")]
@@ -1416,6 +1518,91 @@ public sealed class MemoryEndpointTests
         using HttpResponseMessage retired = await client.PostAsync($"/api/memory/saga/{id}/retire", request);
 
         Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
+
+    }
+
+    private static async Task<MemorySearchResultDto[]> SearchSagaAsync(HttpClient client, string query)
+    {
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest(query, MemorySearchScope.Saga),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        return envelope!.Data!.Results;
+
+    }
+
+    /// <summary>
+    /// Empties the Saga embedding table the way a restore does when an archive was embedded under
+    /// another width, leaving every <c>saga_memories</c> row where it was.
+    /// </summary>
+    private static async Task DropSagaEmbeddingsTakenUnderAnotherWidthAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        long removed = await RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
+            connection,
+            SagaTestDimensions + 1,
+            CancellationToken.None);
+
+        // The seeded memory's vector and nothing else; an arrangement that removed nothing would leave
+        // every assertion after it describing a memory that never lost its embedding.
+        Assert.Equal(1L, removed);
+
+    }
+
+    /// <summary>
+    /// A Session with no binding row, which the Saga scope classifier reads as "ownership never
+    /// resolved", so a memory written under it is <see cref="SagaMemoryScopeKind.LegacyUnresolved"/>.
+    /// </summary>
+    private static async Task<Guid> SeedUnboundSessionAsync(ArcanumWebApplicationFactory factory)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, NULL, 'active', $now, $now);
+            """,
+            ("$id", sessionId.ToString("D").ToUpperInvariant()),
+            ("$now", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+                .ToString("o", System.Globalization.CultureInfo.InvariantCulture)));
+
+        return sessionId;
 
     }
 

@@ -301,6 +301,44 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.Equal(ErrorCodes.MemoryReview.InvalidToken, scopeResult.Error.Code);
     }
 
+    /// <summary>
+    /// A queue item's eligibility follows the same retrieval policy as every other surface: unresolved
+    /// ownership withholds a memory only while Campaign scoping is on, and with it off a turn ranks the
+    /// memory like any other, so the item reads <c>Eligible</c>.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false, SagaRetrievalEligibility.Eligible)]
+    [InlineData(true, SagaRetrievalEligibility.OwnershipUnresolved)]
+    public async Task Unresolved_ownership_follows_the_campaign_scoping_policy(
+        bool campaignScopedMemory,
+        SagaRetrievalEligibility expected)
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
+            .ConfigureAwait(false);
+
+        Guid orphan = await harness.SessionWithUnresolvedBindingAsync().ConfigureAwait(false);
+
+        await InsertAsync(
+            harness,
+            "m-1",
+            "remembered",
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            orphan)
+            .ConfigureAwait(false);
+
+        ReviewRuntime runtime = CreateRuntime(harness, campaignScopedMemory: campaignScopedMemory);
+
+        Result<SagaReviewPageDto> page = await runtime.Service.ListAsync(
+            new SagaReviewListRequest(SagaMemoryScopeKind.LegacyUnresolved, null, 10, null),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.True(page.IsSuccess, page.Error.Message);
+
+        SagaReviewItemDto item = Assert.Single(page.Value.Items);
+
+        Assert.Equal(expected, item.Current!.Eligibility);
+    }
+
     [SkippableFact]
     public async Task Distinct_tokens_for_the_same_exact_version_are_rejected_before_mutation()
     {
@@ -1036,12 +1074,14 @@ public sealed class SagaMemoryReviewServiceTests
 
     private static ReviewRuntime CreateRuntime(
         SagaStoreHarness harness,
-        IWeaveService? weave = null)
-        => CreateRuntime(harness.Context, weave);
+        IWeaveService? weave = null,
+        bool campaignScopedMemory = false)
+        => CreateRuntime(harness.Context, weave, campaignScopedMemory);
 
     private static ReviewRuntime CreateRuntime(
         ArcanumDbContext context,
-        IWeaveService? weave = null)
+        IWeaveService? weave = null,
+        bool campaignScopedMemory = false)
     {
         FakeTimeProvider time = new();
 
@@ -1056,7 +1096,7 @@ public sealed class SagaMemoryReviewServiceTests
             weave ?? FakeWeaveService.Available,
             codec,
             new WeaveIndexAvailability(),
-            Settings(),
+            Settings(campaignScopedMemory),
             MemoryErasureTestKeys.Isolated(),
             new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
             time);
@@ -1095,11 +1135,11 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
     }
 
-    private static TestOptionsMonitor<ArcanumSettings> Settings() =>
+    private static TestOptionsMonitor<ArcanumSettings> Settings(bool campaignScopedMemory = false) =>
         new(
             new ArcanumSettings
             {
-                Features = new FeatureSettings { Annals = true },
+                Features = new FeatureSettings { Annals = true, CampaignScopedMemory = campaignScopedMemory },
                 Integrations = new IntegrationSettings
                 {
                     Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 },
