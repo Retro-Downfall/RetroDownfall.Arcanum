@@ -1,10 +1,17 @@
+using System.Text.Json;
+
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.AI;
 
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
@@ -592,10 +599,10 @@ public sealed class SagaCurationServiceTests
     }
 
     /// <summary>
-    /// <see cref="SagaCurationService.ClassifyEligibility"/> directly, against hand-built rows.
+    /// <see cref="SagaRetrievalEligibilityClassifier.Classify"/> directly, against hand-built rows.
     /// Hand-building a classifier's input is normally a smell in this suite -- a test that constructs
     /// its own input can pass while no production caller ever produces that shape. It is safe here
-    /// because <c>ClassifyEligibility</c>'s production reachability is already proven above, through
+    /// because <c>Classify</c>'s production reachability is already proven above, through
     /// <c>ShowAsync</c>: <see cref="A_retired_memory_reports_retired_rather_than_a_missing_embedding"/>
     /// and <see cref="A_memory_whose_ownership_never_resolved_reports_that_rather_than_eligible"/> both
     /// drive this same method from a real store-backed row. What those two tests cannot do is force
@@ -607,6 +614,8 @@ public sealed class SagaCurationServiceTests
     [Theory]
     [InlineData(SagaMemoryScopeKind.Global, true, false, SagaRetrievalEligibility.Retired)]
     [InlineData(SagaMemoryScopeKind.Unclassified, true, true, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.LegacyUnresolved, true, false, SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaMemoryScopeKind.Unclassified, false, true, SagaRetrievalEligibility.OwnershipUnresolved)]
     [InlineData(SagaMemoryScopeKind.Unclassified, false, false, SagaRetrievalEligibility.OwnershipUnresolved)]
     [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, false, SagaRetrievalEligibility.OwnershipUnresolved)]
     [InlineData(SagaMemoryScopeKind.LegacyUnresolved, false, true, SagaRetrievalEligibility.OwnershipUnresolved)]
@@ -620,7 +629,62 @@ public sealed class SagaCurationServiceTests
 
         SagaMemoryCurationRow row = BuildRow(scopeKind, retired, hasEmbedding);
 
-        Assert.Equal(expected, SagaCurationService.ClassifyEligibility(row));
+        Assert.Equal(expected, SagaRetrievalEligibilityClassifier.Classify(row));
+
+    }
+
+    /// <summary>
+    /// The detail route, the Saga review items, and search all write eligibility through this one
+    /// converter, so a client reads a name it can match rather than an ordinal that changes meaning if
+    /// the enum is ever reordered — and a number on input is refused rather than guessed at.
+    /// </summary>
+    [Fact]
+    public void Saga_eligibility_is_written_as_its_name_and_a_number_is_refused()
+    {
+
+        Assert.Equal(
+            "\"Retired\"",
+            JsonSerializer.Serialize(SagaRetrievalEligibility.Retired, ArcanumJsonContext.Default.SagaRetrievalEligibility));
+
+        Assert.Throws<JsonException>(
+            () => JsonSerializer.Deserialize("2", ArcanumJsonContext.Default.SagaRetrievalEligibility));
+
+    }
+
+    /// <summary>
+    /// Every production surface that reports a memory's eligibility asks the Core classifier, so the
+    /// detail route, the review queue, search, and explain cannot drift apart. A source file outside
+    /// the classifier's own that names an eligibility member is a second ladder in the making.
+    /// </summary>
+    /// <remarks>
+    /// Doc-comment <c>cref</c>s are structured trivia, and <c>DescendantNodes()</c> does not descend
+    /// into trivia, so prose that mentions a member does not count as a decision.
+    /// </remarks>
+    [Fact]
+    public void Only_the_core_classifier_decides_saga_eligibility()
+    {
+
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string[] files =
+        [
+            .. Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                .Where(static file => !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                    && !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                .Where(static file => CSharpSyntaxTree
+                    .ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview))
+                    .GetRoot()
+                    .DescendantNodes()
+                    .OfType<MemberAccessExpressionSyntax>()
+                    .Any(static access => access.Expression is IdentifierNameSyntax
+                    {
+                        Identifier.ValueText: nameof(SagaRetrievalEligibility),
+                    }))
+                .Select(file => Path.GetRelativePath(root, file).Replace('\\', '/'))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(["src/RetroDownfall.Arcanum.Core/Weave/SagaCurationContracts.cs"], files);
 
     }
 

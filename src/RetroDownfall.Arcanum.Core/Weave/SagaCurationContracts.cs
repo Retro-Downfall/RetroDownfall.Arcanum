@@ -1,4 +1,7 @@
+using System.Text.Json.Serialization;
+
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Weave;
 
@@ -23,7 +26,11 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// <para><see cref="EmbeddingMissing"/> — the row survives but <c>saga_memory_embeddings</c> no longer
 /// has a matching entry, so no similarity search can surface it even though nothing about its scope or
 /// curation state says it should be hidden.</para>
+///
+/// <para>Written on the wire as its name, never its number, and a number is refused on input: a client
+/// matching <c>"Retired"</c> keeps meaning what it read if the members are ever reordered.</para>
 /// </remarks>
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<SagaRetrievalEligibility>))]
 public enum SagaRetrievalEligibility
 {
 
@@ -54,6 +61,60 @@ public sealed record SagaMemoryLifecycle(DateTimeOffset? RetiredAtUtc, DateTimeO
 
 /// <summary>One memory's row, its curation lifecycle, and whether it still has an embedding, read together.</summary>
 public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifecycle Lifecycle, bool HasEmbedding);
+
+/// <summary>
+/// The one place a Saga memory's <see cref="SagaRetrievalEligibility"/> is decided.
+/// </summary>
+/// <remarks>
+/// The detail route, the review queue, and search all report eligibility, and every one of them asks
+/// here. Two ladders that agree today are two ladders that disagree after the first edit to one of
+/// them, and the disagreement would land on an operator trying to understand why a memory is not being
+/// recalled.
+/// </remarks>
+public static class SagaRetrievalEligibilityClassifier
+{
+
+    /// <summary>
+    /// Retired first, then ownership, then whether an embedding survives, then eligible — in that
+    /// order because a retired memory has no embedding by construction, and reporting that as
+    /// <see cref="SagaRetrievalEligibility.EmbeddingMissing"/> would describe the wrong problem to an
+    /// operator trying to understand why a memory is not being recalled.
+    /// </summary>
+    public static SagaRetrievalEligibility Classify(SagaMemoryCurationRow row)
+    {
+
+        ArgumentNullException.ThrowIfNull(row);
+
+        if (row.Lifecycle.RetiredAtUtc is not null)
+        {
+
+            return SagaRetrievalEligibility.Retired;
+
+        }
+
+        // Unclassified (an upgrade has not reached this row yet) and LegacyUnresolved (the owning
+        // Session's binding never resolved, or the Session is gone) both mean the same thing to an
+        // operator: retrievable in no scope at all until someone resolves it. Global and Campaign are
+        // the only two scopes that supply real authority.
+        if (row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
+        {
+
+            return SagaRetrievalEligibility.OwnershipUnresolved;
+
+        }
+
+        if (!row.HasEmbedding)
+        {
+
+            return SagaRetrievalEligibility.EmbeddingMissing;
+
+        }
+
+        return SagaRetrievalEligibility.Eligible;
+
+    }
+
+}
 
 /// <summary>
 /// The full detail view of one memory: its row, the digest of the text in that row, its lifecycle, its

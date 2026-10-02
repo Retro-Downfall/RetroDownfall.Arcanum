@@ -344,73 +344,7 @@ internal sealed partial class SagaMemoryStore(
 
                 await using DbCommand cmd = connection.CreateCommand();
 
-                StringBuilder sql = new(
-                    """
-                    SELECT m."Id", m."Content", m."CreatedAt", m."SessionId", m."Tags", m."Source",
-                           p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
-                           p.ContentHash, p.MaterializedAt, p.SourceType,
-                           EXISTS(
-                               SELECT 1 FROM "SessionAttachments" a
-                               WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
-                           ),
-                           m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
-                    FROM "saga_memories" m
-                    LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
-                    WHERE 1 = 1
-                    """);
-
-                if (!string.IsNullOrWhiteSpace(query))
-                {
-                    sql.Append(" AND m.\"Content\" LIKE @query ESCAPE '\\'");
-
-                    AddParameter(cmd, "@query", "%" + EscapeLikePattern(query) + "%");
-                }
-
-                if (sessionId is not null)
-                {
-                    sql.Append(" AND m.\"SessionId\" = @sessionId");
-
-                    AddParameter(cmd, "@sessionId", sessionId.Value.ToString());
-                }
-
-                // The same ownership predicate retrieval ranks by, so this never shows a memory a turn
-                // in this scope could not own. The converse does not follow, in either direction. The
-                // SessionId filter above narrows further, to what one Session wrote, so a sibling
-                // Session's memory in the same Campaign is ranked by that turn and is still not listed
-                // beside it. And there is no join to the embeddings and no predicate over RetiredAtUtc
-                // here, so a retired memory lists exactly as a live one does while no turn can recall
-                // it. That second one is deliberate -- retirement's promise is about retrieval, and an
-                // operator has to be able to see what they took out in order to put it back.
-                if (scope.IsEnforced)
-                {
-                    if (scope.CampaignId is { } campaignId)
-                    {
-                        sql.Append(
-                            " AND (m.ScopeKindCode = @globalScopeKind"
-                            + " OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId))");
-
-                        AddParameter(cmd, "@campaignScopeKind", (int)SagaMemoryScopeKind.Campaign);
-
-                        // Canonical, exactly as DivinationService binds it: the listing and retrieval have
-                        // to select the same candidate set, so a spelling that halved one would have to
-                        // halve the other or the promise above this block is false.
-                        AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
-                    }
-                    else
-                    {
-                        sql.Append(" AND m.ScopeKindCode = @globalScopeKind");
-                    }
-
-                    AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
-                }
-
-                sql.Append(" ORDER BY m.\"CreatedAt\" DESC LIMIT @limit OFFSET @offset");
-
-                AddParameter(cmd, "@limit", limit);
-
-                AddParameter(cmd, "@offset", offset);
-
-                cmd.CommandText = sql.ToString();
+                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: false);
 
                 List<SagaMemoryDto> results = [];
 
@@ -424,6 +358,194 @@ internal sealed partial class SagaMemoryStore(
                 return results.ToArray();
             },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+        string? query,
+        Guid? sessionId,
+        MemoryScope scope,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: true);
+
+                List<SagaMemoryCurationRow> results = [];
+
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    SagaMemoryDto memory = ReadMemory(reader);
+
+                    bool hasEmbedding = reader.GetInt32(18) == 1;
+
+                    results.Add(new SagaMemoryCurationRow(
+                        memory,
+                        new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc),
+                        hasEmbedding));
+                }
+
+                return results.ToArray();
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken)
+    {
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                // Retrieval's own choice, read the other way round: a turn ranks only embedded rows, so an
+                // inner join through the embeddings is what "a turn could reach it" means. Unscoped when the
+                // gate is off, exactly as the turn calls SearchAsync then; scoped to the installation and
+                // this scope's Campaign when it is on, as SearchCampaignScopedAsync over ToSagaScope() is.
+                // Retirement already removes the embedding, so the RetiredAtUtc predicate is the statement
+                // of intent rather than the thing that does the work.
+                cmd.CommandText =
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM "saga_memory_embeddings" e
+                        INNER JOIN "saga_memories" m ON m."Id" = e."MemoryId"
+                        WHERE m."RetiredAtUtc" IS NULL
+                          AND (@enforced = 0
+                               OR m.ScopeKindCode = @globalScopeKind
+                               OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId)))
+                    """;
+
+                AddParameter(cmd, "@enforced", scope.IsEnforced ? 1 : 0);
+
+                AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
+
+                AddParameter(cmd, "@campaignScopeKind", (int)SagaMemoryScopeKind.Campaign);
+
+                // Canonical, as ListAsync and DivinationService bind it. No Campaign binds a null that no
+                // row can equal, leaving the installation-scoped rows alone, which is what a turn that
+                // resolved no Campaign ranks.
+                AddParameter(
+                    cmd,
+                    "@campaignId",
+                    scope.CampaignId is { } campaignId
+                        ? campaignId.ToString("D").ToUpperInvariant()
+                        : DBNull.Value);
+
+                object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+                return Convert.ToInt64(result, CultureInfo.InvariantCulture) == 1;
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The listing's one query, shared by <see cref="ListAsync"/> and <see cref="ListCurationRowsAsync"/>
+    /// so the two can never select different memories for the same arguments.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="includeEmbeddingProbe"/> appends one projected column, at ordinal 18, after every
+    /// column <see cref="ReadMemory"/> reads. It is a correlated <c>EXISTS</c> rather than a join, so it
+    /// can only add a column and never multiply or drop a row.
+    /// </remarks>
+    private static void BuildListCommand(
+        DbCommand cmd,
+        string? query,
+        Guid? sessionId,
+        MemoryScope scope,
+        int limit,
+        int offset,
+        bool includeEmbeddingProbe)
+    {
+        StringBuilder sql = new(
+            """
+            SELECT m."Id", m."Content", m."CreatedAt", m."SessionId", m."Tags", m."Source",
+                   p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
+                   p.ContentHash, p.MaterializedAt, p.SourceType,
+                   EXISTS(
+                       SELECT 1 FROM "SessionAttachments" a
+                       WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
+                   ),
+                   m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
+            """);
+
+        if (includeEmbeddingProbe)
+        {
+            sql.Append(
+                """
+                ,
+                       EXISTS(SELECT 1 FROM "saga_memory_embeddings" e WHERE e."MemoryId" = m."Id")
+                """);
+        }
+
+        sql.Append(
+            """
+
+            FROM "saga_memories" m
+            LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
+            WHERE 1 = 1
+            """);
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            sql.Append(" AND m.\"Content\" LIKE @query ESCAPE '\\'");
+
+            AddParameter(cmd, "@query", "%" + EscapeLikePattern(query) + "%");
+        }
+
+        if (sessionId is not null)
+        {
+            sql.Append(" AND m.\"SessionId\" = @sessionId");
+
+            AddParameter(cmd, "@sessionId", sessionId.Value.ToString());
+        }
+
+        // The same ownership predicate retrieval ranks by, so this never shows a memory a turn in this
+        // scope could not own. The converse does not follow, in either direction. The SessionId filter
+        // above narrows further, to what one Session wrote, so a sibling Session's memory in the same
+        // Campaign is ranked by that turn and is still not listed beside it. And there is no join to the
+        // embeddings and no predicate over RetiredAtUtc here, so a retired memory lists exactly as a live
+        // one does while no turn can recall it. That second one is deliberate -- retirement's promise is
+        // about retrieval, and an operator has to be able to see what they took out in order to put it
+        // back. Each row carries RetiredAtUtc and PinnedAtUtc, so the listing can say which it is.
+        if (scope.IsEnforced)
+        {
+            if (scope.CampaignId is { } campaignId)
+            {
+                sql.Append(
+                    " AND (m.ScopeKindCode = @globalScopeKind"
+                    + " OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId))");
+
+                AddParameter(cmd, "@campaignScopeKind", (int)SagaMemoryScopeKind.Campaign);
+
+                // Canonical, exactly as DivinationService binds it: the listing and retrieval have to
+                // select the same candidate set, so a spelling that halved one would have to halve the
+                // other or the promise above this block is false.
+                AddParameter(cmd, "@campaignId", campaignId.ToString("D").ToUpperInvariant());
+            }
+            else
+            {
+                sql.Append(" AND m.ScopeKindCode = @globalScopeKind");
+            }
+
+            AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
+        }
+
+        sql.Append(" ORDER BY m.\"CreatedAt\" DESC LIMIT @limit OFFSET @offset");
+
+        AddParameter(cmd, "@limit", limit);
+
+        AddParameter(cmd, "@offset", offset);
+
+        cmd.CommandText = sql.ToString();
     }
 
     public async Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(

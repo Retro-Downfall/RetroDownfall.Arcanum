@@ -78,6 +78,48 @@ public sealed class DataRetentionCommandTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Prune_dry_run_renders_Saga_pin_inventory(bool json)
+    {
+        string plan = JsonSerializer.Serialize(CreatePlan(), ArcanumJsonContext.Default.DataRetentionPlan);
+
+        plan = plan[..^1]
+            + ",\"sagaCuration\":{\"pinnedRows\":4,\"pinnedRowsExemptFromPlan\":2}"
+            + ",\"lexiconCuration\":{\"pinnedRows\":5,\"pinnedRowsExemptFromPlan\":3}}";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"isSuccess\":true,\"data\":" + plan + "}", Encoding.UTF8, "application/json"),
+        });
+
+        CliTestResult result = RunCommand(handler, ["data", "prune", "--dry-run", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement inventory = document.RootElement.GetProperty("sagaCuration");
+
+            Assert.Equal(4, inventory.GetProperty("pinnedRows").GetInt64());
+
+            Assert.Equal(2, inventory.GetProperty("pinnedRowsExemptFromPlan").GetInt64());
+        }
+        else
+        {
+            int saga = result.Output.IndexOf("Saga pins: 4; exempt from this plan: 2", StringComparison.Ordinal);
+
+            int lexicon = result.Output.IndexOf("Lexicon pins:", StringComparison.Ordinal);
+
+            Assert.True(saga >= 0, result.Output);
+
+            Assert.True(saga < lexicon, result.Output);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Prune_apply_renders_exact_newly_pinned_conflict(bool json)
     {
         DataRetentionPlan plan = CreatePlan();

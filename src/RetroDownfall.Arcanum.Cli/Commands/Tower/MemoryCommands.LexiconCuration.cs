@@ -209,7 +209,7 @@ public sealed partial class MemoryCommands
 
         write($"  Entry: {detail.Entry.Id:D}; generation: {detail.CurationGeneration}");
 
-        write($"  {LexiconLifecycleText(detail.Lifecycle, detail.Eligibility)}");
+        write($"  {LifecycleText(detail.Lifecycle is not null, detail.Lifecycle?.RetiredAtUtc, detail.Lifecycle?.PinnedAtUtc, detail.Eligibility.ToString())}");
 
         write($"  Snapshot digest: {detail.SnapshotDigest}");
 

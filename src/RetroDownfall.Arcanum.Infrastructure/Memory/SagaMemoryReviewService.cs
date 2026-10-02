@@ -2002,13 +2002,8 @@ internal sealed class SagaMemoryReviewService(
 
         SagaMemoryLifecycle lifecycle = new(memory.RetiredAtUtc, memory.PinnedAtUtc);
 
-        SagaRetrievalEligibility eligibility = memory.RetiredAtUtc is not null
-            ? SagaRetrievalEligibility.Retired
-            : memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved
-                ? SagaRetrievalEligibility.OwnershipUnresolved
-                : !hasEmbedding
-                    ? SagaRetrievalEligibility.EmbeddingMissing
-                    : SagaRetrievalEligibility.Eligible;
+        SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
+            new SagaMemoryCurationRow(memory, lifecycle, hasEmbedding));
 
         return new SagaReviewCurrentDto(
             memory,

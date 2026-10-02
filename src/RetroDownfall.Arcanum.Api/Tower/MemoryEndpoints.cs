@@ -299,6 +299,12 @@ internal static class MemoryEndpoints
 
             bool hasSession = status.Value.SessionId is not null;
 
+            // What a turn in this scope can reach, not what is stored: status counts the rows, and a
+            // retired, unembedded, or other-Campaign memory is a row no turn can recall.
+            bool sagaRetrievable = stores["Saga"].Enabled
+                && await context.RequestServices.GetRequiredService<ISagaMemoryStore>()
+                    .AnyRetrievableAsync(scope, context.RequestAborted).ConfigureAwait(false);
+
             MemoryEligibilityDto[] eligibility =
             [
                 Explain(
@@ -333,7 +339,7 @@ internal static class MemoryEndpoints
                     "Lexicon entities are candidates when the current prompt matches their names or facts; inspection does not promote new facts."),
                 Explain(
                     stores["Saga"],
-                    stores["Saga"].Enabled && stores["Saga"].Count > 0,
+                    sagaRetrievable,
                     "Saga memories are candidates when semantic retrieval for the current prompt selects them; they remain distinct from attachments and Lexicon. "
                     + MemoryCampaignScopeReport.Describe(scope).Detail),
                 Explain(
@@ -1248,8 +1254,11 @@ internal static class MemoryEndpoints
     {
         MemoryCampaignScopeDto reported = MemoryCampaignScopeReport.Describe(scope);
 
-        SagaMemoryDto[] memories = await store
-            .ListAsync(
+        // The listing's own rows, so a retired memory is a hit exactly as a live one is; each carries
+        // its lifecycle and whether an embedding survives, read in the same statement, so the
+        // eligibility reported beside it describes the instant the row was read.
+        SagaMemoryCurationRow[] rows = await store
+            .ListCurationRowsAsync(
                 query,
                 sessionId,
                 scope,
@@ -1258,8 +1267,10 @@ internal static class MemoryEndpoints
                 cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (SagaMemoryDto memory in memories)
+        foreach (SagaMemoryCurationRow row in rows)
         {
+            SagaMemoryDto memory = row.Memory;
+
             string provenance = memory.SessionId is null
                 ? "Saga memory with no originating session"
                 : $"Saga memory from session {memory.SessionId.Value:D}";
@@ -1287,6 +1298,13 @@ internal static class MemoryEndpoints
                 _ => "; ownership not yet classified",
             };
 
+            // Last, so it reads as the verdict on everything before it: the row is still here, and no
+            // turn can recall it.
+            if (row.Lifecycle.RetiredAtUtc is not null)
+            {
+                provenance += "; retired";
+            }
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Saga,
                 "Saga memory",
@@ -1297,7 +1315,9 @@ internal static class MemoryEndpoints
                 reported,
                 Action: new MemorySearchActionDto(
                     MemorySearchActionKind.ShowSagaMemory,
-                    Saga: new MemorySagaTargetDto(memory.Id))));
+                    Saga: new MemorySagaTargetDto(memory.Id)),
+                SagaLifecycle: row.Lifecycle,
+                SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row)));
         }
     }
 

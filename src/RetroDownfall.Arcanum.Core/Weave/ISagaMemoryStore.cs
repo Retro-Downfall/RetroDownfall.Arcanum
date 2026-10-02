@@ -89,7 +89,9 @@ public interface ISagaMemoryStore
     /// <para>Ownership is all that is shared. A retired memory is listed exactly as a live one is --
     /// this reads <c>saga_memories</c> and retirement removes only the embeddings retrieval ranks
     /// through -- so the two surfaces agree about who owns a memory and not about whether a turn can
-    /// recall it. <c>ISagaCurationService.ShowAsync</c> is what reports a memory's retirement.</para>
+    /// recall it. Each row carries <see cref="SagaMemoryDto.RetiredAtUtc"/> and
+    /// <see cref="SagaMemoryDto.PinnedAtUtc"/>, which <c>saga list</c> renders as its <c>State</c>
+    /// column.</para>
     /// </remarks>
     Task<SagaMemoryDto[]> ListAsync(
         string? query,
@@ -98,6 +100,36 @@ public interface ISagaMemoryStore
         int limit,
         int offset,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <see cref="ListAsync"/>'s page, each memory read together with its curation lifecycle and
+    /// whether it still has an embedding.
+    /// </summary>
+    /// <remarks>
+    /// The same query, the same arguments, and so the same memories in the same order as
+    /// <see cref="ListAsync"/>: the embedding probe is one projected column and never a filter. What it
+    /// adds is what <see cref="SagaRetrievalEligibilityClassifier"/> needs, read in the same statement
+    /// as the row, so search can say whether a turn can still recall each hit.
+    /// </remarks>
+    Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+        string? query,
+        Guid? sessionId,
+        MemoryScope scope,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether a turn in <paramref name="scope"/> could reach at least one memory: one that is not
+    /// retired, still has an embedding, and is owned by that scope.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors retrieval's own choice rather than restating it. With Campaign scoping off a turn ranks
+    /// every embedded memory, so this asks about all of them; with it on, only installation-scoped
+    /// memories and the resolved Campaign's own, as the scoped search ranks. This is what <c>memory
+    /// explain</c> reports; <see cref="CountAsync"/> keeps reporting what is stored.
+    /// </remarks>
+    Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken);
 
     /// <summary>
     /// Looks up memories by id (as returned by <c>IDivinationService.SearchAsync</c> against
