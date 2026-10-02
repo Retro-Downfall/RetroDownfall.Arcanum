@@ -745,6 +745,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectio
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStoreSql.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantTurnReceiptCompactor.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ExternalDisclosureStateFold.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ExternalDisclosureStateReader.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ExternalDisclosureStateStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/GrimoireOfflineTransitionEffectHandlerRegistry.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantConnectionSource.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantSqliteConnectionInitializer.cs

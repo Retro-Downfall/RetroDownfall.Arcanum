@@ -54,6 +54,34 @@ public static class CovenantDisclosureStateAlgebra
             OrBloom(state.EvidenceBloom.AsSpan(), evidenceBloom));
     }
 
+    /// <summary>
+    /// Keeps the count, newest instant and evidence, and claims only that the count is a lower bound.
+    /// </summary>
+    /// <remarks>
+    /// Monotone and idempotent: a lower bound stays one, and weakening twice is weakening once. The
+    /// empty state is returned unchanged, because it has exactly one encoding and that encoding is
+    /// <see cref="CovenantDisclosureCountKind.Exact"/>; "at least nothing" would otherwise become a
+    /// second spelling of "nothing".
+    /// </remarks>
+    public static CovenantDisclosureState WeakenToLowerBound(CovenantDisclosureState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (!state.EverOccurred || state.CountKind == CovenantDisclosureCountKind.LowerBound)
+        {
+            return state;
+        }
+
+        return new CovenantDisclosureState(
+            state.Destination,
+            state.Revocability,
+            CovenantDisclosureCountKind.LowerBound,
+            true,
+            state.Count,
+            state.MaximumTimestamp,
+            state.EvidenceBloom.AsSpan());
+    }
+
     public static CovenantDisclosureState JoinRestore(
         CovenantDisclosureState left,
         CovenantDisclosureState right)

@@ -4,7 +4,13 @@ using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
+using RetroDownfall.Arcanum.Cli.UX;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -27,6 +33,8 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 using System.Text.Json;
+
+using System.Text.Json.Serialization.Metadata;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -471,6 +479,100 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.DoesNotContain("a protected summary", serializedPlan, StringComparison.Ordinal);
 
         Assert.DoesNotContain(CovenantRetentionSeed.SessionId, serializedPlan, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The seed's disclosure accounting comes from the production journal and its live fold, not from
+    /// rows written by hand, so every retention report above is reading what the product produced.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Seeded_disclosure_accounting_is_produced_by_the_live_journal_fold()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        Assert.Equal(
+            4,
+            await ScalarAsync(
+                "SELECT COUNT(*) FROM external_disclosure_receipts",
+                CancellationToken.None));
+
+        Assert.Equal(
+            4,
+            await ScalarAsync(
+                """
+                SELECT LastFoldedOrdinal
+                FROM disclosure_subject_state
+                WHERE SubjectId = 'ffffffff-7777-4777-8777-ffffffffffff'
+                    AND LastFoldedOrdinal = LastAllocatedOrdinal;
+                """,
+                CancellationToken.None));
+
+        List<CovenantDisclosureState> buckets = await ExternalDisclosureStateStore.ReadAllAsync(
+            (SqliteConnection)_db!.Database.GetDbConnection(),
+            null,
+            CancellationToken.None);
+
+        (CovenantEgressDestination, CovenantDisclosureRevocability, CovenantDisclosureCountKind, ulong)[] expected =
+        [
+            (CovenantEgressDestination.Provider, CovenantDisclosureRevocability.Nonrevocable,
+                CovenantDisclosureCountKind.Exact, 3ul),
+            (CovenantEgressDestination.Process, CovenantDisclosureRevocability.LocallyRevocable,
+                CovenantDisclosureCountKind.Exact, 1ul),
+        ];
+
+        Assert.Equal(
+            expected,
+            buckets
+                .Select(static bucket => (bucket.Destination, bucket.Revocability, bucket.CountKind, bucket.Count))
+                .OrderBy(static bucket => bucket.Destination)
+                .ToArray());
+
+    }
+
+    /// <summary>
+    /// The reset preview an operator reads before confirming names the receipts this installation
+    /// recorded. Before the live fold, those receipts reached no bucket, and the CLI told the operator
+    /// that nothing nonrevocable had ever left.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Reset_preview_rendered_by_the_cli_counts_live_receipts_instead_of_denying_disclosure()
+    {
+
+        RequireSqlCipher();
+
+        await SeedCovenantFamilyAsync(CancellationToken.None);
+
+        IDataRetentionService service = CreateService(covenantGate: new RecordingCovenantOperationGate());
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetMemory,
+                MemoryScope: MemoryResetScope.Covenant),
+            CancellationToken.None);
+
+        DataRetentionPlan received = Assert.IsType<DataRetentionPlan>(JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(plan, ArcanumJsonContext.Default.DataRetentionPlan),
+            ArcanumJsonContext.Default.DataRetentionPlan));
+
+        DiagnosticRecorder recorder = new();
+
+        new CovenantExternalRetentionDisclosureWriter(recorder, Options.Create(new ArcanumSettings()))
+            .Write(received.Covenant);
+
+        Assert.Contains(
+            "This installation's own receipts record exactly 3 physical attempts that could have carried "
+                + "protected content out of it. Nothing this reset does can revoke any of them.",
+            recorder.Diagnostics);
+
+        Assert.DoesNotContain(
+            recorder.Diagnostics,
+            static line => line.Contains("record no nonrevocable disclosure", StringComparison.Ordinal));
 
     }
 
@@ -1204,6 +1306,7 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                            GenerationProvenanceModeCode, ExactGenerationIds, GenerationBloom, DisclosedAtUtc
                     FROM external_disclosure_receipts
                     WHERE SubjectId = 'ffffffff-7777-4777-8777-ffffffffffff'
+                    ORDER BY SubjectOrdinal DESC
                     LIMIT 1;
                     """,
                     cancellationToken);
@@ -1547,6 +1650,30 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                     '2026-01-01T00:00:00.0000000Z');
             """,
             cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Records the diagnostic stream the disclosure writer prints to, and refuses any other write: the
+    /// disclosure is never payload.
+    /// </summary>
+    private sealed class DiagnosticRecorder : IConsoleDispatcher
+    {
+
+        public List<string> Diagnostics { get; } = [];
+
+        public void WriteDiagnostic(string value) => Diagnostics.Add(value);
+
+        public void WritePayload(string value) => throw new InvalidOperationException(value);
+
+        public void WriteVerbose(string value) => throw new InvalidOperationException(value);
+
+        public void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo) =>
+            throw new InvalidOperationException(typeInfo.Type.Name);
+
+        public void WriteJson(JsonElement value) => throw new InvalidOperationException(value.ToString());
+
+        public void BeginJsonStream() => throw new InvalidOperationException();
 
     }
 

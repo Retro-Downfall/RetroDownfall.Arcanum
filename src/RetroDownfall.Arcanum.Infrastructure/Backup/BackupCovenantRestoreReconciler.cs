@@ -39,6 +39,11 @@ internal sealed record BackupCovenantRestoreDestinationState(
     /// Missing tables are absence rather than failure. A destination that predates the Covenant
     /// tables genuinely has nothing to carry forward, and refusing the restore over it would make an
     /// installation unable to adopt a generation it is entitled to.
+    ///
+    /// <para>The buckets are the effective ones: the persisted state plus every receipt the fold has
+    /// not reached, as a lower bound. A destination upgraded from a build without the live fold holds
+    /// receipts no bucket counts yet, and a join fed only the persisted buckets would tell the restored
+    /// installation that nothing ever left this machine (§10.13).</para>
     /// </remarks>
     internal static async Task<BackupCovenantRestoreDestinationState> ReadAsync(
         SqliteConnection destination,
@@ -56,15 +61,9 @@ internal sealed record BackupCovenantRestoreDestinationState(
                     .ConfigureAwait(false)
                 : null;
 
-        List<CovenantDisclosureState> buckets =
-            await BackupRestoreDatabaseWorker.TableExistsAsync(
-                    destination,
-                    "external_disclosure_state",
-                    cancellationToken).ConfigureAwait(false)
-                ? await CovenantDisclosureStateJoiner
-                    .ReadAllAsync(destination, transaction: null, cancellationToken)
-                    .ConfigureAwait(false)
-                : [];
+        IReadOnlyList<CovenantDisclosureState> buckets = await ExternalDisclosureStateReader
+            .ReadEffectiveAsync(destination, cancellationToken)
+            .ConfigureAwait(false);
 
         return new BackupCovenantRestoreDestinationState(authority, buckets);
     }

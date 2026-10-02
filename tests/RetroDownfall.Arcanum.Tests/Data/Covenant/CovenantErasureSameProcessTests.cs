@@ -2918,7 +2918,9 @@ public sealed class CovenantErasureSameProcessTests
 
         Assert.True(reset.Value.LocalSecureErasureComplete);
 
-        Assert.Equal(3, reset.Value.Exposure.PossibleAttempts);
+        // The fixture's joined bucket holds three, and the harness warmed the journal with one more
+        // provider dispatch before the reset. The live fold counted that receipt when it committed.
+        Assert.Equal(4, reset.Value.Exposure.PossibleAttempts);
 
         Assert.Equal(CovenantDisclosureCountKind.Exact, reset.Value.Exposure.CountKind);
 
@@ -4151,7 +4153,9 @@ public sealed class CovenantErasureSameProcessTests
 
             Assert.Equal(0, covenant.AffectedSessions);
 
-            Assert.Equal(3, covenant.PossibleDisclosures);
+            // The three seeded attempts plus the warm-up dispatch the live fold counted; the reset
+            // preserves disclosure accounting rather than clearing it.
+            Assert.Equal(4, covenant.PossibleDisclosures);
 
             Assert.Equal(CovenantDisclosureCountKind.Exact, covenant.DisclosureCountKind);
 

@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Backup;
@@ -241,6 +243,54 @@ public sealed class BackupCovenantRestoreReconcilerTests : IAsyncLifetime
             await _staged.ScalarLongAsync(
                 "SELECT EverOccurred FROM external_disclosure_state;",
                 CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A destination upgraded from a build without the live fold holds receipts no bucket counts yet.
+    /// The restore must carry them forward, or the join it feeds would tell the restored installation
+    /// that nothing ever left this machine.
+    /// </summary>
+    [Fact]
+    public async Task Destination_state_read_counts_unfolded_receipts_as_a_lower_bound()
+    {
+
+        await _staged.InstallCoreObjectsAsync(
+            ["external_disclosure_receipts", "disclosure_subject_state"],
+            CancellationToken.None);
+
+        for (byte ordinal = 1; ordinal <= 2; ordinal++)
+        {
+
+            await PreFoldDisclosureHistory.InsertAsync(
+                _staged.Connection,
+                new CovenantDisclosureDraft(
+                    Guid.Parse(DestinationIdentity),
+                    CovenantDisclosureSubjectKind.Turn,
+                    Guid.Parse("66666666-7777-4888-8999-aaaaaaaaaaaa"),
+                    CovenantTask6Fixture.D(ordinal),
+                    CovenantEgressDestination.Provider,
+                    CovenantDisclosureRevocability.Nonrevocable,
+                    CovenantTask6Fixture.D(80),
+                    PreFoldDisclosureHistory.Sensitivity.Digest,
+                    null,
+                    CovenantTask6Fixture.D(82),
+                    null,
+                    1_700_000_000_000),
+                ordinal,
+                CancellationToken.None);
+
+        }
+
+        BackupCovenantRestoreDestinationState destination = await BackupCovenantRestoreDestinationState
+            .ReadAsync(_staged.Connection, CancellationToken.None);
+
+        CovenantDisclosureState bucket = Assert.Single(destination.DisclosureBuckets);
+
+        Assert.Equal(
+            (CovenantEgressDestination.Provider, CovenantDisclosureRevocability.Nonrevocable,
+                CovenantDisclosureCountKind.LowerBound, 2ul),
+            (bucket.Destination, bucket.Revocability, bucket.CountKind, bucket.Count));
 
     }
 
