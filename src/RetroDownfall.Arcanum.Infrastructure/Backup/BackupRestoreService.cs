@@ -1063,6 +1063,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 liveRoot,
                 covenantTopology,
                 destination,
+                erasure,
                 protectedState.Outcome is BackupRestoreProtectedStateOutcome.PurgeStaging,
                 cancellationToken).ConfigureAwait(false);
 
@@ -1576,6 +1577,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         string liveRoot,
         BackupRestoreCovenantTopology covenantTopology,
         BackupCovenantRestoreDestinationState destination,
+        BackupRestoreErasureEvidence erasure,
         bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
@@ -1625,17 +1627,78 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // The tier results are deliberately not folded into the restore outcome: convergence of the
-        // staged snapshot is judged by the schema identity recorded below, and a Covenant tier that
-        // reports unavailable here is republished by the host at its own next bootstrap.
-        _ = await BackupRestoreDatabaseWorker
-            .MigrateAsync(
-                connection,
-                _schemaInstaller,
-                _options.EmbeddingDimensions,
-                schemaContext,
-                cancellationToken)
-            .ConfigureAwait(false);
+        // A destination that holds erasure evidence needs the staged generation at every head before the
+        // evidence can be joined to it. Every other restore keeps its migration exactly as it was.
+        bool joinsErasureEvidence =
+            request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
+            && erasure.Kind is BackupRestoreErasureEvidenceKind.Present;
+
+        // Without evidence the tier results are deliberately not folded into the restore outcome:
+        // convergence of the staged snapshot is judged by the schema identity recorded below, and a
+        // tier that reports unavailable or mid-run here is finished by the host at its own next
+        // bootstrap. With evidence they decide whether the drain below runs.
+        GrimoireSchemaInstallResult migrated;
+
+        try
+        {
+
+            migrated = await BackupRestoreDatabaseWorker
+                .MigrateAsync(
+                    connection,
+                    _schemaInstaller,
+                    _options.EmbeddingDimensions,
+                    schemaContext,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception exception) when (
+            joinsErasureEvidence
+            && exception is InvalidOperationException or SqliteException)
+        {
+
+            // A Core refusal is a GrimoireSchemaRefusedException, which is an InvalidOperationException:
+            // an archive journaled toward an older head, for one. Without evidence it stays the generic
+            // failure it has always been; with evidence it is the typed refusal, before anything else.
+            return StageResult.Failed(Issue(BackupRestoreSchemaDrain.Unjoinable(exception.GetType().Name)));
+
+        }
+
+        if (joinsErasureEvidence)
+        {
+
+            // Before the Covenant arm, the safety backup and the commit: a drain that cannot finish
+            // leaves nothing displaced and nothing reconciled.
+            Result<BackupRestoreSchemaDrainReceipt> drained = await BackupRestoreSchemaDrain
+                .DrainAsync(
+                    connection,
+                    _schemaInstaller,
+                    new GrimoireSchemaBackfillRunner(_schemaInstaller, _timeProvider),
+                    migrated,
+                    _options.EmbeddingDimensions,
+                    schemaContext,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (drained.IsFailure)
+            {
+
+                return StageResult.Failed(Issue(drained.Error));
+
+            }
+
+            if (drained.Value.Passes > 0)
+            {
+
+                Record(
+                    phases,
+                    BackupRestorePhase.Migrate,
+                    $"Drained staged schema transitions: {drained.Value.Passes} passes, "
+                    + $"{drained.Value.BatchesRun} batches, {drained.Value.RowsProcessed} rows.");
+
+            }
+
+        }
 
         string afterSchema = await BackupRestoreDatabaseWorker
             .ReadSchemaIdentityAsync(connection, cancellationToken)

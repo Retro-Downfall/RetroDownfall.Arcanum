@@ -2000,11 +2000,11 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "PrepareStagedGenerationAsync(12)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(stagedDatabase,grimoireSecret,readOnly:false,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "PrepareStagedGenerationAsync(13)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(stagedDatabase,grimoireSecret,readOnly:false,cancellationToken)"),
             GrimoirePathAuthority.RestoreOrCompactionStaging,
             GrimoireAcquisitionKind.StagingOrArchive,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
-            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupRestoreService.PrepareStagedGenerationAsync(12)", 0)),
+            new(ExactNonServingProofKind.TypedStagingOrSnapshot, "BackupRestoreService.PrepareStagedGenerationAsync(13)", 0)),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "ReconcileAsync(6)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(databasePath,grimoireSecret,readOnly:true,cancellationToken)"),

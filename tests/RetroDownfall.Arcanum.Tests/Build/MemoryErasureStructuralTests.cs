@@ -71,6 +71,7 @@ public sealed class MemoryErasureStructuralTests
         "Data/Covenant/ExternalDisclosureStateStore.cs",
         "Backup/BackupRestoreErasureEvidence.cs",
         "Backup/BackupRestoreService.ErasureEvidence.cs",
+        "Backup/BackupRestoreSchemaDrain.cs",
     ];
 
     private const string InfrastructureRoot = "src/RetroDownfall.Arcanum.Infrastructure";

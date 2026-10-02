@@ -590,6 +590,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestorePhysicalTopology.
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreProtectedStateInspector.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreProtectedStatePurger.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreRecovery.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreSchemaDrain.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.ErasureEvidence.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreServiceOptions.cs

@@ -44,6 +44,12 @@ internal sealed class GrimoireSchemaInstaller(
     private readonly TimeProvider _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
     /// <summary>
+    /// The chains this installer evolves against, so a driver hands the backfill runner the exact chain
+    /// a journal row was written under rather than a second copy of the shipped one.
+    /// </summary>
+    internal GrimoireSchemaVersionChainSet Chains => _chains;
+
+    /// <summary>
     /// Installs or converges all three tiers.
     /// </summary>
     /// <param name="embeddingDimensions">

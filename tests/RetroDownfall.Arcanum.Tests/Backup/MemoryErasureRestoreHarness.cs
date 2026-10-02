@@ -63,6 +63,18 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
         Task.FromResult(new MemoryErasureRestoreHarness(new RestartableArcanumProfileFixture()));
 
     /// <summary>
+    /// Core at version 11 beside Covenant canonical at version 5: an archive older than both tiers this
+    /// build declares, whose Core tier reaches head only through a sweep-bearing step.
+    /// </summary>
+    internal static GrimoireSchemaVersionChainSet CoreElevenCanonicalFive() =>
+        new(
+        [
+            CoreSchemaVersionElevenFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core),
+            CovenantCanonicalSchemaVersionFiveFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        ]);
+
+    /// <summary>
     /// Starts a host on this profile with Saga, embeddings and the fixed-vector weave on, and the
     /// Covenant as asked. The first host seeds the Grimoire.
     /// </summary>
@@ -137,6 +149,97 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
         return created.ArchivePath!;
     }
 
+    /// <summary>
+    /// Archives a separate installation, with its own Grimoire secret and key-derivation sidecar, whose
+    /// three tiers <paramref name="chains"/> installs and whose rows <paramref name="seed"/> writes.
+    /// </summary>
+    /// <remarks>
+    /// This build has no writer for an older catalog, so an older archive's rows are written with SQL
+    /// through the columns that catalog declares. The archive still goes through the production backup
+    /// service, so a restore reads it exactly as it reads one this installation took.
+    /// </remarks>
+    /// <returns>The archive's path, and the secret its Grimoire, and so the restored Grimoire, opens with.</returns>
+    internal async Task<ArchivedInstallation> CreateArchiveAtAsync(
+        string name,
+        GrimoireSchemaVersionChainSet chains,
+        Func<SqliteConnection, Task> seed)
+    {
+        ArgumentNullException.ThrowIfNull(chains);
+
+        ArgumentNullException.ThrowIfNull(seed);
+
+        string root = Path.Combine(Profile.TempHome, "sources", name);
+
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(root);
+
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+        string database = Path.Combine(root, "arcanum.db");
+
+        GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
+
+        GrimoireKdfSidecarFile.Write(database, sidecar);
+
+        byte[] salt = sidecar.GetSaltBytes();
+
+        string passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(secret, salt);
+
+        CryptographicOperations.ZeroMemory(salt);
+
+        await using (SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = database,
+                Password = passphrase,
+                Pooling = false,
+            }.ToString(),
+            CancellationToken.None))
+        {
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 1536, CancellationToken.None);
+
+            await seed(connection);
+        }
+
+        string archives = Directory.CreateDirectory(Path.Combine(Profile.TempHome, "archives")).FullName;
+
+        BackupStatePaths paths = new(
+            root,
+            root,
+            Path.Combine(root, "audit.jsonl"),
+            Path.Combine(root, "guardrails.jsonl"));
+
+        BackupService backups = new(
+            paths,
+            new BackupInventoryPlanner(paths),
+            new BackupDatabaseSnapshotter(),
+            Codec(),
+            new FixedSecretSnapshotReader(secret),
+            TimeProvider.System);
+
+        BackupCreateResult created = await backups.CreateAsync(
+            new BackupCreateRequest(
+                new BackupPlanRequest(BackupScope.Full, SessionId: null, Include: [], Exclude: []),
+                Path.Combine(archives, name + BackupArchiveFormat.Extension),
+                Overwrite: true),
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.Equal(BackupCreateStatus.Complete, created.Status);
+
+        return new ArchivedInstallation(created.ArchivePath!, secret);
+    }
+
+    /// <summary>
+    /// Opens the live Grimoire read-only with <paramref name="grimoireSecret"/>: this profile's own, or,
+    /// after a restore committed it, the secret of the installation the archive was taken from.
+    /// </summary>
+    internal Task<SqliteConnection> OpenLiveDatabaseAsync(string grimoireSecret)
+    {
+        RequireStopped();
+
+        return BackupRestoreDatabaseWorker.OpenAsync(DatabasePath, grimoireSecret, readOnly: true, CancellationToken.None);
+    }
+
     /// <summary>The SHA-256 of the live database file's bytes, in hex, with no pooled handle open on it.</summary>
     internal async Task<string> LiveDatabaseDigestAsync()
     {
@@ -202,7 +305,14 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
         }
     }
 
+    /// <summary>An archive of a separate installation, and the Grimoire secret it was taken under.</summary>
+    internal sealed record ArchivedInstallation(string ArchivePath, string GrimoireSecret);
+
     /// <summary>A secret store that serves one Grimoire secret, or none when it is null, and nothing else.</summary>
+    /// <remarks>
+    /// Every write is accepted and dropped, the file-encryption key ring included, so a restore that
+    /// commits can rebuild local secret protection without this store ever serving anything new.
+    /// </remarks>
     internal sealed class FixedGrimoireSecretStore(string? grimoireSecret) : ISecretStore
     {
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
@@ -215,6 +325,8 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult(grimoireSecret);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
+
+        public Task SaveFileEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
     }
 
     /// <summary>Serves the archive the Grimoire secret the live database is keyed from.</summary>
