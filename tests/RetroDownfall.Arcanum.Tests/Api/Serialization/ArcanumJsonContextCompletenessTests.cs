@@ -140,6 +140,7 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(ApiResponse<MemoryErasureScrubResultDto>))]
     [InlineData(typeof(ApiResponse<MemoryErasureKeyResetPreflightDto>))]
     [InlineData(typeof(ApiResponse<MemoryErasureKeyResetResultDto>))]
+    [InlineData(typeof(DataRetentionMemoryErasureInventory))]
     public void Memory_erasure_wire_types_have_explicit_source_generation_registrations(Type type)
     {
         Assert.Contains(typeof(ArcanumJsonContext).CustomAttributes, attribute => attribute.AttributeType == typeof(JsonSerializableAttribute)

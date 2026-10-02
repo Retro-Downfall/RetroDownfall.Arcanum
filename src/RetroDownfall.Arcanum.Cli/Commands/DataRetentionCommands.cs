@@ -372,6 +372,16 @@ internal sealed class DataRetentionCommands(
 
         }
 
+        if (status.MemoryErasure is { } erasure)
+        {
+
+            dispatcher.WritePayload(
+                $"Erasure evidence: {FormatCount(erasure.Fingerprints)} fingerprints, "
+                + $"{FormatCount(erasure.Receipts)} receipts, "
+                + $"{FormatCount(erasure.ReceiptSubjects)} subjects; never aged out");
+
+        }
+
         if (status.PreservedOutsideSelectedRoot.Length > 0)
         {
 

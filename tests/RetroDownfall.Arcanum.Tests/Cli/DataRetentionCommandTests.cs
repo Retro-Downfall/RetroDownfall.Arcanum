@@ -78,6 +78,45 @@ public sealed class DataRetentionCommandTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Status_renders_erasure_evidence_counts(bool json)
+    {
+        string status = JsonSerializer.Serialize(CreateStatus(), ArcanumJsonContext.Default.DataRetentionStatus);
+
+        status = status[..^1] + ",\"memoryErasure\":{\"fingerprints\":3,\"receipts\":3,\"receiptSubjects\":3}}";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"isSuccess\":true,\"data\":" + status + "}", Encoding.UTF8, "application/json"),
+        });
+
+        CliTestResult result = RunCommand(handler, ["data", "status", json ? "--json" : "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            JsonElement inventory = document.RootElement.GetProperty("memoryErasure");
+
+            Assert.Equal(3, inventory.GetProperty("fingerprints").GetInt64());
+
+            Assert.Equal(3, inventory.GetProperty("receipts").GetInt64());
+
+            Assert.Equal(3, inventory.GetProperty("receiptSubjects").GetInt64());
+        }
+        else
+        {
+            Assert.Contains(
+                "Erasure evidence: 3 fingerprints, 3 receipts, 3 subjects; never aged out",
+                result.Output,
+                StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Prune_dry_run_renders_Saga_pin_inventory(bool json)
     {
         string plan = JsonSerializer.Serialize(CreatePlan(), ArcanumJsonContext.Default.DataRetentionPlan);

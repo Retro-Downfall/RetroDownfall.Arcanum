@@ -458,6 +458,19 @@ internal sealed partial class DataRetentionService(
             "Volatile daemon execution summaries and durable schedule watermarks; active executions are protected.",
             retention);
 
+        (DataRetentionMemoryErasureInventory memoryErasure, string memoryErasureStore) =
+            await ReadMemoryErasureInventoryAsync(cancellationToken).ConfigureAwait(false);
+
+        AddStatus(
+            items,
+            RetentionDataClass.MemoryErasureEvidence,
+            memoryErasure.Fingerprints + memoryErasure.Receipts + memoryErasure.ReceiptSubjects,
+            0,
+            0,
+            memoryErasureStore,
+            "Content-free erasure fingerprints, receipts and receipt subjects; never aged out.",
+            retention);
+
         DataRetentionCovenantInventory? covenant = null;
 
         CovenantInstallationReadLease? covenantLease =
@@ -502,7 +515,7 @@ internal sealed partial class DataRetentionService(
                 "OS credential and Data Protection stores",
                 "Registered workspaces outside the Arcanum data root",
             ],
-            covenant);
+            covenant) with { MemoryErasure = memoryErasure };
     }
 
     /// <summary>
@@ -5591,6 +5604,64 @@ internal sealed partial class DataRetentionService(
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Counts the erasure evidence the installation holds, and names the tables it lives in.
+    /// </summary>
+    /// <remarks>
+    /// Counts only: no fingerprint, key identifier, digest, or store split leaves this method. It is
+    /// the one place in this service that names the evidence tables, and it only reads them. No prune,
+    /// reset, or factory selection names them, because the evidence outlives every one of those and is
+    /// removed only by a release, operator re-creation, <c>memory erasure reset-key</c>, restore's
+    /// destination-authoritative join, or a full installation reset.
+    ///
+    /// <para>A catalog below Core 13, or one without the fingerprint table, holds no evidence and answers
+    /// zero, the rule every evidence reader keeps. Past that gate the three counts go to the tables
+    /// directly, in one statement and so one snapshot, rather than through an existence probe per table:
+    /// a catalog that claims to hold evidence but lacks a table fails rather than reporting a zero it
+    /// never measured.</para>
+    /// </remarks>
+    private async Task<(DataRetentionMemoryErasureInventory Inventory, string Store)> ReadMemoryErasureInventoryAsync(
+        CancellationToken cancellationToken)
+    {
+        const string store =
+            "memory_erasure_fingerprints + memory_erasure_receipts + memory_erasure_receipt_subjects";
+
+        SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(
+            cancellationToken).ConfigureAwait(false);
+
+        if (!await MemoryErasureEvidence
+                .IsInstalledAsync(connection, null, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return (new DataRetentionMemoryErasureInventory(0, 0, 0), store);
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            SELECT
+                (SELECT COUNT(*) FROM memory_erasure_fingerprints),
+                (SELECT COUNT(*) FROM memory_erasure_receipts),
+                (SELECT COUNT(*) FROM memory_erasure_receipt_subjects)
+            """;
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The erasure evidence inventory returned no row.");
+        }
+
+        return (
+            new DataRetentionMemoryErasureInventory(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2)),
+            store);
     }
 
     /// <summary>

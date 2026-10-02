@@ -79,6 +79,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(DataRetentionStatus))]
 [JsonSerializable(typeof(DataRetentionPlan))]
 [JsonSerializable(typeof(DataRetentionLexiconCurationInventory))]
+[JsonSerializable(typeof(DataRetentionMemoryErasureInventory))]
 [JsonSerializable(typeof(DataRetentionApplyResult))]
 [JsonSerializable(typeof(RetentionSettings))]
 [JsonSerializable(typeof(ApiResponse<DataRetentionStatus>))]

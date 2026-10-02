@@ -25,6 +25,9 @@ namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 /// heads, provenance, tombstones, and disclosure receipts are the evidence that makes an erasure claim
 /// checkable. A rule that could age them out would destroy the only record of what was destroyed
 /// (§10.20.1).</para>
+///
+/// <para><see cref="MemoryErasureEvidence"/> is inventoried and never swept for the same kind of reason:
+/// it has no rule, and status reports it as content-free counts.</para>
 /// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<RetentionDataClass>))]
 public enum RetentionDataClass
@@ -93,6 +96,19 @@ public enum RetentionDataClass
     /// The Annals. Inventoried, never aged out on its own timer: a claim's lifecycle is its subject's.
     /// </summary>
     Annals = 29,
+
+    /// <summary>
+    /// Erasure evidence: the content-free fingerprints, receipts, and receipt subjects selective
+    /// erasure records. Inventoried, never aged out.
+    /// </summary>
+    /// <remarks>
+    /// A fingerprint is what keeps an erased item from being learned again, so a rule that aged one out
+    /// would quietly lift an erasure on a schedule. Rows are removed only by a release, an operator
+    /// re-creation of the erased identity, <c>memory erasure reset-key</c>, restore's
+    /// destination-authoritative join, or a full installation reset, which removes the Grimoire and the
+    /// key together.
+    /// </remarks>
+    MemoryErasureEvidence = 30,
 
 }
 
@@ -205,6 +221,21 @@ public sealed record DataRetentionCovenantInventory(
     long PossibleDisclosures,
     CovenantDisclosureCountKind DisclosureCountKind);
 
+/// <summary>
+/// The content-free inventory of erasure evidence: how many fingerprints, receipts, and receipt
+/// subjects the installation holds.
+/// </summary>
+/// <remarks>
+/// Counts only. No fingerprint, key identifier, digest, store, scope, or Campaign identity appears here.
+/// The evidence is never selected by a prune or a reset, so the inventory is a report rather than a
+/// candidate set and stays outside every plan identity: releasing one fingerprint does not expire a
+/// factory preview that never proposed to remove it.
+/// </remarks>
+public sealed record DataRetentionMemoryErasureInventory(
+    long Fingerprints,
+    long Receipts,
+    long ReceiptSubjects);
+
 public sealed record DataRetentionStatusItem(
     RetentionDataClass DataClass,
     long Rows,
@@ -223,7 +254,9 @@ public sealed record DataRetentionStatus(
     long EstimatedBytes,
     string[] PreservedOutsideSelectedRoot,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionCovenantInventory? Covenant = null);
+    DataRetentionCovenantInventory? Covenant = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionMemoryErasureInventory? MemoryErasure = null);
 
 public sealed record DataRetentionPlanItem(
     RetentionDataClass DataClass,
@@ -285,7 +318,9 @@ public sealed record DataRetentionPlan(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DataRetentionSagaCurationInventory? SagaCuration = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionLexiconCurationInventory? LexiconCuration = null);
+    DataRetentionLexiconCurationInventory? LexiconCuration = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionMemoryErasureInventory? MemoryErasure = null);
 
 /// <summary>
 /// A plan and the optional Covenant read lease that protects its response until serialization ends.
@@ -404,6 +439,10 @@ public static class DataRetentionSettingsCatalog
             // Explicit for the same reason. A claim's lifecycle is its subject's, and a rule that could
             // age one out from under a live memory would leave that memory unexplained.
             RetentionDataClass.Annals => null,
+
+            // Explicit again. A fingerprint is what keeps an erased item from being learned again, so a
+            // rule that aged one out would lift the erasure on a schedule nobody asked for.
+            RetentionDataClass.MemoryErasureEvidence => null,
 
             _ => null,
 
