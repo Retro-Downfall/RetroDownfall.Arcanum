@@ -605,6 +605,67 @@ public sealed class BackupRestoreStagedDrainTests
     }
 
     /// <summary>
+    /// A tier held back only by a dependency recorded at head is no more drainable than that dependency:
+    /// an accelerator that never installed because its canonical tier is drifted waits on a repair no pass
+    /// can make. The restore leaves it to its later steps, with or without evidence, exactly as it leaves
+    /// the drifted canonical tier itself.
+    /// </summary>
+    /// <param name="evidence">Whether the destination erased something before the restore.</param>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_tier_blocked_only_by_an_at_head_dependency_is_not_a_drain_failure(bool evidence)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        await (evidence ? EraseOnTheHostAsync(harness) : WriteWithoutErasingAsync(harness));
+
+        MemoryErasureRestoreHarness.ArchivedInstallation archive = await harness.CreateArchiveAtAsync(
+            "accelerator-behind-drifted-canonical",
+            GrimoireSchemaVersionChains.Default,
+            static connection => ExecuteAsync(
+                connection,
+                """
+                DROP TRIGGER covenant_state_validate_update;
+
+                CREATE TRIGGER covenant_state_validate_update
+                BEFORE UPDATE ON covenant_state
+                BEGIN
+                    SELECT 'drifted';
+                END;
+
+                DROP TABLE covenant_fts;
+
+                DROP TABLE covenant_search_documents;
+
+                DELETE FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 2;
+                """));
+
+        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(), archive.ArchivePath);
+
+        Assert.Empty(result.Issues);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        Assert.Equal(
+            evidence ? BackupRestoreErasureEvidenceStatus.Present : BackupRestoreErasureEvidenceStatus.None,
+            result.Plan.DestinationErasureEvidence?.Status);
+
+        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Reconcile);
+
+        Assert.DoesNotContain(result.Phases, static p => p.Detail.StartsWith("Drained", StringComparison.Ordinal));
+
+        // The staged state really was a drifted canonical tier with no accelerator, and it still is.
+        await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
+
+        Assert.Equal(1L, await ScalarAsync(restored, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'covenant_state_validate_update' AND sql LIKE '%drifted%'"));
+
+        Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 2"));
+    }
+
+    /// <summary>
     /// A sweep longer than one pass is drained across passes. Progress inside one step is the journal's
     /// cursor and row count, not a tier version, so the stall guard has to read it.
     /// </summary>

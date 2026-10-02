@@ -26,7 +26,9 @@ internal sealed record BackupRestoreSchemaDrainReceipt(int Passes, int BatchesRu
 /// <para>A drain is needed exactly when the transition journal has a row or a tier is recorded below this
 /// build's head, a tier recorded at no version included. A tier recorded at head needs none, whatever its
 /// health: no pass can repair a drifted or otherwise degraded catalog, so such a tier is left to the
-/// evidence step's own verification rather than refused here.</para>
+/// restore's later steps rather than refused here. Neither does a tier held back only by such a tier: one
+/// that reports <see cref="GrimoireSchemaTierHealth.DependencyUnavailable"/> while the tier it depends on is
+/// itself settled is waiting on a repair no pass can make, so it is left exactly where its dependency is.</para>
 ///
 /// <para>Each pass advances every pending sweep by at most <see cref="MaxBatchesPerPass"/> batches through
 /// the runner the host drives, then re-enters convergence so the next step's DDL runs, exactly as the
@@ -57,8 +59,9 @@ internal static class BackupRestoreSchemaDrain
     ];
 
     /// <summary>
-    /// Drains <paramref name="staged"/> until the transition journal is empty and every tier is recorded
-    /// at head, starting from the tier healths <paramref name="migrated"/> reported.
+    /// Drains <paramref name="staged"/> until the transition journal is empty and every tier is settled:
+    /// recorded at head, or held back only by a settled dependency. It starts from the tier healths
+    /// <paramref name="migrated"/> reported.
     /// </summary>
     /// <returns>
     /// A receipt, or <see cref="BackupRestoreErasureCodes.EvidenceUnjoinable"/> when a tier below head is
@@ -97,7 +100,7 @@ internal static class BackupRestoreSchemaDrain
             Position position = await Position.ReadAsync(staged, installer.Chains, cancellationToken)
                 .ConfigureAwait(false);
 
-            while (!position.IsAtHead)
+            while (NeedsDrain(tiers, position))
             {
                 if (RefusedHealth(tiers, position) is { } refused)
                 {
@@ -136,7 +139,7 @@ internal static class BackupRestoreSchemaDrain
                 Position after = await Position.ReadAsync(staged, installer.Chains, cancellationToken)
                     .ConfigureAwait(false);
 
-                if (!after.IsAtHead && after.SameProgressAs(position))
+                if (NeedsDrain(tiers, after) && after.SameProgressAs(position))
                 {
                     return Unjoinable((RefusedHealth(tiers, after) ?? WaitingHealth(tiers, after)).ToString());
                 }
@@ -170,6 +173,42 @@ internal static class BackupRestoreSchemaDrain
             + "erasure evidence cannot be applied. Nothing was displaced. Restore a newer archive, or run a full "
             + "installation reset. Diagnostics: " + diagnostics);
 
+    /// <summary>Something is in flight, or some tier is not settled.</summary>
+    private static bool NeedsDrain(GrimoireSchemaInstallResult tiers, Position position) =>
+        position.Journal.Count > 0 || Tiers.Any(tier => !IsSettled(tier, tiers, position));
+
+    /// <summary>
+    /// A tier no pass has to move: recorded at head, or held back only by a dependency that is itself
+    /// settled.
+    /// </summary>
+    /// <remarks>
+    /// The second arm is what keeps an at-head tier from causing a refusal through a dependent. Convergence
+    /// never attempts a tier whose dependency is not healthy, so an accelerator behind a drifted canonical
+    /// tier reports <see cref="GrimoireSchemaTierHealth.DependencyUnavailable"/> forever. That is the
+    /// drifted tier's state, not one a drain could change, and it is left where that tier is left. A
+    /// dependent below head for its own reasons, with its dependency healthy, is not settled.
+    /// </remarks>
+    private static bool IsSettled(
+        GrimoireSchemaTransactionTier tier,
+        GrimoireSchemaInstallResult tiers,
+        Position position) =>
+        position.IsRecordedAtHead(tier)
+        || (HealthOf(tiers, tier) == GrimoireSchemaTierHealth.DependencyUnavailable
+            && DependencyOf(tier) is { } dependency
+            && IsSettled(dependency, tiers, position));
+
+    /// <summary>
+    /// The tier convergence requires healthy before it attempts this one, in the order
+    /// <c>InstallAsync</c> installs them.
+    /// </summary>
+    private static GrimoireSchemaTransactionTier? DependencyOf(GrimoireSchemaTransactionTier tier) =>
+        tier switch
+        {
+            GrimoireSchemaTransactionTier.CovenantCanonical => GrimoireSchemaTransactionTier.Core,
+            GrimoireSchemaTransactionTier.CovenantAccelerator => GrimoireSchemaTransactionTier.CovenantCanonical,
+            _ => null,
+        };
+
     /// <summary>
     /// The first health no further pass can change, reported by a tier the drain still has to move, or
     /// null when every such tier is only waiting: on its own sweep, or on a tier it depends on.
@@ -194,12 +233,12 @@ internal static class BackupRestoreSchemaDrain
         return null;
     }
 
-    /// <summary>What the first tier still below head is waiting on, for a stall's diagnostic.</summary>
+    /// <summary>What the first tier the drain still has to move is waiting on, for a stall's diagnostic.</summary>
     private static GrimoireSchemaTierHealth WaitingHealth(GrimoireSchemaInstallResult tiers, Position position)
     {
         foreach (GrimoireSchemaTransactionTier tier in Tiers)
         {
-            if (!position.IsRecordedAtHead(tier))
+            if (!IsSettled(tier, tiers, position))
             {
                 return HealthOf(tiers, tier);
             }
@@ -252,9 +291,6 @@ internal static class BackupRestoreSchemaDrain
         }
 
         internal IReadOnlyList<GrimoireSchemaTransitionJournalRow> Journal { get; }
-
-        /// <summary>Nothing in flight, and every tier recorded at head.</summary>
-        internal bool IsAtHead => Journal.Count == 0 && Tiers.All(IsRecordedAtHead);
 
         internal bool IsRecordedAtHead(GrimoireSchemaTransactionTier tier) =>
             _recorded[tier] == _heads[tier];
