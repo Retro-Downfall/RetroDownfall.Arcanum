@@ -222,28 +222,41 @@ public sealed class CovenantDisclosureJournalTests
 
     }
 
-    [Fact]
-    public async Task AcknowledgeAsync_a_pre_fold_backlog_is_folded_with_the_next_receipt_as_a_lower_bound()
+    /// <summary>
+    /// A live fold weakens its buckets exactly when the tail it folds is longer than the one receipt
+    /// it just wrote. Tail sizes one, two and three pin that boundary: a tail of one is this receipt
+    /// alone and stays exact, and any longer tail carries receipts a build without the fold wrote.
+    /// </summary>
+    [Theory]
+    [InlineData(1, CovenantDisclosureCountKind.Exact)]
+    [InlineData(2, CovenantDisclosureCountKind.LowerBound)]
+    [InlineData(3, CovenantDisclosureCountKind.LowerBound)]
+    public async Task AcknowledgeAsync_a_pre_fold_backlog_is_folded_with_the_next_receipt_as_a_lower_bound(
+        int tail,
+        CovenantDisclosureCountKind expectedKind)
     {
 
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             CancellationToken.None,
             coreObjects: CoreObjects);
 
-        await PreFoldDisclosureHistory.InsertAsync(fixture.Connection, Draft(1), 1, CancellationToken.None);
+        for (byte ordinal = 1; ordinal < tail; ordinal++)
+        {
 
-        await PreFoldDisclosureHistory.InsertAsync(fixture.Connection, Draft(2), 2, CancellationToken.None);
+            await PreFoldDisclosureHistory.InsertAsync(fixture.Connection, Draft(ordinal), ordinal, CancellationToken.None);
+
+        }
 
         Result<CovenantDisclosureReceipt> next = await Journal().AcknowledgeAsync(
             fixture.Connection,
-            Draft(3),
+            Draft((byte)tail),
             CovenantDisclosureEffectCategory.ProviderDispatch,
             Sensitivity,
             CancellationToken.None);
 
         Assert.True(next.IsSuccess, next.Error.Message);
 
-        Assert.Equal(3ul, next.Value.AllocatedSubjectOrdinal);
+        Assert.Equal((ulong)tail, next.Value.AllocatedSubjectOrdinal);
 
         CovenantDisclosureState bucket = Assert.Single(
             await ExternalDisclosureStateStore.ReadAllAsync(fixture.Connection, null, CancellationToken.None));
@@ -252,17 +265,15 @@ public sealed class CovenantDisclosureJournalTests
         // proves they are the whole of that history.
         Assert.Equal(
             (CovenantEgressDestination.Provider, CovenantDisclosureRevocability.Nonrevocable,
-                CovenantDisclosureCountKind.LowerBound, 3ul),
+                expectedKind, (ulong)tail),
             (bucket.Destination, bucket.Revocability, bucket.CountKind, bucket.Count));
 
         Assert.Equal(
-            Or(
-                new CovenantDisclosureReceipt(Draft(1), 1).EvidenceBloom,
-                new CovenantDisclosureReceipt(Draft(2), 2).EvidenceBloom,
-                new CovenantDisclosureReceipt(Draft(3), 3).EvidenceBloom),
+            Or([.. Enumerable.Range(1, tail).Select(
+                static ordinal => new CovenantDisclosureReceipt(Draft((byte)ordinal), (ulong)ordinal).EvidenceBloom)]),
             bucket.EvidenceBloom.ToArray());
 
-        Assert.Equal(3, await ScalarAsync(fixture, "LastFoldedOrdinal"));
+        Assert.Equal(tail, await ScalarAsync(fixture, "LastFoldedOrdinal"));
 
     }
 

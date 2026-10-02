@@ -199,74 +199,225 @@ public sealed class ExternalDisclosureStateReaderTests
     }
 
     /// <summary>
-    /// The exposure count is read without rebuilding receipts, so it has to be pinned to the bucket
-    /// read it summarizes: the nonrevocable buckets' total, lower bound when any of them is.
+    /// The disclosure histories the exposure count and the effective buckets have to agree on.
     /// </summary>
-    [Fact]
-    public async Task Exposure_is_the_nonrevocable_sum_of_the_effective_buckets()
+    public enum DisclosureHistory
+    {
+
+        /// <summary>Every receipt folded live: nothing to weaken.</summary>
+        FullyFolded,
+
+        /// <summary>A live subject, two pre-fold subjects, and a locally revocable tail receipt.</summary>
+        MixedPreFold,
+
+        /// <summary>One receipt folded live, then a pre-fold receipt past the watermark.</summary>
+        PartiallyFolded,
+
+        /// <summary>A pre-fold receipt whose instant no supported format parses.</summary>
+        UnparseableInstant,
+
+        /// <summary>A receipt numbered past its unfolded subject's last allocated ordinal.</summary>
+        StrayPastAllocation,
+
+    }
+
+    /// <summary>
+    /// The exposure count is read without rebuilding receipts, so it has to be pinned to the bucket
+    /// read it summarizes: the nonrevocable buckets' total, lower bound when any of them is. Each row
+    /// is a fold state in which two independently written statements could disagree, and each also
+    /// pins the literal total, so the two cannot drift together.
+    /// </summary>
+    [Theory]
+    [InlineData(DisclosureHistory.FullyFolded, 2, CovenantDisclosureCountKind.Exact)]
+    [InlineData(DisclosureHistory.MixedPreFold, 4, CovenantDisclosureCountKind.LowerBound)]
+    [InlineData(DisclosureHistory.PartiallyFolded, 2, CovenantDisclosureCountKind.LowerBound)]
+    [InlineData(DisclosureHistory.UnparseableInstant, 2, CovenantDisclosureCountKind.LowerBound)]
+    [InlineData(DisclosureHistory.StrayPastAllocation, 3, CovenantDisclosureCountKind.LowerBound)]
+    public async Task Exposure_is_the_nonrevocable_sum_of_the_effective_buckets(
+        DisclosureHistory history,
+        long expectedAttempts,
+        CovenantDisclosureCountKind expectedKind)
     {
 
         await using CovenantCanonicalFixture fixture = await CreateAsync();
 
-        Result<CovenantDisclosureReceipt> live = await new CovenantDisclosureTransactionWriter(BootId)
-            .AcknowledgeAsync(
-                fixture.Connection,
-                Draft(SubjectC, 1, 1_700_000_000_000),
-                CovenantDisclosureEffectCategory.ProviderDispatch,
-                PreFoldDisclosureHistory.Sensitivity,
-                Token);
+        await SeedHistoryAsync(fixture, history);
 
-        Assert.True(live.IsSuccess, live.Error.Message);
-
-        await BacklogAsync(fixture, SubjectA, 2);
-
-        await PreFoldDisclosureHistory.InsertAsync(
-            fixture.Connection,
-            Draft(SubjectB, 1, 1_700_000_000_000, CovenantEgressDestination.Network),
-            1,
-            Token);
-
-        await PreFoldDisclosureHistory.InsertAsync(
-            fixture.Connection,
-            Draft(
-                SubjectB,
-                2,
-                1_700_000_000_000,
-                CovenantEgressDestination.Process,
-                CovenantDisclosureRevocability.LocallyRevocable),
-            2,
-            Token,
-            CovenantDisclosureEffectCategory.McpToolUse);
+        CovenantDisclosureExposure expected = new(expectedAttempts, expectedKind);
 
         CovenantDisclosureExposureReader exposure = new();
 
-        await using SqliteTransaction snapshot = fixture.Connection.BeginTransaction(deferred: true);
+        await using (SqliteTransaction snapshot = fixture.Connection.BeginTransaction(deferred: true))
+        {
 
-        IReadOnlyList<CovenantDisclosureState> buckets = await ExternalDisclosureStateReader.ReadEffectiveAsync(
-            fixture.Connection,
-            snapshot,
-            Token);
+            IReadOnlyList<CovenantDisclosureState> buckets = await ExternalDisclosureStateReader
+                .ReadEffectiveAsync(fixture.Connection, snapshot, Token);
 
-        Assert.Equal(3, buckets.Count);
+            Assert.Equal(expected, NonrevocableSum(buckets));
+
+            Assert.Equal(expected, (await exposure.ReadWithinAsync(fixture.Connection, snapshot, Token)).Value);
+
+            await snapshot.RollbackAsync(Token);
+
+        }
+
+        Assert.Equal(
+            expected,
+            NonrevocableSum(await ExternalDisclosureStateReader.ReadEffectiveAsync(fixture.Connection, Token)));
+
+        Assert.Equal(expected, (await exposure.ReadWithinAsync(fixture.Connection, null, Token)).Value);
+
+    }
+
+    private static async Task SeedHistoryAsync(CovenantCanonicalFixture fixture, DisclosureHistory history)
+    {
+
+        switch (history)
+        {
+
+            case DisclosureHistory.FullyFolded:
+            {
+
+                await AcknowledgeAsync(fixture, Draft(SubjectC, 1, 1_700_000_000_000));
+
+                await AcknowledgeAsync(fixture, Draft(SubjectC, 2, 1_700_000_060_000));
+
+                await AcknowledgeAsync(
+                    fixture,
+                    Draft(
+                        SubjectC,
+                        3,
+                        1_700_000_120_000,
+                        CovenantEgressDestination.Process,
+                        CovenantDisclosureRevocability.LocallyRevocable),
+                    CovenantDisclosureEffectCategory.McpToolUse);
+
+                return;
+
+            }
+
+            case DisclosureHistory.MixedPreFold:
+            {
+
+                await AcknowledgeAsync(fixture, Draft(SubjectC, 1, 1_700_000_000_000));
+
+                await BacklogAsync(fixture, SubjectA, 2);
+
+                await PreFoldDisclosureHistory.InsertAsync(
+                    fixture.Connection,
+                    Draft(SubjectB, 1, 1_700_000_000_000, CovenantEgressDestination.Network),
+                    1,
+                    Token);
+
+                await PreFoldDisclosureHistory.InsertAsync(
+                    fixture.Connection,
+                    Draft(
+                        SubjectB,
+                        2,
+                        1_700_000_000_000,
+                        CovenantEgressDestination.Process,
+                        CovenantDisclosureRevocability.LocallyRevocable),
+                    2,
+                    Token,
+                    CovenantDisclosureEffectCategory.McpToolUse);
+
+                return;
+
+            }
+
+            case DisclosureHistory.PartiallyFolded:
+            {
+
+                await AcknowledgeAsync(fixture, Draft(SubjectA, 1, 1_700_000_000_000));
+
+                await PreFoldDisclosureHistory.InsertAsync(
+                    fixture.Connection,
+                    Draft(SubjectA, 2, 1_700_000_060_000),
+                    2,
+                    Token);
+
+                // The state under test, proven rather than assumed: folded through one, allocated to two.
+                Assert.Equal(
+                    1,
+                    await ScalarAsync(
+                        fixture,
+                        "SELECT COUNT(*) FROM disclosure_subject_state WHERE LastFoldedOrdinal = 1 AND LastAllocatedOrdinal = 2;"));
+
+                return;
+
+            }
+
+            case DisclosureHistory.UnparseableInstant:
+            {
+
+                await AcknowledgeAsync(fixture, Draft(SubjectC, 1, 1_700_000_000_000));
+
+                await PreFoldDisclosureHistory.InsertAsync(
+                    fixture.Connection,
+                    Draft(SubjectA, 1, 1_700_000_000_000, CovenantEgressDestination.ExternalMcp),
+                    1,
+                    Token,
+                    disclosedAtUtc: "not an instant");
+
+                return;
+
+            }
+
+            case DisclosureHistory.StrayPastAllocation:
+            {
+
+                await BacklogAsync(fixture, SubjectA, 2);
+
+                await PreFoldDisclosureHistory.InsertAsync(
+                    fixture.Connection,
+                    Draft(SubjectA, 7, 1_700_000_420_000),
+                    7,
+                    Token,
+                    allocate: false);
+
+                Assert.Equal(
+                    1,
+                    await ScalarAsync(
+                        fixture,
+                        "SELECT COUNT(*) FROM disclosure_subject_state WHERE LastFoldedOrdinal = 0 AND LastAllocatedOrdinal = 2;"));
+
+                return;
+
+            }
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(history), history, null);
+
+        }
+
+    }
+
+    private static async Task AcknowledgeAsync(
+        CovenantCanonicalFixture fixture,
+        CovenantDisclosureDraft draft,
+        CovenantDisclosureEffectCategory category = CovenantDisclosureEffectCategory.ProviderDispatch)
+    {
+
+        Result<CovenantDisclosureReceipt> acknowledged = await new CovenantDisclosureTransactionWriter(BootId)
+            .AcknowledgeAsync(fixture.Connection, draft, category, PreFoldDisclosureHistory.Sensitivity, Token);
+
+        Assert.True(acknowledged.IsSuccess, acknowledged.Error.Message);
+
+    }
+
+    private static CovenantDisclosureExposure NonrevocableSum(IReadOnlyList<CovenantDisclosureState> buckets)
+    {
 
         CovenantDisclosureState[] nonrevocable =
         [
             .. buckets.Where(static bucket => bucket.Revocability is CovenantDisclosureRevocability.Nonrevocable),
         ];
 
-        CovenantDisclosureExposure expected = new(
+        return new CovenantDisclosureExposure(
             nonrevocable.Sum(static bucket => checked((long)bucket.Count)),
             nonrevocable.Any(static bucket => bucket.CountKind is CovenantDisclosureCountKind.LowerBound)
                 ? CovenantDisclosureCountKind.LowerBound
                 : CovenantDisclosureCountKind.Exact);
-
-        Assert.Equal(new CovenantDisclosureExposure(4, CovenantDisclosureCountKind.LowerBound), expected);
-
-        Assert.Equal(expected, (await exposure.ReadWithinAsync(fixture.Connection, snapshot, Token)).Value);
-
-        await snapshot.RollbackAsync(Token);
-
-        Assert.Equal(expected, (await exposure.ReadWithinAsync(fixture.Connection, null, Token)).Value);
 
     }
 

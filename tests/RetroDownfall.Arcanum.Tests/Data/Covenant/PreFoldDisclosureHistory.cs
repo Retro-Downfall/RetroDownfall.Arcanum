@@ -45,13 +45,24 @@ internal static class PreFoldDisclosureHistory
     /// Overrides the stored generation identities. A value the sensitivity grammar refuses, such as a
     /// zero identity, makes the row one no reader can rebuild into its original receipt.
     /// </param>
+    /// <param name="disclosedAtUtc">
+    /// Overrides the stored instant text. The column has no shape check, so a row can carry text no
+    /// supported instant format parses.
+    /// </param>
+    /// <param name="allocate">
+    /// False leaves the subject row exactly as it was, so a receipt past its last allocated ordinal
+    /// is a stray the journal never allocated. The schema admits one: nothing ties a receipt's ordinal
+    /// to its subject's counter.
+    /// </param>
     internal static async Task InsertAsync(
         SqliteConnection connection,
         CovenantDisclosureDraft draft,
         ulong ordinal,
         CancellationToken cancellationToken,
         CovenantDisclosureEffectCategory category = CovenantDisclosureEffectCategory.ProviderDispatch,
-        byte[]? exactGenerationIds = null)
+        byte[]? exactGenerationIds = null,
+        string? disclosedAtUtc = null,
+        bool allocate = true)
     {
 
         ArgumentNullException.ThrowIfNull(connection);
@@ -162,11 +173,32 @@ internal static class PreFoldDisclosureHistory
                 "$backup",
                 draft.BackupEvidenceDigest is { } backup ? backup.Bytes : DBNull.Value);
 
-            _ = insert.Parameters.AddWithValue("$disclosedAt", Iso(draft.Timestamp));
+            _ = insert.Parameters.AddWithValue("$disclosedAt", disclosedAtUtc ?? Iso(draft.Timestamp));
 
             Assert.Equal(1, await insert.ExecuteNonQueryAsync(cancellationToken));
 
         }
+
+        if (allocate)
+        {
+
+            await AdvanceAsync(connection, transaction, draft, ordinal, category, chain, cancellationToken);
+
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+    }
+
+    private static async Task AdvanceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantDisclosureDraft draft,
+        ulong ordinal,
+        CovenantDisclosureEffectCategory category,
+        CovenantDisclosureChain chain,
+        CancellationToken cancellationToken)
+    {
 
         await using (SqliteCommand advance = Command(connection, transaction, draft))
         {
@@ -196,8 +228,6 @@ internal static class PreFoldDisclosureHistory
             Assert.Equal(1, await advance.ExecuteNonQueryAsync(cancellationToken));
 
         }
-
-        await transaction.CommitAsync(cancellationToken);
 
     }
 
