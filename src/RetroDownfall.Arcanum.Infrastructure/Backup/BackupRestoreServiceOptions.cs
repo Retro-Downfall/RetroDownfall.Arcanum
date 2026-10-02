@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -103,5 +105,15 @@ internal sealed class BackupRestoreServiceOptions
     /// and not the purge alone, are what stand between a staged generation and its commit.
     /// </remarks>
     internal Func<SqliteConnection, SqliteTransaction, CancellationToken, Task>? AfterErasurePurgeForTests { get; init; }
+
+    /// <summary>
+    /// Replaces the checked write-ahead-log checkpoint the evidence step takes on the staged database
+    /// after its commit.
+    /// </summary>
+    /// <remarks>
+    /// The seam that lets a suite fail that checkpoint outright, which no real database can be made to do
+    /// on demand, and so prove a failed checkpoint is reported as a pending scrub.
+    /// </remarks>
+    internal Func<SqliteConnection, CancellationToken, Task<Result<CovenantWalCheckpointOutcome>>>? StagedCheckpointForTests { get; init; }
 
 }

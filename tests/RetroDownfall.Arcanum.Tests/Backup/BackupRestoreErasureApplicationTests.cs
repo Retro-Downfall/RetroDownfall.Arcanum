@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -63,6 +64,12 @@ public sealed class BackupRestoreErasureApplicationTests
     private const string VerificationFailed = "backup.restore_erasure_verification_failed";
 
     private const string ProtectedStatePresent = "backup.restore_protected_state_present";
+
+    private const string CommittedPresent =
+        "backup.restore_erasure_verification_failed: an erased item is present in the committed generation.";
+
+    private const string CommittedUnproven =
+        "backup.restore_erasure_verification_failed: the committed generation could not be proven free of the items this installation erased.";
 
     private static readonly Guid BootId = Guid.Parse("d4d4d4d4-0000-4000-8000-0000000000aa");
 
@@ -950,9 +957,14 @@ public sealed class BackupRestoreErasureApplicationTests
 
         AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
 
-        Assert.Contains(
-            "backup.restore_erasure_verification_failed: an erased item is present in the committed generation.",
-            result.Reconciliation!.Issues);
+        string issue = Assert.Single(result.Reconciliation!.Issues);
+
+        Assert.StartsWith(CommittedPresent, issue, StringComparison.Ordinal);
+
+        // The issue names what to do next, and only the store's own erase command or a fresh restore can.
+        Assert.Contains("erase it again", issue, StringComparison.Ordinal);
+
+        Assert.Contains("run the same restore again", issue, StringComparison.Ordinal);
 
         Assert.Equal(BackupRestoreErasureScrubStatus.ScrubPending, result.Reconciliation.ErasureApplication!.Scrub);
     }
@@ -1061,13 +1073,23 @@ public sealed class BackupRestoreErasureApplicationTests
                 1,
                 CancellationToken.None));
 
-        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(), archive.ArchivePath);
+        CountingOsCredentialStore keychain = new(harness.Credentials);
+
+        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(credentials: keychain), archive.ArchivePath);
 
         Assert.Equal(BackupRestoreStatus.Completed, result.Status);
 
         Assert.Equal(
             new BackupRestoreErasureEvidenceSummary(BackupRestoreErasureEvidenceStatus.None, 0, 0, 0, 0),
             result.Plan.DestinationErasureEvidence);
+
+        // A destination with no evidence is restored, evidence step and all, without a single keychain call,
+        // and the restore leaves the keychain without a key.
+        Assert.Equal(0, keychain.Calls);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            harness.Credentials.ProbePresence(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount));
 
         await using (SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret))
         {
@@ -1270,6 +1292,527 @@ public sealed class BackupRestoreErasureApplicationTests
     }
 
     /// <summary>
+    /// A Lexicon entry's full-text row is removed only by its content table's delete trigger, which skips a
+    /// retired row. An archive whose index still holds a row for an entry this installation erased, beside
+    /// that entry as a retired row, would otherwise commit the erased text with every target counted
+    /// zero, so the purge proves the index row gone, exactly as the live erase does, or refuses.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_staged_lexicon_index_row_that_outlived_its_entry_refuses_as_verification_failed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        harness.StartHost();
+
+        await ScribeAsync(harness, "Vault Keeper", null, ["zqxvaulttoken"]);
+
+        _ = await harness.EraseLexiconAsync("Vault Keeper", null);
+
+        await harness.StopHostAsync();
+
+        MemoryErasureRestoreHarness.ArchivedInstallation archive = await harness.CreateArchiveAtAsync(
+            "stale-index",
+            GrimoireSchemaVersionChains.Default,
+            static connection => ExecuteAsync(
+                connection,
+                """
+                INSERT INTO lexicon_entries (rowid, Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt, ScopeCampaignId, RetiredAtUtc)
+                VALUES (987654, '6A1D2C3B-4A59-4E68-8D7C-1B2A3F4E5D6C', 'Vault Keeper', 'VAULT KEEPER', 'Person', '["zqxvaulttoken"]',
+                        'zqxvaulttoken', '2026-01-01T00:00:00.0000000Z', '', '2026-01-02T00:00:00.0000000Z');
+
+                INSERT INTO lexicon_fts (rowid, Name, Type, FactsText) VALUES (987654, 'Vault Keeper', 'Person', 'zqxvaulttoken');
+                """));
+
+        string before = await harness.LiveDatabaseDigestAsync();
+
+        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(), archive.ArchivePath);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.Equal(VerificationFailed, issue.Code);
+
+        Assert.Contains("lexicon_fts", issue.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("zqxvaulttoken", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        AssertNoStagingRemains(harness);
+    }
+
+    /// <summary>
+    /// The match keeps one archived id, and the purge deletes by that id's normalised spelling. A second
+    /// archived row whose id differs only in case or dashes is not a match, so deleting it would purge
+    /// something nothing erased: the step refuses instead, as the live erases refuse that shape.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unmatched_row_sharing_a_matched_rows_identity_refuses_rather_than_being_purged()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        await EraseOnTheHostAsync(harness);
+
+        MemoryErasureRestoreHarness.ArchivedInstallation archive = await harness.CreateArchiveAtAsync(
+            "shared-id",
+            GrimoireSchemaVersionChains.Default,
+            static connection => ExecuteAsync(
+                connection,
+                """
+                INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode)
+                VALUES ('5D1D2C3B-4A59-4E68-8D7C-1B2A3F4E5D6C', 'erase me', '2026-01-01T00:00:00.0000000Z', 1),
+                       ('5d1d2c3b-4a59-4e68-8d7c-1b2a3f4e5d6c', 'never erased anywhere', '2026-01-01T00:00:00.0000000Z', 1);
+                """));
+
+        string before = await harness.LiveDatabaseDigestAsync();
+
+        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(), archive.ArchivePath);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.Equal(VerificationFailed, issue.Code);
+
+        Assert.DoesNotContain("never erased", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        AssertNoStagingRemains(harness);
+    }
+
+    /// <summary>
+    /// The staged write-ahead log is checkpointed after the evidence commits. A reader that still holds a
+    /// snapshot from before the commit keeps that checkpoint from truncating, and the restore then says
+    /// the scrub is pending rather than verified.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_busy_staged_checkpoint_reports_the_scrub_as_pending()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        SqliteConnection? reader = null;
+
+        try
+        {
+            BackupRestoreService service = harness.CreateRestoreService(
+                options: new BackupRestoreServiceOptions
+                {
+                    AfterErasurePurgeForTests = async (connection, transaction, cancellationToken) =>
+                    {
+                        Assert.NotNull(transaction);
+
+                        reader = await BackupRestoreDatabaseWorker.OpenAsync(
+                            connection.DataSource,
+                            GrimoireFixture.TestGrimoireSecret,
+                            readOnly: true,
+                            cancellationToken);
+
+                        await using SqliteCommand snapshot = reader.CreateCommand();
+
+                        snapshot.CommandText = "BEGIN DEFERRED; SELECT COUNT(*) FROM sqlite_master;";
+
+                        _ = await snapshot.ExecuteScalarAsync(cancellationToken);
+                    },
+                    BeforePhaseForTests = phase =>
+                    {
+                        if (phase == BackupRestorePhase.RemapPaths)
+                        {
+                            reader?.Dispose();
+
+                            reader = null;
+                        }
+                    },
+                });
+
+            BackupRestoreResult result = await RestoreAsync(service, archive);
+
+            Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+            AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
+
+            Assert.Equal(
+                new BackupRestoreErasureApplication(1, 0, 0, 0, 1, 1, 0, BackupRestoreErasureScrubStatus.ScrubPending),
+                result.Reconciliation!.ErasureApplication);
+        }
+        finally
+        {
+            reader?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A checkpoint that fails outright after the evidence committed is a scrub that could not be
+    /// proven, not a restore that failed: the purge was already proven, so the restore completes and says
+    /// the scrub is pending.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_staged_checkpoint_that_fails_reports_the_scrub_as_pending()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            options: new BackupRestoreServiceOptions
+            {
+                StagedCheckpointForTests = static (connection, cancellationToken) =>
+                    Task.FromException<Result<CovenantWalCheckpointOutcome>>(new SqliteException("disk I/O error", 10)),
+            });
+
+        BackupRestoreResult result = await RestoreAsync(service, archive);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
+
+        Assert.Equal(
+            new BackupRestoreErasureApplication(1, 0, 0, 0, 1, 1, 0, BackupRestoreErasureScrubStatus.ScrubPending),
+            result.Reconciliation!.ErasureApplication);
+    }
+
+    /// <summary>
+    /// The extracted archive database is deleted with a check. One that cannot be deleted is still a
+    /// completed restore, because the staging cleanup removes the whole work directory anyway, but the
+    /// scrub it reports is pending rather than verified.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_extracted_database_that_cannot_be_deleted_reports_the_scrub_as_pending()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "The extract is made undeletable through Unix file modes.");
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        string parent = Path.GetDirectoryName(harness.InstallationRoot)!;
+
+        string? extractedGrimoire = null;
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            options: new BackupRestoreServiceOptions
+            {
+                BeforeStagedEntryComposeForTests = entry =>
+                {
+                    if (extractedGrimoire is null && !OperatingSystem.IsWindows())
+                    {
+                        extractedGrimoire = Path.Combine(
+                            Assert.Single(Directory.GetDirectories(parent, BackupRestoreJournal.StagingPrefix + "*")),
+                            BackupRestoreJournal.WorkDirectoryName,
+                            "extract",
+                            "grimoire");
+
+                        File.SetUnixFileMode(extractedGrimoire, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                    }
+                },
+                BeforePhaseForTests = phase =>
+                {
+                    if (phase == BackupRestorePhase.Commit && extractedGrimoire is not null && !OperatingSystem.IsWindows())
+                    {
+                        Assert.True(File.Exists(Path.Combine(extractedGrimoire, "arcanum.db")), "The extract could not be deleted.");
+
+                        File.SetUnixFileMode(
+                            extractedGrimoire,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                    }
+                },
+            });
+
+        BackupRestoreResult result = await RestoreAsync(service, archive);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
+
+        Assert.Equal(
+            new BackupRestoreErasureApplication(1, 0, 0, 0, 1, 1, 0, BackupRestoreErasureScrubStatus.ScrubPending),
+            result.Reconciliation!.ErasureApplication);
+
+        AssertNoStagingRemains(harness);
+    }
+
+    /// <summary>
+    /// The post-commit proof needs the key the destination read latched. If it is no longer in hand, the
+    /// committed generation is not proven clean: the restore requires an operator, and says absence could
+    /// not be proven rather than that an erased item is present.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_key_no_longer_in_hand_after_commit_is_reported_as_unproven_absence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        BackupRestoreResult result = await RestoreAsync(
+            harness.CreateRestoreService(erasureKeys: new LatchLostAfterStaging(new MemoryErasureKeyring(harness.Credentials))),
+            archive);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
+
+        string issue = Assert.Single(result.Reconciliation!.Issues);
+
+        Assert.StartsWith(CommittedUnproven, issue, StringComparison.Ordinal);
+
+        Assert.Contains("run the same restore again", issue, StringComparison.Ordinal);
+
+        Assert.Equal(BackupRestoreErasureScrubStatus.ScrubPending, result.Reconciliation.ErasureApplication!.Scrub);
+    }
+
+    /// <summary>
+    /// A committed row whose identity the match cannot read leaves the committed generation unproven. The
+    /// post-commit proof reports that rather than throwing out of a restore that has already committed.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_committed_identity_that_cannot_be_read_is_reported_as_unproven_absence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        harness.StartHost();
+
+        await ScribeAsync(harness, "Vault Keeper", null, ["keeps the vault key"]);
+
+        await harness.StopHostAsync();
+
+        string archive = await harness.CreateArchiveAsync("unreadable-committed.arcbackup");
+
+        harness.StartHost();
+
+        _ = await harness.EraseLexiconAsync("Vault Keeper", null);
+
+        await harness.StopHostAsync();
+
+        string database = harness.DatabasePath;
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            options: new BackupRestoreServiceOptions
+            {
+                BeforePhaseForTests = phase =>
+                {
+                    if (phase != BackupRestorePhase.Reconcile)
+                    {
+                        return;
+                    }
+
+                    using SqliteConnection committed = BackupRestoreDatabaseWorker
+                        .OpenAsync(database, GrimoireFixture.TestGrimoireSecret, readOnly: false, Token)
+                        .GetAwaiter()
+                        .GetResult();
+
+                    using SqliteCommand command = committed.CreateCommand();
+
+                    // A Campaign scope no erasure identity can name: the empty GUID.
+                    command.CommandText = """
+                        INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt, ScopeCampaignId)
+                        VALUES ('1E1D2C3B-4A59-4E68-8D7C-1B2A3F4E5D6C', 'Harbor Master', 'HARBOR MASTER', 'Person', '[]', '',
+                                '2026-01-01T00:00:00.0000000Z', '00000000-0000-0000-0000-000000000000');
+                        """;
+
+                    _ = command.ExecuteNonQuery();
+                },
+            });
+
+        BackupRestoreResult result = await RestoreAsync(service, archive);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        AssertExecuteTimeEvidence(result, saga: 0, lexicon: 1, covenant: 0, receipts: 1);
+
+        Assert.StartsWith(CommittedUnproven, Assert.Single(result.Reconciliation!.Issues), StringComparison.Ordinal);
+
+        Assert.Equal(BackupRestoreErasureScrubStatus.ScrubPending, result.Reconciliation.ErasureApplication!.Scrub);
+    }
+
+    /// <summary>
+    /// The destination's disclosure buckets are joined into every replacement. A destination that opens
+    /// but whose disclosure state cannot be read would otherwise contribute nothing, and the restored
+    /// installation would under-report what has already left this machine, so the restore refuses.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_destination_disclosure_state_that_cannot_be_read_refuses_rather_than_being_dropped()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        await ExecuteOnLiveAsync(
+            harness,
+            "DROP TABLE external_disclosure_state; CREATE TABLE external_disclosure_state (Unreadable INTEGER NOT NULL);");
+
+        string before = await harness.LiveDatabaseDigestAsync();
+
+        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(), archive);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
+
+        Assert.Equal(VerificationFailed, issue.Code);
+
+        Assert.Contains("external_disclosure_state", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        AssertNoStagingRemains(harness);
+    }
+
+    /// <summary>
+    /// A restore reads the keychain only for its plan-time destination read: the execute-time read, the
+    /// evidence step and the post-commit proof all use the key that read latched, and none creates one.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_restore_reads_the_keychain_only_for_its_plan_time_destination_read()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        CountingOsCredentialStore planOnly = new(harness.Credentials);
+
+        BackupRestorePlan plan = await harness
+            .CreateRestoreService(credentials: planOnly)
+            .PlanAsync(Request(archive), MemoryErasureRestoreHarness.Passphrase.AsMemory(), Token);
+
+        Assert.Equal(BackupRestoreErasureEvidenceStatus.Present, plan.DestinationErasureEvidence?.Status);
+
+        Assert.True(planOnly.Calls > 0, "The plan-time read proves the evidence against the key.");
+
+        CountingOsCredentialStore restoring = new(harness.Credentials);
+
+        BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(credentials: restoring), archive);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        AssertExecuteTimeEvidence(result, saga: 1, lexicon: 0, covenant: 0, receipts: 1);
+
+        Assert.Equal(planOnly.Calls, restoring.Calls);
+    }
+
+    /// <summary>
+    /// The operator cancelling inside the evidence step is a cancellation, exactly as it is during the
+    /// drain: it leaves the restore as one, the CLI exits 130, and nothing is displaced.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_cancellation_inside_the_evidence_step_exits_as_cancelled_with_nothing_displaced()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        string before = await harness.LiveDatabaseDigestAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            options: new BackupRestoreServiceOptions
+            {
+                AfterErasurePurgeForTests = (connection, transaction, cancellationToken) =>
+                {
+                    cancellation.Cancel();
+
+                    return Task.CompletedTask;
+                },
+            });
+
+        OperationCanceledException cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => RestoreAsync(service, archive, cancellationToken: cancellation.Token));
+
+        CliFailure failure = CliFailureMapper.Map(cancelled);
+
+        Assert.Equal(CliExitCode.Cancelled, failure.ExitCode);
+
+        Assert.Equal(130, (int)failure.ExitCode);
+
+        Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        AssertNoStagingRemains(harness);
+    }
+
+    /// <summary>
+    /// With the gate on, the Covenant restore session is already open when the evidence step refuses. The
+    /// refusal aborts it as proven pre-swap, before the staged Covenant reconcile, so admission reopens
+    /// and the installation is exactly as it was.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_verification_failure_with_the_covenant_gate_on_reopens_admission_with_nothing_displaced()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        string archive = await ArchiveThenEraseAsync(harness);
+
+        string before = await harness.LiveDatabaseDigestAsync();
+
+        CovenantRestoreStagingTests.RecordingExclusiveGate gate = new();
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            options: new BackupRestoreServiceOptions
+            {
+                RestoreStaging = harness.CovenantStaging(gate),
+                AfterErasurePurgeForTests = ReinsertTheErasedMemoryAsync,
+            });
+
+        BackupRestoreResult result = await RestoreAsync(service, archive);
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Equal(VerificationFailed, Assert.Single(result.Issues).Code);
+
+        Assert.Equal(1, gate.ExclusiveAcquisitions);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.RollbackAndReopen], gate.Dispositions);
+
+        Assert.DoesNotContain(result.Phases, static p => p.Detail.StartsWith("Stripped the archive's managed-file authority", StringComparison.Ordinal));
+
+        Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        AssertNoStagingRemains(harness);
+    }
+
+    /// <summary>A row of the erased identity under a new id, put back after the purge.</summary>
+    private static async Task ReinsertTheErasedMemoryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode)
+            VALUES ('3E1D2C3B-4A59-4E68-8D7C-1B2A3F4E5D6C', 'erase me', '2026-01-01T00:00:00.0000000Z', 1);
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Index blocks that still hold the fact's token. FTS5 stores a term after the one before it as the
     /// length of their shared prefix and the rest of its bytes, and <c>qqzsigiltoken</c> sorts right after
     /// the name's own <c>qqz</c>, so the bytes a block holds for it are <c>sigiltoken</c>.
@@ -1326,17 +1869,18 @@ public sealed class BackupRestoreErasureApplicationTests
     private static Task<BackupRestoreResult> RestoreAsync(
         BackupRestoreService service,
         string archive,
-        BackupProtectedStateMode mode = BackupProtectedStateMode.Reject) =>
-        service.RestoreAsync(
-            new BackupRestoreRequest(
-                archive,
-                BackupRestoreConflictMode.ReplaceInstallation,
-                Confirmed: true,
-                CreateSafetyBackup: false,
-                ProtectedStateMode: mode,
-                ProtectedStateConfirmed: mode is not BackupProtectedStateMode.Reject),
-            MemoryErasureRestoreHarness.Passphrase.AsMemory(),
-            Token);
+        BackupProtectedStateMode mode = BackupProtectedStateMode.Reject,
+        CancellationToken cancellationToken = default) =>
+        service.RestoreAsync(Request(archive, mode), MemoryErasureRestoreHarness.Passphrase.AsMemory(), cancellationToken);
+
+    private static BackupRestoreRequest Request(string archive, BackupProtectedStateMode mode = BackupProtectedStateMode.Reject) =>
+        new(
+            archive,
+            BackupRestoreConflictMode.ReplaceInstallation,
+            Confirmed: true,
+            CreateSafetyBackup: false,
+            ProtectedStateMode: mode,
+            ProtectedStateConfirmed: mode is not BackupProtectedStateMode.Reject);
 
     private static async Task<string> DestinationEvidenceHexAsync(MemoryErasureRestoreHarness harness)
     {
@@ -1586,6 +2130,22 @@ public sealed class BackupRestoreErasureApplicationTests
 
         public MemoryErasureKey? TryCopyLatched() =>
             MemoryErasureKey.FromBytes(System.Security.Cryptography.RandomNumberGenerator.GetBytes(MemoryErasureDigestGrammar.KeyBytes));
+    }
+
+    /// <summary>
+    /// Hands the evidence step the latched key, then nothing: what a provider whose latch was lost between
+    /// the staged commit and the post-commit proof would do.
+    /// </summary>
+    private sealed class LatchLostAfterStaging(IMemoryErasureKeyProvider inner) : IMemoryErasureKeyProvider
+    {
+        private int _copies;
+
+        public MemoryErasureKeyLatch Latch => inner.Latch;
+
+        public MemoryErasureKeyOpenResult OpenExisting(MemoryErasureKeyProbe probe) => inner.OpenExisting(probe);
+
+        public MemoryErasureKey? TryCopyLatched() =>
+            Interlocked.Increment(ref _copies) == 1 ? inner.TryCopyLatched() : null;
     }
 
     private static CovenantDisclosureDraft Draft(Guid subject, byte effectSeed, long timestamp) =>

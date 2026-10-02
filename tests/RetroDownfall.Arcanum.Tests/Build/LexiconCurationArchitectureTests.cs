@@ -406,11 +406,13 @@ public sealed class LexiconCurationArchitectureTests
         // Scalar status is operator inventory; reset/pruning/purge selects identities only. The
         // version writer snapshots evidence, and the historical schema backfill is not retrieval. Restore
         // staging's erasure match fingerprints an archived entry's name to find what this installation
-        // erased; it returns ids only and never serves a name.
+        // erased; it returns ids only and never serves a name. Its purge reads only the matched entries'
+        // content rowids, to prove the full-text index holds none of them afterwards.
         Assert.Equal(new[]
         {
             "AnnalsClaimWriter.SnapshotLexiconProvenanceAsync",
             "BackupRestoreErasureEvidenceApplier.FindMatchesAsync",
+            "BackupRestoreErasureEvidenceApplier.ReadLexiconRowIdsAsync",
             "DataRetentionService.BuildMemoryResetSelections",
             "DataRetentionService.Pruning.AddLexiconCandidatesCoreAsync",
             "DataRetentionService.Pruning.DeleteLexiconCandidateAsync",

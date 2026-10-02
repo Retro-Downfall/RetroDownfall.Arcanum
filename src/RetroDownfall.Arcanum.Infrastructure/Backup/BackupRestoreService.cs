@@ -776,10 +776,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         }
 
-        BackupCovenantRestoreDestinationState destination =
+        Result<BackupCovenantRestoreDestinationState> destination =
             await ReadDestinationCovenantStateAsync(cancellationToken).ConfigureAwait(false);
 
-        return BackupRestoreProtectedStateInspector.Exposure(destination.DisclosureBuckets);
+        // A plan only previews; the restore that would act on this refuses when the read cannot answer.
+        return BackupRestoreProtectedStateInspector.Exposure(
+            destination.IsSuccess ? destination.Value.DisclosureBuckets : []);
 
     }
 
@@ -1030,11 +1032,27 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 && DeleteExtractedDatabase(extractRoot);
 
             // Read for every replacement, with the gate on or off: the evidence step joins the destination's
-            // disclosure buckets in both, and only the Covenant arm needs the authority row.
-            BackupCovenantRestoreDestinationState destination =
-                request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
-                    ? await ReadDestinationCovenantStateAsync(cancellationToken).ConfigureAwait(false)
-                    : BackupCovenantRestoreDestinationState.None;
+            // disclosure buckets in both, and only the Covenant arm needs the authority row. A destination that
+            // opens but cannot answer refuses here, before anything is staged further, rather than joining
+            // nothing and under-reporting what has already left this installation.
+            BackupCovenantRestoreDestinationState destination = BackupCovenantRestoreDestinationState.None;
+
+            if (request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
+            {
+
+                Result<BackupCovenantRestoreDestinationState> read = await ReadDestinationCovenantStateAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read.IsFailure)
+                {
+
+                    return Rejected(operationId, effectivePlan, phases, [Issue(read.Error)]);
+
+                }
+
+                destination = read.Value;
+
+            }
 
             if (ReconcilesProtectedState(request) && maintenance is not null)
             {
@@ -2464,9 +2482,10 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 .ReconcileAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
 
-            bool committedClean = !proves
-                || await ProveCommittedAbsenceAsync(connection, erasure!.Destination, cancellationToken)
-                    .ConfigureAwait(false);
+            string? unproven = proves
+                ? await ProveCommittedAbsenceAsync(connection, erasure!.Destination, cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
 
             return new BackupRestoreReconciliation(
                 counts.Attachments,
@@ -2475,8 +2494,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 counts.BatchFiles,
                 embeddingsToRebuild,
                 pendingCleared,
-                committedClean ? [] : [CommittedMatchIssue],
-                erasure is null ? null : ErasureApplication(erasure, committedClean));
+                unproven is null ? [] : [unproven],
+                erasure is null ? null : ErasureApplication(erasure, committedClean: unproven is null));
 
         }
         catch (Exception exception) when (
@@ -2756,8 +2775,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// installation this operation has already closed admission on. A destination that cannot be
     /// opened contributes nothing, which the monotonic join treats as a clean lineage at epoch zero —
     /// the archive's own taint and epoch both survive that.
+    ///
+    /// <para>One that opens and then cannot be read is different, and refuses. Its buckets record what has
+    /// already left this machine, and every replacement joins them into the generation it adopts, so a
+    /// read that failed quietly would have the restored installation under-report that exposure.</para>
     /// </remarks>
-    private async Task<BackupCovenantRestoreDestinationState> ReadDestinationCovenantStateAsync(
+    private async Task<Result<BackupCovenantRestoreDestinationState>> ReadDestinationCovenantStateAsync(
         CancellationToken cancellationToken)
     {
 
@@ -2767,6 +2790,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             return BackupCovenantRestoreDestinationState.None;
 
         }
+
+        SqliteConnection connection;
 
         try
         {
@@ -2782,12 +2807,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
             }
 
-            await using SqliteConnection connection = await BackupRestoreDatabaseWorker
+            connection = await BackupRestoreDatabaseWorker
                 .OpenAsync(_paths.DatabasePath, secret.Value, readOnly: true, cancellationToken)
-                .ConfigureAwait(false);
-
-            return await BackupCovenantRestoreDestinationState
-                .ReadAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
 
         }
@@ -2800,6 +2821,39 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         {
 
             return BackupCovenantRestoreDestinationState.None;
+
+        }
+
+        await using (connection.ConfigureAwait(false))
+        {
+
+            try
+            {
+
+                return await BackupCovenantRestoreDestinationState
+                    .ReadAsync(connection, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (Exception exception) when (
+                exception is SqliteException
+                    or InvalidDataException
+                    or InvalidOperationException
+                    or FormatException
+                    or ArgumentException
+                    or OverflowException)
+            {
+
+                return new Error(
+                    BackupRestoreErasureCodes.VerificationFailed,
+                    "This installation's Grimoire opened, but its Covenant authority and disclosure state "
+                    + "(covenant_authority_state, external_disclosure_state) could not be read, so the restore "
+                    + "cannot carry what has already left this installation into the restored generation. It "
+                    + "stopped before committing anything and the current installation is unchanged. Repair the "
+                    + "Grimoire's Covenant state and retry, or perform a full installation reset. Diagnostics: "
+                    + exception.GetType().Name);
+
+            }
 
         }
 

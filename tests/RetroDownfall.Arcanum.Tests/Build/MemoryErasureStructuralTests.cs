@@ -328,6 +328,28 @@ public sealed class MemoryErasureStructuralTests
         Assert.DoesNotMatch(ForbiddenAgentToolReference, "ILexiconService lexicon, ISagaMemoryStore saga");
 
     /// <summary>
+    /// A restore reads the erasure key and never creates one: its destination read probes the keychain,
+    /// and its staged evidence step and post-commit proof use only the key that read latched. So no file
+    /// under the restore's own folder may reach the creator.
+    /// </summary>
+    [Fact]
+    public void Restore_never_names_the_erasure_key_creator()
+    {
+        (string Path, string Text)[] backup =
+        [
+            .. Sources("*.cs").Where(static source =>
+                source.Path.StartsWith("src/RetroDownfall.Arcanum.Infrastructure/Backup/", StringComparison.Ordinal)),
+        ];
+
+        Assert.Contains(backup, static source => source.Path.EndsWith("/BackupRestoreErasureEvidenceApplier.cs", StringComparison.Ordinal));
+
+        Assert.Empty(
+            backup
+                .Where(static source => Regex.IsMatch(source.Text, @"\b(?:IMemoryErasureKeyCreator|OpenOrCreate|CreateForReset)\b"))
+                .Select(static source => source.Path));
+    }
+
+    /// <summary>
     /// Authorization kind 12 opens every canonical delete guard an entry erasure needs, so exactly one
     /// production file may grant it: the entry-erasure service, which grants it to its own erase
     /// transaction. The plan it runs deletes under whatever its caller granted.

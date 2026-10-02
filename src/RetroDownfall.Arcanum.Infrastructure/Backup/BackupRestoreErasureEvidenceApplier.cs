@@ -39,6 +39,10 @@ internal sealed record BackupRestoreErasureMatches(
 /// Covenant entry's index did too.
 /// </param>
 /// <param name="CheckpointTruncated">Whether the staged write-ahead log was truncated after the commit.</param>
+/// <param name="VectorMirrorsVerified">
+/// Whether every vector mirror a purge reached was absent or a plain table. A legacy virtual-table mirror
+/// is skipped and stays unreachable residue, which a live erase records as a scrub that never verifies.
+/// </param>
 internal sealed record BackupRestoreErasureApplicationReceipt(
     long SagaMemoriesRemoved,
     long LexiconEntriesRemoved,
@@ -48,7 +52,8 @@ internal sealed record BackupRestoreErasureApplicationReceipt(
     long ReceiptsJoined,
     long ArchiveRowsDropped,
     bool FullTextVerified,
-    bool CheckpointTruncated)
+    bool CheckpointTruncated,
+    bool VectorMirrorsVerified = true)
 {
     /// <summary>A staged generation that had nothing to reconcile, because the archive carried no Grimoire.</summary>
     internal static BackupRestoreErasureApplicationReceipt None { get; } = new(0, 0, 0, 0, 0, 0, 0, true, true);
@@ -174,7 +179,7 @@ internal static class BackupRestoreErasureEvidenceApplier
                 return found.Error;
             }
 
-            Purge saga = await PurgeArtifactsAsync(
+            Result<Purge> saga = await PurgeArtifactsAsync(
                 staged,
                 transaction,
                 SensitiveArtifactKind.Saga,
@@ -182,13 +187,27 @@ internal static class BackupRestoreErasureEvidenceApplier
                 timeProvider,
                 cancellationToken).ConfigureAwait(false);
 
-            Purge lexicon = await PurgeArtifactsAsync(
+            if (saga.IsFailure)
+            {
+                await RollbackAsync(transaction).ConfigureAwait(false);
+
+                return saga.Error;
+            }
+
+            Result<Purge> lexicon = await PurgeArtifactsAsync(
                 staged,
                 transaction,
                 SensitiveArtifactKind.Lexicon,
                 found.Value.LexiconIds,
                 timeProvider,
                 cancellationToken).ConfigureAwait(false);
+
+            if (lexicon.IsFailure)
+            {
+                await RollbackAsync(transaction).ConfigureAwait(false);
+
+                return lexicon.Error;
+            }
 
             Result<CovenantPurge> covenant = await PurgeCovenantAsync(
                 staged,
@@ -218,8 +237,8 @@ internal static class BackupRestoreErasureEvidenceApplier
                 transaction,
                 key,
                 rows,
-                saga,
-                lexicon,
+                saga.Value,
+                lexicon.Value,
                 covenant.Value,
                 cancellationToken).ConfigureAwait(false);
 
@@ -229,15 +248,16 @@ internal static class BackupRestoreErasureEvidenceApplier
             }
 
             return new BackupRestoreErasureApplicationReceipt(
-                saga.Removed,
-                lexicon.Removed,
+                saga.Value.Removed,
+                lexicon.Value.Removed,
                 covenant.Value.Removed,
-                saga.RetirementPairs,
+                saga.Value.RetirementPairs,
                 rows.Fingerprints.Count,
                 rows.Receipts.Count,
                 dropped,
                 fullText && covenant.Value.FullTextVerified,
-                CheckpointTruncated: false);
+                CheckpointTruncated: false,
+                VectorMirrorsVerified: saga.Value.VectorMirrorsVerified && lexicon.Value.VectorMirrorsVerified);
         }
         // A catalog the drain left drifted, an identity the archive cannot name, or a plan statement its
         // schema refuses: none of them is a purge that can be proven, so each refuses, naming its type.
@@ -366,7 +386,19 @@ internal static class BackupRestoreErasureEvidenceApplier
                     campaign = parsed;
                 }
 
-                if (Matches(lexicon, key, MemoryErasureIdentity.ForLexicon(campaign, name)))
+                MemoryErasureIdentity identity;
+
+                try
+                {
+                    identity = MemoryErasureIdentity.ForLexicon(campaign, name);
+                }
+                catch (ArgumentException)
+                {
+                    // An empty Campaign GUID parses, and no erasure identity can name it.
+                    return Unnameable("an archived Lexicon entry's Campaign");
+                }
+
+                if (Matches(lexicon, key, identity))
                 {
                     if (reader.IsDBNull(0))
                     {
@@ -503,7 +535,17 @@ internal static class BackupRestoreErasureEvidenceApplier
     /// Removes each matched Saga or Lexicon artifact through the shared plan, then its labels and its Saga
     /// retirement pair, then recounts every Session that owned one of those labels.
     /// </summary>
-    private static async Task<Purge> PurgeArtifactsAsync(
+    /// <remarks>
+    /// <para>The plan deletes by an id's normalised spelling, and an archive can hold two rows whose ids
+    /// differ only in case or dashes. Each normalised id is therefore counted first, and a count that is
+    /// not exactly the matched rows that share it refuses, as the live erases refuse that shape: deleting
+    /// the other row would purge something nothing erased.</para>
+    ///
+    /// <para>A Lexicon entry's full-text row is keyed by its content rowid and removed only by a trigger
+    /// that skips retired rows, so each matched entry's rowid is read before the delete for the absence
+    /// proof to look for.</para>
+    /// </remarks>
+    private static async Task<Result<Purge>> PurgeArtifactsAsync(
         SqliteConnection staged,
         SqliteTransaction transaction,
         SensitiveArtifactKind kind,
@@ -515,15 +557,17 @@ internal static class BackupRestoreErasureEvidenceApplier
 
         long pairs = 0;
 
+        bool vectorMirrorsVerified = true;
+
         List<string> keys = [];
+
+        Dictionary<string, long> matched = new(StringComparer.Ordinal);
 
         List<SagaRow> sagaRows = [];
 
-        HashSet<string> sessions = new(StringComparer.Ordinal);
+        List<long> rowIds = [];
 
-        bool labelled = await BackupRestoreDatabaseWorker
-            .TableExistsAsync(staged, "artifact_sensitivity", cancellationToken, transaction)
-            .ConfigureAwait(false);
+        HashSet<string> sessions = new(StringComparer.Ordinal);
 
         foreach (string id in ids)
         {
@@ -535,22 +579,51 @@ internal static class BackupRestoreErasureEvidenceApplier
                 throw new InvalidDataException("A matched artifact has an empty identity.");
             }
 
-            keys.Add(artifactKey);
+            if (matched.TryGetValue(artifactKey, out long count))
+            {
+                matched[artifactKey] = count + 1;
+            }
+            else
+            {
+                matched[artifactKey] = 1;
+
+                keys.Add(artifactKey);
+            }
+        }
+
+        bool labelled = await BackupRestoreDatabaseWorker
+            .TableExistsAsync(staged, "artifact_sensitivity", cancellationToken, transaction)
+            .ConfigureAwait(false);
+
+        foreach (string artifactKey in keys)
+        {
+            // The count is measured before the delete, with the predicates the delete removes by. A delete's
+            // own tally cannot say it: SQLite does not count a row a foreign key removes as its change.
+            CovenantArtifactPlanTally measured = await CovenantArtifactPlanRunner
+                .RunAsync(staged, transaction, kind, artifactKey, CovenantArtifactPlanMode.Count, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (measured.ArtifactRows != matched[artifactKey])
+            {
+                return Refusal("an archived row shares the identity of a matched row without matching it");
+            }
+
+            removed += measured.ArtifactRows;
 
             if (kind is SensitiveArtifactKind.Saga)
             {
                 sagaRows.AddRange(await ReadSagaRowsAsync(staged, transaction, artifactKey, cancellationToken).ConfigureAwait(false));
             }
+            else
+            {
+                rowIds.AddRange(await ReadLexiconRowIdsAsync(staged, transaction, artifactKey, cancellationToken).ConfigureAwait(false));
+            }
 
-            // The count is measured before the delete, with the predicates the delete removes by. A delete's
-            // own tally cannot say it: SQLite does not count a row a foreign key removes as its change.
-            removed += (await CovenantArtifactPlanRunner
-                .RunAsync(staged, transaction, kind, artifactKey, CovenantArtifactPlanMode.Count, cancellationToken)
-                .ConfigureAwait(false)).ArtifactRows;
-
-            _ = await CovenantArtifactPlanRunner
+            CovenantArtifactPlanTally deleted = await CovenantArtifactPlanRunner
                 .RunAsync(staged, transaction, kind, artifactKey, CovenantArtifactPlanMode.Delete, cancellationToken)
                 .ConfigureAwait(false);
+
+            vectorMirrorsVerified &= deleted.VectorMirror is not SagaVectorMirrorKind.LegacyVirtualTable;
 
             if (!labelled)
             {
@@ -588,7 +661,7 @@ internal static class BackupRestoreErasureEvidenceApplier
 
         await RecountSessionsAsync(staged, transaction, sessions, timeProvider, cancellationToken).ConfigureAwait(false);
 
-        return new Purge(kind, removed, pairs, keys, sagaRows);
+        return new Purge(kind, removed, pairs, keys, sagaRows, rowIds, vectorMirrorsVerified);
     }
 
     /// <summary>
@@ -738,6 +811,13 @@ internal static class BackupRestoreErasureEvidenceApplier
             }
         }
 
+        if (lexicon.RowIds.Count > 0
+            && await BackupRestoreDatabaseWorker.TableExistsAsync(staged, "lexicon_fts", cancellationToken, transaction).ConfigureAwait(false)
+            && await FullTextRowCountAsync(staged, transaction, lexicon.RowIds, cancellationToken).ConfigureAwait(false) != 0)
+        {
+            return "residual rows in lexicon_fts";
+        }
+
         foreach (Purge purge in (Purge[])[saga, lexicon])
         {
             foreach (string artifactKey in purge.Keys)
@@ -876,6 +956,67 @@ internal static class BackupRestoreErasureEvidenceApplier
         return rows;
     }
 
+    /// <summary>A Lexicon entry's content rowid, which keys its full-text row, read before it is deleted.</summary>
+    private static async Task<List<long>> ReadLexiconRowIdsAsync(
+        SqliteConnection staged,
+        SqliteTransaction transaction,
+        string artifactKey,
+        CancellationToken cancellationToken)
+    {
+        List<long> rowIds = [];
+
+        await using SqliteCommand command = Command(
+            staged,
+            transaction,
+            $"SELECT rowid FROM lexicon_entries WHERE {CovenantIdentitySql.Keyed("Id", "$id")};");
+
+        _ = command.Parameters.AddWithValue("$id", artifactKey);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rowIds.Add(reader.GetInt64(0));
+        }
+
+        return rowIds;
+    }
+
+    /// <summary>
+    /// How many of these content rowids <c>lexicon_fts</c> still indexes. FTS5 keeps one
+    /// <c>lexicon_fts_docsize</c> row for every row it indexes, keyed by the content rowid, so that row's
+    /// absence is the exact proof the live Lexicon erase rests on too.
+    /// </summary>
+    private static async Task<long> FullTextRowCountAsync(
+        SqliteConnection staged,
+        SqliteTransaction transaction,
+        IReadOnlyList<long> rowIds,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = Command(staged, transaction, string.Empty);
+
+        List<string> parameters = new(rowIds.Count);
+
+        int index = 0;
+
+        foreach (long rowId in rowIds)
+        {
+            string name = $"$r{index}";
+
+            parameters.Add(name);
+
+            _ = command.Parameters.AddWithValue(name, rowId);
+
+            index++;
+        }
+
+        command.CommandText = $"SELECT COUNT(*) FROM lexicon_fts_docsize WHERE id IN ({string.Join(", ", parameters)});";
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rows
+            ? rows
+            : throw new InvalidDataException("The full-text row count did not return an integer.");
+    }
+
     /// <summary>One statement over an artifact's labels, matched by kind and normalised artifact identity.</summary>
     private static SqliteCommand LabelCommand(
         SqliteConnection staged,
@@ -951,13 +1092,16 @@ internal static class BackupRestoreErasureEvidenceApplier
     /// <summary>One Saga memory's identity parts, as its retirement pair is computed from them.</summary>
     private sealed record SagaRow(SagaMemoryScopeKind Scope, string? CampaignId, string Content);
 
-    /// <summary>What one store's artifact purge removed, and the keys its post-conditions recount.</summary>
+    /// <summary>What one store's artifact purge removed, and what its post-conditions look for.</summary>
+    /// <param name="RowIds">The purged Lexicon entries' content rowids, which key their full-text rows.</param>
     private sealed record Purge(
         SensitiveArtifactKind Kind,
         long Removed,
         long RetirementPairs,
         IReadOnlyList<string> Keys,
-        IReadOnlyList<SagaRow> SagaRows);
+        IReadOnlyList<SagaRow> SagaRows,
+        IReadOnlyList<long> RowIds,
+        bool VectorMirrorsVerified);
 
     /// <summary>What the Covenant purge removed, and each entry its absence proof needs.</summary>
     private sealed record CovenantPurge(

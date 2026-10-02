@@ -176,7 +176,18 @@ internal sealed partial class BackupRestoreService
 
     /// <summary>The issue a post-commit match adds to the reconciliation, which makes it require an operator.</summary>
     private const string CommittedMatchIssue =
-        BackupRestoreErasureCodes.VerificationFailed + ": an erased item is present in the committed generation.";
+        BackupRestoreErasureCodes.VerificationFailed + ": an erased item is present in the committed generation. "
+        + "It stays retrievable until it is removed: erase it again with its store's erase command, or run the same "
+        + "restore again, which removes it in staging.";
+
+    /// <summary>
+    /// The issue the post-commit proof adds when it could not run to an answer: no key in hand, or a committed
+    /// row whose identity it cannot read. That is not a presence, and it says so.
+    /// </summary>
+    private const string CommittedUnprovenIssue =
+        BackupRestoreErasureCodes.VerificationFailed + ": the committed generation could not be proven free of the "
+        + "items this installation erased. With the erasure key readable, run the same restore again, which proves "
+        + "it in staging, or erase any item that reappears with its store's erase command.";
 
     /// <summary>
     /// Applies this installation's erasure evidence to the staged generation in one <c>BEGIN IMMEDIATE</c>,
@@ -236,11 +247,24 @@ internal sealed partial class BackupRestoreService
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        Result<CovenantWalCheckpointOutcome> checkpoint = await GrimoireWalCheckpoint
-            .TruncateAsync(staged, cancellationToken)
-            .ConfigureAwait(false);
+        // After the commit the purge is proven, so a checkpoint that fails is a scrub that is not, never a
+        // restore that is: it is reported as pending, exactly as a busy one is.
+        bool truncated;
 
-        return applied.Value with { CheckpointTruncated = checkpoint.IsSuccess && checkpoint.Value.IsTruncated };
+        try
+        {
+            Result<CovenantWalCheckpointOutcome> checkpoint = _options.StagedCheckpointForTests is { } seam
+                ? await seam(staged, cancellationToken).ConfigureAwait(false)
+                : await GrimoireWalCheckpoint.TruncateAsync(staged, cancellationToken).ConfigureAwait(false);
+
+            truncated = checkpoint.IsSuccess && checkpoint.Value.IsTruncated;
+        }
+        catch (SqliteException)
+        {
+            truncated = false;
+        }
+
+        return applied.Value with { CheckpointTruncated = truncated };
     }
 
     /// <summary>
@@ -279,8 +303,13 @@ internal sealed partial class BackupRestoreService
     /// Proves the committed generation holds nothing this installation erased, on a connection the caller
     /// already has open, with the key this restore latched.
     /// </summary>
-    /// <returns>False when an archived row matches, when the match cannot be made, or when no key is in hand.</returns>
-    private async Task<bool> ProveCommittedAbsenceAsync(
+    /// <remarks>
+    /// Total: every way it can fail to answer is an answer. A key no longer in hand or not the evidence's,
+    /// a committed identity the match cannot read, or a match that throws all report that absence could not
+    /// be proven, so a restore that has already committed is never left by an exception.
+    /// </remarks>
+    /// <returns>Null when the committed generation is proven clean; otherwise the issue that says why not.</returns>
+    private async Task<string?> ProveCommittedAbsenceAsync(
         SqliteConnection committed,
         BackupRestoreErasureEvidence destination,
         CancellationToken cancellationToken)
@@ -289,14 +318,29 @@ internal sealed partial class BackupRestoreService
 
         if (key is null || !key.HasKeyId(destination.KeyId))
         {
-            return false;
+            return CommittedUnprovenIssue;
         }
 
-        Result<BackupRestoreErasureMatches> matches = await BackupRestoreErasureEvidenceApplier
-            .FindMatchesAsync(committed, null, key, destination.Rows, cancellationToken)
-            .ConfigureAwait(false);
+        Result<BackupRestoreErasureMatches> matches;
 
-        return matches.IsSuccess && matches.Value.IsEmpty;
+        try
+        {
+            matches = await BackupRestoreErasureEvidenceApplier
+                .FindMatchesAsync(committed, null, key, destination.Rows, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException
+                or InvalidOperationException
+                or InvalidDataException
+                or FormatException)
+        {
+            return CommittedUnprovenIssue;
+        }
+
+        return matches.IsFailure
+            ? CommittedUnprovenIssue
+            : matches.Value.IsEmpty ? null : CommittedMatchIssue;
     }
 
     /// <summary>What a restore reports it did with the destination's erasure evidence, scrub status included.</summary>
@@ -307,7 +351,11 @@ internal sealed partial class BackupRestoreService
 
         BackupRestoreErasureScrubStatus scrub = !receipt.Touched
             ? BackupRestoreErasureScrubStatus.NotApplicable
-            : receipt.FullTextVerified && receipt.CheckpointTruncated && erasure.ExtractedDatabaseDeleted && committedClean
+            : receipt.FullTextVerified
+                && receipt.VectorMirrorsVerified
+                && receipt.CheckpointTruncated
+                && erasure.ExtractedDatabaseDeleted
+                && committedClean
                 ? BackupRestoreErasureScrubStatus.Verified
                 : BackupRestoreErasureScrubStatus.ScrubPending;
 

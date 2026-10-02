@@ -107,6 +107,18 @@ public sealed class BackupRestoreErasureMatchTests
         Assert.True(matches.IsSuccess, matches.IsFailure ? matches.Error.Message : null);
 
         Assert.True(matches.Value.IsEmpty);
+
+        // The same content erased in Global scope does not reach the Campaign rows either.
+        Result<BackupRestoreErasureMatches> global = await BackupRestoreErasureEvidenceApplier.FindMatchesAsync(
+            connection,
+            null,
+            key,
+            Destination(key, MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, Content)),
+            Token);
+
+        Assert.True(global.IsSuccess, global.IsFailure ? global.Error.Message : null);
+
+        Assert.Equal(["A0000000-0000-4000-8000-000000000002"], global.Value.SagaIds);
     }
 
     [Fact]
