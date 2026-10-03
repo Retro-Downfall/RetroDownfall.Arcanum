@@ -42,6 +42,11 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// there and must stay, and the route refuses rather than reporting a deletion that did not happen.
 /// A prune is the one arm that skips rather than refuses, because a sweep selects many candidates
 /// and one protected member is a reason to leave that member alone, not to abandon the sweep.</para>
+///
+/// <para>A label table that cannot be read is a third answer, and neither of the other two. The routes
+/// below that are driven with a guard standing in for that condition refuse with
+/// <c>Covenant.Unavailable</c> (503) rather than <c>Covenant.ForbiddenAuthority</c>, and the prune skips
+/// the candidate it cannot vouch for.</para>
 /// </remarks>
 [Collection("ApiHost")]
 
@@ -499,6 +504,196 @@ public sealed class CovenantLabeledRetentionRouteTests
     }
 
     /// <summary>
+    /// A label table that cannot be read refuses the Session delete with <c>Covenant.Unavailable</c>, not
+    /// with the refusal a labelled Entry gets, and leaves the Session and its Entry in place.
+    /// </summary>
+    /// <remarks>
+    /// Nothing was found to be protected, so there is no authority to lack: the protection could not be
+    /// checked, which is the Grimoire's condition and the operator's to repair. A route that read the
+    /// unreadable answer as a pass would delete a Session whose Entries might be labelled.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task An_unreadable_label_refuses_the_session_delete_route()
+    {
+
+        RequireSqlCipher();
+
+        await using ArcanumWebApplicationFactory factory = HostWithUnreadableGuard();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            await SeedSessionAsync(connection, sessionId);
+
+            await SeedEntryAsync(connection, sessionId, entryId);
+
+        }
+
+        HttpResponseMessage deleted = await client.DeleteAsync(
+            $"/api/data/sessions/{sessionId:D}");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, deleted.StatusCode);
+
+        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(deleted);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, body.Error?.Code);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryId));
+
+        Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
+
+    }
+
+    /// <summary>
+    /// A label table that cannot be read refuses the untargeted memory reset with
+    /// <c>Covenant.Unavailable</c> and leaves the store's rows in place.
+    /// </summary>
+    /// <remarks>
+    /// The reset's statement examines no identity, so the guard's bulk question is the only protection it
+    /// has. Answered "unreadable", the reset must stop rather than read the failure as "nothing is
+    /// labelled here" and empty the table.
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData("saga")]
+
+    [InlineData("lexicon")]
+
+    public async Task An_unreadable_label_refuses_the_untargeted_memory_reset_route(string store)
+    {
+
+        RequireSqlCipher();
+
+        bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
+
+        await using ArcanumWebApplicationFactory factory = HostWithUnreadableGuard();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid artifactId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            if (saga)
+            {
+
+                await SeedSagaMemoryAsync(connection, artifactId);
+
+            }
+            else
+            {
+
+                await SeedLexiconEntryAsync(connection, artifactId);
+
+            }
+
+        }
+
+        HttpResponseMessage reset = await client.PostAsync(
+            "/api/data/memory/reset",
+            Json(
+                new MemoryResetRequest(saga ? MemoryResetScope.Saga : MemoryResetScope.Lexicon),
+                ArcanumJsonContext.Default.MemoryResetRequest));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, reset.StatusCode);
+
+        ApiResponse<DataRetentionApplyResult> body = await ReadAsync(reset);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, body.Error?.Code);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(
+            1,
+            await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
+
+    }
+
+    /// <summary>
+    /// A prune skips an Entry candidate whose label cannot be read and leaves every row in place, and the
+    /// sweep itself still succeeds.
+    /// </summary>
+    /// <remarks>
+    /// A sweep selects many candidates, so one it cannot vouch for is a reason to leave that candidate
+    /// alone, as a pin is, not to abandon the sweep or to delete on a guess. The Session the Entry belongs
+    /// to is asserted too, because the rule that selects the Entry must not carry the Session away with it.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task An_unreadable_label_makes_the_prune_skip_the_entry_candidate()
+    {
+
+        RequireSqlCipher();
+
+        await using ArcanumWebApplicationFactory factory = HostWithUnreadableGuard();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            await SeedSessionAsync(connection, sessionId);
+
+            await SeedEntryAsync(connection, sessionId, entryId);
+
+        }
+
+        HttpResponseMessage enabled = await client.PutAsync(
+            "/api/data/retention",
+            Json(
+                new RetentionRuleUpdateRequest("entries", true, 1),
+                ArcanumJsonContext.Default.RetentionRuleUpdateRequest));
+
+        Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+
+        HttpResponseMessage pruned = await client.PostAsync(
+            "/api/data/prune",
+            Json(
+                new DataRetentionApplyRequest(
+                    new DataRetentionRequest(DataRetentionOperation.Prune)),
+                ArcanumJsonContext.Default.DataRetentionApplyRequest));
+
+        Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryId));
+
+        Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
+
+    }
+
+    /// <summary>
     /// Seeds one unlabelled memory or entry the operation deletes, runs the operation with a second
     /// writer trying to label it right after the guard answers, and asserts that writer was blocked.
     /// </summary>
@@ -578,6 +773,21 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(0, intruder.AskedOutsideTransaction);
 
     }
+
+    /// <summary>
+    /// A host whose labelled-artifact guard cannot read the label table.
+    /// </summary>
+    /// <remarks>
+    /// The transaction form is the registration the composition builds the guard from, and the Core form
+    /// forwards to it, so replacing this one puts the unreadable answer in front of every caller.
+    /// </remarks>
+    private static ArcanumWebApplicationFactory HostWithUnreadableGuard() =>
+        new()
+        {
+            ServiceOverrides = static services =>
+                services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
+                    static _ => new UnreadableLabeledArtifactGuard()),
+        };
 
     private static async Task<SqliteConnection> OpenAsync(AsyncServiceScope scope)
     {
