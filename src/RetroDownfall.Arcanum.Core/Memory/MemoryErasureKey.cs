@@ -16,6 +16,12 @@ namespace RetroDownfall.Arcanum.Core.Memory;
 /// readable: it names the key without revealing it, and a caller that captured the key's identity
 /// before releasing the material may still need to compare it.</para>
 ///
+/// <para>A key has a single owner. Whoever opened it, or was handed it by the keyring's copy, uses it
+/// and disposes it, and no other thread computes a digest while the owner disposes. Nothing here
+/// synchronizes <see cref="Dispose"/> against the digest methods: a digest racing a disposal may
+/// compute over bytes that are being zeroed. A caller that must share the key across threads takes a
+/// separate copy for each, rather than sharing one instance.</para>
+///
 /// <para><see cref="FromBytes"/> is public because Core internals are not visible to Infrastructure,
 /// where the keyring that reads secure storage lives.</para>
 /// </remarks>

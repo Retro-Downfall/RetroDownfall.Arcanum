@@ -13,25 +13,38 @@ public sealed class CovenantErasurePreflightBodyTests
 
     private static readonly Guid ProposedVersion = Guid.Parse("66666666-7777-4888-8999-aaaaaaaaaaaa");
 
+    /// <summary>
+    /// Each of the three head shapes an entry can carry round-trips: both lanes, the Confirmed lane
+    /// alone, and the Proposed lane alone, which is an entry nobody has confirmed yet.
+    /// </summary>
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void Round_trip_preserves_every_field(bool bothHeads)
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Round_trip_preserves_every_field(bool confirmedHead, bool proposedHead)
     {
         CovenantErasurePreflightBody original = Body() with
         {
-            ProposedVersionId = bothHeads ? ProposedVersion : null,
+            ConfirmedVersionId = confirmedHead ? ConfirmedVersion : null,
+            ProposedVersionId = proposedHead ? ProposedVersion : null,
         };
 
-        Result<CovenantErasurePreflightBody> decoded = CovenantErasurePreflightBody.TryDecode(original.Encode());
+        byte[] encoded = original.Encode();
+
+        // The two presence bytes follow the entry id, each ahead of its sixteen-byte slot.
+        Assert.Equal(confirmedHead ? (byte)1 : (byte)0, encoded[90]);
+
+        Assert.Equal(proposedHead ? (byte)1 : (byte)0, encoded[107]);
+
+        Result<CovenantErasurePreflightBody> decoded = CovenantErasurePreflightBody.TryDecode(encoded);
 
         Assert.True(decoded.IsSuccess, decoded.IsFailure ? decoded.Error.Message : string.Empty);
 
         Assert.Equal(original, decoded.Value);
 
-        Assert.Equal(ConfirmedVersion, decoded.Value.ConfirmedVersionId);
+        Assert.Equal(confirmedHead ? ConfirmedVersion : null, decoded.Value.ConfirmedVersionId);
 
-        Assert.Equal(bothHeads ? ProposedVersion : null, decoded.Value.ProposedVersionId);
+        Assert.Equal(proposedHead ? ProposedVersion : null, decoded.Value.ProposedVersionId);
     }
 
     [Fact]

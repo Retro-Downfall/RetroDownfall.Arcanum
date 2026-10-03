@@ -1,3 +1,5 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Weave;
@@ -35,6 +37,10 @@ public enum MemoryErasureScopeKind : byte
 ///
 /// <para>A Campaign is named exactly when the scope is <see cref="MemoryErasureScopeKind.Campaign"/>,
 /// and the preimage binds its sixteen GUID bytes rather than any spelling of it.</para>
+///
+/// <para>The text form leaves <see cref="Value"/> out. A record struct prints every member, and this
+/// one's value is exactly what an erasure removes, so an identity that reached a log line, an exception
+/// message or a debugger view would copy it. Equality still compares the value.</para>
 /// </remarks>
 public readonly record struct MemoryErasureIdentity(
     MemoryReviewStore Store,
@@ -135,5 +141,18 @@ public readonly record struct MemoryErasureIdentity(
         identity.ThrowIfInvalid();
 
         return identity;
+    }
+
+    /// <summary>
+    /// Prints the store, scope and Campaign for <see cref="object.ToString"/>, and never the value.
+    /// </summary>
+    private bool PrintMembers(StringBuilder builder)
+    {
+        _ = builder
+            .Append("Store = ").Append(Store)
+            .Append(", Scope = ").Append(Scope)
+            .Append(", CampaignId = ").Append(CampaignId);
+
+        return true;
     }
 }

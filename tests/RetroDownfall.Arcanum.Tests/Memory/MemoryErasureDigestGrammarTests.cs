@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using System.Security.Cryptography;
 
 using System.Text;
@@ -69,7 +71,7 @@ public sealed class MemoryErasureDigestGrammarTests
 
     private const string CafeNfc = "caf\u00E9";
 
-    private const string CafeNfd = "café";
+    private const string CafeNfd = "cafe\u0301";
 
     private const string CafeNfcBytes = "636166C3A9";
 
@@ -366,6 +368,60 @@ public sealed class MemoryErasureDigestGrammarTests
         Assert.NotEqual(SagaGlobal(CafeNfc), SagaGlobal(CafeNfd));
     }
 
+    /// <summary>
+    /// An identity's text names its store, scope and Campaign and never its value, which is the erased
+    /// content, name or key.
+    /// </summary>
+    /// <remarks>
+    /// A positional record struct prints every member, so an identity that reached a log line, an
+    /// exception message or a debugger view would copy exactly what an erasure removes.
+    /// </remarks>
+    [Fact]
+    public void An_identity_prints_its_store_scope_and_campaign_but_never_its_value()
+    {
+        Guid campaign = Guid.Parse(Campaign);
+
+        const string content = "the exact erased memory content";
+
+        MemoryErasureIdentity[] identities =
+        [
+            MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Campaign, campaign, content),
+            MemoryErasureIdentity.ForLexicon(campaign, "Warden Of The Mill"),
+            MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, campaign, "persona.private.tone"),
+        ];
+
+        foreach (MemoryErasureIdentity identity in identities)
+        {
+            string printed = identity.ToString();
+
+            Assert.DoesNotContain(identity.Value, printed, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain(content, $"{identity}", StringComparison.Ordinal);
+
+            Assert.Contains($"Store = {identity.Store}", printed, StringComparison.Ordinal);
+
+            Assert.Contains("Scope = Campaign", printed, StringComparison.Ordinal);
+
+            Assert.Contains($"CampaignId = {campaign}", printed, StringComparison.Ordinal);
+        }
+
+        Assert.StartsWith("MemoryErasureIdentity { ", identities[0].ToString(), StringComparison.Ordinal);
+
+        Assert.EndsWith(" }", identities[0].ToString(), StringComparison.Ordinal);
+
+        // The value is still the identity: leaving it out of the text must not leave it out of equality.
+        Assert.NotEqual(
+            MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "one"),
+            MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "two"));
+
+        Assert.Equal(
+            MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "one"),
+            MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "one"));
+
+        // A default identity bypasses the factories, and printing one must not throw.
+        Assert.StartsWith("MemoryErasureIdentity { ", default(MemoryErasureIdentity).ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Invalid_shapes_throw_rather_than_digest()
     {
@@ -573,6 +629,43 @@ public sealed class MemoryErasureDigestGrammarTests
         key.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => key.Fingerprint(identity));
+
+        Assert.Equal("D5046E85FE5A45250A18B7BE9B743D3D", Convert.ToHexString(key.KeyId));
+    }
+
+    /// <summary>
+    /// Disposal overwrites the key's own private copy, which no public member exposes, so the buffer is
+    /// read through reflection: a Dispose that only flagged the key as disposed would still refuse every
+    /// digest and leave the bytes in memory.
+    /// </summary>
+    [Fact]
+    public void Dispose_zeroes_the_private_key_buffer_and_never_touches_the_callers_copy()
+    {
+        byte[] caller = [.. Key];
+
+        MemoryErasureKey key = MemoryErasureKey.FromBytes(caller);
+
+        FieldInfo field = typeof(MemoryErasureKey).GetField("_key", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("MemoryErasureKey no longer holds its bytes in a field named _key.");
+
+        byte[] held = Assert.IsType<byte[]>(field.GetValue(key));
+
+        Assert.NotSame(caller, held);
+
+        Assert.Equal(Key, held);
+
+        key.Dispose();
+
+        Assert.Equal(MemoryErasureDigestGrammar.KeyBytes, held.Length);
+
+        Assert.All(held, static value => Assert.Equal(0, value));
+
+        Assert.Equal(Key, caller);
+
+        // A second disposal is harmless, and the key id, which does not reveal the key, stays readable.
+        key.Dispose();
+
+        Assert.All(held, static value => Assert.Equal(0, value));
 
         Assert.Equal("D5046E85FE5A45250A18B7BE9B743D3D", Convert.ToHexString(key.KeyId));
     }
