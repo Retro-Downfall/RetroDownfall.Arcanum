@@ -111,8 +111,18 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         if (pending.IsEmpty)
         {
             // Nothing to apply, but the tuple may still need adopting so eligibility can be reached
-            // on an installation that has simply never mutated.
-            if (state.AppliedDatasetGeneration != state.DatasetGeneration)
+            // on an installation that has simply never mutated. An adopted tuple that is current may
+            // still trail a Campaign delete that removed no head: owner cleanup spends no search
+            // sequence on it, so no delta will ever arrive to carry the watermark, and search would
+            // stay on the canonical fallback until an unrelated Covenant write. The stamp is the one
+            // every applied batch writes.
+            bool adopting = state.AppliedDatasetGeneration != state.DatasetGeneration;
+
+            bool watermarkBehind = !adopting
+                && applied.Value == state.CanonicalSearchSequence
+                && state.AppliedCampaignDeletionSequence < state.CoreCampaignDeletionSequence;
+
+            if (adopting || watermarkBehind)
             {
                 await PublishAppliedAsync(transaction, state.DatasetGeneration, applied.Value, cancellationToken)
                     .ConfigureAwait(false);
@@ -233,10 +243,11 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
-            SELECT DatasetGeneration, CanonicalSearchSequence, AppliedDatasetGeneration, AppliedSearchSequence,
-                   AcceleratorEpoch
-            FROM covenant_state
-            WHERE StateKey = 1;
+            SELECT st.DatasetGeneration, st.CanonicalSearchSequence, st.AppliedDatasetGeneration,
+                   st.AppliedSearchSequence, st.AcceleratorEpoch, st.AppliedCampaignDeletionSequence,
+                   COALESCE((SELECT MAX(Sequence) FROM owner_deletion_events WHERE OwnerKindCode = 1), 0)
+            FROM covenant_state st
+            WHERE st.StateKey = 1;
             """;
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -249,7 +260,9 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
             reader.GetInt64(1),
             reader.IsDBNull(2) ? null : new Guid((byte[])reader.GetValue(2)),
             reader.IsDBNull(3) ? null : reader.GetInt64(3),
-            checked((ulong)reader.GetInt64(4)));
+            checked((ulong)reader.GetInt64(4)),
+            reader.GetInt64(5),
+            reader.GetInt64(6));
     }
 
     private static async ValueTask<ImmutableArray<OutboxRow>> ReadPendingAsync(
@@ -415,7 +428,9 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         long CanonicalSearchSequence,
         Guid? AppliedDatasetGeneration,
         long? AppliedSearchSequence,
-        ulong AcceleratorEpoch);
+        ulong AcceleratorEpoch,
+        long AppliedCampaignDeletionSequence,
+        long CoreCampaignDeletionSequence);
 
     private readonly record struct OutboxRow(
         long SearchSequence,

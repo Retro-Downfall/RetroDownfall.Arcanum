@@ -170,6 +170,10 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         Assert.Equal(CovenantSearchExecutionMode.Fts, search.ExecutionMode);
 
+        // The reset records a full rebuild as owed, but the projection it left empty was adopted and is
+        // answering, so there is nothing for the operator to rebuild.
+        Assert.Equal(CovenantSearchRebuildGuidance.None, search.Guidance);
+
         _ = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
     }
 
@@ -243,18 +247,191 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         long canonical = await ScalarAsync(host, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;");
 
-        using (HttpResponseMessage deleted = await client.DeleteAsync($"/api/campaigns/{campaign:D}", Token))
-        {
-            Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
-        }
+        await DeleteCampaignAsync(client, campaign);
 
-        await CleanUpOwnersAsync(host);
+        CovenantCleanupOutcome cleaned = await CleanUpOwnersAsync(host);
+
+        Assert.Equal(1, cleaned.HeadsRemoved);
 
         CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.OwnerCleanup);
 
         Assert.Equal(canonical + 1, live.CanonicalSequence);
 
         Assert.Equal(CovenantFtsSynchronizationState.Dirty, live.FtsSynchronization);
+    }
+
+    /// <summary>
+    /// An owner-cleanup batch that removed no head still republishes. The Campaign delete itself
+    /// publishes nothing, because it holds no Covenant lease, so this republication is what carries the
+    /// core Campaign-deletion sequence into the snapshot.
+    /// </summary>
+    [SkippableFact]
+    public async Task Owner_cleanup_that_removed_no_head_still_republishes_the_core_campaign_deletion_sequence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in British English.");
+
+        await PassAsync(host);
+
+        Guid campaign = await RegisterCampaignAsync(host, client, "headless-cleanup");
+
+        await DeleteCampaignAsync(client, campaign);
+
+        long core = await CoreCampaignDeletionSequenceAsync(host);
+
+        Assert.True(Live(host).CoreCampaignDeletionSequence < core, "The Campaign delete published its own deletion sequence.");
+
+        CovenantCleanupOutcome cleaned = await CleanUpOwnersAsync(host);
+
+        Assert.Equal(0, cleaned.HeadsRemoved);
+
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.OwnerCleanup);
+
+        Assert.Equal(core, live.CoreCampaignDeletionSequence);
+    }
+
+    /// <summary>
+    /// Deleting a Campaign that holds no Covenant entries moves only the core Campaign-deletion sequence.
+    /// The next maintenance pass carries the applied watermark up to it, so search returns to
+    /// Synchronized without waiting for an unrelated Covenant write.
+    /// </summary>
+    [SkippableFact]
+    public async Task Deleting_a_campaign_with_no_covenant_entries_returns_search_to_synchronized_after_one_pass()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in British English.");
+
+        await PassAsync(host);
+
+        Assert.Equal(CovenantSearchHealthState.Healthy, (await SearchAsync(client)).State);
+
+        long canonical = await ScalarAsync(host, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;");
+
+        Guid campaign = await RegisterCampaignAsync(host, client, "headless");
+
+        await DeleteCampaignAsync(client, campaign);
+
+        long core = await CoreCampaignDeletionSequenceAsync(host);
+
+        await PassAsync(host);
+
+        CovenantSearchHealthDto search = await SearchAsync(client);
+
+        Assert.Equal(CovenantSearchHealthState.Healthy, search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, search.ExecutionMode);
+
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.Equal(core, live.AppliedCampaignDeletionSequence);
+
+        // Only the watermark moved: no head was removed, so no search sequence was spent.
+        Assert.Equal(canonical, live.CanonicalSequence);
+
+        Assert.Equal(canonical, live.AppliedSequence);
+    }
+
+    /// <summary>
+    /// A fresh installation records a full rebuild as owed, and nothing in a host clears that record.
+    /// Once one pass has synchronized search, the accelerator answers every query, so status asks the
+    /// operator for no rebuild.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_fresh_installation_reports_no_rebuild_guidance_once_a_pass_has_synchronized_search()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in British English.");
+
+        await PassAsync(host);
+
+        CovenantSearchHealthDto search = await SearchAsync(client);
+
+        Assert.Equal(CovenantSearchHealthState.Healthy, search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.None, search.Guidance);
+
+        // The persisted record is untouched; only what status asks of the operator changed.
+        Assert.Equal(
+            (long)CovenantFtsRebuildState.FullRebuildRequired,
+            await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
+    }
+
+    /// <summary>
+    /// A rebuild abandoned after its base scan wrote documents leaves a projection the outbox cannot
+    /// adopt. Search is not synchronized, and status still asks for the rebuild that alone can recover it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_projection_the_outbox_cannot_adopt_still_reports_rebuild_required()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in British English.");
+
+        await PassAsync(host);
+
+        await using (AsyncServiceScope scope = host.Services.CreateAsyncScope())
+        {
+            await OpenAsync(scope);
+
+            CovenantIndexRebuildCoordinator rebuild = scope.ServiceProvider.GetRequiredService<CovenantIndexRebuildCoordinator>();
+
+            ILongRunningOperationStore operations = scope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>();
+
+            Result<LongRunningOperation> started = await rebuild.StartAsync(RebuildOwner, Token);
+
+            Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+            Result<CovenantIndexRebuildProgress> cleared = await rebuild.AdvanceAsync(started.Value, RebuildOwner, Token);
+
+            Assert.True(cleared.IsSuccess, cleared.IsFailure ? cleared.Error.Message : null);
+
+            LongRunningOperation? operation = await operations.GetAsync(started.Value.Id, Token);
+
+            Assert.NotNull(operation);
+
+            Result<CovenantIndexRebuildProgress> scanned = await rebuild.AdvanceAsync(operation, RebuildOwner, Token);
+
+            Assert.True(scanned.IsSuccess, scanned.IsFailure ? scanned.Error.Message : null);
+
+            Assert.Equal(1, scanned.Value.BaseHeadsProcessed);
+        }
+
+        await PassAsync(host);
+
+        CovenantSearchHealthDto search = await SearchAsync(client);
+
+        Assert.Equal(CovenantSearchHealthState.Synchronizing, search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, search.Guidance);
+
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.Null(live.AppliedSequence);
+
+        Assert.True(live.RebuildRequired);
     }
 
     /// <summary>A review apply that retires a head republishes the canonical position it committed.</summary>
@@ -487,7 +664,7 @@ public sealed class CovenantAvailabilityRepublicationTests
         Assert.True(await host.Services.GetRequiredService<CovenantMaintenanceHostedService>().RunOnceAsync(Token));
 
     /// <summary>One owner-cleanup batch, on a scope whose connection EF opened, as the pass runs it.</summary>
-    private static async Task CleanUpOwnersAsync(ArcanumWebApplicationFactory host)
+    private static async Task<CovenantCleanupOutcome> CleanUpOwnersAsync(ArcanumWebApplicationFactory host)
     {
         await using AsyncServiceScope scope = host.Services.CreateAsyncScope();
 
@@ -500,7 +677,20 @@ public sealed class CovenantAvailabilityRepublicationTests
         Assert.True(cleaned.IsSuccess, cleaned.IsFailure ? cleaned.Error.Message : null);
 
         Assert.Equal(1, cleaned.Value.CampaignsCleaned);
+
+        return cleaned.Value;
     }
+
+    private static async Task DeleteCampaignAsync(HttpClient client, Guid campaign)
+    {
+        using HttpResponseMessage deleted = await client.DeleteAsync($"/api/campaigns/{campaign:D}", Token);
+
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+    }
+
+    /// <summary>The core Campaign-deletion sequence, as the publisher reads it.</summary>
+    private static Task<long> CoreCampaignDeletionSequenceAsync(ArcanumWebApplicationFactory host) =>
+        ScalarAsync(host, "SELECT COALESCE(MAX(Sequence), 0) FROM owner_deletion_events WHERE OwnerKindCode = 1;");
 
     private static async Task OpenAsync(AsyncServiceScope scope)
     {

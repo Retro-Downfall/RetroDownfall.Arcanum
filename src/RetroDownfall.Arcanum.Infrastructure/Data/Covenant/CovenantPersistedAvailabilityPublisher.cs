@@ -235,7 +235,8 @@ internal static class CovenantPersistedAvailabilityPublisher
 /// <see cref="CovenantPersistedAvailabilityPublisher.PublishAsync"/>. What counts as owed or
 /// synchronized is still decided only there.</para>
 /// <para>A failure is never the writer's failure, because its rows are already durable. It is logged
-/// without content and swallowed. The snapshot it left stale is corrected by the next maintenance pass,
+/// without content and swallowed, and that includes a SQLite failure the publisher's own read absorbs
+/// and reports only as nothing published. The snapshot it left stale is corrected by the next maintenance pass,
 /// whose cleanup and outbox batches republish after every commit even when they apply nothing, or by
 /// bootstrap on restart. Two republications that race land in either order, and the same pass corrects
 /// the older one.</para>
@@ -244,6 +245,9 @@ internal sealed class CovenantAvailabilityRepublisher(
     CovenantAvailability availability,
     ILogger<CovenantAvailabilityRepublisher> logger)
 {
+
+    /// <summary>The fixed failure name for a state read the publisher absorbed.</summary>
+    private const string UnreadableState = "CovenantStateUnreadable";
 
     internal async Task RepublishAsync(SqliteConnection connection, CovenantHealthTransition transition)
     {
@@ -255,25 +259,38 @@ internal sealed class CovenantAvailabilityRepublisher(
 
             // Not the caller's token: a caller that stopped waiting has not undone the commit, and the
             // whole cost is one read of a singleton row.
-            _ = await CovenantPersistedAvailabilityPublisher.PublishAsync(
+            bool published = await CovenantPersistedAvailabilityPublisher.PublishAsync(
                 availability,
                 connection,
                 availability.Current.Accelerator is CovenantCapabilityState.Healthy,
                 transition,
                 CancellationToken.None).ConfigureAwait(false);
 
+            // The publisher's read absorbs a SQLite failure and reports it as nothing to publish. Every
+            // caller has just committed a Covenant write on a healthy canonical tier, whose state row
+            // therefore exists, so nothing to publish here means the read failed.
+            if (!published)
+            {
+
+                LogNotRepublished(transition, UnreadableState);
+
+            }
+
         }
         catch (Exception failure)
         {
 
             // The type names the failure; its message is not repeated, so nothing it carries is logged.
-            logger.LogWarning(
-                "Covenant availability was not republished after a committed {Transition} ({FailureType}); the next maintenance pass or a restart republishes it.",
-                transition,
-                failure.GetType().Name);
+            LogNotRepublished(transition, failure.GetType().Name);
 
         }
 
     }
+
+    private void LogNotRepublished(CovenantHealthTransition transition, string failure) =>
+        logger.LogWarning(
+            "Covenant availability was not republished after a committed {Transition} ({FailureType}); the next maintenance pass or a restart republishes it.",
+            transition,
+            failure);
 
 }

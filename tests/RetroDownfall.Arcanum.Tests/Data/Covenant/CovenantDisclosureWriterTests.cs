@@ -316,8 +316,9 @@ public sealed class CovenantDisclosureWriterTests
 
     /// <summary>
     /// A republication that keeps the dataset and the canonical tier's health does not fail the first open
-    /// it overlaps. Every committed Covenant write republishes availability, so this overlap is ordinary,
-    /// and a refusal here closes the writer until the next reopen.
+    /// it overlaps. Every committed write that moves the search position, and every maintenance batch,
+    /// republishes availability, so this overlap is ordinary, and a refusal here closes the writer until
+    /// the next reopen.
     /// </summary>
     [Fact]
     public async Task First_lazy_open_survives_an_availability_republication_that_keeps_its_dataset()

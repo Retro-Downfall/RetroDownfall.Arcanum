@@ -619,14 +619,20 @@ internal sealed class CovenantManagementService(
     /// <remarks>
     /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
     /// synchronization" there would send an operator to sit through a state that will never change.
+    ///
+    /// <para>A synchronized snapshot asks for nothing, even while a full rebuild is recorded as owed. A
+    /// fresh installation and a Covenant reset both record that debt, and the outbox then adopts their
+    /// empty projection and keeps it current, so the accelerator answers every query by the same rule
+    /// search applies and a search page reports no guidance. Asking for a rebuild there would name a
+    /// remedy nothing needs. The debt still decides the guidance whenever search is not synchronized.</para>
     /// </remarks>
     private static CovenantSearchRebuildGuidance RebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
         snapshot.Accelerator is CovenantCapabilityState.Unavailable
             ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
-            : snapshot.RebuildRequired
-                ? CovenantSearchRebuildGuidance.RebuildRequired
-                : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                    ? CovenantSearchRebuildGuidance.None
+            : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
+                ? CovenantSearchRebuildGuidance.None
+                : snapshot.RebuildRequired
+                    ? CovenantSearchRebuildGuidance.RebuildRequired
                     : CovenantSearchRebuildGuidance.WaitForSynchronization;
 
     private static CovenantExplainDto Explain(

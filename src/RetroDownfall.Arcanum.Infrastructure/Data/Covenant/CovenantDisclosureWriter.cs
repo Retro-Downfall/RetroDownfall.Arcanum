@@ -426,8 +426,8 @@ internal sealed class CovenantDisclosureWriter :
 
                 // The handle was verified against one dataset on a healthy canonical tier, and that is
                 // what has to still hold. Any other republication is routine, because every committed
-                // Covenant write republishes availability, and refusing it here would close the writer
-                // until the next reopen.
+                // write that moves the search position, and every maintenance batch, republishes
+                // availability, and refusing it here would close the writer until the next reopen.
                 CovenantAvailabilitySnapshot current = _availability.Current;
 
                 if (current.Canonical != CovenantCapabilityState.Healthy

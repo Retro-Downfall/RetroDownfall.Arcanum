@@ -48,9 +48,12 @@ public interface ICovenantDisclosureWriterLifecycle
     /// that is already proven.
     /// No ordinary connection is opened here: database reconciliation, maintenance-I/O closure,
     /// Covenant disposition and authenticated journal retirement precede final Grimoire reopening.
-    /// The first acknowledgement opens a fresh ordinary handle and verifies its exact dataset and
-    /// runtime snapshot before committing any receipt or permitting egress. An earlier maintenance
-    /// refusal has no effect and does not permanently revoke this prepared readiness.
+    /// The first acknowledgement opens a fresh ordinary handle and verifies its exact dataset, and that
+    /// the published snapshot still names that dataset on a healthy canonical tier, before committing any
+    /// receipt or permitting egress. It does not require the snapshot itself to be unchanged, so a
+    /// destructive operation cannot rely on a republication alone to stop it; it must quiesce the writer
+    /// by name. An earlier maintenance refusal has no effect and does not permanently revoke this
+    /// prepared readiness.
     /// </remarks>
     ValueTask<Result> ReopenAsync(CancellationToken cancellationToken);
 
