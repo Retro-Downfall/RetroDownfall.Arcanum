@@ -185,10 +185,25 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
     }
 
-    private async Task SeedLabelAsync(
+    private Task SeedLabelAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        SeedLabelRowAsync(
+            Guid.NewGuid().ToString("D").ToUpperInvariant(),
+            kind,
+            artifactId.ToString("D").ToUpperInvariant(),
+            cancellationToken);
+
+    /// <summary>
+    /// Writes one label row with exactly the identity text given, parseable as a Guid or not, because the
+    /// column has no format check and a damaged Grimoire is what the cases that pass garbage describe.
+    /// </summary>
+    private async Task SeedLabelRowAsync(
+        string labelId,
+        SensitiveArtifactKind kind,
+        string artifactId,
+        CancellationToken cancellationToken = default)
     {
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
@@ -213,11 +228,11 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                     1, zeroblob(32), zeroblob(32), NULL, NULL, NULL, zeroblob(32), $now);
             """;
 
-        _ = command.Parameters.AddWithValue("$label", Guid.NewGuid().ToString("D").ToUpperInvariant());
+        _ = command.Parameters.AddWithValue("$label", labelId);
 
         _ = command.Parameters.AddWithValue("$kind", (int)kind);
 
-        _ = command.Parameters.AddWithValue("$artifact", artifactId.ToString("D").ToUpperInvariant());
+        _ = command.Parameters.AddWithValue("$artifact", artifactId);
 
         _ = command.Parameters.AddWithValue("$generations", Enumerable.Repeat((byte)7, 16).ToArray());
 
@@ -324,11 +339,137 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
     }
 
-    /// <summary>A purger that records how often it was asked and removes nothing.</summary>
+    /// <summary>
+    /// A label row the scan read but could not parse is a label it cannot examine, so the reset stops
+    /// there instead of walking past it.
+    /// </summary>
+    /// <remarks>
+    /// The label table keys every artifact by a Guid, but nothing in its schema says so: the column has
+    /// no format check. A row whose <c>ArtifactId</c> is not one was dropped without a failure, and a
+    /// page whose rows were all dropped came back empty, which ended the walk — so every label after it
+    /// for that kind was never dispatched, and the set-based truncation removed the rows they named. That
+    /// is the same hole a label table that cannot be read used to be, reached through a different door:
+    /// it needs corruption or tampering, and the guard itself already fails closed on a corrupt row.
+    ///
+    /// <para>Both shapes are here. The first page is a hundred and twenty-eight unparseable rows with a
+    /// real label behind them, which is the page that ended the walk; the second is one unparseable row
+    /// beside two real ones, which dispatched the two and carried on. Both are refused before the page is
+    /// dispatched, so the purger is never called and the labelled memory is still there.</para>
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(EmbeddingsResetScope.Saga, SensitiveArtifactKind.Saga, 130)]
+    [InlineData(EmbeddingsResetScope.Saga, SensitiveArtifactKind.Saga, 1)]
+    [InlineData(EmbeddingsResetScope.Entry, SensitiveArtifactKind.Embedding, 130)]
+    public async Task ResetAsync_RefusesWhenALabelRowCannotBeParsed_AndDispatchesNothing(
+        EmbeddingsResetScope scope,
+        SensitiveArtifactKind kind,
+        int unparseableRows)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _ = await _sagaStore!.InsertAsync(
+            "mem-kept",
+            "a labelled memory the reset must not reach",
+            DateTimeOffset.UtcNow,
+            Guid.NewGuid(),
+            null,
+            "extraction",
+            Vec(1f),
+            CancellationToken.None);
+
+        // Sorted ahead of every real label, so they are what the first page reads.
+        for (int index = 1; index <= unparseableRows; index++)
+        {
+
+            await SeedLabelRowAsync(
+                string.Create(System.Globalization.CultureInfo.InvariantCulture, $"00000000-0000-0000-0000-{index:D12}"),
+                kind,
+                $"not-a-guid-{index}");
+
+        }
+
+        await SeedLabelRowAsync(
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+            kind,
+            Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        CountingPurger purger = new();
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(new RecordingScopedOrdinaryConnectionFactory());
+
+        EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
+
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
+            () => service.ResetAsync(scope, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
+
+        Assert.DoesNotContain("not-a-guid", refused.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, purger.Calls);
+
+        Assert.Equal(unparseableRows + 1, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        if (kind is SensitiveArtifactKind.Saga)
+        {
+
+            Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
+
+        }
+
+    }
+
+    /// <summary>
+    /// A walk over more labels than one page holds dispatches each page in key order and ends only when a
+    /// page reads no rows.
+    /// </summary>
+    /// <remarks>
+    /// The cursor is the last label identity read, and the walk stops on zero rows read rather than on
+    /// zero rows kept. The refusal for an unparseable row above must not make a clean walk refuse or stop
+    /// short, so this is its control: a hundred and thirty real labels are two pages, a full one and the
+    /// remainder, and a third read finds nothing.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ResetAsync_DispatchesEveryLabelAcrossPages_WhenEveryRowParses()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        for (int index = 1; index <= 130; index++)
+        {
+
+            await SeedLabelRowAsync(
+                string.Create(System.Globalization.CultureInfo.InvariantCulture, $"00000000-0000-0000-0000-{index:D12}"),
+                SensitiveArtifactKind.Saga,
+                Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        }
+
+        CountingPurger purger = new();
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(new RecordingScopedOrdinaryConnectionFactory());
+
+        EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
+
+        _ = await service.ResetAsync(EmbeddingsResetScope.Saga, CancellationToken.None);
+
+        Assert.Equal([128, 2], purger.PageSizes);
+
+    }
+
+    /// <summary>A purger that records how often it was asked, with how many targets, and removes nothing.</summary>
     private sealed class CountingPurger : ICovenantSensitiveArtifactPurger
     {
 
         public int Calls { get; private set; }
+
+        /// <summary>The number of targets each call was handed, in call order.</summary>
+        public List<int> PageSizes { get; } = [];
 
         public ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
             IReadOnlyList<CovenantSensitivePurgeTarget> targets,
@@ -336,6 +477,8 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         {
 
             Calls++;
+
+            PageSizes.Add(targets.Count);
 
             return ValueTask.FromResult(
                 Result<CovenantSensitivePurgeOutcome>.Success(

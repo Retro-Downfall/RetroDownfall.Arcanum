@@ -95,7 +95,11 @@ public sealed class EmbeddingsResetService(
     /// table that cannot be read stops the reset instead, with <c>Covenant.Unavailable</c>: the table is a
     /// Core object at every schema version, so a scan that fails is a Grimoire whose protection cannot be
     /// checked, and the set-based truncation that follows would remove rows nothing had been asked
-    /// about.</para>
+    /// about. A row the scan read but could not parse is the same condition and gets the same answer,
+    /// because the artifact column has no format check and a label that cannot be dispatched is one the
+    /// truncation would remove unexamined. The walk's position is the last label identity read and it ends
+    /// only on a page that read no rows, so no row is stepped over without being either dispatched or
+    /// refused.</para>
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeLabeledScopeAsync(
         EmbeddingsResetScope scope,
@@ -180,6 +184,14 @@ public sealed class EmbeddingsResetService(
 
             List<(Guid ArtifactId, string LabelId)> page = [];
 
+            // Counted apart from the page: a row that was read is a row the walk has examined, whether or
+            // not it parsed, and the walk's position and its end are decided by what was read.
+            int rowsRead = 0;
+
+            string lastLabelId = cursor;
+
+            bool unreadableRow = false;
+
             {
 
                 if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)
@@ -251,10 +263,20 @@ public sealed class EmbeddingsResetService(
                         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                         {
 
+                            rowsRead++;
+
+                            lastLabelId = reader.GetString(1);
+
                             if (Guid.TryParse(reader.GetString(0), out Guid artifactId))
                             {
 
-                                page.Add((artifactId, reader.GetString(1)));
+                                page.Add((artifactId, lastLabelId));
+
+                            }
+                            else
+                            {
+
+                                unreadableRow = true;
 
                             }
 
@@ -290,14 +312,31 @@ public sealed class EmbeddingsResetService(
 
             }
 
-            if (page.Count == 0)
+            if (unreadableRow)
+            {
+
+                // A label this walk cannot parse is a label it cannot dispatch, and dropping it let the
+                // truncation that follows remove the artifact it names. The column has no format check, so
+                // this is corruption or tampering, and the Grimoire's protection cannot be shown: the same
+                // condition, and the same answer, as a table that cannot be read. Refused before this page
+                // is dispatched, so nothing is purged on the strength of a page that was only partly
+                // understood; pages before it stay purged, and the message names no artifact.
+                return Result<CovenantSensitivePurgeOutcome>.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.Unavailable,
+                        "A sensitivity label could not be read, so this embeddings reset was refused "
+                            + "before its truncation ran."));
+
+            }
+
+            if (rowsRead == 0)
             {
 
                 break;
 
             }
 
-            cursor = page[^1].LabelId;
+            cursor = lastLabelId;
 
             Result<CovenantSensitivePurgeOutcome> purged = await purger!
                 .PurgeAsync(
