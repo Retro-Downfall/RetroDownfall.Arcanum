@@ -51,9 +51,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
     private const string RebuildOwner = "covenant-republication-test";
 
-    private const string VaultKey = "republication.vault";
+    internal const string VaultKey = "republication.vault";
 
-    private const string HarborKey = "republication.harbor";
+    internal const string HarborKey = "republication.harbor";
 
     private static CancellationToken Token => CancellationToken.None;
 
@@ -660,12 +660,12 @@ public sealed class CovenantAvailabilityRepublicationTests
     }
 
     /// <summary>
-    /// An outbox that no longer starts at the dataset's first sequence is not replayed onto an empty
-    /// projection, even when what remains would touch every head. Here an earlier pass consumed the first
-    /// delta and a rebuild that was then abandoned cleared the projection and the applied tuple.
+    /// An entry erasure removes the erased entry's own deltas wherever they sit, the oldest included, so the
+    /// outbox can start above sequence 1 before the first pass has run. What remains still names every head,
+    /// and a replay of it onto the empty projection is exact, so the pass adopts it.
     /// </summary>
     [SkippableFact]
-    public async Task An_outbox_that_no_longer_starts_at_the_first_sequence_is_not_adopted_onto_an_empty_projection()
+    public async Task An_erased_oldest_entry_before_the_first_pass_still_lets_the_outbox_adopt_the_empty_projection()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -675,11 +675,103 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         MemoryErasureRouteDriver driver = new(client);
 
-        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in British English.");
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, HarborKey, "Moor at the east harbor.");
+
+        _ = await driver.EraseCovenantAsync(CovenantScope.Global, null, VaultKey);
+
+        // The erased entry's own delta was the oldest one, so the outbox no longer starts at sequence 1, and
+        // the one head left is named by a pending delta.
+        Assert.Equal(2L, await ScalarAsync(host, "SELECT MIN(SearchSequence) FROM covenant_search_outbox;"));
+
+        Assert.Equal(1L, await ScalarAsync(host, "SELECT COUNT(*) FROM covenant_heads;"));
 
         await PassAsync(host);
 
-        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in Scottish English.");
+        AssertAnswersFromTheIndex(await SearchAsync(client));
+
+        CovenantPageDto kept = await QueryAsync(client, "harbor");
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, kept.Search.ExecutionMode);
+
+        _ = Assert.Single(kept.Items);
+
+        CovenantPageDto erased = await QueryAsync(client, "vault");
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, erased.Search.ExecutionMode);
+
+        Assert.Empty(erased.Items);
+
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Synchronized, live.FtsSynchronization);
+    }
+
+    /// <summary>
+    /// An entry written and then erased before the first pass leaves no head at all, and an absent delta in the
+    /// outbox that sits above sequence 1. An empty dataset needs nothing projected, so the pass adopts it.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_entry_erased_before_the_first_pass_leaves_nothing_to_project_and_the_outbox_adopts_the_empty_projection()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        MemoryErasureRouteDriver driver = new(client);
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+        _ = await driver.EraseCovenantAsync(CovenantScope.Global, null, VaultKey);
+
+        Assert.Equal(0L, await ScalarAsync(host, "SELECT COUNT(*) FROM covenant_heads;"));
+
+        Assert.Equal(2L, await ScalarAsync(host, "SELECT MIN(SearchSequence) FROM covenant_search_outbox;"));
+
+        await PassAsync(host);
+
+        AssertAnswersFromTheIndex(await SearchAsync(client));
+
+        CovenantPageDto erased = await QueryAsync(client, "vault");
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, erased.Search.ExecutionMode);
+
+        Assert.Empty(erased.Items);
+
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Synchronized, live.FtsSynchronization);
+    }
+
+    /// <summary>
+    /// An empty outbox beside a canonical sequence above zero is not adopted, even with no head to project:
+    /// adopting at sequence zero could never reach that sequence. Here a rebuild started after every delta
+    /// was consumed cleared the applied tuple, so the pass meets an empty projection, no head, an empty
+    /// outbox and a canonical sequence of 2.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_empty_outbox_beside_a_canonical_sequence_above_zero_is_not_adopted_even_with_no_head()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        MemoryErasureRouteDriver driver = new(client);
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+        _ = await driver.EraseCovenantAsync(CovenantScope.Global, null, VaultKey);
+
+        await PassAsync(host);
+
+        Assert.Equal(0L, await ScalarAsync(host, "SELECT COUNT(*) FROM covenant_search_outbox;"));
+
+        Assert.Equal(2L, await ScalarAsync(host, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;"));
 
         await using (AsyncServiceScope scope = host.Services.CreateAsyncScope())
         {
@@ -696,19 +788,120 @@ public sealed class CovenantAvailabilityRepublicationTests
             Assert.True(cleared.IsSuccess, cleared.IsFailure ? cleared.Error.Message : null);
         }
 
-        Assert.Equal(0L, await ScalarAsync(host, "SELECT COUNT(*) FROM covenant_search_documents;"));
-
-        Assert.Equal(2L, await ScalarAsync(host, "SELECT MIN(SearchSequence) FROM covenant_search_outbox;"));
+        Assert.Equal(1L, await ScalarAsync(host, "SELECT AppliedSearchSequence IS NULL FROM covenant_state WHERE StateKey = 1;"));
 
         await PassAsync(host);
 
+        Assert.Equal(1L, await ScalarAsync(host, "SELECT AppliedSearchSequence IS NULL FROM covenant_state WHERE StateKey = 1;"));
+
         AssertOwesRebuild(await SearchAsync(client));
+    }
 
-        CovenantPageDto found = await QueryAsync(client, "Scottish");
+    /// <summary>
+    /// After a restore that kept its heads, no pass can bring the empty projection current, so a search page
+    /// says what status says: a rebuild is what search is waiting for. The page used to tell the operator to
+    /// wait for a synchronization that no pass would ever complete.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_query_after_a_restore_that_kept_its_heads_reports_the_same_guidance_status_reports()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, found.Search.ExecutionMode);
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
 
-        Assert.Single(found.Items);
+        await RestoreUnprojectedArchiveAsync(harness);
+
+        await using ArcanumWebApplicationFactory host = Host(harness.Credentials, harness.Profile);
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        CovenantSearchHealthDto status = await SearchAsync(client);
+
+        AssertOwesRebuild(status);
+
+        CovenantPageDto before = await QueryAsync(client, "vault");
+
+        AssertOwesRebuild(before.Search);
+
+        Assert.Equal(status, before.Search);
+
+        await PassAsync(host);
+
+        status = await SearchAsync(client);
+
+        AssertOwesRebuild(status);
+
+        CovenantPageDto after = await QueryAsync(client, "vault");
+
+        AssertOwesRebuild(after.Search);
+
+        Assert.Equal(status, after.Search);
+    }
+
+    /// <summary>
+    /// A projection that is merely pending, because a write landed after the last pass applied a published
+    /// tuple, is something to wait out. Both routes say so, though a fresh installation still carries the
+    /// full rebuild it recorded when it was created: that debt describes the empty projection the first pass
+    /// adopted, not the delta waiting behind it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_projection_pending_behind_a_published_tuple_reports_wait_for_synchronization_on_both_routes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        MemoryErasureRouteDriver driver = new(client);
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+        await PassAsync(host);
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, HarborKey, "Moor at the east harbor.");
+
+        Assert.Equal(
+            (long)CovenantFtsRebuildState.FullRebuildRequired,
+            await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
+
+        CovenantSearchHealthDto status = await SearchAsync(client);
+
+        CovenantSearchHealthDto page = (await QueryAsync(client, "harbor")).Search;
+
+        Assert.Equal(
+            new CovenantSearchHealthDto(
+                CovenantSearchHealthState.Synchronizing,
+                CovenantSearchExecutionMode.CanonicalFallback,
+                CovenantSearchRebuildGuidance.WaitForSynchronization),
+            page);
+
+        Assert.Equal(page, status);
+
+        await PassAsync(host);
+
+        AssertAnswersFromTheIndex(await SearchAsync(client));
+
+        AssertAnswersFromTheIndex((await QueryAsync(client, "harbor")).Search);
+    }
+
+    /// <summary>
+    /// Whatever the answer is while the applied tuple is still unpublished, the two routes give it together.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_page_and_status_agree_while_the_applied_tuple_is_unpublished()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+        Assert.Equal(1, await ScalarAsync(host, "SELECT AppliedSearchSequence IS NULL FROM covenant_state WHERE StateKey = 1;"));
+
+        Assert.Equal(await SearchAsync(client), (await QueryAsync(client, "vault")).Search);
     }
 
     /// <summary>
@@ -807,6 +1000,15 @@ public sealed class CovenantAvailabilityRepublicationTests
         Assert.Equal(1, cleaned.Value.CampaignsCleaned);
 
         return cleaned.Value;
+    }
+
+    private static void AssertAnswersFromTheIndex(CovenantSearchHealthDto search)
+    {
+        Assert.Equal(CovenantSearchHealthState.Healthy, search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.Fts, search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.None, search.Guidance);
     }
 
     private static void AssertOwesRebuild(CovenantSearchHealthDto search)

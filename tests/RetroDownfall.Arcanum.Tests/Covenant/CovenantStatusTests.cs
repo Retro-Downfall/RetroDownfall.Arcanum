@@ -282,8 +282,13 @@ public sealed class CovenantStatusTests
 
         FakeCovenantAvailability availability = new();
 
+        // No applied tuple names this dataset, so the outbox has nothing to continue from and only the
+        // recorded rebuild can complete search.
         availability.Mutate(static current => current with
         {
+            AppliedDatasetGeneration = null,
+            AppliedSequence = null,
+            AppliedCampaignDeletionSequence = null,
             FtsSynchronization = CovenantFtsSynchronizationState.Dirty,
             RebuildRequired = true,
             AcceleratorDiagnosticCode = "accelerator-dirty",
@@ -302,6 +307,57 @@ public sealed class CovenantStatusTests
         // The accelerator code is the only one there is here, and reporting only the canonical code
         // would leave a real degradation with no code at all beside it.
         Assert.Equal("accelerator-dirty", status.DegradationCode);
+
+    }
+
+    [Fact]
+    public async Task A_projection_pending_behind_a_published_tuple_is_something_to_wait_out_whatever_rebuild_is_recorded()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        FakeCovenantAvailability availability = new();
+
+        // The applied tuple names this dataset, so the outbox continues from it. A fresh installation
+        // still records the full rebuild it owed on the day it was created.
+        availability.Mutate(static current => current with
+        {
+            FtsSynchronization = CovenantFtsSynchronizationState.Dirty,
+            RebuildRequired = true,
+        });
+
+        CovenantStatusDto status = await StatusAsync(fixture, availability);
+
+        Assert.Equal(CovenantSearchHealthState.Synchronizing, status.Search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, status.Search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, status.Search.Guidance);
+
+    }
+
+    [Fact]
+    public async Task An_unpublished_tuple_with_no_rebuild_recorded_is_something_to_wait_out()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(static current => current with
+        {
+            AppliedDatasetGeneration = null,
+            AppliedSequence = null,
+            AppliedCampaignDeletionSequence = null,
+            FtsSynchronization = CovenantFtsSynchronizationState.Dirty,
+            RebuildRequired = false,
+        });
+
+        CovenantStatusDto status = await StatusAsync(fixture, availability);
+
+        Assert.Equal(CovenantSearchHealthState.Synchronizing, status.Search.State);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, status.Search.Guidance);
 
     }
 

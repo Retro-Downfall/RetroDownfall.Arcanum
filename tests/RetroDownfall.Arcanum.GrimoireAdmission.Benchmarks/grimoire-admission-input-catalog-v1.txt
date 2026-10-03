@@ -737,6 +737,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantQuotaSnapshotRe
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantRecoveryCheckpoints.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantResetCheckpointInitiator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantResidualArtifacts.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchHealthRule.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchIndex.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchOutboxWorker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSearchQueryCompiler.cs

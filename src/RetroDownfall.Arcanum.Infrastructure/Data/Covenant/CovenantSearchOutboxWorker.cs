@@ -246,12 +246,16 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
     /// </summary>
     /// <remarks>
     /// Two shapes qualify. Sequence zero with no head is a dataset nothing was written to yet: a fresh
-    /// installation, or one a reset or an erasure has just emptied. Otherwise the outbox must still hold
-    /// the dataset's first delta, so the replay is contiguous from empty, and every head must be named by
-    /// a pending delta. Deltas leave the outbox only from its oldest end, all at once, or together with
-    /// the head they name when an entry is erased, so a head named by any pending delta is also named by
-    /// its latest one. A head named by none was written somewhere the outbox never saw, such as the
-    /// installation a restore came from.
+    /// installation, or one a reset or an erasure has just emptied. Otherwise the outbox must hold at
+    /// least one delta, and every head must be named by a pending delta. Where the outbox starts does
+    /// not matter: replaying any suffix of it onto an empty projection is exact once every head is named,
+    /// because deltas leave the outbox only from its oldest end, all at once, or together with the head
+    /// they name when an entry is erased, so a head named by any pending delta is also named by its
+    /// latest one. An entry erasure removes the erased entry's own deltas wherever they sit, the oldest
+    /// included, so insisting that the outbox start at the dataset's first sequence would refuse a replay
+    /// that projects every head exactly. A head named by no delta was written somewhere the outbox never
+    /// saw, such as the installation a restore came from. An empty outbox beside a canonical sequence
+    /// above zero is refused too: adopting at zero could never reach that sequence.
     /// </remarks>
     private static async ValueTask<bool> OutboxReplaysEveryHeadAsync(
         CovenantMutationTransaction transaction,
@@ -263,7 +267,7 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         command.CommandText = """
             SELECT CASE
                 WHEN $canonical = 0 AND NOT EXISTS (SELECT 1 FROM covenant_heads) THEN 1
-                WHEN (SELECT MIN(SearchSequence) FROM covenant_search_outbox) = 1
+                WHEN EXISTS (SELECT 1 FROM covenant_search_outbox)
                     AND NOT EXISTS (
                         SELECT 1 FROM covenant_heads
                         WHERE SearchRowId NOT IN (SELECT SearchRowId FROM covenant_search_outbox)) THEN 1

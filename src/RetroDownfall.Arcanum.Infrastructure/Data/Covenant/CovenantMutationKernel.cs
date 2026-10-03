@@ -844,9 +844,13 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
         // ID at or past it. The ID is never reused within a dataset generation, so an accelerator row
         // can never be claimed by a different head after a delete and recreate.
         //
-        // The allocation never falls below an ID a head or a pending delta still holds. A restore by an
-        // earlier build restarted the counter at 1 beside restored heads holding IDs from 1 upward, and
-        // covenant_heads holds them unique, so every new key collided and rolled back. Both reads are
+        // The allocation never lands at or below an ID a head or a pending delta still holds. A restore by
+        // an earlier build restarted the counter at 1 beside restored heads holding IDs from 1 upward, and
+        // covenant_heads holds them unique, so every new key collided and rolled back. The delta term is
+        // reachable on exactly that installation: nothing consumes its outbox while the applied tuple is
+        // unpublished, so an erased entry's absent delta stays pending with a row ID above every head's,
+        // and a counter still at 1 would hand that ID to the next key. On any other installation the
+        // counter is already past every ID the outbox names, and the term changes nothing. Both reads are
         // indexed, the counter only moves forward, and the healed value persists with the allocation.
         command.CommandText = """
             UPDATE covenant_state

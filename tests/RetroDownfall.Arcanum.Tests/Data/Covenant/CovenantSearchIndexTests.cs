@@ -91,12 +91,58 @@ public sealed class CovenantSearchIndexTests
             "Findable text.",
             Token);
 
-        // No synchronization pass: canonical has moved and the accelerator has not.
+        // The pass publishes the tuple, then canonical moves on and the accelerator has not followed.
+        await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "other.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Another body.",
+            Token);
+
         CovenantSearchPage page = await SearchAsync(fixture, "findable", null);
 
         Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, page.ExecutionMode);
 
+        // The outbox continues from a published tuple, so this is something to wait out, not to rebuild.
         Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, page.Guidance);
+
+        _ = Assert.Single(page.Hits);
+
+    }
+
+    [Fact]
+    public async Task An_unpublished_applied_tuple_beside_a_recorded_rebuild_asks_for_the_rebuild()
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "global.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Findable text.",
+            Token);
+
+        // No synchronization pass has published a tuple, and the installation records a full rebuild as
+        // owed. The page says what the status route says about the same state.
+        Assert.Equal(
+            (long)CovenantFtsRebuildState.FullRebuildRequired,
+            await CovenantCapacityFixture.ScalarAsync(
+                fixture,
+                "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;",
+                Token));
+
+        CovenantSearchPage page = await SearchAsync(fixture, "findable", null);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, page.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, page.Guidance);
 
         _ = Assert.Single(page.Hits);
 

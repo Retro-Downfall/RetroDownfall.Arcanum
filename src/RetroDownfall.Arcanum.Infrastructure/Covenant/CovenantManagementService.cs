@@ -206,13 +206,14 @@ internal sealed class CovenantManagementService(
                 next)) : null,
             Hex(filterDigest),
             new CovenantSearchHealthDto(
-                page.ExecutionMode is CovenantSearchExecutionMode.Fts
-                    ? CovenantSearchHealthState.Healthy
-                    : page.Guidance is CovenantSearchRebuildGuidance.WaitForSynchronization
-                        ? CovenantSearchHealthState.Synchronizing
-                        : page.Guidance is CovenantSearchRebuildGuidance.AcceleratorUnavailable
-                            ? CovenantSearchHealthState.Unavailable
-                            : CovenantSearchHealthState.Degraded,
+                // The same rule status applies. A page answered from the index is the synchronized case,
+                // and one that was not is waiting on the outbox or on a rebuild, which status calls
+                // synchronizing too; the page cannot see the capability state, so it never reports a
+                // degraded accelerator.
+                CovenantSearchHealthRule.State(
+                    acceleratorUnavailable: page.Guidance is CovenantSearchRebuildGuidance.AcceleratorUnavailable,
+                    acceleratorDegraded: false,
+                    synchronized: page.ExecutionMode is CovenantSearchExecutionMode.Fts),
                 page.ExecutionMode,
                 page.Guidance),
             page.Truncated || page.NextKeyset is not null,
@@ -584,20 +585,17 @@ internal sealed class CovenantManagementService(
     /// The four states search can actually be in, from the published availability snapshot.
     /// </summary>
     /// <remarks>
-    /// Derived rather than named, and derived here rather than at each caller. This DTO is frozen and
-    /// reaches an operator through the API, the CLI, and the ordinary memory status block alike; a
-    /// second producer computing its own answer would give one contract four fields that mean
-    /// different things depending on which of them replied.
+    /// Derived rather than named, and derived by <see cref="CovenantSearchHealthRule"/> rather than at each
+    /// caller. This DTO is frozen and reaches an operator through the API, the CLI, and the ordinary memory
+    /// status block alike, and a search page carries the same one; a second producer computing its own
+    /// answer would give one contract several fields that mean different things depending on which of
+    /// them replied.
     /// </remarks>
     private static CovenantSearchHealthState SearchHealth(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator switch
-        {
-            CovenantCapabilityState.Unavailable => CovenantSearchHealthState.Unavailable,
-            CovenantCapabilityState.Degraded => CovenantSearchHealthState.Degraded,
-            _ => snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                ? CovenantSearchHealthState.Healthy
-                : CovenantSearchHealthState.Synchronizing,
-        };
+        CovenantSearchHealthRule.State(
+            acceleratorUnavailable: snapshot.Accelerator is CovenantCapabilityState.Unavailable,
+            acceleratorDegraded: snapshot.Accelerator is CovenantCapabilityState.Degraded,
+            synchronized: snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized);
 
     /// <summary>
     /// How the next query would run, by the same rule the store itself applies.
@@ -617,25 +615,22 @@ internal sealed class CovenantManagementService(
     /// The one remediation this snapshot actually calls for, most specific first.
     /// </summary>
     /// <remarks>
-    /// Order matters. An unavailable accelerator cannot be waited out, so reporting "wait for
-    /// synchronization" there would send an operator to sit through a state that will never change.
-    ///
-    /// <para>A synchronized snapshot asks for nothing, even while a full rebuild is recorded as owed. A
-    /// fresh installation and a Covenant reset both record that debt, and the outbox then adopts their
-    /// empty projection and keeps it current, so the accelerator answers every query by the same rule
-    /// search applies and a search page reports no guidance. Asking for a rebuild there would name a
-    /// remedy nothing needs. The debt still decides the guidance whenever search is not synchronized,
-    /// which includes a restore that kept its heads: the outbox will not adopt a projection it cannot
-    /// replay those heads onto.</para>
+    /// <see cref="CovenantSearchHealthRule.Guidance"/> decides, and a search page asks the same function
+    /// with the facts it was answered from, so the two routes agree on a state. The order it applies, and
+    /// why, is documented there: an unavailable accelerator cannot be waited out, a synchronized snapshot
+    /// asks for nothing even while a fresh installation's recorded rebuild is still owed, a published
+    /// tuple for this dataset means the outbox will carry search the rest of the way, and only without
+    /// one does the recorded rebuild decide, which includes a restore that kept its heads: the outbox will
+    /// not adopt a projection it cannot replay those heads onto.
     /// </remarks>
     private static CovenantSearchRebuildGuidance RebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
-        snapshot.Accelerator is CovenantCapabilityState.Unavailable
-            ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
-            : snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized
-                ? CovenantSearchRebuildGuidance.None
-                : snapshot.RebuildRequired
-                    ? CovenantSearchRebuildGuidance.RebuildRequired
-                    : CovenantSearchRebuildGuidance.WaitForSynchronization;
+        CovenantSearchHealthRule.Guidance(
+            acceleratorUnavailable: snapshot.Accelerator is CovenantCapabilityState.Unavailable,
+            synchronized: snapshot.FtsSynchronization is CovenantFtsSynchronizationState.Synchronized,
+            outboxCanContinue: snapshot.Accelerator is CovenantCapabilityState.Healthy
+                && snapshot.DatasetGeneration is { } dataset
+                && snapshot.AppliedDatasetGeneration == dataset,
+            rebuildOwed: snapshot.RebuildRequired);
 
     private static CovenantExplainDto Explain(
         CovenantExplainRequest request,

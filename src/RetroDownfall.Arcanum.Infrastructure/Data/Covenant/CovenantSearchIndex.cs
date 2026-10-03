@@ -62,7 +62,10 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                 .ConfigureAwait(false);
 
-        CovenantSearchSourceSnapshot sources = await ReadSourcesAsync(connection, transaction, cancellationToken)
+        (CovenantSearchSourceSnapshot sources, bool rebuildOwed) = await ReadSourcesAsync(
+                connection,
+                transaction,
+                cancellationToken)
             .ConfigureAwait(false);
 
         bool acceleratorInstalled = await AcceleratorInstalledAsync(connection, transaction, cancellationToken)
@@ -94,6 +97,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
                 scope.Value,
                 sources,
                 acceleratorInstalled,
+                rebuildOwed,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -131,7 +135,14 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            return BuildPage(hits, query, sources, CovenantSearchExecutionMode.Fts, truncated: false);
+            // An answer from the index is the synchronized one, which asks nothing of the caller.
+            return BuildPage(
+                hits,
+                query,
+                sources,
+                CovenantSearchExecutionMode.Fts,
+                truncated: false,
+                CovenantSearchRebuildGuidance.None);
 
         }
         catch (SqliteException exception)
@@ -152,6 +163,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantOperationScope? scope,
         CovenantSearchSourceSnapshot sources,
         bool acceleratorInstalled,
+        bool rebuildOwed,
         CancellationToken cancellationToken)
     {
 
@@ -188,13 +200,21 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         // 2,048 heads were examined out of 5,000 would draw a false conclusion.
         bool truncated = candidates > FallbackCandidateLimit;
 
+        // The same rule the status route applies, over the facts this page was answered from. A page the
+        // canonical scan answered was not answered by the index, so it is never the synchronized case.
+        CovenantSearchRebuildGuidance guidance = CovenantSearchHealthRule.Guidance(
+            acceleratorUnavailable: !acceleratorInstalled,
+            synchronized: false,
+            outboxCanContinue: acceleratorInstalled && sources.AppliedDatasetGeneration == sources.DatasetGeneration,
+            rebuildOwed: rebuildOwed);
+
         return BuildPage(
             hits,
             query,
             sources,
             CovenantSearchExecutionMode.CanonicalFallback,
             truncated,
-            acceleratorInstalled);
+            guidance);
 
     }
 
@@ -204,7 +224,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantSearchSourceSnapshot sources,
         CovenantSearchExecutionMode mode,
         bool truncated,
-        bool acceleratorInstalled = true)
+        CovenantSearchRebuildGuidance guidance)
     {
 
         bool hasMore = hits.Length > query.EffectivePageSize;
@@ -216,18 +236,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantSearchKeyset? next = hasMore && !page.IsEmpty
             ? ToKeyset(page[^1])
             : null;
-
-        CovenantSearchRebuildGuidance guidance = mode == CovenantSearchExecutionMode.Fts
-            ? CovenantSearchRebuildGuidance.None
-            : !acceleratorInstalled
-                ? CovenantSearchRebuildGuidance.AcceleratorUnavailable
-                // A null applied tuple is an accelerator that has not published yet, which the
-                // synchronization worker resolves on its next pass. A published tuple naming another
-                // dataset is the case no delta can reconcile.
-                : sources.AppliedDatasetGeneration is null
-                    || sources.AppliedDatasetGeneration == sources.DatasetGeneration
-                    ? CovenantSearchRebuildGuidance.WaitForSynchronization
-                    : CovenantSearchRebuildGuidance.RebuildRequired;
 
         return new CovenantSearchPage(page, next, sources, mode, truncated, guidance);
 
@@ -348,7 +356,16 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             ? containsPattern[1..]
             : containsPattern;
 
-    private static async ValueTask<CovenantSearchSourceSnapshot> ReadSourcesAsync(
+    /// <summary>
+    /// Reads the generation facts and the persisted rebuild debt in one statement, so both belong to the
+    /// same snapshot as the rows the page is answered from.
+    /// </summary>
+    /// <remarks>
+    /// The debt is not part of <see cref="CovenantSearchSourceSnapshot"/>, which a cursor encodes and which
+    /// therefore decides when a cursor goes stale. A rebuild state change moves no row a page returns, so it
+    /// must not invalidate one.
+    /// </remarks>
+    private static async ValueTask<(CovenantSearchSourceSnapshot Sources, bool RebuildOwed)> ReadSourcesAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
@@ -365,7 +382,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
 
-        return new CovenantSearchSourceSnapshot(
+        CovenantSearchSourceSnapshot sources = new(
             new Guid((byte[])reader.GetValue(0)),
             reader.GetInt64(1),
             reader.GetInt64(2),
@@ -373,6 +390,9 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             reader.IsDBNull(4) ? null : reader.GetInt64(4),
             reader.IsDBNull(5) ? null : reader.GetInt64(5),
             checked((ulong)reader.GetInt64(6)));
+
+        // Idle is the only rebuild state that owes nothing, which is the rule the status publisher applies.
+        return (sources, (CovenantFtsRebuildState)reader.GetInt32(7) != CovenantFtsRebuildState.Idle);
 
     }
 
