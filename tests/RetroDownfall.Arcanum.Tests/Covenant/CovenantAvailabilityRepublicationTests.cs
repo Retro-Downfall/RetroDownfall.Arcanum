@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -14,12 +15,14 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.Backup;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -47,6 +50,10 @@ public sealed class CovenantAvailabilityRepublicationTests
     private const string OtherKey = "republication.answer-length";
 
     private const string RebuildOwner = "covenant-republication-test";
+
+    private const string VaultKey = "republication.vault";
+
+    private const string HarborKey = "republication.harbor";
 
     private static CancellationToken Token => CancellationToken.None;
 
@@ -584,6 +591,127 @@ public sealed class CovenantAvailabilityRepublicationTests
     }
 
     /// <summary>
+    /// A restore whose archive carried an empty projection keeps the archived heads but resets the canonical
+    /// search sequence to 0 and drains the outbox, so no delta can ever project those heads. The outbox must
+    /// not adopt that empty projection: search stays on the canonical fallback, which still finds every
+    /// restored entry, and status asks for the rebuild that alone can project them.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_restore_whose_archive_carried_an_empty_projection_keeps_search_on_the_canonical_fallback()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        await RestoreUnprojectedArchiveAsync(harness);
+
+        await using ArcanumWebApplicationFactory host = Host(harness.Credentials, harness.Profile);
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, (await SearchAsync(client)).Guidance);
+
+        await PassAsync(host);
+
+        AssertOwesRebuild(await SearchAsync(client));
+
+        CovenantPageDto found = await QueryAsync(client, "vault");
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, found.Search.ExecutionMode);
+
+        Assert.Single(found.Items);
+
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+
+        Assert.Null(live.AppliedSequence);
+    }
+
+    /// <summary>
+    /// The same restore followed by a write to one restored key before the first pass. The outbox now
+    /// starts at sequence 1, but that delta projects one head and leaves the other restored heads out, so
+    /// the empty projection is still not adopted.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_restore_followed_by_a_write_to_one_restored_key_still_keeps_search_on_the_canonical_fallback()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        await RestoreUnprojectedArchiveAsync(harness);
+
+        await using ArcanumWebApplicationFactory host = Host(harness.Credentials, harness.Profile);
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key in the safe.");
+
+        Assert.Equal(1L, await ScalarAsync(host, "SELECT MIN(SearchSequence) FROM covenant_search_outbox;"));
+
+        await PassAsync(host);
+
+        AssertOwesRebuild(await SearchAsync(client));
+
+        CovenantPageDto found = await QueryAsync(client, "harbor");
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, found.Search.ExecutionMode);
+
+        Assert.Single(found.Items);
+    }
+
+    /// <summary>
+    /// An outbox that no longer starts at the dataset's first sequence is not replayed onto an empty
+    /// projection, even when what remains would touch every head. Here an earlier pass consumed the first
+    /// delta and a rebuild that was then abandoned cleared the projection and the applied tuple.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_outbox_that_no_longer_starts_at_the_first_sequence_is_not_adopted_onto_an_empty_projection()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        MemoryErasureRouteDriver driver = new(client);
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in British English.");
+
+        await PassAsync(host);
+
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, Key, "Answer in Scottish English.");
+
+        await using (AsyncServiceScope scope = host.Services.CreateAsyncScope())
+        {
+            await OpenAsync(scope);
+
+            CovenantIndexRebuildCoordinator rebuild = scope.ServiceProvider.GetRequiredService<CovenantIndexRebuildCoordinator>();
+
+            Result<LongRunningOperation> started = await rebuild.StartAsync(RebuildOwner, Token);
+
+            Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+            Result<CovenantIndexRebuildProgress> cleared = await rebuild.AdvanceAsync(started.Value, RebuildOwner, Token);
+
+            Assert.True(cleared.IsSuccess, cleared.IsFailure ? cleared.Error.Message : null);
+        }
+
+        Assert.Equal(0L, await ScalarAsync(host, "SELECT COUNT(*) FROM covenant_search_documents;"));
+
+        Assert.Equal(2L, await ScalarAsync(host, "SELECT MIN(SearchSequence) FROM covenant_search_outbox;"));
+
+        await PassAsync(host);
+
+        AssertOwesRebuild(await SearchAsync(client));
+
+        CovenantPageDto found = await QueryAsync(client, "Scottish");
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, found.Search.ExecutionMode);
+
+        Assert.Single(found.Items);
+    }
+
+    /// <summary>
     /// A host with the Covenant on and its background maintenance pass left out, so every pass a test needs
     /// is one it runs.
     /// </summary>
@@ -679,6 +807,85 @@ public sealed class CovenantAvailabilityRepublicationTests
         Assert.Equal(1, cleaned.Value.CampaignsCleaned);
 
         return cleaned.Value;
+    }
+
+    private static void AssertOwesRebuild(CovenantSearchHealthDto search)
+    {
+        Assert.Equal(CovenantSearchHealthState.Synchronizing, search.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, search.ExecutionMode);
+
+        Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, search.Guidance);
+    }
+
+    /// <summary>
+    /// Authors two Global entries on a host whose maintenance pass never runs, so the archived projection
+    /// is empty while its heads exist, then archives it and restores it in place with its protected state.
+    /// </summary>
+    private static async Task RestoreUnprojectedArchiveAsync(MemoryErasureRestoreHarness harness)
+    {
+        await using (ArcanumWebApplicationFactory source = Host(harness.Credentials, harness.Profile))
+        {
+            using HttpClient client = source.CreateAuthenticatedClient();
+
+            MemoryErasureRouteDriver driver = new(client);
+
+            _ = await driver.SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+            _ = await driver.SetCovenantAsync(CovenantScope.Global, null, HarborKey, "Moor at the east harbor.");
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        string archive = await harness.CreateArchiveAsync("covenant-unprojected.arcbackup");
+
+        BackupRestoreResult restored = await harness.CreateRestoreService(covenantStaging: true).RestoreAsync(
+            new BackupRestoreRequest(
+                archive,
+                BackupRestoreConflictMode.ReplaceInstallation,
+                Confirmed: true,
+                CreateSafetyBackup: false,
+                ProtectedStateMode: BackupProtectedStateMode.RestoreProtectedState,
+                ProtectedStateConfirmed: true),
+            MemoryErasureRestoreHarness.Passphrase.AsMemory(),
+            Token);
+
+        Assert.Equal(BackupRestoreStatus.Completed, restored.Status);
+
+        // The state the reconciler leaves: the heads, an empty projection, a reset sequence and no deltas.
+        await using (SqliteConnection live = await harness.OpenLiveDatabaseAsync(GrimoireFixture.TestGrimoireSecret))
+        {
+            Assert.Equal(2L, await CountAsync(live, "SELECT COUNT(*) FROM covenant_heads;"));
+
+            Assert.Equal(0L, await CountAsync(live, "SELECT COUNT(*) FROM covenant_search_documents;"));
+
+            Assert.Equal(0L, await CountAsync(live, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;"));
+
+            Assert.Equal(0L, await CountAsync(live, "SELECT COUNT(*) FROM covenant_search_outbox;"));
+        }
+
+        SqliteConnection.ClearAllPools();
+    }
+
+    private static async Task<CovenantPageDto> QueryAsync(HttpClient client, string text)
+    {
+        using HttpResponseMessage response = await new MemoryErasureRouteDriver(client).PostAsync(
+            "/api/memory/covenant/query",
+            new CovenantQueryRequest(CovenantCursorScopeSelection.AllScopes, null, text, null, CovenantLifecycle.Any, null, 50, null),
+            ArcanumJsonContext.Default.CovenantQueryRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        return await MemoryErasureRouteDriver.ReadDataAsync(response, ArcanumJsonContext.Default.ApiResponseCovenantPageDto);
+    }
+
+    private static async Task<long> CountAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt64(await command.ExecuteScalarAsync(Token), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static async Task DeleteCampaignAsync(HttpClient client, Guid campaign)

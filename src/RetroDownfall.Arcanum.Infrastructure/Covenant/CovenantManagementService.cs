@@ -624,7 +624,9 @@ internal sealed class CovenantManagementService(
     /// fresh installation and a Covenant reset both record that debt, and the outbox then adopts their
     /// empty projection and keeps it current, so the accelerator answers every query by the same rule
     /// search applies and a search page reports no guidance. Asking for a rebuild there would name a
-    /// remedy nothing needs. The debt still decides the guidance whenever search is not synchronized.</para>
+    /// remedy nothing needs. The debt still decides the guidance whenever search is not synchronized,
+    /// which includes a restore that kept its heads: the outbox will not adopt a projection it cannot
+    /// replay those heads onto.</para>
     /// </remarks>
     private static CovenantSearchRebuildGuidance RebuildGuidance(CovenantAvailabilitySnapshot snapshot) =>
         snapshot.Accelerator is CovenantCapabilityState.Unavailable

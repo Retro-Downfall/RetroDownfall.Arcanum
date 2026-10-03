@@ -93,11 +93,16 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (applied is null)
         {
-            // A projection with no published tuple is adoptable only while it is empty: an empty
-            // projection is trivially correct for sequence zero, so the worker can start from there
-            // instead of demanding a rebuild of nothing. Anything already projected under a tuple
-            // this dataset never published cannot be reconciled by a delta.
-            if (await ProjectionRowCountAsync(transaction, cancellationToken).ConfigureAwait(false) > 0)
+            // A projection with no published tuple is adoptable only while it is empty, and only while
+            // the outbox can still replay every head the canonical tier holds onto it, so the worker can
+            // start from there instead of demanding a rebuild of nothing. Anything already projected
+            // under a tuple this dataset never published cannot be reconciled by a delta, and neither can
+            // a head no pending delta names: a restore resets the sequence to zero and drains the
+            // outbox but keeps its heads, and adopting that projection would let search answer from an
+            // index missing every one of them.
+            if (await ProjectionRowCountAsync(transaction, cancellationToken).ConfigureAwait(false) > 0
+                || !await OutboxReplaysEveryHeadAsync(transaction, state.CanonicalSearchSequence, cancellationToken)
+                    .ConfigureAwait(false))
             {
                 return new CovenantOutboxSyncOutcome(0, 0, 0, 0, RebuildRequired: true);
             }
@@ -234,6 +239,43 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Whether replaying the outbox onto an empty projection would project every current head.
+    /// </summary>
+    /// <remarks>
+    /// Two shapes qualify. Sequence zero with no head is a dataset nothing was written to yet: a fresh
+    /// installation, or one a reset or an erasure has just emptied. Otherwise the outbox must still hold
+    /// the dataset's first delta, so the replay is contiguous from empty, and every head must be named by
+    /// a pending delta. Deltas leave the outbox only from its oldest end, all at once, or together with
+    /// the head they name when an entry is erased, so a head named by any pending delta is also named by
+    /// its latest one. A head named by none was written somewhere the outbox never saw, such as the
+    /// installation a restore came from.
+    /// </remarks>
+    private static async ValueTask<bool> OutboxReplaysEveryHeadAsync(
+        CovenantMutationTransaction transaction,
+        long canonicalSearchSequence,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            SELECT CASE
+                WHEN $canonical = 0 AND NOT EXISTS (SELECT 1 FROM covenant_heads) THEN 1
+                WHEN (SELECT MIN(SearchSequence) FROM covenant_search_outbox) = 1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM covenant_heads
+                        WHERE SearchRowId NOT IN (SELECT SearchRowId FROM covenant_search_outbox)) THEN 1
+                ELSE 0
+            END;
+            """;
+
+        _ = command.Parameters.AddWithValue("$canonical", canonicalSearchSequence);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture) == 1;
     }
 
     private static async ValueTask<AcceleratorState> ReadStateAsync(

@@ -453,7 +453,11 @@ internal static class BackupCovenantRestoreReconciler
     /// projection rows themselves are deliberately left where they are: only the outbox worker and the
     /// rebuilder write accelerator state, and a null applied tuple already makes those rows unusable —
     /// the worker refuses a nonempty projection it never published a tuple for, and the rebuilder
-    /// clears the whole table before its first batch.</para>
+    /// clears the whole table before its first batch. An empty projection is refused as well, because
+    /// this reissue resets the sequence to zero and drains the outbox while keeping the archived heads:
+    /// no pending delta names them, and the worker adopts an empty projection only when the outbox can
+    /// replay every head onto it. Search therefore answers restored entries through the canonical
+    /// fallback until a rebuild projects them.</para>
     /// </remarks>
     private static async Task<Result<CanonicalReissue>> ReissueCanonicalIdentitiesAsync(
         SqliteConnection staged,
