@@ -239,6 +239,56 @@ public sealed class CovenantErasureSuppressionTests
     }
 
     /// <summary>
+    /// The exact-scope boundary from both sides an agent proposal can meet it: a fingerprint of the
+    /// same key recorded in Global, or in another Campaign, names a different identity, so neither the
+    /// staging probe nor the kernel withholds a proposal of that key in this Campaign.
+    /// </summary>
+    /// <remarks>
+    /// Agents author only Campaign Proposed lanes, so a Global erasure never blocks an agent proposing
+    /// the key inside a Campaign, and an erasure in Campaign Two says nothing about Campaign One. Each
+    /// row first proves the fingerprint is live and matches the key in the scope it was recorded in, so
+    /// the clear answer below is a decision about scope rather than about missing evidence or a key the
+    /// gate could not read.
+    /// </remarks>
+    [Theory]
+    [InlineData("Global")]
+    [InlineData("CampaignTwo")]
+    public async Task A_fingerprint_in_another_scope_withholds_nothing_from_a_Campaign_proposal(string erasedIn)
+    {
+
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        (CovenantScope scope, Guid? campaignId) = erasedIn == "Global"
+            ? (CovenantScope.Global, (Guid?)null)
+            : (CovenantScope.Campaign, CovenantOperationGateFixture.CampaignTwo);
+
+        await harness.SeedCovenantFingerprintAsync(scope, campaignId, Key, Token);
+
+        Assert.Equal(CovenantAgentErasureState.Withheld, await ClassifyAsync(harness, scope, campaignId, Key));
+
+        CovenantLaneHeadProbe probe = await ProbeAsync(harness, harness.Fixture.Store, CovenantLane.Proposed, Key);
+
+        Assert.Equal(CovenantAgentErasureState.Clear, probe.AgentErasure);
+
+        Assert.False(probe.IsAgentWithheld);
+
+        CovenantMutationKernel kernel = Kernel(harness);
+
+        using CovenantAgentErasureGate gate = kernel.CaptureErasureGate();
+
+        Assert.NotNull(gate.Key);
+
+        Applied applied = await ApplyAsync(
+            harness,
+            kernel,
+            gate,
+            CovenantMutationFixture.AgentPropose(CampaignOne, Key, "The model suggests building from tools.", 0, probe.KeyEpoch));
+
+        AssertApplied(applied);
+
+    }
+
+    /// <summary>
     /// With Covenant evidence present and no key in hand, the kernel refuses every agent write, even of
     /// a key nobody erased, and says why from the latch state it was handed (R16).
     /// </summary>
@@ -901,6 +951,35 @@ public sealed class CovenantErasureSuppressionTests
         Assert.True(probe.IsSuccess, probe.IsFailure ? probe.Error.Message : string.Empty);
 
         return probe.Value;
+
+    }
+
+    /// <summary>
+    /// Classifies one exact scoped identity through the gate the kernel and the probes share, inside a
+    /// read transaction of its own, with the key the fixture's latch holds.
+    /// </summary>
+    private static async Task<CovenantAgentErasureState> ClassifyAsync(
+        CovenantServiceHarness harness,
+        CovenantScope scope,
+        Guid? campaignId,
+        string key)
+    {
+
+        using CovenantAgentErasureGate gate = CovenantAgentErasureGate.FromLatch(harness.Fixture.ErasureKeys);
+
+        await using SqliteTransaction transaction = harness.Fixture.Connection.BeginTransaction(deferred: true);
+
+        CovenantAgentErasureState state = await gate.ClassifyAsync(
+            harness.Fixture.Connection,
+            transaction,
+            scope,
+            campaignId,
+            key,
+            Token);
+
+        await transaction.RollbackAsync(Token);
+
+        return state;
 
     }
 
