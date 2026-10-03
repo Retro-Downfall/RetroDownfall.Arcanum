@@ -59,7 +59,9 @@ internal interface IMemoryErasureKeyCreator
 /// <para>The latch itself is one immutable snapshot, replaced whole under that lock and read without
 /// it. <see cref="Latch"/> and <see cref="TryCopyLatched"/> may be read while a Covenant lease is held,
 /// and a probe can sit behind a keychain prompt for as long as the operator leaves it there, so those
-/// two must never wait for the lock a probe holds.</para>
+/// two must never wait for the lock a probe holds. Neither does <see cref="OpenExisting"/> when the
+/// latch already answers it: a present latch, or any resolved latch for an automatic caller. Only a call
+/// that has to probe takes the lock.</para>
 ///
 /// <para>Construction performs no credential I/O, and nothing here logs.</para>
 /// </remarks>
@@ -125,6 +127,25 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
     /// <inheritdoc/>
     public MemoryErasureKeyOpenResult OpenExisting(MemoryErasureKeyProbe probe)
     {
+        // An answer the latch already holds needs no credential I/O, so it takes no lock either: an
+        // automatic caller, which may hold a Covenant lease, must never wait behind an operator's probe
+        // that is parked in a keychain prompt. A present latch answers every caller with a copy, and a
+        // resolved one answers an automatic caller with its state. Anything else, and a present latch
+        // that was replaced while it was copied, is decided again under the lock.
+        Latched latched = Volatile.Read(ref _latched);
+
+        if (latched.State is MemoryErasureKeyState.Present)
+        {
+            if (TryCopyLatched() is { } copy)
+            {
+                return new MemoryErasureKeyOpenResult(MemoryErasureKeyState.Present, copy);
+            }
+        }
+        else if (probe is not MemoryErasureKeyProbe.Reprobe && latched.State is not MemoryErasureKeyState.Unresolved)
+        {
+            return new MemoryErasureKeyOpenResult(latched.State, null);
+        }
+
         lock (_gate)
         {
             if (_disposed)

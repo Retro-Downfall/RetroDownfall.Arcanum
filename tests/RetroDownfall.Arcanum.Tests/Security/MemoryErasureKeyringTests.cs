@@ -1,13 +1,29 @@
 using System.Buffers.Text;
 
+using System.Reflection;
+
 using System.Security.Cryptography;
 
 using Microsoft.Extensions.Configuration;
+
 using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Hosting;
 
+using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Cli.Services;
+
 using RetroDownfall.Arcanum.Core.Memory;
+
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
+using RetroDownfall.Arcanum.Infrastructure.Memory;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -449,6 +465,251 @@ public sealed class MemoryErasureKeyringTests
         Assert.NotNull(kept);
     }
 
+    /// <summary>
+    /// A resolved latch answers an automatic open, and a present one answers any open, without waiting
+    /// behind an operator's probe that is parked inside the credential store.
+    /// </summary>
+    /// <remarks>
+    /// Taking the keyring's lock for an answer that needs no I/O would put every automatic caller,
+    /// including the ones that hold a Covenant lease, behind a keychain prompt for as long as the
+    /// operator leaves it up. The operator's own probe is the one that is allowed to wait.
+    /// </remarks>
+    [Theory]
+    [InlineData("Absent")]
+    [InlineData("Malformed")]
+    [InlineData("Present")]
+    public async Task Open_existing_answers_from_a_resolved_latch_without_waiting_behind_an_inflight_probe(string resolved)
+    {
+        TimeSpan prompt = TimeSpan.FromSeconds(5);
+
+        InMemoryOsCredentialStore inner = new();
+
+        _ = resolved switch
+        {
+            "Absent" => OsCredentialStoreResult.NotFound(),
+            "Malformed" => inner.Set(Service, Account, "not base64url"),
+            "Present" => inner.Set(Service, Account, Base64Url.EncodeToString(FixedKey)),
+            _ => throw new ArgumentOutOfRangeException(nameof(resolved)),
+        };
+
+        MemoryErasureKeyState expected = Enum.Parse<MemoryErasureKeyState>(resolved);
+
+        using GatedCredentialStore store = new(inner);
+
+        using MemoryErasureKeyring keyring = new(store);
+
+        try
+        {
+            // Resolve the latch with the store open, then take the one stale signal that read left.
+            store.Release();
+
+            using (MemoryErasureKey? first = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe).Key)
+            {
+                Assert.Equal(expected, keyring.Latch.State);
+            }
+
+            Assert.True(await store.WaitUntilHeldAsync());
+
+            // Park an operator's probe inside the store, holding whatever lock the keyring takes for it.
+            store.Hold();
+
+            Func<MemoryErasureKeyOpenResult> operatorProbe = resolved == "Present"
+                ? () => keyring.CreateForReset()
+                : () => keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
+
+            Task<MemoryErasureKeyOpenResult> parked = Task.Run(operatorProbe);
+
+            Assert.True(await store.WaitUntilHeldAsync());
+
+            MemoryErasureKeyOpenResult automatic = await Task
+                .Run(() => keyring.OpenExisting(MemoryErasureKeyProbe.UseLatched))
+                .WaitAsync(prompt);
+
+            using MemoryErasureKey? automaticKey = automatic.Key;
+
+            Assert.Equal(expected, automatic.State);
+
+            if (resolved == "Present")
+            {
+                Assert.NotNull(automaticKey);
+
+                Assert.True(automaticKey.HasKeyId(IndependentKeyId(FixedKey)));
+
+                // An operator open of a present latch is answered from the latch too, and never probes.
+                MemoryErasureKeyOpenResult operatorOpen = await Task
+                    .Run(() => keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe))
+                    .WaitAsync(prompt);
+
+                using MemoryErasureKey? operatorKey = operatorOpen.Key;
+
+                Assert.Equal(MemoryErasureKeyState.Present, operatorOpen.State);
+
+                Assert.NotNull(operatorKey);
+
+                Assert.True(operatorKey.HasKeyId(IndependentKeyId(FixedKey)));
+
+                Assert.NotSame(automaticKey, operatorKey);
+            }
+            else
+            {
+                Assert.Null(automaticKey);
+            }
+
+            Assert.False(parked.IsCompleted);
+
+            store.Release();
+
+            using MemoryErasureKey? finished = (await parked.WaitAsync(TimeSpan.FromSeconds(30))).Key;
+        }
+        finally
+        {
+            // Releases rather than disposes, so a probe still parked on a failing run can finish before
+            // the keyring that holds its lock is disposed.
+            store.Release();
+        }
+    }
+
+    /// <summary>
+    /// A copy handed out while the latch is republished is never part-zeroed.
+    /// </summary>
+    /// <remarks>
+    /// Publishing a key swaps in a new snapshot and then zeroes the one it replaced, so a reader that
+    /// copied from the old snapshot may copy zeroes. The copy-and-recheck loop discards such a copy. A
+    /// republish with an unchanged key is the sharpest probe, because the replaced bytes and the new
+    /// ones are equal and only the zeroing differs: a reader that returns a torn copy is caught by its
+    /// key id, which is computed from the copied bytes.
+    /// </remarks>
+    [Fact]
+    public async Task A_copy_taken_while_the_latch_is_republished_is_never_torn()
+    {
+        const int readers = 4;
+
+        const int republishes = 100_000;
+
+        InMemoryOsCredentialStore inner = new();
+
+        _ = inner.Set(Service, Account, Base64Url.EncodeToString(FixedKey));
+
+        using MemoryErasureKeyring keyring = new(inner);
+
+        using (MemoryErasureKey? opened = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe).Key)
+        {
+            Assert.NotNull(opened);
+        }
+
+        byte[] expectedKeyId = IndependentKeyId(FixedKey);
+
+        using CancellationTokenSource stop = new();
+
+        long copies = 0;
+
+        long torn = 0;
+
+        Task[] readerTasks =
+        [
+            .. Enumerable.Range(0, readers).Select(reader => Task.Factory.StartNew(
+                () =>
+                {
+                    while (!stop.IsCancellationRequested)
+                    {
+                        using MemoryErasureKey? copy = keyring.TryCopyLatched();
+
+                        _ = Interlocked.Increment(ref copies);
+
+                        if (copy is null || !copy.HasKeyId(expectedKeyId))
+                        {
+                            _ = Interlocked.Increment(ref torn);
+                        }
+                    }
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)),
+        ];
+
+        try
+        {
+            for (int republish = 0; republish < republishes; republish++)
+            {
+                // A reset re-reads the account and publishes what it finds, replacing the snapshot the
+                // readers are copying from with one that holds the same key.
+                using MemoryErasureKey? kept = keyring.CreateForReset().Key;
+
+                Assert.NotNull(kept);
+            }
+        }
+        finally
+        {
+            await stop.CancelAsync();
+
+            await Task.WhenAll(readerTasks).WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        Assert.True(Interlocked.Read(ref copies) > 0, "No reader ever copied the key.");
+
+        Assert.Equal(0, Interlocked.Read(ref torn));
+    }
+
+    /// <summary>
+    /// Every way a create can fail leaves the latch Unavailable after exactly one write, and nothing
+    /// asks the store again for an automatic caller.
+    /// </summary>
+    [Theory]
+    [InlineData("SetUnavailable", 1)]
+    [InlineData("SetFailed", 1)]
+    [InlineData("SetThrows", 1)]
+    [InlineData("ReadBackNotFound", 2)]
+    [InlineData("ReadBackUnavailable", 2)]
+    [InlineData("ReadBackMalformed", 2)]
+    [InlineData("ReadBackThrows", 2)]
+    public void A_failed_create_latches_unavailable_after_one_write(string failure, int reads)
+    {
+        ScriptedCredentialStore store = new ScriptedCredentialStore().Read(OsCredentialStoreResult.NotFound());
+
+        _ = failure switch
+        {
+            "SetUnavailable" => store.Write(OsCredentialStoreResult.Unavailable("test backend unavailable")),
+            "SetFailed" => store.Write(OsCredentialStoreResult.Failed("test backend failure")),
+            "SetThrows" => store.WriteThrows(new IOException("test")),
+            "ReadBackNotFound" => store.Read(OsCredentialStoreResult.NotFound()),
+            "ReadBackUnavailable" => store.Read(OsCredentialStoreResult.Unavailable("test backend unavailable")),
+            "ReadBackMalformed" => store.Read(OsCredentialStoreResult.Ok("not base64url")),
+            "ReadBackThrows" => store.ReadThrows(new IOException("test")),
+            _ => throw new ArgumentOutOfRangeException(nameof(failure)),
+        };
+
+        using MemoryErasureKeyring keyring = new(store);
+
+        MemoryErasureKeyOpenResult opened = keyring.OpenOrCreate(evidenceRowsExist: false);
+
+        Assert.Equal(MemoryErasureKeyState.Unavailable, opened.State);
+
+        Assert.Null(opened.Key);
+
+        Assert.Equal(MemoryErasureKeyState.Unavailable, keyring.Latch.State);
+
+        Assert.Null(keyring.Latch.KeyId);
+
+        Assert.Null(keyring.TryCopyLatched());
+
+        Assert.Equal(1, store.SetCount);
+
+        Assert.Equal(reads, store.TryGetCount);
+
+        Assert.Equal(0, store.DeleteCount);
+
+        // The failure is remembered: an automatic caller is told so without another read or write.
+        MemoryErasureKeyOpenResult again = keyring.OpenExisting(MemoryErasureKeyProbe.UseLatched);
+
+        Assert.Equal(MemoryErasureKeyState.Unavailable, again.State);
+
+        Assert.Null(again.Key);
+
+        Assert.Equal(1, store.SetCount);
+
+        Assert.Equal(reads, store.TryGetCount);
+    }
+
     [Fact]
     public void Two_keyrings_sharing_one_account_converge_on_the_first_key()
     {
@@ -647,7 +908,7 @@ public sealed class MemoryErasureKeyringTests
     {
         CountingCredentialStore store = new(new InMemoryOsCredentialStore());
 
-        MemoryErasureKeyring keyring = new(store);
+        using MemoryErasureKeyring keyring = new(store);
 
         MemoryErasureIdentity identity = MemoryErasureIdentity.ForLexicon(null, "independent copy");
 
@@ -757,6 +1018,112 @@ public sealed class MemoryErasureKeyringTests
         _ = Assert.IsType<MemoryErasureKeyring>(provider.GetRequiredService<IMemoryErasureKeyProvider>());
 
         Assert.Null(provider.GetService<IMemoryErasureKeyCreator>());
+    }
+
+    /// <summary>
+    /// The creator port, and the concrete keyring that implements it, are taken by a closed set of
+    /// constructors, every one of them an erasure service the host alone composes.
+    /// </summary>
+    /// <remarks>
+    /// The CLI and restore containers register the keyring as itself so each holds one latch, which
+    /// leaves the concrete type resolvable there: nothing but the services below keeps a consumer from
+    /// asking for it and creating a key. So a new constructor that takes either is a decision this list
+    /// makes visible, and <see cref="Host_only_erasure_services_are_not_registered_in_the_cli_or_restore_compositions"/>
+    /// holds the other half.
+    /// </remarks>
+    [Fact]
+    public void Only_host_only_erasure_services_take_the_key_creator_or_the_concrete_keyring()
+    {
+        Assembly[] assemblies =
+        [
+            typeof(MemoryErasureKeyring).Assembly,
+            typeof(ArcanumJsonContext).Assembly,
+            typeof(ArcanumApiClient).Assembly,
+        ];
+
+        string[] consumers =
+        [
+            .. assemblies
+                .SelectMany(static assembly => assembly.GetTypes())
+                .Where(static type => !type.IsAbstract)
+                .Where(static type => type
+                    .GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Any(static constructor => constructor.GetParameters().Any(static parameter =>
+                        parameter.ParameterType == typeof(MemoryErasureKeyring)
+                        || parameter.ParameterType == typeof(IMemoryErasureKeyCreator))))
+                .Select(static type => type.Name)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal(
+            [
+                nameof(CovenantEntryErasureService),
+                nameof(LexiconErasureDependencies),
+                nameof(MemoryErasureAdministration),
+                nameof(SagaMemoryErasureService),
+            ],
+            consumers);
+    }
+
+    /// <summary>
+    /// Neither the CLI stack nor the backup registration, which restore runs in, registers any of the
+    /// services that take the creator or the concrete keyring, or any interface they answer to.
+    /// </summary>
+    [Fact]
+    public void Host_only_erasure_services_are_not_registered_in_the_cli_or_restore_compositions()
+    {
+        Type[] hostOnly =
+        [
+            typeof(CovenantEntryErasureService),
+            typeof(LexiconErasureDependencies),
+            typeof(MemoryErasureAdministration),
+            typeof(SagaMemoryErasureService),
+        ];
+
+        HashSet<Type> serviceTypes =
+        [
+            .. hostOnly,
+            .. hostOnly
+                .SelectMany(static type => type.GetInterfaces())
+                .Where(static contract => contract.Namespace?.StartsWith("RetroDownfall.Arcanum", StringComparison.Ordinal) == true),
+        ];
+
+        // The set is only as good as the interfaces it found, so each port the services answer to is named.
+        Assert.Contains(typeof(ISagaMemoryErasureService), serviceTypes);
+
+        Assert.Contains(typeof(ICovenantEntryErasureService), serviceTypes);
+
+        Assert.Contains(typeof(IMemoryErasureAdministration), serviceTypes);
+
+        ServiceCollection cli = [];
+
+        cli.AddLogging();
+
+        cli.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+        cli.AddArcanumCliClientStack();
+
+        ServiceCollection backup = [];
+
+        backup.AddLogging();
+
+        backup.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+        backup.AddArcanumBackup();
+
+        foreach ((string composition, ServiceCollection services) in new[] { ("CLI stack", cli), ("backup", backup) })
+        {
+            Assert.True(
+                services.Count > 0,
+                $"The {composition} composition registered nothing.");
+
+            Assert.Empty(
+                services
+                    .Where(descriptor => serviceTypes.Contains(descriptor.ServiceType)
+                        || (descriptor.ImplementationType is { } implementation && hostOnly.Contains(implementation)))
+                    .Select(static descriptor => descriptor.ServiceType.Name));
+        }
     }
 
     [Fact]
@@ -1047,6 +1414,8 @@ public sealed class MemoryErasureKeyringTests
     {
         private readonly Queue<Func<OsCredentialStoreResult>> _reads = new();
 
+        private Func<string, OsCredentialStoreResult>? _write;
+
         public int TryGetCount { get; private set; }
 
         public int SetCount { get; private set; }
@@ -1065,6 +1434,21 @@ public sealed class MemoryErasureKeyringTests
         public ScriptedCredentialStore ReadThrows(Exception exception)
         {
             _reads.Enqueue(() => throw exception);
+
+            return this;
+        }
+
+        /// <summary>Answers every write with <paramref name="result"/> instead of echoing the secret.</summary>
+        public ScriptedCredentialStore Write(OsCredentialStoreResult result)
+        {
+            _write = _ => result;
+
+            return this;
+        }
+
+        public ScriptedCredentialStore WriteThrows(Exception exception)
+        {
+            _write = _ => throw exception;
 
             return this;
         }
@@ -1089,7 +1473,7 @@ public sealed class MemoryErasureKeyringTests
 
             AssertIdentity(service, account);
 
-            return OsCredentialStoreResult.Ok(secret);
+            return _write is null ? OsCredentialStoreResult.Ok(secret) : _write(secret);
         }
 
         public OsCredentialStoreResult Delete(string service, string account)

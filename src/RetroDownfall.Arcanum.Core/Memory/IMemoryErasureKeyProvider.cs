@@ -9,6 +9,7 @@ public enum MemoryErasureKeyState
     /// <summary>The credential store proved the account empty.</summary>
     Absent = 2,
 
+    /// <summary>The credential store holds a canonical key and this process has latched it.</summary>
     Present = 3,
 
     /// <summary>The credential store could not answer, or a create did not read back as written.</summary>
@@ -45,8 +46,8 @@ public sealed record MemoryErasureKeyLatch(MemoryErasureKeyState State, byte[]? 
 /// </summary>
 /// <remarks>
 /// One process-wide latch backs every call. <see cref="Latch"/> and <see cref="TryCopyLatched"/> never
-/// perform credential I/O and never wait for a probe another caller has in flight. Every key returned
-/// is a private copy.
+/// perform credential I/O and never wait for a probe another caller has in flight, and neither does
+/// <see cref="OpenExisting"/> when the latch already answers it. Every key returned is a private copy.
 /// </remarks>
 public interface IMemoryErasureKeyProvider
 {
