@@ -2182,6 +2182,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             connections ?? FixtureOrdinaryConnectionFactory.For(context),
             FixtureLabeledArtifactGuard.For(context));
     }

@@ -89,7 +89,8 @@ internal sealed class CovenantEntryErasureService(
     ICovenantOperationGate gate,
     ICovenantSqliteConnectionInitializer initializer,
     IOptionsMonitor<ArcanumSettings> options,
-    TimeProvider timeProvider) : ICovenantEntryErasureService, ICovenantEntryErasurePreparer
+    TimeProvider timeProvider,
+    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantEntryErasureService, ICovenantEntryErasurePreparer
 {
     private const int ScrubPending = 1;
 
@@ -576,6 +577,16 @@ internal sealed class CovenantEntryErasureService(
                 // A rollback that failed and a re-read that found no receipt of this request together
                 // prove nothing: the connection's own transaction may still be in an unknown state, so
                 // the closure stays closed.
+            }
+
+            // A committed erase appended its absent deltas and advanced the canonical search sequence.
+            // Republished after COMMIT and before the closure reopens, so no exclusive transition can
+            // publish between the two.
+            if (disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen)
+            {
+                await availabilityRepublisher
+                    .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+                    .ConfigureAwait(false);
             }
         }
         finally

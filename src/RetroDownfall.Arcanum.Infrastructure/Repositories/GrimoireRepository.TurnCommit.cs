@@ -213,6 +213,15 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
 
             await efTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
+            // A published batch advanced the canonical search sequence. Republished after COMMIT, on the
+            // connection that committed and under the turn's Covenant lease, and before the final use.
+            if (!request.Mutations.IsEmpty && _availabilityRepublisher is { } republisher)
+            {
+                await republisher
+                    .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+                    .ConfigureAwait(false);
+            }
+
             await PauseAfterTurnTransactionAsync(
                 GrimoireScopedConsumerFinalUseKind.TransactionCommitted,
                 request.Outcome,

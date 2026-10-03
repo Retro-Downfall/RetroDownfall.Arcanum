@@ -661,7 +661,8 @@ public sealed class CovenantAcrossSessionsTests
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new FixedAuthority(),
-            TimeProvider.System);
+            TimeProvider.System,
+            DetachedAvailabilityRepublisher.Create());
 
     /// <summary>
     /// A codec that authenticates by construction rather than by key material.

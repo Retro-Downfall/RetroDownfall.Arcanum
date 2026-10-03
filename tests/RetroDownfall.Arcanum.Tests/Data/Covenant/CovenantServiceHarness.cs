@@ -132,7 +132,8 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             new CovenantMutationKernel(new CovenantQuotaGuard(), fixture.ErasureKeys),
             new CovenantCurationKernel(),
             new HarnessAuthority(),
-            clock)
+            clock,
+            DetachedAvailabilityRepublisher.Create())
         {
             AfterReplayProbeForTesting = afterReplayProbeForTesting,
         };

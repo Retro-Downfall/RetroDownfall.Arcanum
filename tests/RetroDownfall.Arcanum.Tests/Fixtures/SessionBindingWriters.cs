@@ -53,6 +53,7 @@ internal static class SessionBindingWriters
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(db),
             FixtureLabeledArtifactGuard.For(db));
 

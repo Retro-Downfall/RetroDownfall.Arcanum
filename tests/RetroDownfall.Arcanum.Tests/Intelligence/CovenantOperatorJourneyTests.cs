@@ -1149,7 +1149,8 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             _authority,
-            TimeProvider.System);
+            TimeProvider.System,
+            DetachedAvailabilityRepublisher.Create());
 
     private CovenantStore Store() => new(new FixedCovenantConnectionSource(Connection()), MemoryErasureTestKeys.Isolated());
 
@@ -1210,6 +1211,7 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
+            DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 

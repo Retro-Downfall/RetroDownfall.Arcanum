@@ -582,7 +582,8 @@ public sealed class CovenantEntryErasureServiceTests
             new RecordingCovenantOperationGate(),
             CovenantSqliteConnectionInitializer.Instance,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-            TimeProvider.System);
+            TimeProvider.System,
+            DetachedAvailabilityRepublisher.Create());
 
         Result<MemoryErasurePreflightDto> prepared = await service.PrepareAsync(
             new CovenantErasePrepareRequest(
@@ -1292,7 +1293,8 @@ public sealed class CovenantEntryErasureServiceTests
                 gate ?? Gate,
                 CovenantSqliteConnectionInitializer.Instance,
                 new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-                TimeProvider.System)
+                TimeProvider.System,
+                DetachedAvailabilityRepublisher.Create())
             {
                 CommitForTesting = commit,
                 ReceiptReReadForTesting = reread,

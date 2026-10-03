@@ -29,7 +29,8 @@ internal sealed class CovenantMemoryReviewService(
     IMemoryReviewTokenCodec tokenCodec,
     CovenantMutationKernel mutationKernel,
     CovenantCurationKernel curationKernel,
-    TimeProvider timeProvider) : ICovenantMemoryReviewService
+    TimeProvider timeProvider,
+    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
@@ -684,6 +685,12 @@ internal sealed class CovenantMemoryReviewService(
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        // After COMMIT, under the caller's write lease. A decision that went through the mutation kernel
+        // advanced the canonical search sequence; one that only curated republishes the unchanged tuple.
+        await availabilityRepublisher
+            .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+            .ConfigureAwait(false);
 
         return new MemoryReviewBulkResultDto(
             MemoryReviewStore.Covenant,

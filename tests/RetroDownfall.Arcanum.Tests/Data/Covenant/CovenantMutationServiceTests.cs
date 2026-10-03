@@ -344,7 +344,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            clock);
+            clock,
+            DetachedAvailabilityRepublisher.Create());
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -395,7 +396,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            clock);
+            clock,
+            DetachedAvailabilityRepublisher.Create());
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -605,7 +607,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            clock);
+            clock,
+            DetachedAvailabilityRepublisher.Create());
 
     }
 
@@ -786,7 +789,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),
-            TimeProvider.System);
+            TimeProvider.System,
+            DetachedAvailabilityRepublisher.Create());
 
     private static async Task<long> CountAsync(CovenantCanonicalFixture fixture, string sql)
     {

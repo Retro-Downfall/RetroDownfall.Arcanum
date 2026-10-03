@@ -43,7 +43,8 @@ internal sealed partial class CovenantMutationService(
     CovenantMutationKernel kernel,
     CovenantCurationKernel curationKernel,
     ICovenantAuthoritySnapshotProvider authority,
-    TimeProvider timeProvider) : ICovenantMutationService
+    TimeProvider timeProvider,
+    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantMutationService
 {
 
     /// <summary>How long a prepared mutation stays committable.</summary>
@@ -604,6 +605,12 @@ internal sealed partial class CovenantMutationService(
             : false;
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        // After COMMIT, under the caller's write lease: the batch advanced the canonical search sequence,
+        // so the accelerator owes this write a projection until the outbox applies it.
+        await availabilityRepublisher
+            .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+            .ConfigureAwait(false);
 
         return new CovenantMutationResultDto(
             receipt.MutationId,

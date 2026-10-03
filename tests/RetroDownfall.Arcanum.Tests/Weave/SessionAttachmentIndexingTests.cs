@@ -277,6 +277,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(_settings),
             _index,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 

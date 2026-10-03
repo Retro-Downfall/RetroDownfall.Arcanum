@@ -1494,7 +1494,8 @@ public sealed class CovenantMemoryReviewServiceTests
                     new CovenantQuotaGuard(),
                     withErasureEvidence ? fixture.ErasureKeys : MemoryErasureTestKeys.Isolated()),
                 new CovenantCurationKernel(),
-                time);
+                time,
+                DetachedAvailabilityRepublisher.Create());
 
             return new ReviewRuntime(fixture, service, codec, dataset, time);
         }

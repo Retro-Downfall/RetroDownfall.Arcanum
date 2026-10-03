@@ -331,6 +331,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
                 sp.GetService<CovenantMutationKernel>(),
+                sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
 
@@ -1063,7 +1064,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantOperationGate>(),
             sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
             sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped<ICovenantEntryErasureService>(
             static sp => sp.GetRequiredService<CovenantEntryErasureService>());
@@ -1488,6 +1490,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
                 sp.GetService<ISessionAttachmentIndexMaintenance>(),
                 sp.GetService<CovenantMutationKernel>(),
+                sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
 
@@ -1935,6 +1938,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICovenantAvailability>(
             static sp => sp.GetRequiredService<CovenantAvailability>());
 
+        // Every writer of the persisted search tuple inside a serving host republishes through this one
+        // instance after its commit, so the snapshot follows the database without a restart.
+        services.AddSingleton(
+            static sp => new CovenantAvailabilityRepublisher(
+                sp.GetRequiredService<CovenantAvailability>(),
+                sp.GetRequiredService<ILogger<CovenantAvailabilityRepublisher>>()));
+
         services.AddSingleton(
             static sp => new CovenantAuthoritySnapshotProvider(
                 sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
@@ -2049,7 +2059,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped<ICovenantMemoryReviewService>(static sp => new CovenantMemoryReviewService(
             sp.GetRequiredService<ICovenantConnectionSource>(),
@@ -2057,7 +2068,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IMemoryReviewTokenCodec>(),
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped<ICovenantContextProvider>(
             static sp => new CovenantContextProvider(
@@ -2202,7 +2214,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped(
             static sp => new CovenantIndexRebuilder(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
-                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>()));
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         return services.AddCovenantErasureAndMaintenance();
     }
@@ -2428,13 +2441,15 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantOwnerCleanupCoordinator(
                 sp.GetRequiredService<ICovenantOperationGate>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
-                sp.GetRequiredService<CovenantCleanupWorker>()));
+                sp.GetRequiredService<CovenantCleanupWorker>(),
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped(
             static sp => new CovenantSearchOutboxCoordinator(
                 sp.GetRequiredService<ICovenantOperationGate>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
-                sp.GetRequiredService<CovenantSearchOutboxWorker>()));
+                sp.GetRequiredService<CovenantSearchOutboxWorker>(),
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
 
         services.AddScoped(
             static sp => new CovenantTurnReceiptCompactionCoordinator(

@@ -482,6 +482,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             attachmentIndex: null,
             new CovenantMutationKernel(new CovenantQuotaGuard(), _erasureKeys),
+            DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 

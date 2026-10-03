@@ -366,6 +366,7 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                     new TestOptionsSnapshot<ArcanumSettings>(settings),
                     attachmentIndex: null,
                     covenantKernel: null,
+                    availabilityRepublisher: null,
                     sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                     FixtureLabeledArtifactGuard.For(_db)));
 

@@ -33,6 +33,7 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Intelligence;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -179,6 +180,41 @@ public sealed class CovenantErasureEndpointTests
         Assert.Equal(AssistantAnswer, await LastAssistantContentAsync(host, proposed.SessionId));
 
         await AssertNoOrphanClaimsAsync(host);
+    }
+
+    /// <summary>
+    /// A real turn whose proposal publishes at turn commit republishes the canonical position that commit
+    /// advanced. It sits here for this class's real-turn harness; the host leaves its background maintenance
+    /// pass out so nothing else publishes between the commit and the assertion.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_turn_that_publishes_a_proposal_republishes_the_canonical_position_its_commit_advanced()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = CovenantAvailabilityRepublicationTests.Host(new InMemoryOsCredentialStore());
+
+        (HttpClient client, _) = Connect(host);
+
+        Guid campaign = await RegisterCampaignAsync(host, client, "republication");
+
+        long canonical = await ScalarAsync(host, "SELECT CanonicalSearchSequence FROM covenant_state WHERE StateKey = 1;");
+
+        AgentTurnOutcome proposed = await ProposeInRealTurnAsync(host, campaign, Key, "The agent proposes a fresh key.");
+
+        Assert.True(proposed.Turn.IsSuccess, proposed.Turn.IsFailure ? $"{proposed.Turn.Error.Code}: {proposed.Turn.Error.Message}" : null);
+
+        Assert.Null(Assert.Single(proposed.Failures));
+
+        Assert.Equal(1, await ScalarAsync(host, $"SELECT count(*) FROM covenant_heads WHERE NormalizedKey = '{Key}' AND LaneCode = 2;"));
+
+        CovenantAvailabilitySnapshot live = await CovenantAvailabilityRepublicationTests.AssertRepublishedAsync(
+            host,
+            CovenantHealthTransition.CanonicalMutation);
+
+        Assert.Equal(canonical + 1, live.CanonicalSequence);
+
+        Assert.Equal(CovenantFtsSynchronizationState.Dirty, live.FtsSynchronization);
     }
 
     [SkippableFact]

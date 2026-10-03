@@ -818,7 +818,8 @@ public sealed class CovenantEntryErasurePlanTests
             new MemoryReviewTokenCodec(TimeProvider.System),
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
-            TimeProvider.System);
+            TimeProvider.System,
+            DetachedAvailabilityRepublisher.Create());
 
         CovenantOperationScope scope = CovenantOperationScope.ForCampaign(campaignId);
 

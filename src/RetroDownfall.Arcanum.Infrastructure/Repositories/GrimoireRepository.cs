@@ -47,6 +47,12 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     private readonly CovenantMutationKernel? _covenantKernel;
 
     /// <summary>
+    /// Republishes Covenant availability after a turn commit that published a batch, and is composed
+    /// wherever the kernel is.
+    /// </summary>
+    private readonly CovenantAvailabilityRepublisher? _availabilityRepublisher;
+
+    /// <summary>
     /// The labelled-artifact check every raw delete on this repository passes first.
     /// </summary>
     /// <remarks>
@@ -94,6 +100,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         IOptionsSnapshot<ArcanumSettings> arcOptions,
         ISessionAttachmentIndexMaintenance? attachmentIndex,
         CovenantMutationKernel? covenantKernel,
+        CovenantAvailabilityRepublisher? availabilityRepublisher,
         IGrimoireOrdinaryConnectionFactory connections,
         ICovenantLabeledArtifactGuard labeledArtifactGuard)
     {
@@ -112,6 +119,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         _attachmentIndex = attachmentIndex;
 
         _covenantKernel = covenantKernel;
+
+        _availabilityRepublisher = availabilityRepublisher;
 
         _labeledArtifactGuard = labeledArtifactGuard;
 

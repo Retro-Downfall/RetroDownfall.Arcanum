@@ -6,6 +6,8 @@ using System.Text;
 
 using Microsoft.Data.Sqlite;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Performance;
@@ -239,7 +241,11 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
             new CovenantMutationKernel(new CovenantQuotaGuard(CovenantSqliteConnectionInitializer.Instance), _erasureKeys),
             new CovenantCurationKernel(),
             Authority,
-            TimeProvider.System);
+            TimeProvider.System,
+
+            // Detached from the bed's own availability, which the bed controls, while still paying the
+            // post-commit read every operator write makes.
+            new CovenantAvailabilityRepublisher(new CovenantAvailability(), NullLogger<CovenantAvailabilityRepublisher>.Instance));
 
         Management = new CovenantManagementService(
             Store,

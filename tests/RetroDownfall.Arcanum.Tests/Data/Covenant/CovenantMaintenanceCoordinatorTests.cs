@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
@@ -50,7 +52,8 @@ public sealed class CovenantMaintenanceCoordinatorTests
         CovenantSearchOutboxCoordinator coordinator = new(
             CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantSearchOutboxWorker());
+            new CovenantSearchOutboxWorker(),
+            DetachedAvailabilityRepublisher.Create());
 
         // No lease and no transaction passed in. Everything the worker's own suite supplies by hand is
         // supplied here by the thing that supplies it in service.
@@ -82,7 +85,8 @@ public sealed class CovenantMaintenanceCoordinatorTests
         CovenantOwnerCleanupCoordinator coordinator = new(
             CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
             new FixedCovenantConnectionSource(fixture.Connection),
-            new CovenantCleanupWorker());
+            new CovenantCleanupWorker(),
+            DetachedAvailabilityRepublisher.Create());
 
         // An installation with nothing deleted is the ordinary case, and it has to be a quiet success
         // rather than a refusal: the driver runs this every pass, and a sweep that reported failure on

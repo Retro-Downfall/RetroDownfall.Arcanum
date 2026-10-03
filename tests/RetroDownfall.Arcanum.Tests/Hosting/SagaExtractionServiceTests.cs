@@ -1659,6 +1659,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(disabledSettings),
             attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(sp.GetRequiredService<ArcanumDbContext>()),
             FixtureLabeledArtifactGuard.For(sp.GetRequiredService<ArcanumDbContext>())));
 
@@ -5258,6 +5259,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             attachmentIndex: null,
             covenantKernel: null,
+            availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
             FixtureLabeledArtifactGuard.For(_db!));
 
