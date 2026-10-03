@@ -15,8 +15,11 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -135,6 +138,20 @@ public sealed class MemoryErasureLifecycleSurvivalTests
         // composes.
         await using ArcanumWebApplicationFactory factory = path switch
         {
+            // The prune row enables every retention rule, so it needs every producer whose rows a rule
+            // can select: the workspace indexer and both dated audit logs.
+            MemoryErasureLifecyclePath.RetentionPrune => MemoryErasureRouteDriver.Host(
+                credentials,
+                covenant: true,
+                configure: static settings =>
+                {
+                    settings.Features.CodebaseRetrieval = true;
+
+                    settings.Host.AuditLog.Enabled = true;
+
+                    settings.Security.Guardrails.AuditLog.Enabled = true;
+                }),
+
             MemoryErasureLifecyclePath.ResetAttachments => MemoryErasureRouteDriver.Host(
                 credentials,
                 covenant: true,
@@ -158,9 +175,17 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
         LifecycleVictim victim = await host.SeedVictimAsync(path);
 
+        // Every probe sees its victim before the path runs, so a probe that stopped seeing it could not
+        // let a path pass without deleting anything.
+        Assert.All(
+            await host.VictimStatesAsync(path, victim),
+            static state => Assert.True(state.Present, $"{state.Name} was absent before the path ran."));
+
         await host.RunAsync(path, victim);
 
-        Assert.True(await host.VictimGoneAsync(path, victim), $"{path} left its own victim in place.");
+        Assert.All(
+            await host.VictimStatesAsync(path, victim),
+            static state => Assert.False(state.Present, $"{state.Name} survived the path."));
 
         await host.AssertRetainedAsync(before);
 
@@ -286,7 +311,13 @@ public sealed class MemoryErasureLifecycleSurvivalTests
     }
 
     /// <summary>What one row seeded for its lifecycle path to remove, and how to find it again.</summary>
-    private sealed record LifecycleVictim(string Id, string? Generation = null);
+    private sealed record LifecycleVictim(string Id, string? Generation = null, IReadOnlyList<PruneVictim>? Prune = null);
+
+    /// <summary>One aged row or file a retention rule selects, and the check that it is still there.</summary>
+    private sealed record PruneVictim(string Name, string Sql, string Id, string? FilePath = null);
+
+    /// <summary>Whether one victim of a row is still present.</summary>
+    private sealed record VictimState(string Name, bool Present);
 
     /// <summary>
     /// One host with one item erased in each store, and the routes and services a lifecycle row drives.
@@ -381,27 +412,7 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             switch (path)
             {
                 case MemoryErasureLifecyclePath.RetentionPrune:
-                {
-                    string id = Guid.NewGuid().ToString();
-
-                    await using AsyncServiceScope scope = Factory.Services.CreateAsyncScope();
-
-                    SagaMemoryWriteOutcome written = await scope.ServiceProvider
-                        .GetRequiredService<ISagaMemoryStore>()
-                        .InsertAsync(
-                            id,
-                            Victim,
-                            DateTimeOffset.UtcNow.AddDays(-3),
-                            null,
-                            null,
-                            "extraction",
-                            Vector(),
-                            Token);
-
-                    Assert.Equal(SagaMemoryWriteOutcome.Written, written);
-
-                    return new(id);
-                }
+                    return new(string.Empty, Prune: await SeedPruneVictimsAsync());
 
                 case MemoryErasureLifecyclePath.SagaDeleteOne
                     or MemoryErasureLifecyclePath.SagaDeleteAll
@@ -461,7 +472,7 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             switch (path)
             {
                 case MemoryErasureLifecyclePath.RetentionPrune:
-                    await PruneAsync();
+                    await PruneEveryRuleAsync();
 
                     return;
 
@@ -578,12 +589,35 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             }
         }
 
-        internal async Task<bool> VictimGoneAsync(MemoryErasureLifecyclePath path, LifecycleVictim victim)
+        /// <summary>Each victim the row seeded, and whether it is still present.</summary>
+        internal async Task<IReadOnlyList<VictimState>> VictimStatesAsync(
+            MemoryErasureLifecyclePath path,
+            LifecycleVictim victim)
+        {
+            if (victim.Prune is { } prune)
+            {
+                List<VictimState> states = [];
+
+                foreach (PruneVictim aged in prune)
+                {
+                    bool present = aged.FilePath is { } file
+                        ? File.Exists(file)
+                        : await CountAsync(aged.Sql, aged.Id) > 0;
+
+                    states.Add(new(aged.Name, present));
+                }
+
+                return states;
+            }
+
+            return [new(path.ToString(), !await VictimGoneAsync(path, victim))];
+        }
+
+        private async Task<bool> VictimGoneAsync(MemoryErasureLifecyclePath path, LifecycleVictim victim)
         {
             switch (path)
             {
-                case MemoryErasureLifecyclePath.RetentionPrune
-                    or MemoryErasureLifecyclePath.SagaDeleteOne
+                case MemoryErasureLifecyclePath.SagaDeleteOne
                     or MemoryErasureLifecyclePath.SagaDeleteAll
                     or MemoryErasureLifecyclePath.ResetSaga
                     or MemoryErasureLifecyclePath.ResetSagaCampaign
@@ -649,17 +683,27 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : null);
         }
 
-        /// <summary>The prune route with one aged Saga rule, applied at the plan it previewed.</summary>
-        private async Task PruneAsync()
+        /// <summary>
+        /// The prune route with every retention rule enabled, applied at the plan it previewed.
+        /// </summary>
+        /// <remarks>
+        /// Every rule the policy store accepts is enabled, so every prune executor that has a candidate
+        /// runs once with erasure evidence present. Entries keep ten days rather than one, so the entry
+        /// aged three days for the embedding rule is selected by that rule alone; accounting ages by its
+        /// own floor whatever its rule says.
+        /// </remarks>
+        private async Task PruneEveryRuleAsync()
         {
-            using (HttpResponseMessage enabled = await Client.PutAsync(
-                "/api/data/retention",
-                JsonContent.Create(
-                    new RetentionRuleUpdateRequest("saga-memories", true, 1),
-                    ArcanumJsonContext.Default.RetentionRuleUpdateRequest),
-                Token))
+            foreach ((string dataClass, int days) in PruneRules)
             {
-                Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+                using HttpResponseMessage enabled = await Client.PutAsync(
+                    "/api/data/retention",
+                    JsonContent.Create(
+                        new RetentionRuleUpdateRequest(dataClass, true, days),
+                        ArcanumJsonContext.Default.RetentionRuleUpdateRequest),
+                    Token);
+
+                Assert.True(enabled.StatusCode == HttpStatusCode.OK, $"{dataClass}: {(int)enabled.StatusCode}");
             }
 
             DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -673,10 +717,16 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             {
                 Assert.Equal(HttpStatusCode.OK, planned.StatusCode);
 
+                await RequireNoErasureInventoryAsync(planned);
+
                 plan = await MemoryErasureRouteDriver.ReadDataAsync(
                     planned,
                     ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
             }
+
+            Assert.Empty(plan.Blockers);
+
+            Assert.Empty(plan.Conflicts);
 
             using HttpResponseMessage pruned = await Client.PostAsync(
                 "/api/data/prune",
@@ -687,9 +737,410 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
             Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
 
-            RequireApplied(await MemoryErasureRouteDriver.ReadDataAsync(
+            DataRetentionApplyResult result = await MemoryErasureRouteDriver.ReadDataAsync(
                 pruned,
-                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult));
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+            RequireApplied(result);
+
+            Assert.True(result.Reconciled);
+        }
+
+        /// <summary>
+        /// One aged victim for every prune executor this harness can feed, each written by a production
+        /// writer and then aged.
+        /// </summary>
+        /// <remarks>
+        /// <para>Where a writer takes its own timestamp the victim is written already old. Elsewhere the
+        /// writer stamps "now", and only the timestamp the rule reads is moved back afterwards; for a
+        /// dated audit file that is its last-write time.</para>
+        ///
+        /// <para>Two executors have no victim here. A standalone cost adjustment has no production writer
+        /// at all, and daemon history is process-local and stamped by its repository's own clock. Neither
+        /// executor opens a Grimoire connection, and the compiled-statement pin covers their source.</para>
+        /// </remarks>
+        private async Task<IReadOnlyList<PruneVictim>> SeedPruneVictimsAsync()
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            DateTimeOffset threeDaysAgo = now.AddDays(-3);
+
+            DateTimeOffset accountingAge = now.AddDays(-400);
+
+            List<PruneVictim> victims = [];
+
+            await using AsyncServiceScope scope = Factory.Services.CreateAsyncScope();
+
+            IServiceProvider services = scope.ServiceProvider;
+
+            // Saga: the store takes the timestamp.
+            string memory = Guid.NewGuid().ToString();
+
+            Assert.Equal(
+                SagaMemoryWriteOutcome.Written,
+                await services.GetRequiredService<ISagaMemoryStore>().InsertAsync(
+                    memory,
+                    Victim,
+                    threeDaysAgo,
+                    null,
+                    null,
+                    "extraction",
+                    Vector(),
+                    Token));
+
+            victims.Add(new("saga memory", "SELECT count(*) FROM saga_memories WHERE Id = $id;", memory));
+
+            // Lexicon: written now, aged.
+            await ScribeAsync(VictimLexiconName, LexiconScope.Global);
+
+            await AgeAsync(
+                "UPDATE lexicon_entries SET UpdatedAt = $at WHERE upper(trim(Name)) = upper($id);",
+                VictimLexiconName,
+                threeDaysAgo);
+
+            victims.Add(new("lexicon entry", "SELECT count(*) FROM lexicon_entries WHERE upper(trim(Name)) = upper($id);", VictimLexiconName));
+
+            // One fresh Session holds an old entry, an entry whose embedding alone is old, and an old
+            // attachment; two more Sessions are old themselves, one of them archived.
+            Guid holder = await CreateSessionAsync();
+
+            string oldEntry = await AppendEntryAsync(holder, "Which quay does the ferry leave from?");
+
+            string embeddedEntry = await AppendEntryAsync(holder, "When does the ferry leave?");
+
+            EmbeddingSettings embeddings = Factory.Services
+                .GetRequiredService<IOptionsMonitor<ArcanumSettings>>()
+                .CurrentValue
+                .ResolveEmbeddings();
+
+            Assert.Equal(
+                EntryWeavingTickOutcome.Woven,
+                await Factory.Services.GetRequiredService<EntryWeavingService>().RunTickAsync(embeddings, Token));
+
+            await AgeAsync("UPDATE Entries SET CreatedAt = $at WHERE Id = $id;", oldEntry, now.AddDays(-20));
+
+            await AgeAsync("UPDATE Entries SET CreatedAt = $at WHERE Id = $id;", embeddedEntry, threeDaysAgo);
+
+            victims.Add(new("entry", "SELECT count(*) FROM Entries WHERE Id = $id;", oldEntry));
+
+            victims.Add(new("entry embedding", "SELECT count(*) FROM entry_embeddings WHERE EntryId = $id;", embeddedEntry));
+
+            string attachment = (await UploadTextAttachmentAsync(holder)).ToString("N");
+
+            await AgeAsync(
+                "UPDATE SessionAttachments SET CreatedAt = $at WHERE lower(replace(Id, '-', '')) = $id;",
+                attachment,
+                threeDaysAgo);
+
+            victims.Add(new("attachment", "SELECT count(*) FROM SessionAttachments WHERE lower(replace(Id, '-', '')) = $id;", attachment));
+
+            string active = (await CreateSessionAsync()).ToString("N");
+
+            await AgeAsync("UPDATE Sessions SET UpdatedAt = $at WHERE lower(replace(Id, '-', '')) = $id;", active, threeDaysAgo);
+
+            victims.Add(new("active session", "SELECT count(*) FROM Sessions WHERE lower(replace(Id, '-', '')) = $id;", active));
+
+            Guid archivedSession = await CreateSessionAsync();
+
+            using (HttpResponseMessage archived = await Client.PatchAsync(
+                $"/api/sessions/{archivedSession:D}",
+                JsonContent.Create(
+                    new UpdateSessionRequest(null, "archived"),
+                    ArcanumJsonContext.Default.UpdateSessionRequest),
+                Token))
+            {
+                Assert.Equal(HttpStatusCode.OK, archived.StatusCode);
+            }
+
+            string archivedId = archivedSession.ToString("N");
+
+            await AgeAsync("UPDATE Sessions SET UpdatedAt = $at WHERE lower(replace(Id, '-', '')) = $id;", archivedId, threeDaysAgo);
+
+            victims.Add(new("archived session", "SELECT count(*) FROM Sessions WHERE lower(replace(Id, '-', '')) = $id AND Status = 'archived';", archivedId));
+
+            // An uploaded file through the OpenAI-compatible route.
+            string file = await UploadFileAsync();
+
+            await AgeAsync("UPDATE UploadedFiles SET CreatedAt = $at WHERE lower(replace(Id, '-', '')) = $id;", file, threeDaysAgo);
+
+            victims.Add(new("uploaded file", "SELECT count(*) FROM UploadedFiles WHERE lower(replace(Id, '-', '')) = $id;", file));
+
+            // A terminal batch: the repository takes both timestamps. Its input is a fresh upload of
+            // its own, which no rule selects.
+            Guid batch = Guid.NewGuid();
+
+            Guid batchInput = Guid.Parse(await UploadFileAsync());
+
+            await services.GetRequiredService<IBatchRepository>().CreateAsync(
+                new BatchRecord(
+                    batch,
+                    batchInput,
+                    "/v1/chat/completions",
+                    BatchStatuses.Completed,
+                    threeDaysAgo,
+                    threeDaysAgo,
+                    null,
+                    null),
+                Token);
+
+            victims.Add(new("completed batch", "SELECT count(*) FROM Batches WHERE lower(replace(Id, '-', '')) = $id;", batch.ToString("N")));
+
+            // Workspace chunks from the host's own indexer, aged.
+            string workspace = await SeedIndexedWorkspaceAsync();
+
+            await AgeAsync("UPDATE workspace_file_chunks SET IndexedAt = $at WHERE WorkspacePath = $id;", workspace, threeDaysAgo);
+
+            victims.Add(new("workspace chunks", "SELECT count(*) FROM workspace_file_chunks WHERE WorkspacePath = $id;", workspace));
+
+            // A terminal idempotency claim, aged, and a legacy completed-response key written old.
+            IIdempotencyClaimStore claims = services.GetRequiredService<IIdempotencyClaimStore>();
+
+            IdempotencyClaimAcquireResult acquired = await claims.TryAcquireAsync(
+                new IdempotencyClaimAcquireRequest(
+                    Convert.ToHexString(Guid.NewGuid().ToByteArray()),
+                    Convert.ToHexString(Guid.NewGuid().ToByteArray()),
+                    "survival-owner",
+                    now.AddMinutes(5),
+                    now),
+                Token);
+
+            Assert.True(acquired.Acquired);
+
+            await claims.CompleteAsync(acquired.Claim.Id, "survival-owner", 200, "application/json", "{}", true, null, Token);
+
+            string claim = acquired.Claim.Id.ToString("N");
+
+            await AgeAsync(
+                "UPDATE IdempotencyClaims SET CreatedAt = $at, UpdatedAt = $at, LeaseExpiresAt = $at WHERE lower(replace(Id, '-', '')) = $id;",
+                claim,
+                threeDaysAgo);
+
+            victims.Add(new("idempotency claim", "SELECT count(*) FROM IdempotencyClaims WHERE lower(replace(Id, '-', '')) = $id;", claim));
+
+            string keyHash = Convert.ToHexString(Guid.NewGuid().ToByteArray());
+
+            await services.GetRequiredService<IIdempotencyStore>().SaveAsync(keyHash, 200, "application/json", "{}", threeDaysAgo, Token);
+
+            victims.Add(new("idempotency key", "SELECT count(*) FROM IdempotencyKeys WHERE KeyHash = $id;", keyHash));
+
+            // Accounting: a finished run with no Session, and a budget alert, both past the floor.
+            ITurnRunWriter runs = services.GetRequiredService<ITurnRunWriter>();
+
+            Guid run = await runs.StartRunAsync(
+                new InferenceRunStart("survival-" + Guid.NewGuid().ToString("N"), null, "test", "survival", null, accountingAge),
+                Token);
+
+            await runs.CompleteRunAsync(run, InferenceRunStatus.Completed, Token);
+
+            await AgeAsync(
+                "UPDATE InferenceRuns SET StartedAt = $at, CompletedAt = $at WHERE lower(replace(Id, '-', '')) = $id;",
+                run.ToString("N"),
+                accountingAge);
+
+            victims.Add(new("inference run", "SELECT count(*) FROM InferenceRuns WHERE lower(replace(Id, '-', '')) = $id;", run.ToString("N")));
+
+            Assert.True(await services.GetRequiredService<IBudgetAlertRepository>().RecordAlertAsync(80, 8m, 10m, Token));
+
+            string alert = await ScalarTextAsync("SELECT Id FROM BudgetAlerts ORDER BY AlertedAt DESC LIMIT 1;", string.Empty);
+
+            await AgeAsync("UPDATE BudgetAlerts SET AlertedAt = $at WHERE Id = $id;", alert, accountingAge);
+
+            victims.Add(new("budget alert", "SELECT count(*) FROM BudgetAlerts WHERE Id = $id;", alert));
+
+            // A terminal long-running operation, written with its own old timestamps.
+            ILongRunningOperationStore operations = services.GetRequiredService<ILongRunningOperationStore>();
+
+            LongRunningOperation operation = await operations.CreateAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionMutation,
+                    LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                    "Survival history.",
+                    threeDaysAgo),
+                Token);
+
+            LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+                operation.Id,
+                "survival-owner",
+                threeDaysAgo,
+                threeDaysAgo.AddMinutes(5),
+                Token);
+
+            Assert.True(lease.Acquired);
+
+            Assert.True(await operations.TryTransitionAsync(
+                operation.Id,
+                lease.Operation.Revision,
+                "survival-owner",
+                LongRunningOperationState.Completed,
+                threeDaysAgo.AddMinutes(1),
+                cancellationToken: Token));
+
+            victims.Add(new("long-running operation", "SELECT count(*) FROM LongRunningOperations WHERE lower(replace(Id, '-', '')) = $id;", operation.Id.ToString("N")));
+
+            // A Sanctum breach, written old. The repository assigns its own identity.
+            await services.GetRequiredService<ISanctumBreachRepository>().RecordAsync(
+                new SanctumBreachRecord(string.Empty, Campaign.ToString("D"), threeDaysAgo, "survival_tool", "PathEscape", "Survival breach.", null),
+                100,
+                Token);
+
+            string breach = await ScalarTextAsync("SELECT Id FROM SanctumBreaches WHERE ToolName = $id;", "survival_tool");
+
+            victims.Add(new("sanctum breach", "SELECT count(*) FROM SanctumBreaches WHERE Id = $id;", breach));
+
+            // Both dated audit logs, written today by their own loggers, then aged.
+            await services.GetRequiredService<IInferenceAuditLogger>().LogAsync(
+                new InferenceAuditRecord(now.ToString("O"), null, "survival", null, null, 0, 0, 0, 0, 0, [], null, null, null, null, null),
+                Token);
+
+            victims.Add(new("audit log", string.Empty, string.Empty, BackdateLog("audit", threeDaysAgo)));
+
+            await services.GetRequiredService<IGuardrailAuditLogger>().LogAsync(
+                new GuardrailAuditRecord(now.ToString("O"), null, "input", "survival", null, null),
+                Token);
+
+            victims.Add(new("guardrail log", string.Empty, string.Empty, BackdateLog("guardrails", threeDaysAgo)));
+
+            return victims;
+        }
+
+        /// <summary>The rules the prune row enables, with their days.</summary>
+        private static readonly (string DataClass, int Days)[] PruneRules =
+        [
+            ("active-sessions", 1),
+            ("archived-sessions", 1),
+            ("entries", 10),
+            ("attachments", 1),
+            ("uploaded-files", 1),
+            ("completed-batches", 1),
+            ("saga-memories", 1),
+            ("lexicon-entries", 1),
+            ("workspace-indexes", 1),
+            ("session-entry-embeddings", 1),
+            ("audit-logs", 1),
+            ("guardrail-logs", 1),
+            ("idempotency-claims", 1),
+            ("accounting", 1),
+            ("long-running-operations", 1),
+            ("sanctum-breaches", 1),
+            ("daemon-history", 1),
+        ];
+
+        /// <summary>
+        /// Ages today's dated log of one family: renamed to an older date, so its logger never appends to
+        /// it again, and given that date as its last write, which is the age the prune reads.
+        /// </summary>
+        private string BackdateLog(string stem, DateTimeOffset at)
+        {
+            string directory = Path.Combine(Factory.TempHome, ".config", "arcanum");
+
+            string today = Path.Combine(directory, $"{stem}-{DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture)}.jsonl");
+
+            Assert.True(File.Exists(today), $"the {stem} logger wrote no file for today");
+
+            string aged = Path.Combine(directory, $"{stem}-{at.ToString("yyyyMMdd", CultureInfo.InvariantCulture)}.jsonl");
+
+            File.Move(today, aged);
+
+            File.SetLastWriteTimeUtc(aged, at.UtcDateTime);
+
+            return aged;
+        }
+
+        /// <summary>Moves one timestamp back on rows a production writer just wrote. Setup-only.</summary>
+        private async Task AgeAsync(string sql, string id, DateTimeOffset at)
+        {
+            await using AsyncServiceScope scope = Factory.Services.CreateAsyncScope();
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+            if (connection.State != ConnectionState.Open)
+            {
+                await db.Database.OpenConnectionAsync(Token);
+            }
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = sql;
+
+            _ = command.Parameters.AddWithValue("$id", id);
+
+            _ = command.Parameters.AddWithValue("$at", UtcInstantText.Format(at));
+
+            Assert.True(await command.ExecuteNonQueryAsync(Token) >= 1, $"Nothing to age: {sql}");
+        }
+
+        private async Task<string> AppendEntryAsync(Guid session, string content)
+        {
+            using (HttpResponseMessage appended = await Client.PostAsync(
+                $"/api/sessions/{session:D}/entries",
+                JsonContent.Create(
+                    new AppendEntryRequest(MessageRole.User, content),
+                    ArcanumJsonContext.Default.AppendEntryRequest),
+                Token))
+            {
+                Assert.Equal(HttpStatusCode.OK, appended.StatusCode);
+            }
+
+            return await ScalarTextAsync(
+                "SELECT Id FROM Entries WHERE lower(replace(SessionId, '-', '')) = $id ORDER BY Sequence DESC LIMIT 1;",
+                session.ToString("N"));
+        }
+
+        private async Task<Guid> UploadTextAttachmentAsync(Guid session)
+        {
+            using MultipartFormDataContent form = new();
+
+            using ByteArrayContent content = new(Encoding.UTF8.GetBytes("The ferry leaves the east quay at noon on market days."));
+
+            content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+
+            form.Add(content, "file", "ferry-notes.txt");
+
+            using HttpResponseMessage uploaded = await Client.PostAsync($"/api/sessions/{session:D}/attachments", form, Token);
+
+            Assert.Equal(HttpStatusCode.Created, uploaded.StatusCode);
+
+            return (await MemoryErasureRouteDriver.ReadDataAsync(
+                uploaded,
+                ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto)).Id;
+        }
+
+        /// <summary>One file through <c>POST /v1/files</c>; returns its stored identity.</summary>
+        private async Task<string> UploadFileAsync()
+        {
+            using MultipartFormDataContent form = new();
+
+            using ByteArrayContent content = new([1, 2, 3, 4]);
+
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+
+            form.Add(content, "file", "ferry-ledger.bin");
+
+            form.Add(new StringContent("assistants"), "purpose");
+
+            using HttpResponseMessage uploaded = await Client.PostAsync("/v1/files", form, Token);
+
+            Assert.Equal(HttpStatusCode.Created, uploaded.StatusCode);
+
+            using JsonDocument body = JsonDocument.Parse(await uploaded.Content.ReadAsStringAsync(Token));
+
+            string id = body.RootElement.GetProperty("id").GetString()!;
+
+            Assert.StartsWith("file-", id, StringComparison.Ordinal);
+
+            return id["file-".Length..];
+        }
+
+        /// <summary>A plan that is not a factory plan carries no erasure inventory on the wire.</summary>
+        private static async Task RequireNoErasureInventoryAsync(HttpResponseMessage response)
+        {
+            using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Token));
+
+            Assert.False(
+                body.RootElement.GetProperty("data").TryGetProperty("memoryErasure", out _),
+                "A plan other than the factory plan carried a memoryErasure member.");
         }
 
         /// <summary>The reset-plan route, then the reset route at the plan it previewed.</summary>
@@ -703,6 +1154,8 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                 Token))
             {
                 Assert.Equal(HttpStatusCode.OK, planned.StatusCode);
+
+                await RequireNoErasureInventoryAsync(planned);
 
                 plan = await MemoryErasureRouteDriver.ReadDataAsync(
                     planned,

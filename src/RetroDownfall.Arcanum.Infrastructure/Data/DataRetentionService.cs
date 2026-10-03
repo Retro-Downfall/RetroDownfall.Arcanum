@@ -3487,11 +3487,18 @@ internal sealed partial class DataRetentionService(
                     selection.Parameters).ConfigureAwait(false);
             }
 
+            // A store that held nothing at preview pins no candidate, and applying that preview is a
+            // no-op that succeeds with nothing removed, provided the store still holds nothing: rows that
+            // appeared since are still refused by the count. A preview that did select rows must still
+            // name exactly this reset, so a Campaign's plan can never apply to the whole store.
+            bool previewedEmpty = plan.CandidateIds.Length == 0 && plan.DerivedRecords == 0;
+
             if (currentRows != plan.DerivedRecords
                 || plan.Rows != 0
                 || plan.Files != 0
                 || plan.EstimatedBytes != 0
-                || !plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)]))
+                || !(previewedEmpty
+                    || plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)])))
             {
                 throw new RetentionConflictException(
                     "Memory data changed after preview; request a new dry-run before retrying.");
@@ -5607,61 +5614,28 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// Counts the erasure evidence the installation holds, and names the tables it lives in.
+    /// The erasure evidence the installation holds, as counts, and the store those counts describe.
     /// </summary>
     /// <remarks>
-    /// Counts only: no fingerprint, key identifier, digest, or store split leaves this method. It is
-    /// the one place in this service that names the evidence tables, and it only reads them. No prune,
-    /// reset, or factory selection names them, because the evidence outlives every one of those and is
-    /// removed only by a release, operator re-creation, <c>memory erasure reset-key</c>, restore's
+    /// Counts only: no fingerprint, key identifier, digest, or store split reaches status or the factory
+    /// preview. The evidence store reads them and names the tables, so this service names none: no prune,
+    /// reset, or factory selection here can reach evidence that outlives every one of them and goes only
+    /// through a release, operator re-creation, <c>memory erasure reset-key</c>, restore's
     /// destination-authoritative join, or a full installation reset.
-    ///
-    /// <para>A catalog below Core 13, or one without the fingerprint table, holds no evidence and answers
-    /// zero, the rule every evidence reader keeps. Past that gate the three counts go to the tables
-    /// directly, in one statement and so one snapshot, rather than through an existence probe per table:
-    /// a catalog that claims to hold evidence but lacks a table fails rather than reporting a zero it
-    /// never measured.</para>
     /// </remarks>
     private async Task<(DataRetentionMemoryErasureInventory Inventory, string Store)> ReadMemoryErasureInventoryAsync(
         CancellationToken cancellationToken)
     {
-        const string store =
-            "memory_erasure_fingerprints + memory_erasure_receipts + memory_erasure_receipt_subjects";
-
         SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        if (!await MemoryErasureEvidence
-                .IsInstalledAsync(connection, null, cancellationToken)
-                .ConfigureAwait(false))
-        {
-            return (new DataRetentionMemoryErasureInventory(0, 0, 0), store);
-        }
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            SELECT
-                (SELECT COUNT(*) FROM memory_erasure_fingerprints),
-                (SELECT COUNT(*) FROM memory_erasure_receipts),
-                (SELECT COUNT(*) FROM memory_erasure_receipt_subjects)
-            """;
-
-        await using SqliteDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            throw new InvalidOperationException("The erasure evidence inventory returned no row.");
-        }
+        (long fingerprints, long receipts, long subjects) = await MemoryErasureEvidence
+            .ReadInventoryAsync(connection, null, cancellationToken)
+            .ConfigureAwait(false);
 
         return (
-            new DataRetentionMemoryErasureInventory(
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.GetInt64(2)),
-            store);
+            new DataRetentionMemoryErasureInventory(fingerprints, receipts, subjects),
+            MemoryErasureEvidence.InventoryStore);
     }
 
     /// <summary>

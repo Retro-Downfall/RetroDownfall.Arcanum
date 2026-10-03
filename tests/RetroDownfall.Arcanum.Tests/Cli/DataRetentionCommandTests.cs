@@ -14,6 +14,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Api.Security;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -33,6 +35,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -73,6 +76,51 @@ public sealed class DataRetentionCommandTests
         {
             Assert.Contains("Lexicon pins: 5; exempt from this plan: 3", result.Output, StringComparison.Ordinal);
         }
+    }
+
+    /// <summary>
+    /// The bundled CLI resets an already-empty store through a real host and exits 0.
+    /// </summary>
+    /// <remarks>
+    /// The host is real so the answer is the server's own: an empty store previews no candidate, and the
+    /// reset it confirms must apply as a no-op rather than come back as a conflict. The in-process test
+    /// server cannot answer the loopback presence proof, so the CLI proves its key to the local responder
+    /// and the bridge to the host carries the test API key in place of the process capability that proof
+    /// would have issued. Every command request and response is the real one.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Reset_memory_on_an_empty_store_exits_zero()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpMessageHandler host = factory.Server.CreateHandler();
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(
+            services,
+            new ConfigurationManager());
+
+        services.RemoveAll<IHttpClientFactory>();
+
+        services.AddSingleton<IHttpClientFactory>(new HostHttpClientFactory(host));
+
+        services.RemoveAll<ISecretStore>();
+
+        services.AddSingleton<ISecretStore>(
+            new FakeSecretStore(ArcanumWebApplicationFactory.TestApiKey));
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            ArcanumWebApplicationFactory.TestApiKey);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--yes", "data", "reset-memory", "--scope", "workspace"]);
+
+        Assert.True(result.ExitCode == 0, $"exit {result.ExitCode}: {result.Output}{result.Error}");
     }
 
     [Theory]
@@ -1087,6 +1135,45 @@ public sealed class DataRetentionCommandTests
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
+    }
+
+    /// <summary>Hands the CLI clients that reach the in-process test host.</summary>
+    private sealed class HostHttpClientFactory(
+        HttpMessageHandler host) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) =>
+            new(new TestKeyBridge(host), disposeHandler: true)
+            {
+                BaseAddress = new Uri("http://localhost:5001/"),
+            };
+    }
+
+    /// <summary>
+    /// Carries the test API key to the in-process host in place of a process capability, which only a
+    /// loopback presence proof the test server cannot answer would have issued.
+    /// </summary>
+    private sealed class TestKeyBridge(HttpMessageHandler host) : DelegatingHandler(new NonDisposingHandler(host))
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            _ = request.Headers.Remove(ArcanumApiHeaders.ProcessCapability);
+
+            _ = request.Headers.TryAddWithoutValidation(
+                ArcanumApiHeaders.ApiKey,
+                ArcanumWebApplicationFactory.TestApiKey);
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    /// <summary>Lets each CLI client dispose its bridge without disposing the shared test server handler.</summary>
+    private sealed class NonDisposingHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 
     private sealed class RecordingConfirmationPrompt(

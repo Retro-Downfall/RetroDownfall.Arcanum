@@ -90,9 +90,11 @@ internal sealed record MemoryErasureEvidenceSnapshot(
 /// the recorded version, so no archived row survives it to become visible after a later upgrade.</para>
 ///
 /// <para>These are the only statements in the product that delete, update, or insert evidence rows,
-/// and an architecture test pins that: a later operation that needs a new evidence write adds a member
-/// here. Nothing replaces or upserts a row, because a replace deletes the old row, which cascades to a
-/// receipt's subjects and never fires the receipt table's update guard.</para>
+/// and architecture tests pin that, over the source and over the strings the compiled assemblies load:
+/// a later operation that needs a new evidence write adds a member here. Nothing replaces or upserts a
+/// row, because a replace deletes the old row, which cascades to a receipt's subjects and never fires the
+/// receipt table's update guard. Nothing else in the product names the tables at all; the retention
+/// inventory reads its counts through <see cref="ReadInventoryAsync"/>.</para>
 /// </remarks>
 internal static class MemoryErasureEvidence
 {
@@ -511,6 +513,51 @@ internal static class MemoryErasureEvidence
         }
 
         return verified;
+    }
+
+    /// <summary>The evidence tables, as the retention inventory names the store its counts come from.</summary>
+    internal static string InventoryStore => "memory_erasure_fingerprints + memory_erasure_receipts + memory_erasure_receipt_subjects";
+
+    /// <summary>
+    /// How many fingerprints, receipts and receipt subjects the catalog holds, whatever key or store
+    /// wrote them.
+    /// </summary>
+    /// <remarks>
+    /// Counts only, for the retention inventory: status and the factory preview report them and never
+    /// select the rows. The three counts are one statement and so one snapshot. A catalog that cannot
+    /// hold evidence answers zero; past that gate the tables are counted directly, so a catalog that
+    /// claims to hold evidence but lacks a table fails rather than reporting a zero it never measured.
+    /// </remarks>
+    internal static async Task<(long Fingerprints, long Receipts, long ReceiptSubjects)> ReadInventoryAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        if (!await IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            return (0, 0, 0);
+        }
+
+        await using SqliteCommand command = Command(
+            connection,
+            transaction,
+            """
+            SELECT
+                (SELECT COUNT(*) FROM memory_erasure_fingerprints),
+                (SELECT COUNT(*) FROM memory_erasure_receipts),
+                (SELECT COUNT(*) FROM memory_erasure_receipt_subjects);
+            """);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The erasure evidence inventory returned no row.");
+        }
+
+        return (reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
     }
 
     /// <summary>Counts the evidence per store, split by whether <paramref name="currentKeyId"/> can verify it.</summary>

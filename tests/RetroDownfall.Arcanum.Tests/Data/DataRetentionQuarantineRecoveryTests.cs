@@ -631,16 +631,16 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
-    /// No reset residue list, no restore canonical list, and no retention source outside the one
-    /// inventory reader names an erasure evidence table.
+    /// No reset residue list, no restore canonical list, and no retention source names an erasure
+    /// evidence table.
     /// </summary>
     /// <remarks>
     /// Evidence survives every reset, restore staging is destination-authoritative over it, and the
-    /// retention service only counts it. So the residue lists and the canonical-content lists must
-    /// never name it, and within the retention service the table names appear only in the method that
-    /// counts the rows for status and the factory preview. A table name added to a selection, deletion,
-    /// or residue list anywhere in those files is a string literal outside that method, which the scan
-    /// reports by the member that holds it.
+    /// retention service only reports it, through the evidence store's own inventory read. So the
+    /// residue lists and the canonical-content lists must never name it, and no string literal in the
+    /// retention service's sources names it either; the scan reports any it finds by the member that
+    /// holds it. A name assembled from parts is invisible to a scan of spellings, which is what the
+    /// compiled-string pin in <c>MemoryErasureEvidenceCompiledPinTests</c> reads instead.
     /// </remarks>
     [SkippableFact]
 
@@ -696,7 +696,7 @@ public sealed partial class DataRetentionServiceTests
                 .Order(StringComparer.Ordinal),
         ];
 
-        Assert.Equal(["DataRetentionService.cs::ReadMemoryErasureInventoryAsync"], owners);
+        Assert.Empty(owners);
 
     }
 

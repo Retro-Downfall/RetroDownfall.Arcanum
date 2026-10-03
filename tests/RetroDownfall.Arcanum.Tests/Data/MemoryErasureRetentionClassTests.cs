@@ -1,6 +1,10 @@
+using System.Text.Json;
+
 using Microsoft.Data.Sqlite;
 
 using Microsoft.Extensions.Logging.Abstractions;
+
+using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -151,6 +155,49 @@ public sealed class MemoryErasureRetentionClassTests
             {
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    /// <summary>
+    /// The inventory is omitted from the wire wherever it is absent: every plan but the factory plan,
+    /// and a status built without one.
+    /// </summary>
+    [Fact]
+    public void A_plan_or_status_without_an_inventory_carries_no_memoryErasure_member()
+    {
+        DataRetentionPlan plan = new(
+            "plan",
+            new DataRetentionRequest(DataRetentionOperation.ResetMemory, MemoryScope: MemoryResetScope.Saga),
+            DateTimeOffset.UnixEpoch,
+            [],
+            [],
+            [],
+            0,
+            0,
+            0,
+            0,
+            [],
+            RequiresConfirmation: true);
+
+        DataRetentionStatus status = new(DateTimeOffset.UnixEpoch, [], 0, 0, 0, []);
+
+        using (JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(plan, ArcanumJsonContext.Default.DataRetentionPlan)))
+        {
+            Assert.False(document.RootElement.TryGetProperty("memoryErasure", out _));
+        }
+
+        using (JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(status, ArcanumJsonContext.Default.DataRetentionStatus)))
+        {
+            Assert.False(document.RootElement.TryGetProperty("memoryErasure", out _));
+        }
+
+        using (JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(
+            plan with { MemoryErasure = new DataRetentionMemoryErasureInventory(1, 2, 3) },
+            ArcanumJsonContext.Default.DataRetentionPlan)))
+        {
+            JsonElement inventory = document.RootElement.GetProperty("memoryErasure");
+
+            Assert.Equal((1, 2, 3), (inventory.GetProperty("fingerprints").GetInt64(), inventory.GetProperty("receipts").GetInt64(), inventory.GetProperty("receiptSubjects").GetInt64()));
         }
     }
 
