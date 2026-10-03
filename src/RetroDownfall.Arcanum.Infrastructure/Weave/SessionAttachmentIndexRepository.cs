@@ -984,43 +984,6 @@ internal sealed class SessionAttachmentIndexRepository(
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task DeleteAttachmentIndexAsync(
-        DbConnection connection,
-        DbTransaction transaction,
-        Guid attachmentId,
-        CancellationToken cancellationToken)
-    {
-        List<string> ids = [];
-
-        await using (DbCommand select = connection.CreateCommand())
-        {
-            select.Transaction = transaction;
-
-            select.CommandText = "SELECT ChunkId FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
-
-            AddParameter(select, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
-
-            await using DbDataReader reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                ids.Add(reader.GetString(0));
-            }
-        }
-
-        await DeleteVecRowsAsync(connection, transaction, ids, cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand delete = connection.CreateCommand();
-
-        delete.Transaction = transaction;
-
-        delete.CommandText = "DELETE FROM session_attachment_chunks WHERE AttachmentId = @attachmentId";
-
-        AddParameter(delete, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
-
-        _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private static async Task<string?> GetPublishedGenerationIdAsync(
         DbConnection connection,
         DbTransaction transaction,
