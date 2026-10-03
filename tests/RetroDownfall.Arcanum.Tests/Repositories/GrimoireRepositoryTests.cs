@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -2133,8 +2134,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         await LabelAssistantEntryAsync(composed, assistantEntryId, CancellationToken.None);
 
-        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => repository.DeleteEntryAsync(sessionId, assistantEntryId, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
 
         Assert.Contains("purge boundary", refused.Message, StringComparison.Ordinal);
 

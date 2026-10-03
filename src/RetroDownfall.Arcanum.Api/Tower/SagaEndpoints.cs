@@ -283,7 +283,23 @@ internal static class SagaEndpoints
 
                 }
 
-                bool deleted = await store.DeleteAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+                bool deleted;
+
+                try
+                {
+
+                    deleted = await store.DeleteAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                }
+                catch (LabeledArtifactRefusalException refused)
+                {
+
+                    // The store asks again inside its own transaction, after the purge dispatch above, and
+                    // answers with the guard's own error: a label that cannot be read is a 503 and one
+                    // written since the dispatch is a 403, not an opaque 500.
+                    return SagaPurgeRefusal(ctx, refused.Error);
+
+                }
 
                 if (!deleted)
                 {
@@ -353,7 +369,18 @@ internal static class SagaEndpoints
 
                 }
 
-                await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
+                try
+                {
+
+                    await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
+
+                }
+                catch (LabeledArtifactRefusalException refused)
+                {
+
+                    return SagaPurgeRefusal(ctx, refused.Error);
+
+                }
 
                 return Results.NoContent();
 

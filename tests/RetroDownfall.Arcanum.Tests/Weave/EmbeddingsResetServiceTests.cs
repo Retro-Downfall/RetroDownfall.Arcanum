@@ -309,8 +309,10 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
 
-        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => service.ResetAsync(scope, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.DoesNotContain("mem-kept", refused.Message, StringComparison.Ordinal);
 

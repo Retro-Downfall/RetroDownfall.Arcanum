@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -62,6 +63,22 @@ internal static class EmbeddingsResetEndpoints
                     result = await resetService
                         .ResetAsync(parsedScope.Value, ctx.RequestAborted)
                         .ConfigureAwait(false);
+
+                }
+                catch (LabeledArtifactRefusalException refused)
+                {
+
+                    // The reset's label walk or its own guard refused, and says why in the error's own
+                    // code: a label table that cannot be read is Covenant.Unavailable, which is the
+                    // Grimoire's to repair, not an artifact to erase by hand. Answered by the central
+                    // mapper so the status follows the code, and before the catch below, which this
+                    // exception would otherwise reach as the InvalidOperationException it derives from.
+                    return Results.Json(
+                        ApiResponse<EmbeddingsResetResult>.FromResult(
+                            Result<EmbeddingsResetResult>.Failure(refused.Error),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(refused.Error.Code));
 
                 }
                 catch (InvalidOperationException blocked)

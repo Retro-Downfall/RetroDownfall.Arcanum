@@ -4,6 +4,10 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -47,8 +51,10 @@ public sealed class SagaLabeledDeleteTransactionTests
 
         await UnreadableLabelTableAsync(harness);
 
-        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => harness.Store.DeleteAllAsync(Token));
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.DoesNotContain(ids[0], refused.Message, StringComparison.OrdinalIgnoreCase);
 
@@ -70,8 +76,10 @@ public sealed class SagaLabeledDeleteTransactionTests
 
         await UnreadableLabelTableAsync(harness);
 
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => harness.Store.DeleteAsync(ids[0], Token));
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.Equal(2, await harness.CountAsync("saga_memories", "1 = 1"));
 

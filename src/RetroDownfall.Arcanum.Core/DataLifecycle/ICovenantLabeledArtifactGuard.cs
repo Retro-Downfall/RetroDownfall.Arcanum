@@ -41,3 +41,28 @@ public interface ICovenantLabeledArtifactGuard
         CancellationToken cancellationToken = default);
 
 }
+
+/// <summary>
+/// A raw delete that stopped because the labelled-artifact guard did not clear it, carrying the
+/// <see cref="Error"/> the guard answered with.
+/// </summary>
+/// <remarks>
+/// The deletes that raise this return no <see cref="Result"/> of their own — a <c>bool</c>, a task with
+/// no value, a reset that reports counts — so the refusal travels as an exception, and the route that
+/// called them turns <see cref="Error"/> back into the envelope it would have returned: a labelled
+/// artifact is <c>Covenant.ForbiddenAuthority</c> and a label table that cannot be read is
+/// <c>Covenant.Unavailable</c>. A bare <see cref="InvalidOperationException"/> carried only the message,
+/// so the one half a client can act on was lost and the route answered <c>500</c> for a condition the
+/// installation had refused on purpose.
+///
+/// <para>It is an <see cref="InvalidOperationException"/> so a caller that already treats any refusal of
+/// these deletes as one keeps doing so. The message is the guard's own and names the boundary, never the
+/// artifact, because it reaches operator surfaces.</para>
+/// </remarks>
+public sealed class LabeledArtifactRefusalException(Error error) : InvalidOperationException(error.Message)
+{
+
+    /// <summary>The guard's answer, or the purge's, that stopped the delete.</summary>
+    public Error Error { get; } = error;
+
+}

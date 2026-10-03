@@ -8,6 +8,10 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -125,8 +129,10 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
 
         }
 
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => repository.DeleteEntryAsync(sessionId, entryId, Token));
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.Equal(1L, await CountEntryAsync(entryId));
 

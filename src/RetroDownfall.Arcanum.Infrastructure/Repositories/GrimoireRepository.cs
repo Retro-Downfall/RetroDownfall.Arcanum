@@ -884,7 +884,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
             if (unlabeled.IsFailure)
             {
-                throw new InvalidOperationException(unlabeled.Error.Message);
+                throw new LabeledArtifactRefusalException(unlabeled.Error);
             }
 
             Entry? entry = await ReadEntryAsync(sessionId, entryId, cancellationToken)

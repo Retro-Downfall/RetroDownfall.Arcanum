@@ -697,7 +697,7 @@ internal sealed partial class SagaMemoryStore(
 
                     if (unlabeled.IsFailure)
                     {
-                        throw new InvalidOperationException(unlabeled.Error.Message);
+                        throw new LabeledArtifactRefusalException(unlabeled.Error);
                     }
                 }
 
@@ -783,7 +783,7 @@ internal sealed partial class SagaMemoryStore(
 
                     if (none.IsFailure)
                     {
-                        throw new InvalidOperationException(none.Error.Message);
+                        throw new LabeledArtifactRefusalException(none.Error);
                     }
                 }
 

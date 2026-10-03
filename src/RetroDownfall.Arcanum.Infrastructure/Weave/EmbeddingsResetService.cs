@@ -376,7 +376,9 @@ public sealed class EmbeddingsResetService(
         if (purged.IsFailure)
         {
 
-            throw new InvalidOperationException(purged.Error.Message);
+            // Typed so the route answers the walk's own refusal, not a blanket "erase it by hand": an
+            // unreadable label table is the Grimoire's condition to repair, and a stale label is a retry.
+            throw new LabeledArtifactRefusalException(purged.Error);
 
         }
 
