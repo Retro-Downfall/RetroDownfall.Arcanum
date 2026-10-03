@@ -690,7 +690,35 @@ public class TomeViewModelTests
 
         Assert.Equal(2, dataSource.GetEntriesCallCount);
 
-        Assert.Equal("0 entries.", viewModel.MemoryStatusText);
+        // The refresh that follows a compaction writes the entry count, and the compaction result has to
+        // survive it: the count of entries removed is the one thing the operator asked to see.
+        Assert.Equal("Compacted: 3 entries removed (100 → 40 tokens). 0 entries.", viewModel.MemoryStatusText);
+
+    }
+
+    [Fact]
+    public async Task Compact_WhenTheCompactionStopped_ShowsTheStopBesideTheCount()
+    {
+
+        CompactResult compact = new(100, 70, 2, "Covenant.StaleSnapshot");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            CompactResult = new DataSourceResult<CompactResult>(compact, true, null, null),
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.CompactAsync(CancellationToken.None);
+
+        // The entries removed before the stop are gone whether or not compaction finished, so the count
+        // stays and the stop is added to it rather than replacing it.
+        Assert.Equal(
+            "Compacted: 2 entries removed (100 → 70 tokens). Stopped early on Covenant.StaleSnapshot; the rest of the selected entries were left unchanged. 0 entries.",
+            viewModel.MemoryStatusText);
 
     }
 

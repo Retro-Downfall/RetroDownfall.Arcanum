@@ -81,10 +81,13 @@ internal sealed class ContextCompressionService : IContextCompressionService
     /// <para>A block ends the walk with the same typed code every other direct-deletion route answers: a
     /// label that moved is <c>Covenant.StaleSnapshot</c>, anything else the kernel could not erase is
     /// <c>Covenant.ManualArtifactErasureRequired</c>. The Entries erased before the block are already
-    /// gone, so the caller counts them from the Session rather than from this failure.</para>
+    /// gone, so the walk records each one the purge reported erased in <paramref name="erasedByPurge"/>,
+    /// the blocked page's included, and the caller counts what the stop removed from that and from the
+    /// stored Entries rather than from this failure.</para>
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeSelectedEntriesAsync(
         IReadOnlyCollection<Guid> entryIds,
+        HashSet<Guid> erasedByPurge,
         CancellationToken cancellationToken)
     {
 
@@ -109,6 +112,11 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             }
 
+            erasedByPurge.UnionWith(
+                purged.Value.Results
+                    .Where(static result => result.Disposition is CovenantSensitivePurgeDisposition.Purged)
+                    .Select(static result => result.ArtifactId));
+
             if (purged.Value.IsBlocked)
             {
 
@@ -126,6 +134,66 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         return Result<CovenantSensitivePurgeOutcome>.Success(
             new CovenantSensitivePurgeOutcome(results, progress));
+
+    }
+
+    /// <summary>
+    /// How many of the dispatched Entries a stopped compaction removed.
+    /// </summary>
+    /// <remarks>
+    /// Not what the purge reported, because a page that stopped at its third item took the first two with
+    /// it and a purge that failed after erasing some of its items reports none of them. And not what the
+    /// reloaded Session lacks either: the repository returns only the newest Entries of a long Session,
+    /// so the oldest ones, which compaction selects first, are missing from it whether or not they still
+    /// exist. Each dispatched Entry the window does not show is therefore confirmed against the stored
+    /// Entry, one lookup per Entry on this path only and never more than the dispatched set.
+    ///
+    /// <para>When the Session cannot be read at all, the count is a lower bound: the Entries the purge
+    /// itself reported erased. An Entry erased by a purge that then failed outright is not among them,
+    /// and nothing here can say it was.</para>
+    /// </remarks>
+    private async Task<int> CountRemovedAfterStopAsync(
+        Guid sessionId,
+        IReadOnlyCollection<Guid> dispatched,
+        HashSet<Guid> erasedByPurge,
+        Session? reloaded,
+        CancellationToken cancellationToken)
+    {
+
+        if (reloaded is null)
+        {
+
+            return erasedByPurge.Count;
+
+        }
+
+        HashSet<Guid> inWindow = [.. reloaded.Entries.Select(static entry => entry.Id)];
+
+        int gone = 0;
+
+        foreach (Guid entryId in dispatched)
+        {
+
+            if (inWindow.Contains(entryId))
+            {
+
+                continue;
+
+            }
+
+            if (erasedByPurge.Contains(entryId)
+                || await _grimoire
+                    .GetEntryByIdAsync(sessionId, entryId, cancellationToken)
+                    .ConfigureAwait(false) is null)
+            {
+
+                gone++;
+
+            }
+
+        }
+
+        return gone;
 
     }
 
@@ -233,9 +301,11 @@ internal sealed class ContextCompressionService : IContextCompressionService
             // Expanding first and purging second is what keeps a partially deleted tool group from
             // existing at any point: a labelled Entry that left through the shared kernel and an
             // unlabelled sibling that left through the ordinary delete are still one group (§10.20.2).
+            HashSet<Guid> erasedByPurge = [];
+
             Result<CovenantSensitivePurgeOutcome>? purged = _purger is null
                 ? null
-                : await PurgeSelectedEntriesAsync(groupSafeDeletes, cancellationToken).ConfigureAwait(false);
+                : await PurgeSelectedEntriesAsync(groupSafeDeletes, erasedByPurge, cancellationToken).ConfigureAwait(false);
 
             if (purged is { } attempted && attempted.IsFailure)
             {
@@ -287,18 +357,18 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
                 tokensAfter = CountTokens(messages, compressionProvider, compressionModel);
 
-                if (stoppedBy is not null)
-                {
+            }
 
-                    // What a stopped compaction removed is what the Session no longer holds of the set it
-                    // dispatched, not what the purge reported. A page that stopped at its third item took
-                    // the first two with it, and a purge that failed after erasing some of its items
-                    // reports none of them; counting from either would say less was removed than was.
-                    HashSet<Guid> remaining = [.. session.Entries.Select(static entry => entry.Id)];
+            if (stoppedBy is not null)
+            {
 
-                    removed = groupSafeDeletes.Count(id => !remaining.Contains(id));
-
-                }
+                removed = await CountRemovedAfterStopAsync(
+                        sessionId,
+                        groupSafeDeletes,
+                        erasedByPurge,
+                        session,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
             }
 

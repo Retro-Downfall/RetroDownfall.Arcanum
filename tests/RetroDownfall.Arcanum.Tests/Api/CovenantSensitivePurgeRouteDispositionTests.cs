@@ -235,6 +235,39 @@ public sealed class CovenantSensitivePurgeRouteDispositionTests
     }
 
     /// <summary>
+    /// Compaction that erased a protected Entry answers with the protected-response headers.
+    /// </summary>
+    /// <remarks>
+    /// The compact handler never sees the purge outcome, so it cannot mark the response itself. The mark
+    /// comes from the conditional retention-purge authority the route declares, which marks the response
+    /// when it issues the authority and so before any Entry is erased, exactly as it does for the Entry
+    /// delete route.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Compacting_after_erasing_a_protected_Entry_marks_the_response_protected()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Host(new LabelReadArm());
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        Guid[] entries = await AppendEntriesAsync(client, sessionId, 8);
+
+        await LabelAsync(factory, SensitiveArtifactKind.AssistantEntry, entries[0], sessionId);
+
+        using HttpResponseMessage response = await client.PostAsync($"/api/sessions/{sessionId:D}/compact", null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(0, await CountAsync(factory, "Entries", "Id", entries[0]));
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+    }
+
+    /// <summary>
     /// A host with the Covenant, Saga and memory management on, an in-memory credential store, and the
     /// armed ledger in front of the real one.
     /// </summary>
