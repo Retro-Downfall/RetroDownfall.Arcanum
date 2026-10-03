@@ -376,7 +376,7 @@ public sealed class MemoryReviewTokenCodecTests
         Assert.Equal(read.Length, read.Distinct().Count());
     }
 
-        [Fact]
+    [Fact]
     public void Erasure_tokens_and_review_tokens_refuse_each_others_purposes()
     {
         MemoryReviewTokenCodec codec = new(FrozenTime());

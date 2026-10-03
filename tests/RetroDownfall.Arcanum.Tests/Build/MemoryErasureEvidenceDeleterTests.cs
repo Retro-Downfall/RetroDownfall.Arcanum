@@ -17,7 +17,8 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// release, key reset and restore staging, which are exactly the operations that must delete. So the
 /// rule is carried here instead, as a scan of every comment-free <c>src/**/*.cs</c> file and every
 /// <c>src/**/*.sql</c> file. Every evidence statement lives in <see cref="Owner"/>, and the members
-/// that delete are called only from a closed list of files.</para>
+/// that delete are called only from a closed list of members, each named with the member it is
+/// called from.</para>
 ///
 /// <para>A full installation reset removes the database file, not rows, so it needs no entry.</para>
 ///
@@ -33,15 +34,28 @@ public sealed class MemoryErasureEvidenceDeleterTests
     private const string Owner = "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs";
 
     /// <summary>
-    /// Closed. Release and every operator re-creation delete through the one fingerprint-release file,
-    /// reset-key is the one caller of the unverifiable-row delete, and restore staging's evidence step is
-    /// the one caller of the destination-authoritative replacement. Nothing else.
+    /// Closed, and per member rather than per file: each entry is a deleting member of the evidence
+    /// store, the file that may call it, and the member in that file the call sits in. Release and
+    /// every operator re-creation delete fingerprints through the two members of the one
+    /// fingerprint-release file, reset-key is the one caller of the unverifiable-row delete, and
+    /// restore staging's evidence step is the one caller of the destination-authoritative replacement.
+    /// Nothing else, so a scrub or a status read that began deleting fingerprints in a file that is
+    /// allowed to delete something else would fail here.
     /// </summary>
     internal static readonly string[] AllowedCallers =
     [
-        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs",
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs",
-        "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureAdministration.cs",
+        "DeleteFingerprintAsync <- src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs::DeleteCandidatesAsync",
+        "DeleteFingerprintAsync <- src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureFingerprintRelease.cs::ReleaseForOperatorWriteAsync",
+        "DeleteUnverifiableAsync <- src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureAdministration.cs::ResetKeyAsync",
+        "ReplaceAllAsync <- src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs::ApplyAsync",
+    ];
+
+    /// <summary>The deleting members of the evidence store, whose callers <see cref="AllowedCallers"/> closes.</summary>
+    private static readonly string[] EvidenceDeleterMembers =
+    [
+        "DeleteFingerprintAsync",
+        "DeleteUnverifiableAsync",
+        "ReplaceAllAsync",
     ];
 
     /// <summary>
@@ -152,7 +166,7 @@ public sealed class MemoryErasureEvidenceDeleterTests
         RegexOptions.CultureInvariant);
 
     [Fact]
-    public void Evidence_deleter_callers_are_a_closed_allow_list()
+    public void Evidence_deleter_callers_are_a_closed_allow_list_of_members()
     {
         Assert.Matches(EvidenceDeleterCall, "MemoryErasureEvidence.DeleteFingerprintAsync(connection, transaction, fingerprint, ct)");
 
@@ -160,15 +174,63 @@ public sealed class MemoryErasureEvidenceDeleterTests
 
         Assert.DoesNotMatch(EvidenceDeleterCall, "MemoryErasureEvidence.DeleteFingerprintAsyncLater(connection)");
 
-        string[] callers =
+        string[] members =
         [
             .. ProductionSourceInventory.Sources()
-                .Where(source => !source.IsExactOwner(Owner) && EvidenceDeleterCall.IsMatch(source.Text))
-                .Select(static source => source.RelativePath)
+                .Where(source => !source.IsExactOwner(Owner) && source.Names("MemoryErasureEvidence"))
+                .SelectMany(static source => EvidenceDeleterCalls(source.Text).Select(call => $"{call.Deleter} <- {source.RelativePath}::{call.Member}"))
+                .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal),
         ];
 
-        Assert.Equal(AllowedCallers.Order(StringComparer.Ordinal), callers);
+        Assert.Equal(AllowedCallers.Order(StringComparer.Ordinal), members);
+
+        // The member scan reads every file the file-level regex does: no caller escapes it by a spelling
+        // only one of the two reads.
+        Assert.Equal(
+            ProductionSourceInventory.Sources()
+                .Where(source => !source.IsExactOwner(Owner) && EvidenceDeleterCall.IsMatch(source.Text))
+                .Select(static source => source.RelativePath)
+                .Order(StringComparer.Ordinal),
+            ProductionSourceInventory.Sources()
+                .Where(source => !source.IsExactOwner(Owner) && source.Names("MemoryErasureEvidence") && EvidenceDeleterCalls(source.Text).Any())
+                .Select(static source => source.RelativePath)
+                .Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// The caller scan names the deleting member and the member it is called from, through lambdas,
+    /// chained calls that break the line, and qualified names, and ignores the evidence store's members
+    /// that delete nothing.
+    /// </summary>
+    [Fact]
+    public void The_evidence_deleter_scan_names_the_called_member_and_its_enclosing_member()
+    {
+        const string source = """
+            internal sealed class Fixture
+            {
+                internal async Task ScrubAsync()
+                {
+                    await Run(async () => _ = await MemoryErasureEvidence
+                        .DeleteFingerprintAsync(null!, null, null!, default));
+                }
+
+                internal Task<long> ResetAsync() =>
+                    RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureEvidence.DeleteUnverifiableAsync(null!, null, null!, default);
+
+                internal Task<long> CountAsync() => MemoryErasureEvidence.CountAsync(null!, null, null, default);
+
+                internal Task<long> ReplaceAsync() => MemoryErasureEvidence.ReplaceAllAsync(null!, null!, null!, default);
+            }
+            """;
+
+        Assert.Equal(
+            [
+                ("DeleteFingerprintAsync", "ScrubAsync"),
+                ("DeleteUnverifiableAsync", "ResetAsync"),
+                ("ReplaceAllAsync", "ReplaceAsync"),
+            ],
+            EvidenceDeleterCalls(source).Order());
     }
 
     /// <summary>
@@ -390,15 +452,40 @@ public sealed class MemoryErasureEvidenceDeleterTests
                 QualifiedNameSyntax qualified => qualified.Right.Identifier.ValueText == "MemoryErasureFingerprintRelease",
                 _ => false,
             })
-            .Select(static access => access.Ancestors().OfType<MemberDeclarationSyntax>().First() switch
+            .Select(static access => EnclosingMember(access));
+
+    /// <summary>
+    /// Every call a source makes to a deleting member of the evidence store, through its class, as the
+    /// deleting member and the member of the source the call sits in. Qualified names count, so a call
+    /// spelled with its namespace is read the same as one that is not.
+    /// </summary>
+    private static IEnumerable<(string Deleter, string Member)> EvidenceDeleterCalls(string source) =>
+        CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
+            .GetCompilationUnitRoot()
+            .DescendantNodes()
+            .OfType<MemberAccessExpressionSyntax>()
+            .Where(static access => EvidenceDeleterMembers.Contains(access.Name.Identifier.ValueText, StringComparer.Ordinal))
+            .Where(static access => access.Expression switch
             {
-                MethodDeclarationSyntax method => method.Identifier.ValueText,
-                ConstructorDeclarationSyntax => ".ctor",
-                PropertyDeclarationSyntax property => property.Identifier.ValueText,
-                FieldDeclarationSyntax field => string.Join(",", field.Declaration.Variables.Select(static variable => variable.Identifier.ValueText)),
-                BaseTypeDeclarationSyntax type => type.Identifier.ValueText,
-                MemberDeclarationSyntax other => other.Kind().ToString(),
-            });
+                IdentifierNameSyntax name => name.Identifier.ValueText == "MemoryErasureEvidence",
+                MemberAccessExpressionSyntax qualified => qualified.Name.Identifier.ValueText == "MemoryErasureEvidence",
+                AliasQualifiedNameSyntax alias => alias.Name.Identifier.ValueText == "MemoryErasureEvidence",
+                QualifiedNameSyntax qualified => qualified.Right.Identifier.ValueText == "MemoryErasureEvidence",
+                _ => false,
+            })
+            .Select(static access => (access.Name.Identifier.ValueText, EnclosingMember(access)));
+
+    /// <summary>The name of the member declaration a node sits in, through any lambda around it.</summary>
+    private static string EnclosingMember(SyntaxNode node) =>
+        node.Ancestors().OfType<MemberDeclarationSyntax>().First() switch
+        {
+            MethodDeclarationSyntax method => method.Identifier.ValueText,
+            ConstructorDeclarationSyntax => ".ctor",
+            PropertyDeclarationSyntax property => property.Identifier.ValueText,
+            FieldDeclarationSyntax field => string.Join(",", field.Declaration.Variables.Select(static variable => variable.Identifier.ValueText)),
+            BaseTypeDeclarationSyntax type => type.Identifier.ValueText,
+            MemberDeclarationSyntax other => other.Kind().ToString(),
+        };
 
     private static void AssertCaught(Regex pattern, string statement, string suffix)
     {
