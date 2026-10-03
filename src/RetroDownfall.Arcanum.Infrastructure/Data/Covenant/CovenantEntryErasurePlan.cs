@@ -36,8 +36,10 @@ internal enum CovenantEntryErasureMode
 /// </param>
 /// <param name="HeadLanes">The lanes the entry holds a head in, which such a receipt is matched by.</param>
 /// <param name="SearchRowIds">
-/// The search projection rows of the entry's heads, which key its full-text index rows, captured
-/// before anything is deleted so the absence proof can still name them afterwards.
+/// The search projection rows of the entry's heads and of every search document the entry owns, which
+/// key its full-text index rows, captured before anything is deleted so the absence proof can still name
+/// them afterwards. A document no head names is projection corruption, and its index row is the entry's
+/// content all the same.
 /// </param>
 internal sealed record CovenantEntryErasureSubject(
     Guid EntryId,
@@ -396,13 +398,24 @@ internal static class CovenantEntryErasurePlan
 
         List<long> searchRows = [];
 
+        // The heads' rows first, in lane order, then any row a search document of the entry holds that no
+        // head names. One statement, so the projection is read in the same pass as the heads it mirrors.
+        string documentRows = await ObjectExistsAsync(connection, transaction, SearchDocuments, cancellationToken).ConfigureAwait(false)
+            ? $"""
+              UNION ALL
+              SELECT NULL, SearchRowId, 1 FROM covenant_search_documents
+              WHERE {CovenantIdentitySql.Keyed("EntryId", "$entry")}
+              """
+            : string.Empty;
+
         await using (SqliteCommand command = Command(
             connection,
             transaction,
             $"""
-            SELECT LaneCode, SearchRowId FROM covenant_heads
+            SELECT LaneCode, SearchRowId, 0 AS Source FROM covenant_heads
             WHERE {CovenantIdentitySql.Keyed("EntryId", "$entry")}
-            ORDER BY LaneCode;
+            {documentRows}
+            ORDER BY Source, LaneCode, SearchRowId;
             """))
         {
             _ = command.Parameters.AddWithValue("$entry", entry);
@@ -411,9 +424,17 @@ internal static class CovenantEntryErasurePlan
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                lanes.Add((CovenantLane)reader.GetInt32(0));
+                if (!reader.IsDBNull(0))
+                {
+                    lanes.Add((CovenantLane)reader.GetInt32(0));
+                }
 
-                searchRows.Add(reader.GetInt64(1));
+                long searchRow = reader.GetInt64(1);
+
+                if (!searchRows.Contains(searchRow))
+                {
+                    searchRows.Add(searchRow);
+                }
             }
         }
 

@@ -625,6 +625,83 @@ public sealed class CovenantEntryErasurePlanTests
     }
 
     /// <summary>
+    /// A search document of the entry that no head names is still the entry's: its full-text row is
+    /// proved gone too, not only the rows of the heads' own search ids.
+    /// </summary>
+    /// <remarks>
+    /// Only projection corruption can leave such a document, so it is planted here. The delete trigger is
+    /// replaced inside the rolled-back transaction by one that skips that document alone, so every head's
+    /// own row is subtracted from the index exactly as in production and the planted document's row is the
+    /// only thing left in it.
+    /// </remarks>
+    [Fact]
+    public async Task Absence_proof_names_the_full_text_row_of_a_search_document_no_head_names()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        Guid entryId = await SeedFullEntryAsync(harness);
+
+        const long Stray = 7_000_001;
+
+        IReadOnlyList<MemoryErasureTableCount> remaining = null!;
+
+        SqliteConnection connection = harness.Fixture.Connection;
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
+        {
+            using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                connection,
+                CovenantSqliteAuthorizationKind.CovenantEntryErasure);
+
+            // The seeded entry holds a document in one lane only. The planted one takes the other lane, so
+            // the one-document-per-head index has no objection, and its insert trigger indexes it.
+            await ExecuteAsync(
+                connection,
+                $"""
+                INSERT INTO covenant_search_documents (
+                    SearchRowId, EntryId, LaneCode, VersionId, ScopeCode, CampaignId, LifecycleCode,
+                    NormalizedKey, AuthoredContent, CompiledContent, DatasetGeneration, CanonicalSearchSequence)
+                SELECT {Stray}, EntryId, CASE LaneCode WHEN 1 THEN 2 ELSE 1 END, VersionId, ScopeCode, CampaignId,
+                       LifecycleCode, NormalizedKey, AuthoredContent, CompiledContent, DatasetGeneration,
+                       CanonicalSearchSequence
+                FROM covenant_search_documents
+                LIMIT 1;
+                """,
+                transaction);
+
+            await ExecuteAsync(
+                connection,
+                $"""
+                DROP TRIGGER covenant_search_documents_ad;
+                CREATE TRIGGER covenant_search_documents_ad AFTER DELETE ON covenant_search_documents
+                WHEN old.SearchRowId <> {Stray}
+                BEGIN
+                    INSERT INTO covenant_fts(covenant_fts, rowid, NormalizedKey, AuthoredContent, CompiledContent, EntryId, LaneCode, VersionId)
+                    VALUES ('delete', old.SearchRowId, old.NormalizedKey, old.AuthoredContent, old.CompiledContent, old.EntryId, old.LaneCode, old.VersionId);
+                END;
+                """,
+                transaction);
+
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entryId);
+
+            CovenantEntryErasureTally deleted = await CovenantEntryErasurePlan.RunAsync(
+                connection, transaction, subject, CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+            remaining = await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, deleted.VersionIds, Token);
+
+            await transaction.RollbackAsync(Token);
+        }
+
+        MemoryErasureTableCount left = Assert.Single(remaining);
+
+        Assert.Equal("covenant_fts", left.Table);
+
+        Assert.Equal(1, left.Rows);
+
+        await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Fixture.Connection, Token);
+    }
+
+    /// <summary>
     /// A kept mask keeps only its chain at the key's binding epoch. Curation of the subject recorded
     /// against any other epoch, as version 5 recorded it against the key's dependency epoch, is the
     /// erased subject's curation and goes with it.
