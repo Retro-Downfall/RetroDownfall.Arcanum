@@ -474,14 +474,20 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     /// <summary>
     /// Replacing a changed file's chunks empties the obsolete ones' rows from a plain vector mirror
-    /// whatever the accelerator flag says.
+    /// whatever the accelerator flag says, and only those rows.
     /// </summary>
+    /// <remarks>
+    /// A second file the walk does not touch keeps its row. That is what tells a delete keyed on the
+    /// obsolete chunk from one that empties the whole mirror, which a single-file index cannot.
+    /// </remarks>
     [SkippableFact]
     public async Task IndexWorkspaceAsync_FileChangedSinceLastIndex_EmptiesTheObsoleteChunksPlainVectorMirrorRowsWhileTheFlagIsOff()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("note.md", "the first version");
+
+        _workspace.WriteFile("other.md", "an untouched file");
 
         FakeWeaveService weave = new();
 
@@ -491,9 +497,11 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         string firstChunkId = Assert.Single((await GetChunkIdsByContentAsync("note.md")).Values);
 
+        string otherChunkId = Assert.Single((await GetChunkIdsByContentAsync("other.md")).Values);
+
         await CreatePlainVectorMirrorAsync();
 
-        await SeedVectorMirrorRowsAsync(firstChunkId);
+        await SeedVectorMirrorRowsAsync(firstChunkId, otherChunkId);
 
         _workspace.WriteFile("note.md", "the second version, which is longer");
 
@@ -503,7 +511,7 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         Assert.NotEqual(firstChunkId, secondChunkId);
 
-        Assert.Empty(await VectorMirrorChunkIdsAsync());
+        Assert.Equal([otherChunkId], await VectorMirrorChunkIdsAsync());
     }
 
     /// <summary>

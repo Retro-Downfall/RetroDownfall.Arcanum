@@ -458,6 +458,43 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(await repository.SessionExistsAsync(retainedSessionId, CancellationToken.None));
     }
 
+    /// <summary>
+    /// Purging a session skips a legacy virtual entry mirror and still removes the session's embeddings.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for a <c>vec0</c> mirror an earlier build left, because it records
+    /// the same <c>CREATE VIRTUAL TABLE</c> text, which is all that classifying a mirror reads, and this
+    /// runtime has no module to open the real one with. The stand-in can be deleted from, so its row
+    /// still being there is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task PurgeSessionAsync_skips_a_legacy_virtual_entry_mirror_and_still_removes_the_sessions_embeddings()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid purgedSessionId, Guid purgedEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "purge embedded entry",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await EnsureEntryEmbeddingTablesAsync(legacyVirtualMirror: true);
+
+        await InsertEntryEmbeddingAsync(purgedEntryId);
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings", purgedEntryId));
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", purgedEntryId));
+
+        Assert.Equal(1, await repository.PurgeSessionAsync(purgedSessionId, CancellationToken.None));
+
+        Assert.Equal(0, await CountEntryEmbeddingAsync("entry_embeddings", purgedEntryId));
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", purgedEntryId));
+    }
+
     [SkippableFact]
     public async Task IncrementSessionTokensAsync_updates_total()
     {
@@ -2187,7 +2224,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             FixtureLabeledArtifactGuard.For(context));
     }
 
-    private async Task EnsureEntryEmbeddingTablesAsync()
+    private async Task EnsureEntryEmbeddingTablesAsync(bool legacyVirtualMirror = false)
     {
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
@@ -2198,18 +2235,24 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
 
+        string mirror = legacyVirtualMirror
+            ? "CREATE VIRTUAL TABLE entry_embeddings_vec USING fts5(EntryId, Embedding);"
+            : """
+              CREATE TABLE IF NOT EXISTS entry_embeddings_vec (
+                  EntryId TEXT PRIMARY KEY,
+                  Embedding BLOB NOT NULL
+              );
+              """;
+
         command.CommandText =
-            """
+            $"""
             CREATE TABLE IF NOT EXISTS entry_embeddings (
                 EntryId TEXT PRIMARY KEY,
                 Embedding BLOB NOT NULL,
                 Dim INTEGER NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS entry_embeddings_vec (
-                EntryId TEXT PRIMARY KEY,
-                Embedding BLOB NOT NULL
-            );
+            {mirror}
             """;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);

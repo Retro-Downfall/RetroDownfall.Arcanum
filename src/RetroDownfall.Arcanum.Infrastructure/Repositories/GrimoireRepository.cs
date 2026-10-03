@@ -662,14 +662,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         foreach (string table in new[] { "entry_embeddings_vec", "entry_embeddings" })
         {
-            await using SqliteCommand exists = await GrimoireSqlCommandFactory.CreateAsync(
-                _db,
-                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = $table LIMIT 1;",
-                cancellationToken).ConfigureAwait(false);
-
-            GrimoireEntitySql.AddParameter(exists, "$table", table);
-
-            if (await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+            if (!await EmbeddingTableIsDeletableAsync(table, ambient, cancellationToken).ConfigureAwait(false))
             {
                 continue;
             }
@@ -692,6 +685,39 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 () => delete.ExecuteNonQueryAsync(cancellationToken),
                 cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Whether an entry embedding table is there to delete the session's rows from.
+    /// </summary>
+    /// <remarks>
+    /// The vector mirror is classified from its definition rather than probed for existence, because a
+    /// legacy <c>vec0</c> virtual table also has a row in <c>sqlite_master</c> and this runtime has no
+    /// module to open it with: a delete against it would fail the whole session purge. A legacy mirror
+    /// is skipped, and a plain one is emptied of the session's rows.
+    /// </remarks>
+    private async Task<bool> EmbeddingTableIsDeletableAsync(
+        string table,
+        IDbContextTransaction ambient,
+        CancellationToken cancellationToken)
+    {
+        if (SagaVectorMirror.IsMirrorName(table))
+        {
+            return await SagaVectorMirror.ClassifyAsync(
+                _db.Database.GetDbConnection(),
+                ambient.GetDbTransaction(),
+                table,
+                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
+        }
+
+        await using SqliteCommand exists = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = $table LIMIT 1;",
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(exists, "$table", table);
+
+        return await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
     }
 
     public async Task<Session?> GetSessionAsync(

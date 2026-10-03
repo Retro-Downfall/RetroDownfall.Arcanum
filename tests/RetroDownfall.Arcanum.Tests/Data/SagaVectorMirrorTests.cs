@@ -1,3 +1,5 @@
+using System.Data.Common;
+
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -220,6 +222,59 @@ public sealed class SagaVectorMirrorTests
         Assert.Equal(0, await harness.CountAsync("saga_memories", "1 = 1"));
 
         Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1"));
+    }
+
+    /// <summary>
+    /// The table-named delete interpolates its table into the statement, so it refuses every name that
+    /// is not a vector mirror's, and the rows of whatever table the name points at survive the refusal.
+    /// </summary>
+    /// <remarks>
+    /// The quoted name is a real table, so without the refusal it would be classified as a plain mirror
+    /// and reach the statement, where the quote would end the identifier early.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("victim")]
+    [InlineData("victim_vec_copy")]
+    [InlineData("victim\"_vec")]
+    public async Task Deleting_every_row_refuses_a_table_that_is_not_a_vector_mirror(string table)
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        string quoted = "\"" + table.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+
+        await ExecuteAsync(harness, $"CREATE TABLE {quoted} (\"Id\" TEXT PRIMARY KEY)");
+
+        await ExecuteAsync(harness, $"INSERT INTO {quoted} (\"Id\") VALUES ('survivor')");
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(
+            () => SagaVectorMirror.DeleteAllAsync(harness.Connection, null, table, Token));
+
+        Assert.Equal(1, await harness.CountAsync(quoted, "1 = 1"));
+    }
+
+    [SkippableFact]
+    public async Task Deleting_every_row_accepts_a_table_named_like_a_vector_mirror()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        await ExecuteAsync(harness, "CREATE TABLE \"example_embeddings_vec\" (\"Id\" TEXT PRIMARY KEY)");
+
+        await ExecuteAsync(harness, "INSERT INTO \"example_embeddings_vec\" (\"Id\") VALUES ('one'), ('two')");
+
+        Assert.Equal(
+            2,
+            await SagaVectorMirror.DeleteAllAsync(harness.Connection, null, "example_embeddings_vec", Token));
+
+        Assert.Equal(0, await harness.CountAsync("example_embeddings_vec", "1 = 1"));
+    }
+
+    private static async Task ExecuteAsync(SagaStoreHarness harness, string sql)
+    {
+        await using DbCommand command = harness.Connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(Token);
     }
 
     private static Task<SagaMemoryWriteOutcome> InsertAsync(SagaStoreHarness harness, string id) =>

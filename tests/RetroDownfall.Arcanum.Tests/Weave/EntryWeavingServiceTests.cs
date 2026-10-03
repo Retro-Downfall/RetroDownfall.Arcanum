@@ -584,12 +584,138 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A new embedding removes the mirror row an earlier build wrote for the entry while the vector
+    /// accelerator flag is off, rather than leaving a row that describes a vector the entry no longer has.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so a stale row is the old embedding left behind, reachable
+    /// by the next build that loads an accelerator. The row is seeded because no build this suite
+    /// composes writes one with the flag off.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RunTickAsync_RemovesTheStalePlainMirrorRowOfAnEntryItEmbedsWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose mirror row went stale");
+
+        await CreateEntryAsync(sessionId, "an entry whose embedding is already mirrored");
+
+        await ExecuteAsync(
+            """CREATE TABLE "entry_embeddings_vec" ("EntryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'0000803F' FROM "Entries" """);
+
+        // The second entry is already embedded, so the tick leaves it and its mirror row alone.
+        await ExecuteAsync(
+            """
+            INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+            SELECT "Id", X'0000803F', 1 FROM "Entries" WHERE "Content" LIKE 'an entry whose%'
+            """);
+
+        Assert.Equal(2, await CountMirrorRowsAsync());
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(2, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+    }
+
+    /// <summary>
+    /// A legacy virtual mirror this runtime cannot open is left alone, and the embedding is still written.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for the <c>vec0</c> mirror, because it records the same
+    /// <c>CREATE VIRTUAL TABLE</c> text, which is all that classifying a mirror reads. The stand-in can be
+    /// deleted from, so its row still being there is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RunTickAsync_LeavesALegacyVirtualMirrorAloneWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose mirror row went stale");
+
+        await ExecuteAsync("""CREATE VIRTUAL TABLE "entry_embeddings_vec" USING fts5("EntryId", "Embedding")""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'0000803F' FROM "Entries" """);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+    }
+
+    /// <summary>
+    /// With the accelerator flag on, the mirror row is written with the embedding, whatever the mirror held.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_RewritesTheMirrorRowWithTheEmbeddingWhileTheFlagIsOn()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose mirror row went stale");
+
+        await ExecuteAsync(
+            """CREATE TABLE "entry_embeddings_vec" ("EntryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'00' FROM "Entries" """);
+
+        WeaveIndexAvailability accelerator = new();
+
+        accelerator.SetAvailable(true);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(
+            weave,
+            out EmbeddingSettings embeddings,
+            vectorAccelerator: accelerator);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
+
+        Assert.Equal(
+            await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings" """),
+            await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings_vec" """));
+
+    }
+
     private EntryWeavingService CreateService(
         FakeWeaveService weave,
         out EmbeddingSettings embeddings,
         IGrimoireConnectionAdmissionGate? gate = null,
         ObservingScopeFactory? scopeFactory = null,
-        ILogger<EntryWeavingService>? logger = null)
+        ILogger<EntryWeavingService>? logger = null,
+        WeaveIndexAvailability? vectorAccelerator = null)
     {
 
         embeddings = ArcanumRuntimeDefaults.Embeddings;
@@ -612,7 +738,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
                 },
             }),
             weave,
-            new WeaveIndexAvailability(),
+            vectorAccelerator ?? new WeaveIndexAvailability(),
             scopeFactory ?? BuildScopeFactory(),
             gate ?? OpenGate(),
             logger ?? NullLogger<EntryWeavingService>.Instance);
@@ -763,6 +889,31 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         return entry.Id;
 
     }
+
+    private async Task<int> CountMirrorRowsAsync() =>
+        Convert.ToInt32(await ScalarAsync("""SELECT COUNT(*) FROM "entry_embeddings_vec";"""));
+
+    private async Task<object?> ScalarAsync(string sql)
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = sql;
+
+        return await cmd.ExecuteScalarAsync();
+
+    }
+
+    private async Task ExecuteAsync(string sql) => _ = await ScalarAsync(sql);
 
     private async Task<int> CountEntryEmbeddingsAsync()
     {

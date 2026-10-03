@@ -172,6 +172,69 @@ public sealed class BackupRestoreDatabaseWorkerTests
 
     }
 
+    /// <summary>
+    /// The sweep skips a legacy virtual mirror, which this runtime has no module to open, and still
+    /// sweeps a plain one in the same restore.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for the <c>vec0</c> mirror, because it records the same
+    /// <c>CREATE VIRTUAL TABLE</c> text, which is all that classifying a mirror reads. The stand-in can
+    /// be read and deleted from, so every one of its rows still being there afterwards, orphan
+    /// included, is what shows no statement reached it.
+    /// </remarks>
+    [Fact]
+    public async Task The_vector_mirror_sweep_skips_a_legacy_virtual_mirror_and_still_sweeps_a_plain_one()
+    {
+
+        await using SqliteConnection connection = await OpenEmbeddingsAsync(legacyVirtualMirror: true);
+
+        await using (SqliteCommand attachments = connection.CreateCommand())
+        {
+
+            attachments.CommandText = """
+                CREATE TABLE "session_attachment_embeddings" (
+                    "ChunkId" TEXT NOT NULL PRIMARY KEY,
+                    "Embedding" BLOB NOT NULL,
+                    "Dim" INTEGER NOT NULL);
+
+                CREATE TABLE "session_attachment_embeddings_vec" (
+                    "ChunkId" TEXT NOT NULL PRIMARY KEY,
+                    "Embedding" BLOB NOT NULL);
+
+                INSERT INTO "session_attachment_embeddings" VALUES ('kept-chunk', X'00', 1536);
+
+                INSERT INTO "session_attachment_embeddings_vec" VALUES ('kept-chunk', X'00');
+
+                INSERT INTO "session_attachment_embeddings_vec" VALUES ('orphaned-chunk', X'00');
+                """;
+
+            _ = await attachments.ExecuteNonQueryAsync();
+
+        }
+
+        long removed = await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
+            connection,
+            1536,
+            CancellationToken.None);
+
+        Assert.Equal(1, removed);
+
+        Assert.Equal(
+            [
+                KeptIdentity.Replace("-", string.Empty).ToLowerInvariant(),
+                DroppedIdentity.Replace("-", string.Empty).ToLowerInvariant(),
+                OrphanedIdentity.Replace("-", string.Empty).ToLowerInvariant(),
+            ],
+            await IdentitiesAsync(connection, "entry_embeddings_vec"));
+
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.CommandText = "SELECT \"ChunkId\" FROM \"session_attachment_embeddings_vec\";";
+
+        Assert.Equal("kept-chunk", Assert.IsType<string>(await read.ExecuteScalarAsync()));
+
+    }
+
     private const string KeptIdentity = "a1a1a1a1-b2b2-4c3c-8d4d-5e5e6f6f7071";
 
     private const string DroppedIdentity = "b2b2b2b2-c3c3-4d4d-8e5e-6f6f70708182";
@@ -181,7 +244,7 @@ public sealed class BackupRestoreDatabaseWorkerTests
     /// <summary>
     /// A base embedding table and its mirror, at the two widths and the three states that matter.
     /// </summary>
-    private static async Task<SqliteConnection> OpenEmbeddingsAsync()
+    private static async Task<SqliteConnection> OpenEmbeddingsAsync(bool legacyVirtualMirror = false)
     {
 
         SqliteConnection connection = new("Data Source=:memory:");
@@ -190,15 +253,21 @@ public sealed class BackupRestoreDatabaseWorkerTests
 
         await using SqliteCommand create = connection.CreateCommand();
 
+        string mirror = legacyVirtualMirror
+            ? """CREATE VIRTUAL TABLE "entry_embeddings_vec" USING fts5("EntryId", "Embedding");"""
+            : """
+              CREATE TABLE "entry_embeddings_vec" (
+                  "EntryId" TEXT NOT NULL PRIMARY KEY,
+                  "Embedding" BLOB NOT NULL);
+              """;
+
         create.CommandText = $"""
             CREATE TABLE "entry_embeddings" (
                 "EntryId" TEXT NOT NULL PRIMARY KEY,
                 "Embedding" BLOB NOT NULL,
                 "Dim" INTEGER NOT NULL);
 
-            CREATE TABLE "entry_embeddings_vec" (
-                "EntryId" TEXT NOT NULL PRIMARY KEY,
-                "Embedding" BLOB NOT NULL);
+            {mirror}
 
             INSERT INTO "entry_embeddings" VALUES ('{KeptIdentity.ToUpperInvariant()}', X'00', 1536);
 

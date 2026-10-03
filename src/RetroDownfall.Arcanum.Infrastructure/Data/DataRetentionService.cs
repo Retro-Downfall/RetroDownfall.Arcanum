@@ -4542,21 +4542,36 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-        await using DbCommand tableCommand = connection.CreateCommand();
-
-        tableCommand.Transaction = transaction;
-
-        tableCommand.CommandText =
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
-
-        Add(tableCommand, "@table", table);
-
-        object? tableResult = await tableCommand.ExecuteScalarAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
+        if (SagaVectorMirror.IsMirrorName(table))
         {
-            return 0;
+            // Classified rather than probed, for the reason TableExistsAsync gives.
+            if (!await IsPlainVectorMirrorAsync(
+                    connection,
+                    transaction,
+                    table,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                return 0;
+            }
+        }
+        else
+        {
+            await using DbCommand tableCommand = connection.CreateCommand();
+
+            tableCommand.Transaction = transaction;
+
+            tableCommand.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
+
+            Add(tableCommand, "@table", table);
+
+            object? tableResult = await tableCommand.ExecuteScalarAsync(
+                cancellationToken).ConfigureAwait(false);
+
+            if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
+            {
+                return 0;
+            }
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -5921,12 +5936,45 @@ internal sealed partial class DataRetentionService(
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// Whether a vector mirror is a plain table, the only kind this runtime can count or delete from.
+    /// </summary>
+    private static async Task<bool> IsPlainVectorMirrorAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string table,
+        CancellationToken cancellationToken) =>
+        await SagaVectorMirror.ClassifyAsync(
+            connection,
+            transaction,
+            table,
+            cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
+
+    /// <summary>
+    /// Whether a table is there to be counted or deleted from.
+    /// </summary>
+    /// <remarks>
+    /// A vector mirror is classified from its definition rather than probed for existence, because a
+    /// legacy <c>vec0</c> virtual table also has a row in <c>sqlite_master</c> and this runtime has no
+    /// module to open it with: a count or delete over it fails with "no such module". So a mirror is
+    /// present here only when it is a plain table, and a legacy one is skipped as though it held
+    /// nothing, which is how the Covenant purge and the staged restore treat it.
+    /// </remarks>
     private async Task<bool> TableExistsAsync(
         string table,
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
+
+        if (SagaVectorMirror.IsMirrorName(table))
+        {
+            return await IsPlainVectorMirrorAsync(
+                connection,
+                transaction: null,
+                table,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         await using DbCommand command = connection.CreateCommand();
 
