@@ -603,7 +603,10 @@ internal sealed partial class SagaMemoryStore(
             AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
         }
 
-        sql.Append(" ORDER BY m.\"CreatedAt\" DESC LIMIT @limit OFFSET @offset");
+        // The identity breaks a tie, so the order is total and is the one ListPositionsAfterAsync walks. A
+        // page boundary inside memories that share a CreatedAt would otherwise fall wherever the scan
+        // happened to leave them, which is a property of how the rows are laid out and not of the data.
+        sql.Append(" ORDER BY m.\"CreatedAt\" DESC, m.\"Id\" DESC LIMIT @limit OFFSET @offset");
 
         AddParameter(cmd, "@limit", limit);
 
@@ -672,27 +675,28 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
     {
-        // The guard, not the purge. A caller that reached this method without going through the
-        // sensitivity purge boundary would remove a labelled Saga fact and leave its label behind,
-        // pointing at content nothing admits is tainted (§10.20.2).
-        if (labeledArtifactGuard is { } guard && Guid.TryParse(id, out Guid memoryId))
-        {
-            Result unlabeled = await guard
-                .EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, memoryId, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (unlabeled.IsFailure)
-            {
-                throw new InvalidOperationException(unlabeled.Error.Message);
-            }
-        }
-
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await using DbTransaction transaction = BeginWriteTransaction(connection);
+
+                // The guard, not the purge. A caller that reached this method without going through the
+                // sensitivity purge boundary would remove a labelled Saga fact and leave its label behind,
+                // pointing at content nothing admits is tainted (§10.20.2). Asked here, after the write
+                // lock is taken, so no label can be committed between the answer and the delete below.
+                if (labeledArtifactGuard is { } guard && Guid.TryParse(id, out Guid memoryId))
+                {
+                    Result unlabeled = await guard
+                        .EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, memoryId, transaction, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (unlabeled.IsFailure)
+                    {
+                        throw new InvalidOperationException(unlabeled.Error.Message);
+                    }
+                }
 
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
@@ -756,27 +760,29 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task DeleteAllAsync(CancellationToken cancellationToken)
     {
-        // A set-based delete examines no identity at all, so there is no single artifact to ask about.
-        // The only honest question is whether the kind still has a labelled member anywhere, and the
-        // only safe answer for "yes" is to refuse rather than remove rows nothing ever examined.
-        if (labeledArtifactGuard is { } guard)
-        {
-            Result none = await guard
-                .EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (none.IsFailure)
-            {
-                throw new InvalidOperationException(none.Error.Message);
-            }
-        }
-
         await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await using DbTransaction transaction = BeginWriteTransaction(connection);
+
+                // A set-based delete examines no identity at all, so there is no single artifact to ask
+                // about. The only honest question is whether the kind still has a labelled member
+                // anywhere, and the only safe answer for "yes" is to refuse rather than remove rows
+                // nothing ever examined. Asked here, after the write lock is taken, so no label can be
+                // committed between the answer and the deletes below.
+                if (labeledArtifactGuard is { } guard)
+                {
+                    Result none = await guard
+                        .EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (none.IsFailure)
+                    {
+                        throw new InvalidOperationException(none.Error.Message);
+                    }
+                }
 
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
@@ -982,6 +988,17 @@ internal sealed partial class SagaMemoryStore(
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// Opens a write transaction that takes the write lock at once rather than at its first write.
+    /// </summary>
+    /// <remarks>
+    /// A delete that asks the labelled-artifact guard has to ask while it already holds the lock. A
+    /// deferred transaction would take it only at the first delete, leaving the answer and the delete
+    /// to be separated by a label committed in between.
+    /// </remarks>
+    private static SqliteTransaction BeginWriteTransaction(DbConnection connection) =>
+        ((SqliteConnection)connection).BeginTransaction(deferred: false);
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {

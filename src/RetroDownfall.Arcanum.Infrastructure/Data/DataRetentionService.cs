@@ -3436,11 +3436,6 @@ internal sealed partial class DataRetentionService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-        await RefuseLabeledUntargetedResetAsync(
-            scope,
-            campaignId,
-            cancellationToken).ConfigureAwait(false);
-
         List<MemoryResetSelection> selections = [];
 
         foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
@@ -3462,6 +3457,14 @@ internal sealed partial class DataRetentionService(
 
         try
         {
+            // First, once the transaction holds the write lock, so no label can be committed between
+            // the answer and the deletes below.
+            await RefuseLabeledUntargetedResetAsync(
+                scope,
+                campaignId,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+
             DataRetentionConflict[] conflicts =
                 await ReadMemoryResetConflictsInTransactionAsync(
                     connection,
@@ -5947,15 +5950,14 @@ internal sealed partial class DataRetentionService(
     /// Whether the labelled-artifact guard permits removing one named artifact by raw delete.
     /// </summary>
     /// <remarks>
-    /// Asked before the mutation transaction opens, not inside it. This service and the guard read
-    /// the same scoped Grimoire connection, and a command issued on a connection that already holds
-    /// a transaction is refused by the provider, so "inside the transaction" is not a shape this
-    /// seam can take. <c>SagaMemoryStore</c>'s own bulk delete asks in the same place.
+    /// Asked before the mutation transaction opens, so it is for a delete that has no transaction of
+    /// its own to ask in. A delete that does owns the question inside it, through the overload below:
+    /// the guard reads through the transaction it is handed, which is what a command issued on a
+    /// connection that already holds a transaction has to do.
     ///
-    /// <para>The guard is required rather than optional. An installation with no Covenant arm still
-    /// gets a truthful answer from the guard itself, which reads a missing label table as "nothing
-    /// protected exists here" and returns success — so the absent-guard branch bought nothing, and
-    /// what it cost was every composition that forgot the argument skipping the refusal in silence.</para>
+    /// <para>The guard is required rather than optional. Every composition has the Core label table,
+    /// so the guard always has something to read, and what an optional guard cost was every
+    /// composition that forgot the argument skipping the refusal in silence.</para>
     /// </remarks>
     private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
         SensitiveArtifactKind kind,
@@ -5966,18 +5968,38 @@ internal sealed partial class DataRetentionService(
             .ConfigureAwait(false);
 
     /// <summary>
-    /// Whether the labelled-artifact guard permits a set-based delete over one whole kind.
+    /// Whether the labelled-artifact guard permits removing one named artifact, asked inside the
+    /// transaction that removes it.
+    /// </summary>
+    /// <remarks>
+    /// The answer and the delete are one moment: a label cannot be committed between them, because the
+    /// transaction already holds the write lock every label writer needs.
+    /// </remarks>
+    private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        Guid artifactId,
+        DbTransaction transaction,
+        CancellationToken cancellationToken) =>
+        await labeledArtifactGuard
+            .EnsureUnlabeledAsync(kind, artifactId, transaction, cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Whether the labelled-artifact guard permits a set-based delete over one whole kind, asked inside
+    /// the transaction that deletes.
     /// </summary>
     /// <remarks>
     /// The bulk arm, for the statements that examine no identity at all. A per-artifact check cannot
     /// see rows it never enumerated, so the only honest question is whether the kind still has a
-    /// labelled member anywhere and the only safe answer for "yes" is to refuse (§10.20.2).
+    /// labelled member anywhere and the only safe answer for "yes" is to refuse (§10.20.2). Asked in
+    /// the delete's own transaction for the reason the per-artifact overload is.
     /// </remarks>
     private async ValueTask<Result> EnsureKindUnlabeledAsync(
         SensitiveArtifactKind kind,
+        DbTransaction transaction,
         CancellationToken cancellationToken) =>
         await labeledArtifactGuard
-            .EnsureNoneLabeledAsync(kind, cancellationToken)
+            .EnsureNoneLabeledAsync(kind, transaction, cancellationToken)
             .ConfigureAwait(false);
 
     /// <summary>
@@ -6037,6 +6059,7 @@ internal sealed partial class DataRetentionService(
     private async Task RefuseLabeledUntargetedResetAsync(
         MemoryResetScope scope,
         Guid? campaignId,
+        DbTransaction transaction,
         CancellationToken cancellationToken)
     {
         if (campaignId is not null)
@@ -6060,6 +6083,7 @@ internal sealed partial class DataRetentionService(
 
         Result unlabeled = await EnsureKindUnlabeledAsync(
             protectedKind,
+            transaction,
             cancellationToken).ConfigureAwait(false);
 
         if (unlabeled.IsFailure)

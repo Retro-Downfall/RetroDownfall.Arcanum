@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -173,6 +175,121 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A label table that cannot be read refuses the delete, on every arm, rather than passing it.
+    /// </summary>
+    /// <remarks>
+    /// The label table is a Core object at every schema version, so "it could not be read" is never
+    /// "nothing is protected here": it is a Grimoire whose protection cannot be checked. The failure is a
+    /// real one - a temporary table of the same name shadows the label table on this connection, so the
+    /// read fails on a column it does not have - and the refusal names no artifact.
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData(false, false)]
+
+    [InlineData(false, true)]
+
+    [InlineData(true, false)]
+
+    [InlineData(true, true)]
+
+    public async Task An_unreadable_label_table_refuses_the_delete_instead_of_passing_it(bool bulk, bool inTransaction)
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactGuard guard = CreateGuard();
+
+        Guid artifactId = Guid.NewGuid();
+
+        await UnreadableLabelTableAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteTransaction? transaction = inTransaction
+            ? connection.BeginTransaction(deferred: false)
+            : null;
+
+        Result refused = (bulk, inTransaction) switch
+        {
+
+            (false, false) => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None),
+
+            (false, true) => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction!, CancellationToken.None),
+
+            (true, false) => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, CancellationToken.None),
+
+            (true, true) => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction!, CancellationToken.None),
+
+        };
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        Assert.DoesNotContain(artifactId.ToString("D"), refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    /// <summary>
+    /// A label the caller's own transaction has written and not committed is seen by the check made in
+    /// it, which is what makes the check and the delete one moment.
+    /// </summary>
+    /// <remarks>
+    /// Another connection could not see an uncommitted label at all, and a check that reads on its own
+    /// connection or outside the transaction would answer "unlabelled" here.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_label_written_in_the_callers_transaction_is_seen_by_the_check_made_in_it()
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactGuard guard = CreateGuard();
+
+        Guid artifactId = Guid.NewGuid();
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+        Assert.True(
+            (await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction, CancellationToken.None)).IsSuccess);
+
+        Assert.True(
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, CancellationToken.None)).IsSuccess);
+
+        await SeedLabelAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None, transaction);
+
+        Result single = await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction, CancellationToken.None);
+
+        Assert.True(single.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, single.Error.Code);
+
+        Assert.True(
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, CancellationToken.None)).IsFailure);
+
+        // The bulk arm is per kind, inside a transaction as outside one.
+        Assert.True(
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, transaction, CancellationToken.None)).IsSuccess);
+
+        await transaction.RollbackAsync();
+
+        Assert.True(
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, CancellationToken.None)).IsSuccess);
+
+    }
+
     private ICovenantLabeledArtifactGuard CreateGuard()
     {
 
@@ -182,14 +299,40 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         return new CovenantLabeledArtifactGuard(
             new ArtifactSensitivityLedger(connections),
-            connections);
+            connections,
+            NullLogger<CovenantLabeledArtifactGuard>.Instance);
+
+    }
+
+    /// <summary>
+    /// Makes the label table unreadable on this connection by shadowing it with a temporary table of the
+    /// same name that has none of its columns.
+    /// </summary>
+    private async Task UnreadableLabelTableAsync()
+    {
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "CREATE TEMP TABLE artifact_sensitivity (Unreadable INTEGER);";
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
 
     }
 
     private async Task SeedLabelAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
@@ -202,6 +345,8 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
         }
 
         await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
 
         command.CommandText = """
             INSERT INTO artifact_sensitivity (

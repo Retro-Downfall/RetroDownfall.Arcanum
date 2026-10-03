@@ -405,7 +405,8 @@ internal sealed class InstallationResetExistingGrimoire(
                 loggerFactory.CreateLogger<DataRetentionService>(),
                 new CovenantLabeledArtifactGuard(
                     new ArtifactSensitivityLedger(covenantConnections),
-                    covenantConnections));
+                    covenantConnections,
+                    loggerFactory.CreateLogger<CovenantLabeledArtifactGuard>()));
 
             return await action(
                 retention,

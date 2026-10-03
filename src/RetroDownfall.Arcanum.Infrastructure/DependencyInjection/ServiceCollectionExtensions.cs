@@ -2250,7 +2250,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICovenantLabeledArtifactGuard>(
             static sp => new CovenantLabeledArtifactGuard(
                 sp.GetRequiredService<IArtifactSensitivityLedger>(),
-                sp.GetRequiredService<ICovenantConnectionSource>()));
+                sp.GetRequiredService<ICovenantConnectionSource>(),
+                sp.GetRequiredService<ILogger<CovenantLabeledArtifactGuard>>()));
 
         services.AddScoped<CovenantSensitivePurgeAuthorityScope>();
 

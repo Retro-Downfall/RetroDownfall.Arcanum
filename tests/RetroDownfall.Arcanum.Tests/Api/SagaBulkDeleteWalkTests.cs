@@ -45,8 +45,8 @@ public sealed class SagaBulkDeleteWalkTests
     private const int UnparseablePosition = 255;
 
     /// <summary>
-    /// Every memory is examined once, in order, whatever the purger removes between pages, and the
-    /// route reports the deletion it performed.
+    /// Every memory is examined once, in order, whatever the purger removes between pages. The route
+    /// answers 204 with no count, so the purger's recorded outcomes are what account for every memory.
     /// </summary>
     [SkippableFact]
     public async Task Deleting_every_Saga_memory_examines_each_one_once_in_order_across_pages_and_a_tie_group()

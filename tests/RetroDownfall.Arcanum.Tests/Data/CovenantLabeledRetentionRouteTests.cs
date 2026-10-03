@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -21,6 +23,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -308,6 +312,193 @@ public sealed class CovenantLabeledRetentionRouteTests
             await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
 
         Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", artifactId));
+
+    }
+
+    /// <summary>
+    /// An untargeted memory reset asks the label guard inside the transaction that deletes, so a label
+    /// written after the answer cannot be removed along with the memory it names.
+    /// </summary>
+    /// <remarks>
+    /// A second writer on its own connection tries to label the memory right after the guard answers,
+    /// which is where a label written between the check and the delete would land. The reset holds the
+    /// write lock from the moment its transaction opens, so that writer is blocked; a reset that asked
+    /// before its transaction opened would let the label commit and then delete the memory under it,
+    /// leaving a label that names nothing.
+    /// </remarks>
+    [SkippableTheory]
+
+    [InlineData("saga")]
+
+    [InlineData("lexicon")]
+
+    public async Task A_memory_reset_asks_the_label_guard_inside_its_transaction(string store)
+    {
+
+        RequireSqlCipher();
+
+        bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
+
+        await AssertGuardAskedInsideTheDeleteTransactionAsync(
+            saga,
+            async client =>
+            {
+
+                MemoryResetRequest request = new(saga ? MemoryResetScope.Saga : MemoryResetScope.Lexicon);
+
+                HttpResponseMessage planned = await client.PostAsync(
+                    "/api/data/memory/reset/plan",
+                    Json(request, ArcanumJsonContext.Default.MemoryResetRequest));
+
+                string plannedPayload = await planned.Content.ReadAsStringAsync();
+
+                ApiResponse<DataRetentionPlan> plan = System.Text.Json.JsonSerializer.Deserialize(
+                    plannedPayload,
+                    ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)
+                    ?? throw new InvalidOperationException($"Unreadable retention plan: {plannedPayload}");
+
+                Assert.True(plan.IsSuccess, plannedPayload);
+
+                HttpResponseMessage reset = await client.PostAsync(
+                    "/api/data/memory/reset",
+                    Json(request with { ExpectedPlanId = plan.Data!.PlanId }, ArcanumJsonContext.Default.MemoryResetRequest));
+
+                ApiResponse<DataRetentionApplyResult> body = await ReadAsync(reset);
+
+                Assert.True(body.IsSuccess, body.Error?.Message);
+
+            });
+
+    }
+
+    /// <summary>
+    /// The retention prune asks the label guard inside the transaction that deletes each Saga memory and
+    /// Lexicon entry it selects, for the reason the reset does.
+    /// </summary>
+    [SkippableTheory]
+
+    [InlineData("saga")]
+
+    [InlineData("lexicon")]
+
+    public async Task A_prune_asks_the_label_guard_inside_each_candidates_transaction(string store)
+    {
+
+        RequireSqlCipher();
+
+        bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
+
+        await AssertGuardAskedInsideTheDeleteTransactionAsync(
+            saga,
+            async client =>
+            {
+
+                HttpResponseMessage enabled = await client.PutAsync(
+                    "/api/data/retention",
+                    Json(
+                        new RetentionRuleUpdateRequest(saga ? "saga-memories" : "lexicon-entries", true, 1),
+                        ArcanumJsonContext.Default.RetentionRuleUpdateRequest));
+
+                Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+
+                HttpResponseMessage pruned = await client.PostAsync(
+                    "/api/data/prune",
+                    Json(
+                        new DataRetentionApplyRequest(
+                            new DataRetentionRequest(DataRetentionOperation.Prune)),
+                        ArcanumJsonContext.Default.DataRetentionApplyRequest));
+
+                Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
+
+            });
+
+    }
+
+    /// <summary>
+    /// Seeds one unlabelled memory or entry the operation deletes, runs the operation with a second
+    /// writer trying to label it right after the guard answers, and asserts that writer was blocked.
+    /// </summary>
+    private static async Task AssertGuardAskedInsideTheDeleteTransactionAsync(
+        bool saga,
+        Func<HttpClient, Task> operation)
+    {
+
+        SqliteConnection? intruderConnection = null;
+
+        LabelIntruder intruder = new(
+            _ => Task.FromResult(intruderConnection!),
+            saga ? SensitiveArtifactKind.Saga : SensitiveArtifactKind.Lexicon);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                Func<IServiceProvider, object> real = services
+                    .Last(static descriptor => descriptor.ServiceType == typeof(ICovenantLabeledArtifactGuard))
+                    .ImplementationFactory
+                    ?? throw new InvalidOperationException("The guard is registered by a factory.");
+
+                services.AddScoped<ICovenantLabeledArtifactGuard>(
+                    sp => new LabelIntrusionGuard((ICovenantLabeledArtifactGuard)real(sp), intruder));
+
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid artifactId = Guid.NewGuid();
+
+        intruder.ArtifactId = artifactId;
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+
+            SqliteConnection connection = await OpenAsync(scope);
+
+            if (saga)
+            {
+
+                await SeedSagaMemoryAsync(connection, artifactId);
+
+            }
+            else
+            {
+
+                await SeedLexiconEntryAsync(connection, artifactId);
+
+            }
+
+        }
+
+        Result<IGrimoireOrdinaryConnectionLease> opened = await factory.Services
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+            .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, CancellationToken.None);
+
+        Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
+
+        await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+        intruderConnection = lease.Connection;
+
+        await operation(client);
+
+        Assert.Equal(1, intruder.Attempts);
+
+        Assert.Equal(1, intruder.Blocked);
+
+        await using AsyncServiceScope after = factory.Services.CreateAsyncScope();
+
+        SqliteConnection verify = await OpenAsync(after);
+
+        Assert.Equal(0, await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
+
+        // No label survives the memory it names.
+        Assert.Equal(0, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", artifactId));
+
+        Assert.Equal(1, intruder.AskedInsideTransaction);
+
+        Assert.Equal(0, intruder.AskedOutsideTransaction);
 
     }
 

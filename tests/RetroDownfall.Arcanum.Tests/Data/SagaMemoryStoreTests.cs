@@ -1,3 +1,5 @@
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -339,6 +341,182 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(expected, seen);
 
         Assert.Equal(0, await _store!.CountAsync(CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// The walk's cursor is the stored <c>CreatedAt</c> text, never a reformatted instant, so a Grimoire
+    /// that still holds an older spelling resumes at exactly the row it left.
+    /// </summary>
+    /// <remarks>
+    /// Every row is written through the store and then rewritten by raw SQL to a spelling an earlier
+    /// build could have stored: space-separated, with an offset, with no suffix, one that is no instant
+    /// at all, and several identities sharing one value. A walk that parsed the cursor into an instant and
+    /// formatted it again would compare against text <c>ORDER BY</c> never sorted, and would skip or
+    /// revisit rows around every spelling that does not survive the round trip.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ListPositionsAfterAsync_ResumesFromTheStoredCreatedAtTextWhateverItsSpelling()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (string Id, string CreatedAt)[] rows =
+        [
+            ("mem-a", "2026-03-01T10:00:00.0000000Z"),
+            ("MEM-A", "2026-03-01T10:00:00.0000000Z"),
+            ("Mem-a", "2026-03-01T10:00:00.0000000Z"),
+            ("mem-b", "2026-03-01 10:00:00"),
+            ("mem-c", "2026-03-01 10:00:00"),
+            ("mem-d", "2026-03-01T10:00:00+02:00"),
+            ("mem-e", "2026-03-01T10:00:00+02:00"),
+            ("mem-f", "2026-03-01T10:00:00"),
+            ("mem-g", "2026-03-01T10:00:00"),
+            ("mem-h", "2026-03-01T10:00:00"),
+            ("mem-i", "2026-02-28T23:59:59.9999999Z"),
+            ("mem-j", "not an instant"),
+            ("mem-\u00e9", "2026-03-01T10:00:00.0000000Z"),
+        ];
+
+        foreach ((string id, _) in Enumerable.Reverse(rows))
+        {
+
+            _ = await _store!.InsertAsync(id, $"memory {id}", DateTimeOffset.Parse("2026-03-01T10:00:00Z"), null, null, "extraction", Vec(1f), CancellationToken.None);
+
+        }
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        foreach ((string id, string createdAt) in rows)
+        {
+
+            await using DbCommand rewrite = connection.CreateCommand();
+
+            rewrite.CommandText = """UPDATE "saga_memories" SET "CreatedAt" = @createdAt WHERE "Id" = @id""";
+
+            DbParameter createdAtParameter = rewrite.CreateParameter();
+
+            createdAtParameter.ParameterName = "@createdAt";
+
+            createdAtParameter.Value = createdAt;
+
+            rewrite.Parameters.Add(createdAtParameter);
+
+            DbParameter idParameter = rewrite.CreateParameter();
+
+            idParameter.ParameterName = "@id";
+
+            idParameter.Value = id;
+
+            rewrite.Parameters.Add(idParameter);
+
+            Assert.Equal(1, await rewrite.ExecuteNonQueryAsync());
+
+        }
+
+        string[] expected =
+        [
+            .. rows
+                .OrderByDescending(static row => row.CreatedAt, StringComparer.Ordinal)
+                .ThenByDescending(static row => row.Id, StringComparer.Ordinal)
+                .Select(static row => row.Id),
+        ];
+
+        List<string> visited = [];
+
+        SagaMemoryPosition? after = null;
+
+        while (true)
+        {
+
+            SagaMemoryPosition[] page = await _store!.ListPositionsAfterAsync(after, 3, CancellationToken.None);
+
+            if (page.Length == 0)
+            {
+
+                break;
+
+            }
+
+            Assert.InRange(page.Length, 1, 3);
+
+            foreach (SagaMemoryPosition position in page)
+            {
+
+                visited.Add(position.Id);
+
+                // The cursor is the text the row holds, byte for byte.
+                Assert.Equal(rows.Single(row => row.Id == position.Id).CreatedAt, position.CreatedAt);
+
+                Assert.True(await _store.DeleteAsync(position.Id, CancellationToken.None));
+
+            }
+
+            after = page[^1];
+
+        }
+
+        Assert.Equal(expected, visited);
+
+        Assert.Equal(0, await _store!.CountAsync(CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A listing paged by limit and offset gives every memory exactly once, and memories that share an
+    /// instant are listed in the same total order the bulk-delete walk follows.
+    /// </summary>
+    /// <remarks>
+    /// Memories are written out of identity order and three share each instant after the first page
+    /// boundary, so the order they were stored in is not the order they sort in. Without the identity as
+    /// a tie-break the order among tied memories is whatever the scan happens to produce, and a page
+    /// boundary inside a tie depends on that rather than on anything the listing promises.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ListAsync_And_ListCurationRowsAsync_PageMemoriesSharingAnInstantExactlyOnceInIdentityOrder()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset origin = DateTimeOffset.Parse("2026-03-01T00:00:00Z");
+
+        for (int step = 0; step < 27; step++)
+        {
+
+            int index = step * 7 % 27;
+
+            _ = await _store!.InsertAsync($"mem-{index:D2}", $"memory {index}", origin.AddMinutes(index / 9), null, null, "extraction", Vec(1f), CancellationToken.None);
+
+        }
+
+        string[] expected =
+        [
+            .. Enumerable.Range(0, 27)
+                .OrderByDescending(static index => index / 9)
+                .ThenByDescending(static index => $"mem-{index:D2}", StringComparer.Ordinal)
+                .Select(static index => $"mem-{index:D2}"),
+        ];
+
+        List<string> listed = [];
+
+        List<string> curated = [];
+
+        for (int offset = 0; offset < expected.Length; offset += 4)
+        {
+
+            listed.AddRange(
+                (await _store!.ListAsync(null, null, MemoryScope.Installation, 4, offset, CancellationToken.None))
+                    .Select(static memory => memory.Id));
+
+            curated.AddRange(
+                (await _store.ListCurationRowsAsync(null, null, MemoryScope.Installation, 4, offset, CancellationToken.None))
+                    .Select(static row => row.Memory.Id));
+
+        }
+
+        Assert.Equal(expected, listed);
+
+        Assert.Equal(expected, curated);
 
     }
 

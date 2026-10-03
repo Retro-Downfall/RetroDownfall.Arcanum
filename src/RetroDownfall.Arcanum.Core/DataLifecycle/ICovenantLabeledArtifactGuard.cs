@@ -1,3 +1,5 @@
+using System.Data.Common;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -24,9 +26,11 @@ public interface ICovenantLabeledArtifactGuard
     /// Confirms the artifact carries no live sensitivity label.
     /// </summary>
     /// <remarks>
-    /// An installation with no Covenant arm answers success: there is no label table to consult and
-    /// nothing protected to guard. A failure here means the caller reached a labelled artifact through a
-    /// path that cannot erase it correctly.
+    /// An installation with no Covenant arm answers success: its label table, a Core object, is empty and
+    /// nothing is protected. A label table that cannot be read answers failure, not success, because a
+    /// Grimoire whose protection cannot be checked is not one nothing is protected in. A failure here
+    /// otherwise means the caller reached a labelled artifact through a path that cannot erase it
+    /// correctly.
     /// </remarks>
     ValueTask<Result> EnsureUnlabeledAsync(
         SensitiveArtifactKind kind,
@@ -43,6 +47,36 @@ public interface ICovenantLabeledArtifactGuard
     /// </remarks>
     ValueTask<Result> EnsureNoneLabeledAsync(
         SensitiveArtifactKind kind,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Confirms the artifact carries no live sensitivity label, reading inside the caller's write
+    /// transaction.
+    /// </summary>
+    /// <remarks>
+    /// The shape a delete that owns a transaction has to use. A check made before the transaction opens
+    /// and a delete made inside it are two moments, and a label written between them is removed with its
+    /// artifact and leaves nothing behind. Asked inside the transaction, the answer and the delete are
+    /// one moment. The read goes through <paramref name="transaction"/> on its own connection, so no
+    /// second connection is opened and a label the same transaction has written is seen.
+    /// </remarks>
+    ValueTask<Result> EnsureUnlabeledAsync(
+        SensitiveArtifactKind kind,
+        Guid artifactId,
+        DbTransaction transaction,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Confirms no artifact of this kind carries a live label anywhere in the installation, reading
+    /// inside the caller's write transaction.
+    /// </summary>
+    /// <remarks>
+    /// The bulk arm for a delete that owns a transaction, for the reason the single arm above has a
+    /// transaction form.
+    /// </remarks>
+    ValueTask<Result> EnsureNoneLabeledAsync(
+        SensitiveArtifactKind kind,
+        DbTransaction transaction,
         CancellationToken cancellationToken = default);
 
 }

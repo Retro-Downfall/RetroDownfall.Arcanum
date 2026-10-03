@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -110,7 +111,14 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// The erasure key provider the store guards its inserts with. Left out, the store gets its own
     /// isolated keyring over an empty in-memory credential store, which never reaches the real keychain.
     /// </param>
-    public static Task<SagaStoreHarness> CreateAsync(bool annalsEnabled, IMemoryErasureKeyProvider? erasureKeys = null)
+    /// <param name="labeledArtifactGuard">
+    /// Builds the labelled-artifact guard the store's deletes ask, from the harness's own context. Left
+    /// out, the store is built with none, as every other suite on this harness expects.
+    /// </param>
+    public static Task<SagaStoreHarness> CreateAsync(
+        bool annalsEnabled,
+        IMemoryErasureKeyProvider? erasureKeys = null,
+        Func<ArcanumDbContext, ICovenantLabeledArtifactGuard>? labeledArtifactGuard = null)
     {
 
         // Must run before the fixture is constructed: GrimoireFixture's constructor silently no-ops
@@ -139,7 +147,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
                         },
                     },
                 }),
-            erasureKeys ?? MemoryErasureTestKeys.Isolated());
+            erasureKeys ?? MemoryErasureTestKeys.Isolated(),
+            labeledArtifactGuard?.Invoke(db));
 
         return Task.FromResult(new SagaStoreHarness(fixture, db, store, vectorAccelerator, new AnnalsStore(db)));
 
