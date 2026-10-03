@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -76,6 +77,11 @@ internal sealed class ContextCompressionService : IContextCompressionService
     /// Paged rather than sent whole, because the boundary is bounded and a long Session's compaction can
     /// select more Entries than one page carries. Each page is a stable identity list read before the
     /// purge, so no unexamined labelled Entry can leave through a set-based call.
+    ///
+    /// <para>A block ends the walk with the same typed code every other direct-deletion route answers: a
+    /// label that moved is <c>Covenant.StaleSnapshot</c>, anything else the kernel could not erase is
+    /// <c>Covenant.ManualArtifactErasureRequired</c>. The Entries erased before the block are already
+    /// gone, so the caller counts them from the Session rather than from this failure.</para>
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeSelectedEntriesAsync(
         IReadOnlyCollection<Guid> entryIds,
@@ -107,7 +113,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
             {
 
                 return new Error(
-                    ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                    CovenantSensitiveDeletion.BlockedError(purged.Value).Code,
                     "A protected Entry selected by compaction could not be erased and was left unchanged.");
 
             }
@@ -185,6 +191,8 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         int tokensAfter = tokensBefore;
 
+        string? stoppedBy = null;
+
         if (ordered.Count > 0)
         {
 
@@ -235,37 +243,36 @@ internal sealed class ContextCompressionService : IContextCompressionService
                 // A refused purge stops compaction rather than falling back to the ordinary delete.
                 // Removing the unlabelled remainder would leave the Session compacted around protected
                 // Entries that are still there, which is worse than not compacting at all.
-                _logger.LogWarning(
-                    "Compaction of session {SessionId} stopped: a protected Entry could not be erased ({Code}).",
-                    sessionId,
-                    attempted.Error.Code);
-
-                return new CompactResult(tokensBefore, tokensBefore, 0);
+                stoppedBy = attempted.Error.Code;
 
             }
-
-            foreach (Guid entryId in groupSafeDeletes)
+            else
             {
 
-                if (purged is { } outcome && !outcome.Value.RequiresOrdinaryDelete(entryId))
+                foreach (Guid entryId in groupSafeDeletes)
                 {
 
-                    if (outcome.Value.WasPurged(entryId))
+                    if (purged is { } outcome && !outcome.Value.RequiresOrdinaryDelete(entryId))
                     {
 
-                        removed++;
+                        if (outcome.Value.WasPurged(entryId))
+                        {
+
+                            removed++;
+
+                        }
+
+                        continue;
 
                     }
 
-                    continue;
+                    await _grimoire
+                        .DeleteEntryAsync(sessionId, entryId, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    removed++;
 
                 }
-
-                await _grimoire
-                    .DeleteEntryAsync(sessionId, entryId, cancellationToken)
-                    .ConfigureAwait(false);
-
-                removed++;
 
             }
 
@@ -280,7 +287,31 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
                 tokensAfter = CountTokens(messages, compressionProvider, compressionModel);
 
+                if (stoppedBy is not null)
+                {
+
+                    // What a stopped compaction removed is what the Session no longer holds of the set it
+                    // dispatched, not what the purge reported. A page that stopped at its third item took
+                    // the first two with it, and a purge that failed after erasing some of its items
+                    // reports none of them; counting from either would say less was removed than was.
+                    HashSet<Guid> remaining = [.. session.Entries.Select(static entry => entry.Id)];
+
+                    removed = groupSafeDeletes.Count(id => !remaining.Contains(id));
+
+                }
+
             }
+
+        }
+
+        if (stoppedBy is not null)
+        {
+
+            _logger.LogWarning(
+                "Compaction of session {SessionId} stopped after removing {Removed} entries: a protected Entry could not be erased ({Code}).",
+                sessionId,
+                removed,
+                stoppedBy);
 
         }
 
@@ -296,7 +327,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         }
 
-        return new CompactResult(tokensBefore, tokensAfter, removed);
+        return new CompactResult(tokensBefore, tokensAfter, removed, stoppedBy);
 
     }
 
