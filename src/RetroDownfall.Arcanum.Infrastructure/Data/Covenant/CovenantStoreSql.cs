@@ -477,11 +477,15 @@ internal static class CovenantStoreSql
     /// is the one returned, because the preflight token and the request digest bind it. The curation
     /// head is joined on the binding epoch, which is the epoch the commit will record and look the head
     /// up by, so the state a preflight shows is the state the commit compares and swaps against.</para>
+    ///
+    /// <para>The Campaign predicate is an equality, because the Campaign subject index is partial on a
+    /// non-null Campaign and only an equality implies that. An <c>IS</c> comparison would walk every
+    /// curation head the Campaign holds.</para>
     /// </remarks>
     internal static string CurationEffectFacts(bool campaignScoped)
     {
 
-        string campaignPredicate = campaignScoped ? "$campaign" : "NULL";
+        string campaignPredicate = campaignScoped ? "ch.CampaignId = $campaign" : "ch.CampaignId IS NULL";
 
         string scopedConfirmed = campaignScoped
             ? "EXISTS(SELECT 1 FROM covenant_heads c WHERE c.CampaignId = $campaign AND c.NormalizedKey = $key"
@@ -505,7 +509,7 @@ internal static class CovenantStoreSql
             FROM covenant_state st
             CROSS JOIN epoch
             LEFT JOIN covenant_curation_heads ch
-                ON ch.CampaignId IS {campaignPredicate}
+                ON {campaignPredicate}
                    AND ch.NormalizedKey = $key
                    AND ch.LaneCode = $lane
                    AND ch.KeyEpoch = epoch.Binding

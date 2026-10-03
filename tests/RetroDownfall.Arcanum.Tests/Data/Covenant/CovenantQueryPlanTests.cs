@@ -125,6 +125,54 @@ public sealed class CovenantQueryPlanTests
     }
 
     /// <summary>
+    /// The curation effect read a preflight makes seeks its scope's unique subject index on the Campaign
+    /// and the key, in both scopes.
+    /// </summary>
+    /// <remarks>
+    /// The Campaign subject index is partial on a non-null Campaign, so only an equality on the Campaign
+    /// implies it: an <c>IS</c> comparison cannot use the index and walks every curation head the
+    /// Campaign holds, which makes a preflight's cost grow with how much the operator curated elsewhere
+    /// in that Campaign. The head is joined on the lane and the binding epoch, which the index also
+    /// leads with the Campaign and the key for.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_curation_effect_read_seeks_its_subject_index(bool campaignScoped)
+    {
+
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        (string Name, object Value)[] parameters = campaignScoped
+            ?
+            [
+                ("$key", "a.key"),
+
+                ("$lane", 1),
+
+                ("$campaign", CovenantOperationGateFixture.CampaignOne.ToString("D")),
+            ]
+            :
+            [
+                ("$key", "a.key"),
+
+                ("$lane", 1),
+            ];
+
+        string plan = await ExplainAsync(fixture, CovenantStoreSql.CurationEffectFacts(campaignScoped), parameters);
+
+        Assert.Contains(
+            campaignScoped
+                ? "SEARCH ch USING INDEX ux_covenant_curation_heads_campaign_subject (CampaignId=? AND NormalizedKey=?"
+                : "SEARCH ch USING INDEX ux_covenant_curation_heads_global_subject (NormalizedKey=?",
+            plan,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN ch", plan, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
     /// The Section occupancy read a live staging call makes, in both scopes and with and without
     /// keys to set aside.
     /// </summary>
