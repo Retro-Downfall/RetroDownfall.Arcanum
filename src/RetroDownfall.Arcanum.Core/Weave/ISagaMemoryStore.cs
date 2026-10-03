@@ -120,6 +120,37 @@ public interface ISagaMemoryStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// One bounded page of memory positions for a walk that removes what it reads: every memory, in one
+    /// total order, strictly after <paramref name="after"/>, or from the newest when it is
+    /// <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>Newest first, with the identity breaking a tie, so no two memories share a place and a page
+    /// boundary can fall inside a group of memories that share a <c>CreatedAt</c>. The next page is
+    /// whatever follows the last position this one returned, never a count of rows to skip: a row removed
+    /// in the meantime cannot slide a later one past the walk, and a row already removed is never read
+    /// again. The position that resumes a walk does not have to belong to a row that still exists.</para>
+    ///
+    /// <para>Deliberately takes no scope, Session or text filter. Erasure has to reach every memory,
+    /// including the ones no turn in any Campaign can currently retrieve, so this lists them all.
+    /// <paramref name="limit"/> must be at least 1; a non-positive limit is refused rather than read as
+    /// "no limit".</para>
+    /// </remarks>
+    Task<SagaMemoryPosition[]> ListPositionsAfterAsync(
+        SagaMemoryPosition? after,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromException<SagaMemoryPosition[]>(
+            new NotSupportedException(
+                "This Saga memory store does not expose an ordered keyset walk over its memories."));
+
+    }
+
+    /// <summary>
     /// Whether a turn in <paramref name="scope"/> could reach at least one memory: one that is not
     /// retired, still has an embedding, and is owned by that scope.
     /// </summary>
@@ -264,3 +295,15 @@ public interface ISagaMemoryStore
     Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken);
 
 }
+
+/// <summary>
+/// Where one memory falls in the order a bulk walk visits Saga memories: newest first, the identity
+/// breaking a tie.
+/// </summary>
+/// <param name="CreatedAt">
+/// The memory's <c>CreatedAt</c> exactly as stored, which is the text the database orders by. A caller
+/// hands it back unchanged as part of the position and never parses or reformats it, so a stored value
+/// that would not survive a round trip through a timestamp still resumes the walk at the right row.
+/// </param>
+/// <param name="Id">The memory's identity exactly as stored.</param>
+public sealed record SagaMemoryPosition(string CreatedAt, string Id);

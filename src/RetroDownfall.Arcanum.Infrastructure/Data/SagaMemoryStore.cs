@@ -398,6 +398,70 @@ internal sealed partial class SagaMemoryStore(
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<SagaMemoryPosition[]> ListPositionsAfterAsync(
+        SagaMemoryPosition? after,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        // SQLite reads a negative LIMIT as "no limit", so a bad value here would not fail, it would read
+        // the whole table into one page.
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                // ListAsync's newest-first order with the identity added, which is the primary key, so no
+                // two rows tie. Strictly after the cursor: the CreatedAt bound alone is what the
+                // CreatedAt index can seek on, and the identity only decides among the rows that share the
+                // cursor's instant. The cursor is bound as the stored text, never as a parsed instant, so
+                // the comparison is against exactly what ORDER BY sorts.
+                if (after is null)
+                {
+                    cmd.CommandText =
+                        """
+                        SELECT m."Id", m."CreatedAt"
+                        FROM "saga_memories" m
+                        ORDER BY m."CreatedAt" DESC, m."Id" DESC
+                        LIMIT @limit
+                        """;
+                }
+                else
+                {
+                    cmd.CommandText =
+                        """
+                        SELECT m."Id", m."CreatedAt"
+                        FROM "saga_memories" m
+                        WHERE m."CreatedAt" <= @afterCreatedAt
+                          AND (m."CreatedAt" < @afterCreatedAt OR m."Id" < @afterId)
+                        ORDER BY m."CreatedAt" DESC, m."Id" DESC
+                        LIMIT @limit
+                        """;
+
+                    AddParameter(cmd, "@afterCreatedAt", after.CreatedAt);
+
+                    AddParameter(cmd, "@afterId", after.Id);
+                }
+
+                AddParameter(cmd, "@limit", limit);
+
+                List<SagaMemoryPosition> results = [];
+
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    results.Add(new SagaMemoryPosition(reader.GetString(1), reader.GetString(0)));
+                }
+
+                return results.ToArray();
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken)
     {
         return await SqliteBusyRetry.ExecuteAsync(

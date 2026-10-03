@@ -224,6 +224,140 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ListPositionsAfterAsync_WalksEveryMemoryOnceNewestFirstWithTheIdentityBreakingATie()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset origin = DateTimeOffset.Parse("2026-03-01T00:00:00Z");
+
+        // Three instants of ten memories each, so every page boundary of four falls inside a tie. They are
+        // written out of identity order, so the order the rows were stored in is not the order they sort in.
+        for (int step = 0; step < 30; step++)
+        {
+
+            int index = step * 7 % 30;
+
+            _ = await _store!.InsertAsync($"mem-{index:D2}", $"memory {index}", origin.AddMinutes(index / 10), null, null, "extraction", Vec(1f), CancellationToken.None);
+
+        }
+
+        string[] expected =
+        [
+            .. Enumerable.Range(0, 30)
+                .OrderByDescending(static index => index / 10)
+                .ThenByDescending(static index => $"mem-{index:D2}", StringComparer.Ordinal)
+                .Select(static index => $"mem-{index:D2}"),
+        ];
+
+        List<SagaMemoryPosition> walked = [];
+
+        SagaMemoryPosition? after = null;
+
+        while (true)
+        {
+
+            SagaMemoryPosition[] page = await _store!.ListPositionsAfterAsync(after, 4, CancellationToken.None);
+
+            if (page.Length == 0)
+            {
+
+                break;
+
+            }
+
+            Assert.InRange(page.Length, 1, 4);
+
+            walked.AddRange(page);
+
+            after = page[^1];
+
+        }
+
+        Assert.Equal(expected, walked.Select(static position => position.Id));
+
+        Assert.Equal(UtcInstantText.Format(origin.AddMinutes(2)), walked[0].CreatedAt);
+
+        Assert.Equal(UtcInstantText.Format(origin), walked[^1].CreatedAt);
+
+    }
+
+    [SkippableFact]
+    public async Task ListPositionsAfterAsync_MissesNoMemoryWhenEveryPageIsDeletedBeforeTheNextIsRead()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset origin = DateTimeOffset.Parse("2026-03-01T00:00:00Z");
+
+        for (int step = 0; step < 25; step++)
+        {
+
+            int index = step * 7 % 25;
+
+            _ = await _store!.InsertAsync($"mem-{index:D2}", $"memory {index}", origin.AddMinutes(index / 5), null, null, "extraction", Vec(1f), CancellationToken.None);
+
+        }
+
+        string[] expected =
+        [
+            .. Enumerable.Range(0, 25)
+                .OrderByDescending(static index => index / 5)
+                .ThenByDescending(static index => $"mem-{index:D2}", StringComparer.Ordinal)
+                .Select(static index => $"mem-{index:D2}"),
+        ];
+
+        List<string> seen = [];
+
+        SagaMemoryPosition? after = null;
+
+        while (true)
+        {
+
+            SagaMemoryPosition[] page = await _store!.ListPositionsAfterAsync(after, 6, CancellationToken.None);
+
+            if (page.Length == 0)
+            {
+
+                break;
+
+            }
+
+            foreach (SagaMemoryPosition position in page)
+            {
+
+                seen.Add(position.Id);
+
+                Assert.True(await _store.DeleteAsync(position.Id, CancellationToken.None));
+
+            }
+
+            after = page[^1];
+
+        }
+
+        Assert.Equal(expected, seen);
+
+        Assert.Equal(0, await _store!.CountAsync(CancellationToken.None));
+
+    }
+
+    [SkippableTheory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task ListPositionsAfterAsync_RefusesALimitBelowOneRatherThanReadingEverything(int limit)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => _store.ListPositionsAfterAsync(null, limit, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
     public async Task CountAsync_And_CountBySessionAsync_ReflectInserts()
     {
 
