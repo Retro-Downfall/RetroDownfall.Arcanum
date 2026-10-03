@@ -44621,7 +44621,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "Microsoft.Data.Sqlite.SqliteDataReader"
                     && property.Name == "FieldCount"
                 || type == "Microsoft.Data.Sqlite.SqliteException"
-                    && property.Name == "SqliteErrorCode"
+                    && property.Name is "SqliteErrorCode" or "SqliteExtendedErrorCode"
                 || type == "Microsoft.Data.Sqlite.SqliteParameter"
                     && property.Name is "ParameterName" or "Value"
                 || type == "Microsoft.Data.Sqlite.SqliteTransaction"

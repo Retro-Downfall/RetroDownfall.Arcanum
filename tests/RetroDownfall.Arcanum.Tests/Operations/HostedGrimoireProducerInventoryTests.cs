@@ -10882,6 +10882,16 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(Discover(FixtureSource("new System.IO.FileInfo(\"path\").LastWriteTimeUtc = DateTime.UtcNow;")).Diagnostics, static d => d.Code == "HOSTED_SITE_UNCLASSIFIED" && d.Detail.Contains("LastWriteTimeUtc", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("SqliteErrorCode")]
+    [InlineData("SqliteExtendedErrorCode")]
+    public void ProviderErrorCodePropertiesOfASqliteExceptionAreReviewedReads(string property)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("try { } catch (Microsoft.Data.Sqlite.SqliteException exception) { _ = exception." + property + "; }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail.StartsWith("Microsoft.Data.Sqlite.SqliteException.", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void AuthoredInitOnlyPropertyOnSensitiveTypeIsNotAnExternalEffect()
     {

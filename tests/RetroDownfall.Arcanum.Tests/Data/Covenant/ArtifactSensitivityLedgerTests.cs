@@ -353,6 +353,100 @@ public sealed class ArtifactSensitivityLedgerTests
     }
 
     [Fact]
+    public async Task A_read_through_the_provider_neutral_transaction_answers_what_the_point_read_answers()
+    {
+
+        await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
+
+        Guid labelled = Guid.NewGuid();
+
+        Guid unlabelled = Guid.NewGuid();
+
+        _ = await fixture.Ledger.LabelAsync(
+            Tainted(SensitiveArtifactKind.Lexicon, labelled, GenerationOne),
+            CancellationToken.None);
+
+        ArtifactSensitivityLabel expected = (await fixture.Ledger.TryReadLabelAsync(
+            SensitiveArtifactKind.Lexicon,
+            labelled,
+            CancellationToken.None)).Value!;
+
+        await using SqliteTransaction transaction = fixture.Connection.BeginTransaction();
+
+        Result<ArtifactSensitivityLabel?> found = await ArtifactSensitivityLedger.ReadLabelThroughAsync(
+            transaction.Connection!,
+            transaction,
+            SensitiveArtifactKind.Lexicon,
+            labelled,
+            CancellationToken.None);
+
+        Assert.True(found.IsSuccess);
+
+        Assert.Equal(expected.LabelId, found.Value!.LabelId);
+
+        Assert.Equal(expected.LabelDigest, found.Value.LabelDigest);
+
+        Result<ArtifactSensitivityLabel?> absent = await ArtifactSensitivityLedger.ReadLabelThroughAsync(
+            transaction.Connection!,
+            transaction,
+            SensitiveArtifactKind.Lexicon,
+            unlabelled,
+            CancellationToken.None);
+
+        Assert.True(absent.IsSuccess);
+
+        Assert.Null(absent.Value);
+
+        Result<ArtifactSensitivityLabel?> otherKind = await ArtifactSensitivityLedger.ReadLabelThroughAsync(
+            transaction.Connection!,
+            transaction,
+            SensitiveArtifactKind.AssistantEntry,
+            labelled,
+            CancellationToken.None);
+
+        Assert.True(otherKind.IsSuccess);
+
+        Assert.Null(otherKind.Value);
+
+    }
+
+    [Fact]
+    public async Task A_malformed_label_row_fails_closed_through_the_provider_neutral_transaction_too()
+    {
+
+        await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        _ = await fixture.Ledger.LabelAsync(
+            Tainted(SensitiveArtifactKind.Lexicon, artifactId, GenerationOne),
+            CancellationToken.None);
+
+        await using (SqliteCommand corrupt = fixture.Connection.CreateCommand())
+        {
+
+            corrupt.CommandText = "UPDATE artifact_sensitivity SET CreatedAtUtc = 'not-a-timestamp';";
+
+            _ = await corrupt.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        await using SqliteTransaction transaction = fixture.Connection.BeginTransaction();
+
+        Result<ArtifactSensitivityLabel?> read = await ArtifactSensitivityLedger.ReadLabelThroughAsync(
+            transaction.Connection!,
+            transaction,
+            SensitiveArtifactKind.Lexicon,
+            artifactId,
+            CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
+
+    }
+
+    [Fact]
     public void An_untainted_write_cannot_claim_producing_covenant_evidence()
     {
 

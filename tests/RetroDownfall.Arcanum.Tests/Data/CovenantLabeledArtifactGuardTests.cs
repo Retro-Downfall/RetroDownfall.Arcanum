@@ -100,6 +100,7 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         Result none = await guard.EnsureNoneLabeledAsync(
             SensitiveArtifactKind.Saga,
+            transaction.Connection!,
             transaction,
             CancellationToken.None);
 
@@ -162,13 +163,14 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
         await using SqliteTransaction transaction = await BeginAsync();
 
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, CancellationToken.None))
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction.Connection!, transaction, CancellationToken.None))
                 .IsSuccess);
 
         await SeedLabelAsync(SensitiveArtifactKind.Saga, Guid.NewGuid(), CancellationToken.None, transaction);
 
         Result refused = await guard.EnsureNoneLabeledAsync(
             SensitiveArtifactKind.Saga,
+            transaction.Connection!,
             transaction,
             CancellationToken.None);
 
@@ -179,7 +181,7 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
         // A different kind is unaffected: the bulk arm is per kind, not per installation, so labelling a
         // Saga fact must not block a Lexicon reset that has nothing protected in it.
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, transaction, CancellationToken.None))
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, transaction.Connection!, transaction, CancellationToken.None))
                 .IsSuccess);
 
     }
@@ -223,9 +225,9 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
             "single" => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None),
 
-            "single-in-transaction" => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction!, CancellationToken.None),
+            "single-in-transaction" => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction!.Connection!, transaction!, CancellationToken.None),
 
-            _ => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction!, CancellationToken.None),
+            _ => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction!.Connection!, transaction!, CancellationToken.None),
 
         };
 
@@ -265,25 +267,25 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
         await using SqliteTransaction transaction = await BeginAsync();
 
         Assert.True(
-            (await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction, CancellationToken.None)).IsSuccess);
+            (await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction.Connection!, transaction, CancellationToken.None)).IsSuccess);
 
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, CancellationToken.None)).IsSuccess);
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction.Connection!, transaction, CancellationToken.None)).IsSuccess);
 
         await SeedLabelAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None, transaction);
 
-        Result single = await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction, CancellationToken.None);
+        Result single = await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction.Connection!, transaction, CancellationToken.None);
 
         Assert.True(single.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, single.Error.Code);
 
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, CancellationToken.None)).IsFailure);
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction.Connection!, transaction, CancellationToken.None)).IsFailure);
 
         // The bulk arm is per kind, inside a transaction as outside one.
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, transaction, CancellationToken.None)).IsSuccess);
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, transaction.Connection!, transaction, CancellationToken.None)).IsSuccess);
 
         await transaction.RollbackAsync();
 
@@ -291,7 +293,41 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
         await using SqliteTransaction after = connection.BeginTransaction(deferred: false);
 
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, after, CancellationToken.None)).IsSuccess);
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, after.Connection!, after, CancellationToken.None)).IsSuccess);
+
+    }
+
+    /// <summary>
+    /// A transaction that is not on the connection handed alongside it is a caller's mistake, refused
+    /// before anything is read.
+    /// </summary>
+    /// <remarks>
+    /// The two travel together so the read is on the transaction's own connection. Answering from one
+    /// connection while the delete runs in a transaction on another would be the check-then-delete shape
+    /// the transaction forms exist to remove, with nothing to say so.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_transaction_that_is_not_on_the_connection_handed_with_it_is_refused_before_anything_is_read()
+    {
+
+        RequireSqlCipher();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteConnection other = new("Data Source=:memory:");
+
+        await other.OpenAsync();
+
+        await using SqliteTransaction foreign = other.BeginTransaction();
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, Guid.NewGuid(), connection, foreign, CancellationToken.None));
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, connection, foreign, CancellationToken.None));
 
     }
 

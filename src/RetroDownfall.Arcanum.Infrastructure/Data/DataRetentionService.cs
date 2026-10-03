@@ -2966,6 +2966,7 @@ internal sealed partial class DataRetentionService(
             // no label can be committed between the answer and the delete below.
             await RefuseLabeledSessionEntriesAsync(
                 snapshot,
+                connection,
                 transaction,
                 cancellationToken).ConfigureAwait(false);
 
@@ -3466,6 +3467,7 @@ internal sealed partial class DataRetentionService(
             await RefuseLabeledUntargetedResetAsync(
                 scope,
                 campaignId,
+                connection,
                 transaction,
                 cancellationToken).ConfigureAwait(false);
 
@@ -6016,10 +6018,11 @@ internal sealed partial class DataRetentionService(
     private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken) =>
         await labeledArtifactGuard
-            .EnsureUnlabeledAsync(kind, artifactId, transaction, cancellationToken)
+            .EnsureUnlabeledAsync(kind, artifactId, connection, transaction, cancellationToken)
             .ConfigureAwait(false);
 
     /// <summary>
@@ -6034,10 +6037,11 @@ internal sealed partial class DataRetentionService(
     /// </remarks>
     private async ValueTask<Result> EnsureKindUnlabeledAsync(
         SensitiveArtifactKind kind,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken) =>
         await labeledArtifactGuard
-            .EnsureNoneLabeledAsync(kind, transaction, cancellationToken)
+            .EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken)
             .ConfigureAwait(false);
 
     /// <summary>
@@ -6097,6 +6101,7 @@ internal sealed partial class DataRetentionService(
     private async Task RefuseLabeledUntargetedResetAsync(
         MemoryResetScope scope,
         Guid? campaignId,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
@@ -6121,6 +6126,7 @@ internal sealed partial class DataRetentionService(
 
         Result unlabeled = await EnsureKindUnlabeledAsync(
             protectedKind,
+            connection,
             transaction,
             cancellationToken).ConfigureAwait(false);
 
@@ -6144,6 +6150,7 @@ internal sealed partial class DataRetentionService(
     /// </remarks>
     private async Task RefuseLabeledSessionEntriesAsync(
         SessionPlanSnapshot snapshot,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
@@ -6152,6 +6159,7 @@ internal sealed partial class DataRetentionService(
             Result unlabeled = await EnsureArtifactUnlabeledAsync(
                 SensitiveArtifactKind.AssistantEntry,
                 entryId,
+                connection,
                 transaction,
                 cancellationToken).ConfigureAwait(false);
 

@@ -67,11 +67,12 @@ internal sealed class CovenantLabeledArtifactGuard(
     public async ValueTask<Result> EnsureUnlabeledAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken = default)
     {
 
-        SqliteTransaction sqlite = RequireSqliteTransaction(transaction);
+        RequireTransactionOn(connection, transaction);
 
         try
         {
@@ -79,7 +80,7 @@ internal sealed class CovenantLabeledArtifactGuard(
             return Verdict(
                 kind,
                 await ArtifactSensitivityLedger
-                    .ReadLabelWithinAsync(sqlite.Connection!, sqlite, kind, artifactId, cancellationToken)
+                    .ReadLabelThroughAsync(connection, transaction, kind, artifactId, cancellationToken)
                     .ConfigureAwait(false));
 
         }
@@ -94,16 +95,17 @@ internal sealed class CovenantLabeledArtifactGuard(
 
     public async ValueTask<Result> EnsureNoneLabeledAsync(
         SensitiveArtifactKind kind,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken = default)
     {
 
-        SqliteTransaction sqlite = RequireSqliteTransaction(transaction);
+        RequireTransactionOn(connection, transaction);
 
         try
         {
 
-            return await AnyLabeledAsync(sqlite.Connection!, sqlite, kind, cancellationToken).ConfigureAwait(false);
+            return await AnyLabeledAsync(connection, transaction, kind, cancellationToken).ConfigureAwait(false);
 
         }
         catch (SqliteException exception)
@@ -132,13 +134,13 @@ internal sealed class CovenantLabeledArtifactGuard(
     }
 
     private static async Task<Result> AnyLabeledAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
+        DbConnection connection,
+        DbTransaction transaction,
         SensitiveArtifactKind kind,
         CancellationToken cancellationToken)
     {
 
-        await using SqliteCommand command = connection.CreateCommand();
+        await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
 
@@ -147,7 +149,13 @@ internal sealed class CovenantLabeledArtifactGuard(
                 SELECT 1 FROM artifact_sensitivity WHERE ArtifactKindCode = $kind);
             """;
 
-        _ = command.Parameters.AddWithValue("$kind", (long)kind);
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "$kind";
+
+        parameter.Value = (long)kind;
+
+        _ = command.Parameters.Add(parameter);
 
         object? any = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -157,16 +165,21 @@ internal sealed class CovenantLabeledArtifactGuard(
 
     }
 
-    private static SqliteTransaction RequireSqliteTransaction(DbTransaction transaction)
+    private static void RequireTransactionOn(DbConnection connection, DbTransaction transaction)
     {
+
+        ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(transaction);
 
-        return transaction is SqliteTransaction { Connection: not null } sqlite
-            ? sqlite
-            : throw new ArgumentException(
-                "The labelled-artifact guard reads through an open SQLite transaction.",
+        if (!ReferenceEquals(transaction.Connection, connection))
+        {
+
+            throw new ArgumentException(
+                "The labelled-artifact guard reads through a transaction on the connection it is handed.",
                 nameof(transaction));
+
+        }
 
     }
 

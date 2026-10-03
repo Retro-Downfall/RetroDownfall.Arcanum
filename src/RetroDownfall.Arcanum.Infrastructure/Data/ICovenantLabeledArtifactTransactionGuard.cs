@@ -15,8 +15,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// A check made before the transaction opens and a delete made inside it are two moments, and a label
 /// written between them is removed with its artifact and leaves nothing behind. Asked inside the
 /// transaction, the answer and the delete are one moment. The read goes through the transaction it is
-/// handed, on that transaction's own connection, so no second connection is opened and a label the same
-/// transaction has written is seen.
+/// handed, on the connection that transaction is on, so no second connection is opened and a label the
+/// same transaction has written is seen.
+///
+/// <para>The connection travels with the transaction, as it does for every other helper that reads or
+/// writes inside one. A transaction names its connection only as the provider-neutral base type, with
+/// nothing to say what concrete connection that is; the caller that began the transaction on a
+/// connection it opened is the one place that knows, and a guard that read the connection back off the
+/// transaction would have to take it on trust. A transaction that is not on the connection handed with
+/// it is refused rather than read around.</para>
 ///
 /// <para>These forms are on an interface of their own, inside Infrastructure, because they name an ADO.NET
 /// transaction and Core names no storage type. Every caller that owns a transaction is in this assembly;
@@ -33,6 +40,7 @@ internal interface ICovenantLabeledArtifactTransactionGuard : ICovenantLabeledAr
     ValueTask<Result> EnsureUnlabeledAsync(
         SensitiveArtifactKind kind,
         Guid artifactId,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken = default);
 
@@ -49,6 +57,7 @@ internal interface ICovenantLabeledArtifactTransactionGuard : ICovenantLabeledAr
     /// </remarks>
     ValueTask<Result> EnsureNoneLabeledAsync(
         SensitiveArtifactKind kind,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken = default);
 

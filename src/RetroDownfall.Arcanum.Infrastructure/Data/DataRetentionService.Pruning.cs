@@ -5316,6 +5316,7 @@ internal sealed partial class DataRetentionService
             if ((await EnsureArtifactUnlabeledAsync(
                     SensitiveArtifactKind.AssistantEntry,
                     entryId,
+                    connection,
                     transaction,
                     cancellationToken).ConfigureAwait(false)).IsFailure)
             {
@@ -5859,12 +5860,14 @@ internal sealed partial class DataRetentionService
     private async ValueTask<bool> CandidateIsLabeledAsync(
         SensitiveArtifactKind kind,
         string candidateId,
+        DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken) =>
         Guid.TryParse(candidateId, out Guid artifactId)
         && (await EnsureArtifactUnlabeledAsync(
                 kind,
                 artifactId,
+                connection,
                 transaction,
                 cancellationToken).ConfigureAwait(false)).IsFailure;
 
@@ -5895,6 +5898,7 @@ internal sealed partial class DataRetentionService
             if (await CandidateIsLabeledAsync(
                     SensitiveArtifactKind.Saga,
                     memoryId,
+                    connection,
                     transaction,
                     cancellationToken).ConfigureAwait(false))
             {
@@ -6036,6 +6040,7 @@ internal sealed partial class DataRetentionService
             if (await CandidateIsLabeledAsync(
                     SensitiveArtifactKind.Lexicon,
                     entryId,
+                    connection,
                     transaction,
                     cancellationToken).ConfigureAwait(false))
             {

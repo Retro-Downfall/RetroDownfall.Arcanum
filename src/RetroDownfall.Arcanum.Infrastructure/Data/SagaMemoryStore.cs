@@ -435,13 +435,16 @@ internal sealed partial class SagaMemoryStore(
                         """
                         SELECT m."Id", m."CreatedAt"
                         FROM "saga_memories" m
-                        WHERE m."CreatedAt" <= @afterCreatedAt
-                          AND (m."CreatedAt" < @afterCreatedAt OR m."Id" < @afterId)
+                        WHERE m."CreatedAt" <= @afterCreatedText
+                          AND (m."CreatedAt" < @afterCreatedText OR m."Id" < @afterId)
                         ORDER BY m."CreatedAt" DESC, m."Id" DESC
                         LIMIT @limit
                         """;
 
-                    AddParameter(cmd, "@afterCreatedAt", after.CreatedAt);
+                    // Named for what it is, the stored text, not an instant: the persisted-instant boundary
+                    // guard is about parameters that carry an instant, and this one is deliberately never
+                    // parsed or reformatted.
+                    AddParameter(cmd, "@afterCreatedText", after.CreatedAt);
 
                     AddParameter(cmd, "@afterId", after.Id);
                 }
@@ -689,7 +692,7 @@ internal sealed partial class SagaMemoryStore(
                 if (labeledArtifactGuard is { } guard && Guid.TryParse(id, out Guid memoryId))
                 {
                     Result unlabeled = await guard
-                        .EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, memoryId, transaction, cancellationToken)
+                        .EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, memoryId, connection, transaction, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (unlabeled.IsFailure)
@@ -775,7 +778,7 @@ internal sealed partial class SagaMemoryStore(
                 if (labeledArtifactGuard is { } guard)
                 {
                     Result none = await guard
-                        .EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, cancellationToken)
+                        .EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, connection, transaction, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (none.IsFailure)

@@ -876,8 +876,10 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             // integrity state that cannot be told apart from data loss (§10.20.2). Asked inside the
             // transaction, ahead of its first write, so no label can be committed between the answer and
             // the delete; a refusal rolls the transaction back untouched.
+            var guardTransaction = tx.GetDbTransaction();
+
             Result unlabeled = await _labeledArtifactGuard
-                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, tx.GetDbTransaction(), cancellationToken)
+                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, guardTransaction.Connection!, guardTransaction, cancellationToken)
                 .ConfigureAwait(false);
 
             if (unlabeled.IsFailure)
