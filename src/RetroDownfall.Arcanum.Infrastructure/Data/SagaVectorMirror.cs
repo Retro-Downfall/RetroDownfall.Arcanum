@@ -22,9 +22,10 @@ internal enum SagaVectorMirrorKind
 }
 
 /// <summary>
-/// The one rule every writer of a Saga vector mirror follows: classify the mirror from the catalog,
-/// delete from a plain one whatever the accelerator flag says, and write only while the accelerator is
-/// live.
+/// The one rule every writer of a vector mirror follows: classify the mirror from the catalog, delete
+/// from a plain one whatever the accelerator flag says, and write only while the accelerator is live.
+/// Entry, workspace-file, session-attachment, and Tapestry mirrors follow it through the table-named
+/// overloads, which are the same rule over a different table.
 /// </summary>
 /// <remarks>
 /// The mirror holds the embedding itself rather than a pointer to it, so a row left behind is content
@@ -106,14 +107,29 @@ internal static class SagaVectorMirror
         return await DeleteRowAsync(connection, transaction, memoryId, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Removes every mirror row when the mirror is a plain table.</summary>
+    /// <summary>Removes every Saga mirror row when the mirror is a plain table.</summary>
+    /// <returns>The rows removed; zero when the mirror is absent or a legacy virtual table.</returns>
+    internal static Task<long> DeleteAllAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        CancellationToken cancellationToken) =>
+        DeleteAllAsync(connection, transaction, SagaStorageKeys.VectorTable, cancellationToken);
+
+    /// <summary>Removes every row of any conditionally installed mirror when it is a plain table.</summary>
+    /// <param name="table">
+    /// A code-owned table literal, interpolated into the statement because SQLite has no parameter form
+    /// for a table name.
+    /// </param>
     /// <returns>The rows removed; zero when the mirror is absent or a legacy virtual table.</returns>
     internal static async Task<long> DeleteAllAsync(
         DbConnection connection,
         DbTransaction? transaction,
+        string table,
         CancellationToken cancellationToken)
     {
-        if (await ClassifyAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+        ArgumentException.ThrowIfNullOrEmpty(table);
+
+        if (await ClassifyAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false)
             is not SagaVectorMirrorKind.PlainTable)
         {
             return 0;
@@ -123,7 +139,7 @@ internal static class SagaVectorMirror
 
         command.Transaction = transaction;
 
-        command.CommandText = """DELETE FROM "saga_memory_embeddings_vec" """;
+        command.CommandText = $"""DELETE FROM "{table}" """;
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }

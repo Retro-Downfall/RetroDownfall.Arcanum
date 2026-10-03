@@ -406,6 +406,108 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Single(await _store.GetNodeEmbeddingsAsync(["n1", "n2"], CancellationToken.None));
     }
 
+    /// <summary>
+    /// Removing a generation empties its nodes' rows from a plain vector mirror whatever the accelerator
+    /// flag says, and leaves the rows of a generation that stays.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so a row left behind is a node's content left behind. The
+    /// store's flag is off here, which is the shipping runtime, and the rows are seeded because no
+    /// production path of this build writes them.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ReconcileGenerationsAsync_EmptiesThePlainVectorMirrorRowsOfARemovedGenerationWhileTheFlagIsOff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string published = await BeginAsync("corpus-1");
+
+        await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            published,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        string interrupted = await BeginAsync("corpus-2");
+
+        await _store.AppendNodesAsync([Leaf(interrupted, "n2", "c1", "beta")], CancellationToken.None);
+
+        await ExecuteAsync(
+            """CREATE TABLE "tapestry_node_embeddings_vec" ("NodeId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "tapestry_node_embeddings_vec" ("NodeId", "Embedding") VALUES ('n1', X'0000803F'), ('n2', X'0000803F')""");
+
+        Assert.Equal(1, await _store.ReconcileGenerationsAsync(CancellationToken.None));
+
+        Assert.Equal(
+            ["n1"],
+            await ScalarsAsync("""SELECT "NodeId" FROM "tapestry_node_embeddings_vec" ORDER BY "NodeId" """));
+    }
+
+    /// <summary>
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and removing the generation
+    /// still succeeds.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for it, because it records the same <c>CREATE VIRTUAL TABLE</c>
+    /// text, which is all that classifying a mirror reads. The stand-in could be deleted from, so it
+    /// still holding its row is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ReconcileGenerationsAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string interrupted = await BeginAsync("corpus-2");
+
+        await _store!.AppendNodesAsync([Leaf(interrupted, "n2", "c1", "beta")], CancellationToken.None);
+
+        await ExecuteAsync(
+            """CREATE VIRTUAL TABLE "tapestry_node_embeddings_vec" USING fts5("NodeId", "Embedding")""");
+
+        await ExecuteAsync(
+            """INSERT INTO "tapestry_node_embeddings_vec" ("NodeId", "Embedding") VALUES ('n2', 'x')""");
+
+        Assert.Equal(1, await _store.ReconcileGenerationsAsync(CancellationToken.None));
+
+        Assert.Empty(await _store.GetNodeEmbeddingsAsync(["n2"], CancellationToken.None));
+
+        Assert.Equal(
+            ["n2"],
+            await ScalarsAsync("""SELECT "NodeId" FROM "tapestry_node_embeddings_vec" """));
+    }
+
+    private async Task<List<string>> ScalarsAsync(string sql)
+    {
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        List<string> values = [];
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            values.Add(reader.GetString(0));
+        }
+
+        return values;
+    }
+
     [SkippableFact]
     public async Task SummariesAreOfferedForReuseByExactChildMembership()
     {

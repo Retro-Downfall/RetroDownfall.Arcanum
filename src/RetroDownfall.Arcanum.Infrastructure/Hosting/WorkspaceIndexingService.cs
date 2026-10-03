@@ -1063,7 +1063,7 @@ internal sealed partial class WorkspaceIndexingService(
             {
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
-                if (weaveIndexAvailability.IsVecAvailable)
+                if (await IsPlainVectorMirrorAsync(connection, cancellationToken).ConfigureAwait(false))
                 {
                     await using DbCommand vecCmd = connection.CreateCommand();
 
@@ -1155,7 +1155,7 @@ internal sealed partial class WorkspaceIndexingService(
             {
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
-                if (weaveIndexAvailability.IsVecAvailable)
+                if (await IsPlainVectorMirrorAsync(connection, cancellationToken).ConfigureAwait(false))
                 {
                     await using DbCommand deleteVecCmd = connection.CreateCommand();
 
@@ -1324,6 +1324,24 @@ internal sealed partial class WorkspaceIndexingService(
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// Whether the workspace vector mirror is a plain table this runtime can delete from.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so whether it is deleted from is a property of the
+    /// database, not of whether this process loaded an accelerator: a plain mirror an earlier build
+    /// filled is deleted from whatever the flag says, and a legacy vec0 mirror this runtime cannot open
+    /// is skipped rather than failing the delete it rides on. Writing a vector still waits for the flag.
+    /// </remarks>
+    private static async Task<bool> IsPlainVectorMirrorAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken) =>
+        await SagaVectorMirror.ClassifyAsync(
+            connection,
+            transaction: null,
+            "workspace_file_embeddings_vec",
+            cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
 
     private static async Task<DbConnection> OpenConnectionAsync(ArcanumDbContext db, CancellationToken cancellationToken)
     {

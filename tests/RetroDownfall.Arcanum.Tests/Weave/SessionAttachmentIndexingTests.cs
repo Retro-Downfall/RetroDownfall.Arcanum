@@ -1,5 +1,7 @@
 using System.Text;
 
+using Microsoft.EntityFrameworkCore;
+
 using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.Logging.Abstractions;
@@ -311,6 +313,258 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Empty(await _index.GetStatusesAsync(
             [attachment.Id],
             CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// Deleting a session empties its rows from a plain vector mirror whatever the accelerator flag
+    /// says, and leaves another session's rows alone.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so a row left behind is attachment content left behind. A
+    /// build with no accelerator would otherwise skip a mirror an earlier build filled. The repository's
+    /// flag is off here, which is the shipping runtime, and the rows are seeded because no production
+    /// path of this build writes them.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task PurgeSessionAsync_EmptiesItsPlainVectorMirrorRowsWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "index then purge",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "notes",
+            "notes.txt",
+            "text/plain",
+            "purge me");
+
+        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
+            new(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        SessionAttachmentIndexedChunk[] chunks = await _index!.GetChunksForAttachmentAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.NotEmpty(chunks);
+
+        await CreatePlainVectorMirrorAsync();
+
+        foreach (SessionAttachmentIndexedChunk chunk in chunks)
+        {
+
+            await SeedVectorMirrorRowAsync(chunk.ChunkId);
+
+        }
+
+        await SeedVectorMirrorRowAsync("another-sessions-chunk");
+
+        Assert.Equal(1, await repository.PurgeSessionAsync(sessionId, CancellationToken.None));
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId <> 'another-sessions-chunk';"));
+
+        Assert.Equal(
+            1,
+            await CountAsync(
+                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = 'another-sessions-chunk';"));
+
+    }
+
+    /// <summary>
+    /// The reconcile pass sweeps mirror rows whose chunk is gone from a plain mirror whatever the
+    /// accelerator flag says, and keeps the rows of chunks that still exist.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ReconcileAndFindPendingAsync_SweepsOrphanedPlainVectorMirrorRowsWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, _) = await CreateRepository().BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "index",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "notes",
+            "notes.txt",
+            "text/plain",
+            "keep me");
+
+        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
+            new(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        string liveChunkId = (await _index!.GetChunksForAttachmentAsync(
+            attachment.Id,
+            CancellationToken.None))[0].ChunkId;
+
+        await CreatePlainVectorMirrorAsync();
+
+        await SeedVectorMirrorRowAsync(liveChunkId);
+
+        await SeedVectorMirrorRowAsync("chunk-whose-attachment-is-gone");
+
+        _ = await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None);
+
+        Assert.Equal(
+            0,
+            await CountAsync(
+                "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = 'chunk-whose-attachment-is-gone';"));
+
+        Assert.Equal(
+            1,
+            await CountAsync(
+                $"SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = '{liveChunkId}';"));
+
+    }
+
+    /// <summary>
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped by the reconcile pass, which
+    /// still completes.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ReconcileAndFindPendingAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await ExecuteAsync(
+            "CREATE VIRTUAL TABLE session_attachment_embeddings_vec USING fts5(ChunkId, Embedding);");
+
+        await SeedVectorMirrorRowAsync("chunk-whose-attachment-is-gone");
+
+        _ = await _index!.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None);
+
+        Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM session_attachment_embeddings_vec;"));
+
+    }
+
+    /// <summary>
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and the session delete still
+    /// succeeds.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for it, because it records the same <c>CREATE VIRTUAL TABLE</c>
+    /// text, which is all that classifying a mirror reads. The stand-in could be deleted from, so it
+    /// still holding its row is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task PurgeSessionAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "index then purge",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "notes",
+            "notes.txt",
+            "text/plain",
+            "purge me");
+
+        _ = await CreateProcessor(new FakeWeaveService()).ProcessUnderOpenAdmissionAsync(
+            new(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        string chunkId = (await _index!.GetChunksForAttachmentAsync(
+            attachment.Id,
+            CancellationToken.None))[0].ChunkId;
+
+        await ExecuteAsync(
+            "CREATE VIRTUAL TABLE session_attachment_embeddings_vec USING fts5(ChunkId, Embedding);");
+
+        await SeedVectorMirrorRowAsync(chunkId);
+
+        Assert.Equal(1, await repository.PurgeSessionAsync(sessionId, CancellationToken.None));
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM session_attachment_embeddings_vec;"));
+
+    }
+
+    private GrimoireRepository CreateRepository() =>
+        new(
+            _db!,
+            _attachments!,
+            NullLogger<GrimoireRepository>.Instance,
+            new TestOptionsSnapshot<ArcanumSettings>(_settings),
+            _index,
+            covenantKernel: null,
+            availabilityRepublisher: null,
+            FixtureOrdinaryConnectionFactory.For(_db!),
+            FixtureLabeledArtifactGuard.For(_db!));
+
+    /// <summary>The plain table a build without an accelerator can read, write, and delete from.</summary>
+    private Task CreatePlainVectorMirrorAsync() =>
+        ExecuteAsync(
+            "CREATE TABLE session_attachment_embeddings_vec (ChunkId TEXT PRIMARY KEY, Embedding BLOB NOT NULL);");
+
+    private Task SeedVectorMirrorRowAsync(string chunkId) =>
+        ExecuteAsync(
+            $"INSERT INTO session_attachment_embeddings_vec (ChunkId, Embedding) VALUES ('{chunkId}', X'0000803F');");
+
+    private async Task ExecuteAsync(string sql)
+    {
+
+        if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+        {
+
+            await _db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await using System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private async Task<int> CountAsync(string sql)
+    {
+
+        if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+        {
+
+            await _db.Database.OpenConnectionAsync(CancellationToken.None);
+
+        }
+
+        await using System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = sql;
+
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            System.Globalization.CultureInfo.InvariantCulture);
 
     }
 

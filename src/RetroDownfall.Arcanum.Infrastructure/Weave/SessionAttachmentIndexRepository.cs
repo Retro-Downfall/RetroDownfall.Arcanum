@@ -115,6 +115,9 @@ internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
     WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter, ISessionAttachmentIndexMaintenance
 {
+    /// <summary>The accelerator's mirror of the chunk embeddings, which no schema file installs.</summary>
+    private const string VectorMirrorTable = "session_attachment_embeddings_vec";
+
     public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
         int expectedDimensions,
         int maxAttachments,
@@ -176,7 +179,14 @@ internal sealed class SessionAttachmentIndexRepository(
             _ = await orphanChunks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        if (availability.IsVecAvailable)
+        // The mirror holds the embedding itself, so whether it is swept is a property of the database,
+        // not of whether this process loaded an accelerator: a plain mirror an earlier build filled is
+        // swept whatever the flag says, and a legacy vec0 mirror this runtime cannot open is skipped.
+        if (await SagaVectorMirror.ClassifyAsync(
+                connection,
+                transaction,
+                VectorMirrorTable,
+                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
         {
             await using DbCommand orphanVec = connection.CreateCommand();
 
@@ -185,14 +195,7 @@ internal sealed class SessionAttachmentIndexRepository(
             orphanVec.CommandText =
                 "DELETE FROM session_attachment_embeddings_vec WHERE ChunkId NOT IN (SELECT ChunkId FROM session_attachment_chunks)";
 
-            try
-            {
-                _ = await orphanVec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-            {
-                availability.SetAvailable(false);
-            }
+            _ = await orphanVec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         List<SessionAttachmentIndexRequest> requests = [];
@@ -1129,7 +1132,19 @@ internal sealed class SessionAttachmentIndexRepository(
         IReadOnlyList<string> chunkIds,
         CancellationToken cancellationToken)
     {
-        if (!availability.IsVecAvailable || chunkIds.Count == 0)
+        if (chunkIds.Count == 0)
+        {
+            return;
+        }
+
+        // Read from the catalog rather than the process flag, for the reason the orphan sweep above
+        // gives: a plain mirror is deleted from whatever the flag says, and a legacy vec0 mirror this
+        // runtime cannot open is skipped rather than failing the delete it rides on.
+        if (await SagaVectorMirror.ClassifyAsync(
+                connection,
+                transaction,
+                VectorMirrorTable,
+                cancellationToken).ConfigureAwait(false) is not SagaVectorMirrorKind.PlainTable)
         {
             return;
         }
@@ -1144,14 +1159,7 @@ internal sealed class SessionAttachmentIndexRepository(
             command,
             ")");
 
-        try
-        {
-            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-        {
-            availability.SetAvailable(false);
-        }
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task InsertChunkAsync(

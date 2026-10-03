@@ -78,7 +78,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         _resetService = new EmbeddingsResetService(
             _db,
-            availability,
             services.BuildServiceProvider());
 
         return Task.CompletedTask;
@@ -134,7 +133,6 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         EmbeddingsResetService service = new(
             _db,
-            new WeaveIndexAvailability(),
             services.BuildServiceProvider(),
             scopedPurger);
 
@@ -467,6 +465,213 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
 
         Assert.Equal(1, result.DeletedRowCounts["saga_memory_embeddings_vec"]);
+
+    }
+
+    /// <summary>Every scope that owns a vector mirror, with the mirror's table.</summary>
+    /// <remarks>
+    /// None of these tables is installed by a schema file, because only an accelerator ever built them,
+    /// so each case creates the shape it needs.
+    /// </remarks>
+    public static TheoryData<EmbeddingsResetScope, string> MirrorScopes => new()
+    {
+        { EmbeddingsResetScope.Entry, "entry_embeddings_vec" },
+        { EmbeddingsResetScope.WorkspaceFile, "workspace_file_embeddings_vec" },
+        { EmbeddingsResetScope.SessionAttachment, "session_attachment_embeddings_vec" },
+        { EmbeddingsResetScope.Tapestry, "tapestry_node_embeddings_vec" },
+        { EmbeddingsResetScope.Saga, "saga_memory_embeddings_vec" },
+    };
+
+    /// <summary>Each mirror's table and the column it keys on.</summary>
+    private static readonly (string Table, string Key)[] EveryMirror =
+    [
+        ("entry_embeddings_vec", "EntryId"),
+        ("workspace_file_embeddings_vec", "ChunkId"),
+        ("session_attachment_embeddings_vec", "ChunkId"),
+        ("tapestry_node_embeddings_vec", "NodeId"),
+        ("saga_memory_embeddings_vec", "MemoryId"),
+    ];
+
+    /// <summary>
+    /// A reset empties the scope's plain vector mirror whatever the accelerator flag says, and leaves
+    /// every other scope's mirror alone.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so rows left in it are the embeddings of content the
+    /// operator just reset. Whether the mirror holds rows is a property of the database, which an
+    /// earlier build may have filled, and not of whether this process loaded an accelerator. Every
+    /// mirror is filled before the reset so a scope that emptied more than its own would show.
+    /// </remarks>
+    [SkippableTheory]
+    [MemberData(nameof(MirrorScopes))]
+    public async Task ResetAsync_EmptiesAPlainVectorMirrorWhileTheFlagIsOff(
+        EmbeddingsResetScope scope,
+        string mirror)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        foreach ((string table, string tableKey) in EveryMirror)
+        {
+
+            await CreatePlainMirrorAsync(table, tableKey);
+
+            await SeedMirrorRowsAsync(table, tableKey, 2);
+
+        }
+
+        Assert.False(_vectorAccelerator.IsVecAvailable);
+
+        EmbeddingsResetResult result = await _resetService!.ResetAsync(scope, CancellationToken.None);
+
+        Assert.Equal(0, await ScalarAsync($"SELECT COUNT(*) FROM \"{mirror}\";"));
+
+        Assert.Equal(2, result.DeletedRowCounts[mirror]);
+
+        foreach ((string table, _) in EveryMirror.Where(entry => entry.Table != mirror))
+        {
+
+            Assert.Equal(2, await ScalarAsync($"SELECT COUNT(*) FROM \"{table}\";"));
+
+        }
+
+    }
+
+    /// <summary>
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, the reset still succeeds, and
+    /// the table keeps what it held.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for it, because it records the same <c>CREATE VIRTUAL TABLE</c>
+    /// text in <c>sqlite_master</c>, which is all that classifying a mirror reads. This runtime could
+    /// not open the real one, and a statement against it would fail the whole reset, so what is checked
+    /// is that no statement reaches it: the stand-in could be emptied, and still holds both rows.
+    /// </remarks>
+    [SkippableTheory]
+    [MemberData(nameof(MirrorScopes))]
+    public async Task ResetAsync_SkipsALegacyVirtualMirrorWithoutFailing(
+        EmbeddingsResetScope scope,
+        string mirror)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string key = EveryMirror.Single(entry => entry.Table == mirror).Key;
+
+        await CreateLegacyMirrorAsync(mirror, key);
+
+        await SeedMirrorRowsAsync(mirror, key, 2);
+
+        EmbeddingsResetResult result = await _resetService!.ResetAsync(scope, CancellationToken.None);
+
+        Assert.Equal(2, await ScalarAsync($"SELECT COUNT(*) FROM \"{mirror}\";"));
+
+        Assert.Equal(0, result.DeletedRowCounts[mirror]);
+
+    }
+
+    [SkippableFact]
+    public async Task ResetAsync_AllScope_EmptiesEveryPlainVectorMirrorWhileTheFlagIsOff()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        foreach ((string table, string key) in EveryMirror)
+        {
+
+            await CreatePlainMirrorAsync(table, key);
+
+            await SeedMirrorRowsAsync(table, key, 3);
+
+        }
+
+        EmbeddingsResetResult result = await _resetService!.ResetAsync(EmbeddingsResetScope.All, CancellationToken.None);
+
+        foreach ((string table, _) in EveryMirror)
+        {
+
+            Assert.Equal(0, await ScalarAsync($"SELECT COUNT(*) FROM \"{table}\";"));
+
+            Assert.Equal(3, result.DeletedRowCounts[table]);
+
+        }
+
+    }
+
+    /// <summary>
+    /// One legacy mirror among plain ones costs the reset only that mirror: the others are emptied and
+    /// nothing fails.
+    /// </summary>
+    [SkippableFact]
+    public async Task ResetAsync_AllScope_SkipsALegacyVirtualMirrorAndEmptiesTheOthers()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string Legacy = "entry_embeddings_vec";
+
+        foreach ((string table, string key) in EveryMirror)
+        {
+
+            if (table == Legacy)
+            {
+
+                await CreateLegacyMirrorAsync(table, key);
+
+            }
+            else
+            {
+
+                await CreatePlainMirrorAsync(table, key);
+
+            }
+
+            await SeedMirrorRowsAsync(table, key, 2);
+
+        }
+
+        EmbeddingsResetResult result = await _resetService!.ResetAsync(EmbeddingsResetScope.All, CancellationToken.None);
+
+        Assert.Equal(2, await ScalarAsync($"SELECT COUNT(*) FROM \"{Legacy}\";"));
+
+        Assert.Equal(0, result.DeletedRowCounts[Legacy]);
+
+        foreach ((string table, _) in EveryMirror.Where(entry => entry.Table != Legacy))
+        {
+
+            Assert.Equal(0, await ScalarAsync($"SELECT COUNT(*) FROM \"{table}\";"));
+
+            Assert.Equal(2, result.DeletedRowCounts[table]);
+
+        }
+
+    }
+
+    /// <summary>The plain table a build without an accelerator can read, write, and delete from.</summary>
+    private Task CreatePlainMirrorAsync(string table, string key) =>
+        ExecuteAsync($"CREATE TABLE \"{table}\" (\"{key}\" TEXT PRIMARY KEY, \"Embedding\" BLOB NOT NULL)");
+
+    /// <summary>
+    /// Stands in for a <c>vec0</c> mirror an earlier build left: an FTS5 virtual table, which records
+    /// the same <c>CREATE VIRTUAL TABLE</c> text.
+    /// </summary>
+    private Task CreateLegacyMirrorAsync(string table, string key) =>
+        ExecuteAsync($"CREATE VIRTUAL TABLE \"{table}\" USING fts5(\"{key}\", \"Embedding\")");
+
+    /// <summary>
+    /// Rows a build that has since lost its accelerator no longer writes, so no production path of
+    /// this harness can put them there.
+    /// </summary>
+    private async Task SeedMirrorRowsAsync(string table, string key, int count)
+    {
+
+        for (int index = 0; index < count; index++)
+        {
+
+            await ExecuteAsync(
+                $"INSERT INTO \"{table}\" (\"{key}\", \"Embedding\") VALUES ('{table}-{index}', 'v{index}')");
+
+        }
 
     }
 

@@ -1077,7 +1077,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped(
             static sp => new EmbeddingsResetService(
                 sp.GetRequiredService<ArcanumDbContext>(),
-                sp.GetRequiredService<WeaveIndexAvailability>(),
                 sp,
                 sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
         services.AddScoped<ITapestryStore, TapestryStore>();

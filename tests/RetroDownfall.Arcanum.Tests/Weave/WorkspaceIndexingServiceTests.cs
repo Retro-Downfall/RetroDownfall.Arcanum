@@ -433,6 +433,171 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountRowsAsync("workspace_file_embeddings"));
     }
 
+    /// <summary>
+    /// Dropping a deleted file's chunks empties their rows from a plain vector mirror whatever the
+    /// accelerator flag says, and leaves the rows of a file that stays.
+    /// </summary>
+    /// <remarks>
+    /// The mirror holds the embedding itself, so a row left behind is the file's content left behind.
+    /// The service's flag is off here, which is the shipping runtime, and the rows are seeded because no
+    /// production path of this build writes them.
+    /// </remarks>
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_FileDeletedSinceLastIndex_EmptiesItsPlainVectorMirrorRowsWhileTheFlagIsOff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("kept.md", "still here");
+
+        string removedFile = _workspace.WriteFile("removed.md", "will be deleted");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        string keptChunkId = Assert.Single((await GetChunkIdsByContentAsync("kept.md")).Values);
+
+        string removedChunkId = Assert.Single((await GetChunkIdsByContentAsync("removed.md")).Values);
+
+        await CreatePlainVectorMirrorAsync();
+
+        await SeedVectorMirrorRowsAsync(keptChunkId, removedChunkId);
+
+        File.Delete(removedFile);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        Assert.Equal([keptChunkId], await VectorMirrorChunkIdsAsync());
+    }
+
+    /// <summary>
+    /// Replacing a changed file's chunks empties the obsolete ones' rows from a plain vector mirror
+    /// whatever the accelerator flag says.
+    /// </summary>
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_FileChangedSinceLastIndex_EmptiesTheObsoleteChunksPlainVectorMirrorRowsWhileTheFlagIsOff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("note.md", "the first version");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        string firstChunkId = Assert.Single((await GetChunkIdsByContentAsync("note.md")).Values);
+
+        await CreatePlainVectorMirrorAsync();
+
+        await SeedVectorMirrorRowsAsync(firstChunkId);
+
+        _workspace.WriteFile("note.md", "the second version, which is longer");
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        string secondChunkId = Assert.Single((await GetChunkIdsByContentAsync("note.md")).Values);
+
+        Assert.NotEqual(firstChunkId, secondChunkId);
+
+        Assert.Empty(await VectorMirrorChunkIdsAsync());
+    }
+
+    /// <summary>
+    /// A legacy <c>vec0</c> mirror this runtime cannot open is skipped, and the file's chunks still go.
+    /// </summary>
+    /// <remarks>
+    /// An FTS5 virtual table stands in for it, because it records the same <c>CREATE VIRTUAL TABLE</c>
+    /// text, which is all that classifying a mirror reads. The stand-in could be deleted from, so it
+    /// still holding its row is what shows no statement reached it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_FileDeletedSinceLastIndex_SkipsALegacyVirtualVectorMirrorWithoutFailing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string removedFile = _workspace.WriteFile("removed.md", "will be deleted");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        string removedChunkId = Assert.Single((await GetChunkIdsByContentAsync("removed.md")).Values);
+
+        await ExecuteAsync(
+            """CREATE VIRTUAL TABLE "workspace_file_embeddings_vec" USING fts5("ChunkId", "Embedding")""");
+
+        await SeedVectorMirrorRowsAsync(removedChunkId);
+
+        File.Delete(removedFile);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        Assert.DoesNotContain("removed.md", await GetIndexedRelativePathsAsync());
+
+        Assert.Equal([removedChunkId], await VectorMirrorChunkIdsAsync());
+    }
+
+    /// <summary>The plain table a build without an accelerator can read, write, and delete from.</summary>
+    private Task CreatePlainVectorMirrorAsync() =>
+        ExecuteAsync(
+            """CREATE TABLE "workspace_file_embeddings_vec" ("ChunkId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+    private async Task SeedVectorMirrorRowsAsync(params string[] chunkIds)
+    {
+        foreach (string chunkId in chunkIds)
+        {
+            await ExecuteAsync(
+                $"""INSERT INTO "workspace_file_embeddings_vec" ("ChunkId", "Embedding") VALUES ('{chunkId}', X'0000803F')""");
+        }
+    }
+
+    private async Task<List<string>> VectorMirrorChunkIdsAsync()
+    {
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = """SELECT "ChunkId" FROM "workspace_file_embeddings_vec" ORDER BY "ChunkId";""";
+
+        List<string> chunkIds = [];
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            chunkIds.Add(reader.GetString(0));
+        }
+
+        return chunkIds;
+    }
+
+    private async Task ExecuteAsync(string sql)
+    {
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = sql;
+
+        _ = await cmd.ExecuteNonQueryAsync();
+    }
+
     [SkippableFact]
     public async Task IndexWorkspaceAsync_NeverIndexesSymlinkEscapingWorkspace()
     {

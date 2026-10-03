@@ -7,7 +7,6 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -23,7 +22,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// </summary>
 public sealed class EmbeddingsResetService(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability,
     IServiceProvider serviceProvider,
     ICovenantSensitiveArtifactPurger? purger = null)
 {
@@ -429,31 +427,24 @@ public sealed class EmbeddingsResetService(
 
     }
 
-    private async Task<int> DeleteFromTableAsync(
+    private static async Task<int> DeleteFromTableAsync(
         DbConnection connection,
         DbTransaction transaction,
         string table,
         CancellationToken cancellationToken)
     {
 
-        // The Saga mirror follows the rule every other Saga write follows, read from the catalog rather
+        // Every vector mirror follows the rule every Saga write follows, read from the catalog rather
         // than the process flag: a plain mirror an earlier build filled is emptied whatever the flag
-        // says, because its rows hold the embeddings of the memories this reset removes, and a legacy
-        // vec0 mirror this runtime cannot open is skipped. The other scopes' mirrors keep the gate below.
-        if (string.Equals(table, SagaStorageKeys.VectorTable, StringComparison.Ordinal))
+        // says, because its rows hold the embeddings of the content this reset removes, and a legacy
+        // vec0 mirror this runtime cannot open is skipped rather than failing the reset. A mirror that
+        // is not there counts zero rows.
+        if (table.EndsWith("_vec", StringComparison.Ordinal))
         {
 
             return checked((int)await SagaVectorMirror
-                .DeleteAllAsync(connection, transaction, cancellationToken)
+                .DeleteAllAsync(connection, transaction, table, cancellationToken)
                 .ConfigureAwait(false));
-
-        }
-
-        if (table.EndsWith("_vec", StringComparison.Ordinal)
-            && !availability.IsVecAvailable)
-        {
-
-            return 0;
 
         }
 
@@ -463,20 +454,7 @@ public sealed class EmbeddingsResetService(
 
         cmd.CommandText = $"""DELETE FROM "{table}" """;
 
-        try
-        {
-
-            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && table.EndsWith("_vec", StringComparison.Ordinal))
-        {
-
-            // The vec0 table may not exist if sqlite-vec became unavailable after schema creation.
-            // Treat as 0 rows deleted and continue with the remaining tables.
-            return 0;
-
-        }
+        return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 
