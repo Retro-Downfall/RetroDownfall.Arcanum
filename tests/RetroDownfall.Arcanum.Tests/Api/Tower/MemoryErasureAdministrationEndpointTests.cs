@@ -3,6 +3,7 @@ using System.Data;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -606,7 +607,7 @@ public sealed class MemoryErasureAdministrationEndpointTests
 
         await using ArcanumWebApplicationFactory factory = Host(inner, credentials, profile);
 
-        await AssertRefusedAsync(factory, PreparePath, content: null, HttpStatusCode.ServiceUnavailable, ErrorCodes.MemoryErasure.KeyUnavailable);
+        string prepareMessage = await AssertRefusedAsync(factory, PreparePath, content: null, HttpStatusCode.ServiceUnavailable, ErrorCodes.MemoryErasure.KeyUnavailable);
 
         string forged = factory.Services
             .GetRequiredService<IMemoryErasureTokenCodec>()
@@ -614,7 +615,11 @@ public sealed class MemoryErasureAdministrationEndpointTests
             .Value
             .Token;
 
-        await AssertRefusedAsync(factory, ResetPath, ResetBody(forged), HttpStatusCode.ServiceUnavailable, ErrorCodes.MemoryErasure.KeyUnavailable);
+        string applyMessage = await AssertRefusedAsync(factory, ResetPath, ResetBody(forged), HttpStatusCode.ServiceUnavailable, ErrorCodes.MemoryErasure.KeyUnavailable);
+
+        Assert.Equal(prepareMessage, applyMessage);
+
+        AssertKeyUnavailableRemedy(prepareMessage);
 
         Assert.Equal("not base64url", inner.TryGet(Service, Account).Value);
 
@@ -906,7 +911,36 @@ public sealed class MemoryErasureAdministrationEndpointTests
     }
 
     /// <summary>Posts with the test API key and requires the refusal it names, with the protected tuple.</summary>
-    private static async Task AssertRefusedAsync(
+    /// <summary>
+    /// The refusal tells an API client to unlock or repair the credential store first, reserves removal
+    /// for an item confirmed malformed, and says what removing a key costs.
+    /// </summary>
+    /// <remarks>
+    /// One refusal covers a locked or unanswering store and an item that is not a key, and nothing the
+    /// host reports tells them apart. A remedy that led with removal would have a client delete a valid
+    /// key because the keychain was locked, which makes every fingerprint unverifiable.
+    /// </remarks>
+    private static void AssertKeyUnavailableRemedy(string message)
+    {
+        int unlock = message.IndexOf("unlock", StringComparison.Ordinal);
+
+        int removal = message.IndexOf("OS credential tool", StringComparison.Ordinal);
+
+        Assert.True(unlock >= 0, message);
+
+        Assert.True(removal > unlock, "The remedy must ask the client to unlock the store before it mentions removing anything.");
+
+        Assert.Contains("confirmed malformed", message, StringComparison.Ordinal);
+
+        Assert.Contains("unverifiable", message, StringComparison.Ordinal);
+
+        Assert.Contains("erased content could be learned again", message, StringComparison.Ordinal);
+
+        Assert.Contains("nothing was discarded and no key was written", message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Posts the request, requires the refusal, and returns the message the host gave.</summary>
+    private static async Task<string> AssertRefusedAsync(
         ArcanumWebApplicationFactory factory,
         string path,
         HttpContent? content,
@@ -920,6 +954,10 @@ public sealed class MemoryErasureAdministrationEndpointTests
         Assert.Equal(code, await MemoryErasureRouteDriver.ReadErrorCodeAsync(refused));
 
         AssertProtectedTuple(refused);
+
+        using JsonDocument document = JsonDocument.Parse(await refused.Content.ReadAsStringAsync());
+
+        return document.RootElement.GetProperty("error").GetProperty("message").GetString()!;
     }
 
     private static void AssertStores(

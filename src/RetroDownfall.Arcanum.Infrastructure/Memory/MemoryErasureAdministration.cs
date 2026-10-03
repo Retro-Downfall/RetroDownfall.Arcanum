@@ -62,7 +62,10 @@ internal sealed class MemoryErasureAdministration(
 {
     private static readonly Error KeyUnavailable = new(
         ErrorCodes.MemoryErasure.KeyUnavailable,
-        "The erasure key could not be read, or the stored item is not a valid key, so nothing was discarded and no key was written. Remove a malformed item with the OS credential tool, then run 'arcanum memory erasure reset-key' again.");
+        "The erasure key could not be read, or the stored item is not a valid key, so nothing was discarded and no key was written. "
+        + "If the credential store is locked or did not answer, unlock it and prepare the reset again. Only if that persists and the "
+        + "stored erasure key item is confirmed malformed, remove it with the OS credential tool and prepare the reset again: removing a "
+        + "key makes every erasure fingerprint unverifiable, and the reset discards them, so erased content could be learned again.");
 
     private static readonly Error StalePlan = new(
         ErrorCodes.MemoryErasure.StalePlan,
