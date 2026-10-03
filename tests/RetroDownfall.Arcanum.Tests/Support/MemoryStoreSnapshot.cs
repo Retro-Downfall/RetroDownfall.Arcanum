@@ -229,6 +229,38 @@ internal sealed record MemoryStoreSnapshot(
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        await SettleAsync(services, ct);
+    }
+
+    /// <summary>
+    /// The same wait, after a verb that may change only <paramref name="verbTarget"/>.
+    /// </summary>
+    /// <remarks>
+    /// A verb outside the Covenant may not leave Covenant search work behind. Draining that work first
+    /// would let it surface only as projection rows, or as a timeout, in a diff that never names where
+    /// it came from, so it fails here by name, before anything drains it.
+    /// </remarks>
+    internal static async Task QuiesceAsync(IServiceProvider services, MemoryStoreFamily verbTarget, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        if (!verbTarget.HasFlag(MemoryStoreFamily.Covenant))
+        {
+            (bool caughtUp, long waiting) = await ReadProjectionAsync(services, ct);
+
+            if (waiting > 0 || !caughtUp)
+            {
+                Assert.Fail(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"A verb that may change only {verbTarget} left Covenant search work pending, which is a write into the Covenant family: {waiting} row(s) in covenant_search_outbox, and the applied tuple in covenant_state is {(caughtUp ? "current" : "behind the canonical tuple")}."));
+            }
+        }
+
+        await SettleAsync(services, ct);
+    }
+
+    private static async Task SettleAsync(IServiceProvider services, CancellationToken ct)
+    {
         ICovenantAvailability availability = services.GetRequiredService<ICovenantAvailability>();
 
         // Every read, batch and wait is bounded by the same deadline, so a step that stops answering

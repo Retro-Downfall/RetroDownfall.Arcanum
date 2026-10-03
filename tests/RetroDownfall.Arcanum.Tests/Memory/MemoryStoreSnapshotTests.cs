@@ -94,9 +94,17 @@ public sealed class MemoryStoreSnapshotTests(GrimoireFixture fixture) : IAsyncLi
 
         Assert.Contains("lexicon_fts_data", snapshot.Tables);
 
-        Assert.Equal(
-            [MemoryStoreFamily.Saga, MemoryStoreFamily.Lexicon, MemoryStoreFamily.Covenant, MemoryStoreFamily.Shared],
-            snapshot.Rows.Keys.Order());
+        // Every store owns tables of its own in the catalog, so no family's comparison is empty by
+        // construction. The Shared family has no table of its own: it is the remainder of the one
+        // table split by artifact kind.
+        foreach (MemoryStoreFamily family in (MemoryStoreFamily[])[MemoryStoreFamily.Saga, MemoryStoreFamily.Lexicon, MemoryStoreFamily.Covenant])
+        {
+            Assert.True(
+                snapshot.Tables.Any(table => MemoryStoreSnapshot.RuleFor(table) is MemoryStorePartitionRule.Whole whole && whole.Family == family),
+                $"No discovered table belongs wholly to the {family} family.");
+        }
+
+        Assert.IsType<MemoryStorePartitionRule.ByCode>(MemoryStoreSnapshot.RuleFor("artifact_sensitivity"));
     }
 
     /// <summary>

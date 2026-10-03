@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization.Metadata;
 
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -10,8 +12,10 @@ using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -23,22 +27,41 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 /// <summary>
-/// Every per-item memory verb, driven through its mapped route, leaves the other two stores and the
-/// shared ledger byte-identical.
+/// Each per-item memory verb below, driven through its production entry point, leaves the other two
+/// stores and the shared ledger byte-identical.
 /// </summary>
 /// <remarks>
+/// <para>The verbs covered are exactly these:</para>
+/// <list type="bullet">
+/// <item><description>the operator verbs spec section 16 lists, through their mapped routes: Saga, Lexicon and
+/// Covenant curation; bulk review apply in each store (a Retire and a Pin); erase and release in
+/// each store; and the legacy <c>DELETE /api/saga/{id}</c> and <c>DELETE /api/memory/lexicon/{name}</c>;</description></item>
+/// <item><description>the other bulk review actions in each store: Confirm, Unpin, and Correct, where the Saga
+/// correction releases an erasure fingerprint implicitly while the other two stores hold
+/// fingerprints of their own;</description></item>
+/// <item><description>the agent tools <c>scribe_lexicon</c> and <c>delete_lexicon</c>, through the function the
+/// host's MCP bridge hands a turn, which outside a turn writes the Global tier.</description></item>
+/// </list>
+///
+/// <para>Not covered: <c>propose_covenant</c> and <c>retire_covenant</c> act only under the Covenant staging
+/// capability a model turn grants (outside one they refuse as <c>Covenant.IneligibleTurn</c>), and what
+/// they stage is published only when that turn commits, so no tool call outside a turn reaches their
+/// write. Saga extraction is out of scope too: it is off in these hosts by design, so that no
+/// background pass can write a Saga row while a row runs.</para>
+///
 /// <para>Each row starts a host holding all three stores, written by their production writers: two
 /// Global Saga memories through the store's insert, a Global and a Campaign Lexicon entry through the
-/// host's Lexicon service, and two Global Covenant keys through the set routes. The row then writes its
-/// own precondition the same way (a retire before a reinstate, a pin before an unpin, a mask before an
-/// unmask, an erase before a release), and only then is the first snapshot taken.</para>
+/// host's Lexicon service, and two Global Covenant keys through the set routes. The memories are then
+/// labelled through the sensitivity ledger: the Saga memories in every row, and the Lexicon entries as
+/// well in the theory that runs without the Annals. The row then writes its own precondition the same
+/// way (a retire before a reinstate, a pin before an unpin, a mask before an unmask, an erase before a
+/// release), and only then is the first snapshot taken.</para>
 ///
-/// <para>Saga extraction stays off, so no background pass can write a Saga row while a row runs. The
-/// Covenant search projection is drained to a settled state before each snapshot, so a Covenant
-/// write's projection lands inside its own row rather than in whichever row the maintenance pass
-/// happens to meet.</para>
+/// <para>The Covenant search projection is drained to a settled state before each snapshot, so a
+/// Covenant write's projection lands inside its own row. After a verb outside the Covenant, any search
+/// work it left pending fails the row by name before anything drains it.</para>
 ///
-/// <para>These rows characterise production code that is expected to be isolated. A row that fails is
+/// <para>These rows characterize production code that is expected to be isolated. A row that fails is
 /// a cross-store write to report, not one to work around here.</para>
 /// </remarks>
 [Collection("ApiHost")]
@@ -57,6 +80,10 @@ public sealed class MemoryCrossStoreIsolationTests
     private const string KeyB = "iso.b";
 
     private const string Fingerprints = "memory_erasure_fingerprints";
+
+    private const string Labels = "artifact_sensitivity";
+
+    private static readonly LexiconReplacementContent CorrectedFacts = new("Place", ["keeps the harbour light", "rings the fog bell"]);
 
     private static readonly MemoryStoreFamily[] Families =
     [
@@ -85,9 +112,18 @@ public sealed class MemoryCrossStoreIsolationTests
         new("covenant-unpin", MemoryStoreFamily.Covenant, static world => CurateAsync(world, CovenantCurationKind.Pin, CovenantScope.Global, null), static world => CurateAsync(world, CovenantCurationKind.Unpin, CovenantScope.Global, null)),
         new("covenant-mask", MemoryStoreFamily.Covenant, NoPrecondition, static world => CurateAsync(world, CovenantCurationKind.Mask, CovenantScope.Campaign, world.Campaign)),
         new("covenant-unmask", MemoryStoreFamily.Covenant, static world => CurateAsync(world, CovenantCurationKind.Mask, CovenantScope.Campaign, world.Campaign), static world => CurateAsync(world, CovenantCurationKind.Unmask, CovenantScope.Campaign, world.Campaign)),
-        new("saga-review-apply", MemoryStoreFamily.Saga, NoPrecondition, static world => ReviewSagaAsync(world)),
-        new("lexicon-review-apply", MemoryStoreFamily.Lexicon, NoPrecondition, static world => ReviewLexiconAsync(world)),
-        new("covenant-review-apply", MemoryStoreFamily.Covenant, NoPrecondition, static world => ReviewCovenantAsync(world)),
+        new("saga-review-apply", MemoryStoreFamily.Saga, NoPrecondition, static world => ReviewSagaAsync(world)) { NeedsAnnals = true },
+        new("lexicon-review-apply", MemoryStoreFamily.Lexicon, NoPrecondition, static world => ReviewLexiconAsync(world)) { NeedsAnnals = true },
+        new("covenant-review-apply", MemoryStoreFamily.Covenant, NoPrecondition, static world => ReviewCovenantAsync(world)) { NeedsAnnals = true },
+        new("saga-review-confirm", MemoryStoreFamily.Saga, NoPrecondition, static world => ReviewSagaOnceAsync(world, MemoryReviewAction.Confirm, world.SagaOneId)) { NeedsAnnals = true },
+        new("lexicon-review-confirm", MemoryStoreFamily.Lexicon, NoPrecondition, static world => ReviewLexiconOnceAsync(world, MemoryReviewAction.Confirm, GlobalEntry, null)) { NeedsAnnals = true },
+        new("covenant-review-confirm", MemoryStoreFamily.Covenant, NoPrecondition, static world => ReviewCovenantOnceAsync(world, MemoryReviewAction.Confirm, KeyA)) { NeedsAnnals = true },
+        new("saga-review-correct", MemoryStoreFamily.Saga, static world => EraseForCorrectionAsync(world, MemoryReviewStore.Saga), static world => CorrectSagaByReviewAsync(world)) { NeedsAnnals = true },
+        new("lexicon-review-correct", MemoryStoreFamily.Lexicon, static world => EraseForCorrectionAsync(world, MemoryReviewStore.Lexicon), static world => ReviewLexiconOnceAsync(world, MemoryReviewAction.Correct, GlobalEntry, null, CorrectedFacts)) { NeedsAnnals = true },
+        new("covenant-review-correct", MemoryStoreFamily.Covenant, static world => EraseForCorrectionAsync(world, MemoryReviewStore.Covenant), static world => ReviewCovenantOnceAsync(world, MemoryReviewAction.Correct, KeyA, "Answer in Scottish English.")) { NeedsAnnals = true },
+        new("saga-review-unpin", MemoryStoreFamily.Saga, static world => SagaPinVerbAsync(world, "pin"), static world => ReviewSagaOnceAsync(world, MemoryReviewAction.Unpin, world.SagaOneId)) { NeedsAnnals = true },
+        new("lexicon-review-unpin", MemoryStoreFamily.Lexicon, static world => LexiconVerbAsync(world, "pin"), static world => ReviewLexiconOnceAsync(world, MemoryReviewAction.Unpin, GlobalEntry, null)) { NeedsAnnals = true },
+        new("covenant-review-unpin", MemoryStoreFamily.Covenant, static world => CurateAsync(world, CovenantCurationKind.Pin, CovenantScope.Global, null), static world => ReviewCovenantOnceAsync(world, MemoryReviewAction.Unpin, KeyA)) { NeedsAnnals = true },
         new("saga-erase", MemoryStoreFamily.Saga, NoPrecondition, static world => EraseAsync(world, MemoryReviewStore.Saga)),
         new("lexicon-erase", MemoryStoreFamily.Lexicon, NoPrecondition, static world => EraseAsync(world, MemoryReviewStore.Lexicon)),
         new("covenant-erase", MemoryStoreFamily.Covenant, NoPrecondition, static world => EraseAsync(world, MemoryReviewStore.Covenant)),
@@ -96,51 +132,61 @@ public sealed class MemoryCrossStoreIsolationTests
         new("covenant-release", MemoryStoreFamily.Covenant, static world => EraseAsync(world, MemoryReviewStore.Covenant), static world => ReleaseAsync(world, MemoryReviewStore.Covenant)),
         new("legacy-saga-delete", MemoryStoreFamily.Saga, NoPrecondition, static world => DeleteAsync(world, $"/api/saga/{world.SagaOneId}")),
         new("legacy-lexicon-delete", MemoryStoreFamily.Lexicon, NoPrecondition, static world => DeleteAsync(world, $"/api/memory/lexicon/{Uri.EscapeDataString(GlobalEntry)}")),
+        new("agent-scribe-lexicon", MemoryStoreFamily.Lexicon, NoPrecondition, static world => ScribeByToolAsync(world)) { AgentTool = true },
+
+        // An agent tool call never carries sensitivity-purge authority, so delete_lexicon refuses a
+        // labelled target by design; this row deletes an unlabelled entry beside labelled bystanders.
+        new("agent-delete-lexicon", MemoryStoreFamily.Lexicon, NoPrecondition, static world => DeleteByToolAsync(world)) { AgentTool = true, Unlabelled = SeededItem.GlobalEntry },
     ];
 
     /// <summary>How long one row may run before every request and wait it makes is cancelled.</summary>
     private static readonly TimeSpan RowDeadline = TimeSpan.FromMinutes(3);
 
-    public static TheoryData<string> Cases
-    {
-        get
-        {
-            TheoryData<string> cases = [];
+    public static TheoryData<string> Cases => Names(Verbs);
 
-            foreach (MemoryMutationCase verb in Verbs)
-            {
-                cases.Add(verb.Name);
-            }
+    /// <summary>Every row that runs without the Annals, which a host holding labelled Lexicon entries does.</summary>
+    public static TheoryData<string> LabelledCases => Names(Verbs.Where(static verb => !verb.NeedsAnnals));
 
-            return cases;
-        }
-    }
-
+    /// <summary>
+    /// Runs one verb in a host whose Saga memories carry sensitivity labels, beside unlabelled Lexicon
+    /// entries and the Covenant keys.
+    /// </summary>
+    /// <remarks>
+    /// The Annals stay on, so the review verbs run here. A Lexicon entry that already holds an Annals claim
+    /// cannot be labelled afterwards in any state production reaches, so the Lexicon's labels are the
+    /// other theory's.
+    /// </remarks>
     [SkippableTheory]
     [MemberData(nameof(Cases))]
     public async Task A_per_item_verb_changes_only_its_own_store(string row)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
+        await RunAsync(Assert.Single(Verbs, candidate => candidate.Name == row), labelLexicon: false);
+    }
+
+    /// <summary>
+    /// Runs one verb in a host without the Annals, where every seeded Saga memory and Lexicon entry
+    /// carries a sensitivity label, so each verb meets a labelled target and labelled bystanders in the
+    /// other store.
+    /// </summary>
+    /// <remarks>
+    /// This is the theory that reaches the labelled branches: the sensitive-artifact purge behind both
+    /// legacy deletes, and the label removal inside a Saga or Lexicon erase. The review verbs need the
+    /// Annals, so they run only in the other theory. A row whose verb treats a labelled target differently
+    /// leaves that one target unlabelled and says why.
+    /// </remarks>
+    [SkippableTheory]
+    [MemberData(nameof(LabelledCases))]
+    public async Task A_per_item_verb_beside_labelled_memories_changes_only_its_own_store(string row)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
         MemoryMutationCase verb = Assert.Single(Verbs, candidate => candidate.Name == row);
 
-        using CancellationTokenSource deadline = new(RowDeadline);
+        Assert.False(verb.NeedsAnnals);
 
-        await using ArcanumWebApplicationFactory host = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
-
-        IsolationWorld world = await SeedAsync(host, deadline.Token);
-
-        await verb.Arrange(world);
-
-        await MemoryStoreSnapshot.QuiesceAsync(host.Services, world.Token);
-
-        MemoryStoreSnapshot before = await CaptureAsync(world);
-
-        await verb.Act(world);
-
-        await MemoryStoreSnapshot.QuiesceAsync(host.Services, world.Token);
-
-        MemoryStoreSnapshot.AssertOnlyChanged(before, await CaptureAsync(world), verb.Target);
+        await RunAsync(verb, labelLexicon: true);
     }
 
     /// <summary>
@@ -184,7 +230,7 @@ public sealed class MemoryCrossStoreIsolationTests
 
         await EraseAsync(world, store);
 
-        await MemoryStoreSnapshot.QuiesceAsync(host.Services, world.Token);
+        await MemoryStoreSnapshot.QuiesceAsync(host.Services, target, world.Token);
 
         MemoryStoreSnapshot erased = await CaptureAsync(world);
 
@@ -200,7 +246,7 @@ public sealed class MemoryCrossStoreIsolationTests
 
         Assert.Equal(1, released.ReleasedCount);
 
-        await MemoryStoreSnapshot.QuiesceAsync(host.Services, world.Token);
+        await MemoryStoreSnapshot.QuiesceAsync(host.Services, target, world.Token);
 
         MemoryStoreSnapshot after = await CaptureAsync(world);
 
@@ -214,6 +260,64 @@ public sealed class MemoryCrossStoreIsolationTests
 
             Assert.Equal(FingerprintRows(before, family), FingerprintRows(after, family));
         }
+    }
+
+    /// <summary>
+    /// Seeds a host, labels its memories, writes the row's precondition, and requires the verb to change
+    /// only its own store.
+    /// </summary>
+    private static async Task RunAsync(MemoryMutationCase verb, bool labelLexicon)
+    {
+        using CancellationTokenSource deadline = new(RowDeadline);
+
+        await using ArcanumWebApplicationFactory host = MemoryErasureRouteDriver.Host(
+            new InMemoryOsCredentialStore(),
+            covenant: true,
+            configure: settings =>
+            {
+                // The agent tools are advertised only while the Lexicon feature is on.
+                settings.Features.Lexicon |= verb.AgentTool;
+
+                // A Lexicon entry labelled after it was scribed is a production state only without the
+                // Annals, the way LexiconErasureEndpointTests labels one.
+                settings.Features.Annals &= !labelLexicon;
+            });
+
+        IsolationWorld world = await SeedAsync(host, deadline.Token);
+
+        await LabelAsync(world, labelLexicon, verb.Unlabelled);
+
+        await verb.Arrange(world);
+
+        await MemoryStoreSnapshot.QuiesceAsync(host.Services, world.Token);
+
+        MemoryStoreSnapshot before = await CaptureAsync(world);
+
+        // Labelled rows exist in every family this theory labels, so the label partition is compared on
+        // rows that are there, not on an empty table.
+        Assert.True(before.CountRows(MemoryStoreFamily.Saga, Labels) > 0, "No labelled Saga memory remains before the verb.");
+
+        Assert.True(
+            !labelLexicon || before.CountRows(MemoryStoreFamily.Lexicon, Labels) > 0,
+            "No labelled Lexicon entry remains before the verb.");
+
+        await verb.Act(world);
+
+        await MemoryStoreSnapshot.QuiesceAsync(host.Services, verb.Target, world.Token);
+
+        MemoryStoreSnapshot.AssertOnlyChanged(before, await CaptureAsync(world), verb.Target);
+    }
+
+    private static TheoryData<string> Names(IEnumerable<MemoryMutationCase> verbs)
+    {
+        TheoryData<string> names = [];
+
+        foreach (MemoryMutationCase verb in verbs)
+        {
+            names.Add(verb.Name);
+        }
+
+        return names;
     }
 
     private static Task NoPrecondition(IsolationWorld world) => Task.CompletedTask;
@@ -502,7 +606,11 @@ public sealed class MemoryCrossStoreIsolationTests
         await ReviewSagaOnceAsync(world, MemoryReviewAction.Pin, world.SagaTwoId);
     }
 
-    private static async Task ReviewSagaOnceAsync(IsolationWorld world, MemoryReviewAction action, string memoryId)
+    private static async Task<MemoryReviewBulkResultDto> ReviewSagaOnceAsync(
+        IsolationWorld world,
+        MemoryReviewAction action,
+        string memoryId,
+        string? replacement = null)
     {
         SagaReviewPageDto page = await PostOkAsync(
             world,
@@ -520,7 +628,7 @@ public sealed class MemoryCrossStoreIsolationTests
             SagaMemoryScopeKind.Global,
             null,
             action,
-            [new SagaReviewDecision(item.ObservationToken, null)]);
+            [new SagaReviewDecision(item.ObservationToken, replacement)]);
 
         MemoryReviewBulkPlanDto plan = await PostOkAsync(
             world,
@@ -537,6 +645,8 @@ public sealed class MemoryCrossStoreIsolationTests
             ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkResultDto);
 
         AssertReviewApplied(result, MemoryReviewStore.Saga, action);
+
+        return result;
     }
 
     /// <summary>A bulk review of both Lexicon queues: the Global entry retired, the Campaign entry pinned.</summary>
@@ -547,7 +657,12 @@ public sealed class MemoryCrossStoreIsolationTests
         await ReviewLexiconOnceAsync(world, MemoryReviewAction.Pin, CampaignEntry, world.Campaign);
     }
 
-    private static async Task ReviewLexiconOnceAsync(IsolationWorld world, MemoryReviewAction action, string name, Guid? campaignId)
+    private static async Task ReviewLexiconOnceAsync(
+        IsolationWorld world,
+        MemoryReviewAction action,
+        string name,
+        Guid? campaignId,
+        LexiconReplacementContent? replacement = null)
     {
         Guid entryId = (await ShowLexiconAsync(world, name, campaignId)).Target.EntryId;
 
@@ -564,7 +679,7 @@ public sealed class MemoryCrossStoreIsolationTests
             Guid.CreateVersion7(),
             ScopeOf(campaignId),
             action,
-            [new LexiconReviewDecision(item.ObservationToken, null)]);
+            [new LexiconReviewDecision(item.ObservationToken, replacement)]);
 
         MemoryReviewBulkPlanDto plan = await PostOkAsync(
             world,
@@ -591,7 +706,11 @@ public sealed class MemoryCrossStoreIsolationTests
         await ReviewCovenantOnceAsync(world, MemoryReviewAction.Pin, KeyA);
     }
 
-    private static async Task ReviewCovenantOnceAsync(IsolationWorld world, MemoryReviewAction action, string key)
+    private static async Task ReviewCovenantOnceAsync(
+        IsolationWorld world,
+        MemoryReviewAction action,
+        string key,
+        string? replacement = null)
     {
         CovenantReviewPageDto page = await PostOkAsync(
             world,
@@ -608,7 +727,7 @@ public sealed class MemoryCrossStoreIsolationTests
             null,
             CovenantLane.Confirmed,
             action,
-            [new CovenantReviewDecision(item.ObservationToken, null)]);
+            [new CovenantReviewDecision(item.ObservationToken, replacement)]);
 
         MemoryReviewBulkPlanDto plan = await PostOkAsync(
             world,
@@ -635,11 +754,167 @@ public sealed class MemoryCrossStoreIsolationTests
 
         Assert.False(result.Replayed);
 
-        // Each store names its own outcomes, and the Lexicon spells them in lower case.
-        Assert.Equal(
-            action == MemoryReviewAction.Retire ? "Retired" : "Pinned",
-            Assert.Single(result.Items).Outcome,
-            ignoreCase: true);
+        // Each store names its own outcomes: the Lexicon spells them in lower case and acknowledges what
+        // the other two confirm.
+        string expected = (action, store) switch
+        {
+            (MemoryReviewAction.Confirm, MemoryReviewStore.Lexicon) => "acknowledged",
+            (MemoryReviewAction.Confirm, _) => "Confirmed",
+            (MemoryReviewAction.Correct, _) => "Corrected",
+            (MemoryReviewAction.Retire, _) => "Retired",
+            (MemoryReviewAction.Pin, _) => "Pinned",
+            _ => "Unpinned",
+        };
+
+        Assert.Equal(expected, Assert.Single(result.Items).Outcome, ignoreCase: true);
+    }
+
+    /// <summary>
+    /// Erases the seeded item of every store but the one a review correction targets, so that
+    /// correction runs beside fingerprints the other stores hold. A Saga correction also needs the
+    /// fingerprint of the content it corrects to, which the erase of the second memory records.
+    /// </summary>
+    private static async Task EraseForCorrectionAsync(IsolationWorld world, MemoryReviewStore corrected)
+    {
+        _ = await world.Driver.EraseSagaAsync(world.SagaTwoId, ct: world.Token);
+
+        if (corrected != MemoryReviewStore.Lexicon)
+        {
+            _ = await world.Driver.EraseLexiconAsync(CampaignEntry, world.Campaign, ct: world.Token);
+        }
+
+        if (corrected != MemoryReviewStore.Covenant)
+        {
+            _ = await world.Driver.EraseCovenantAsync(CovenantScope.Global, null, KeyB, ct: world.Token);
+        }
+    }
+
+    /// <summary>
+    /// Corrects the first memory, through the Saga review queue, to the content the second memory's
+    /// erase fingerprinted, so the correction releases that fingerprint implicitly and reports it.
+    /// </summary>
+    private static async Task CorrectSagaByReviewAsync(IsolationWorld world)
+    {
+        MemoryReviewBulkResultDto result = await ReviewSagaOnceAsync(world, MemoryReviewAction.Correct, world.SagaOneId, SagaTwoContent);
+
+        Assert.True(Assert.Single(result.Items).ReleasedErasureFingerprint);
+    }
+
+    /// <summary>
+    /// Scribes a new Global entry through the agent's <c>scribe_lexicon</c> tool. Outside a turn a tool
+    /// call has no Session, so it writes the Global tier.
+    /// </summary>
+    private static async Task ScribeByToolAsync(IsolationWorld world)
+    {
+        string text = await InvokeToolAsync(
+            world,
+            "scribe_lexicon",
+            new Dictionary<string, object?>
+            {
+                ["name"] = "Iso Herald",
+                ["type"] = "Person",
+                ["facts"] = new[] { "rings the harbour bell" },
+            });
+
+        Assert.Contains("Iso Herald", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>Deletes the Global entry through the agent's <c>delete_lexicon</c> tool.</summary>
+    private static async Task DeleteByToolAsync(IsolationWorld world)
+    {
+        string text = await InvokeToolAsync(world, "delete_lexicon", new Dictionary<string, object?> { ["name"] = GlobalEntry });
+
+        Assert.Contains("was removed", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Invokes one internal tool through the function the host's MCP bridge hands a turn, the production
+    /// entry point for every agent tool call.
+    /// </summary>
+    private static async Task<string> InvokeToolAsync(IsolationWorld world, string tool, Dictionary<string, object?> arguments)
+    {
+        IReadOnlyList<AITool> tools = await world.Host.Services
+            .GetRequiredService<IMcpConnectionManager>()
+            .GetAvailableToolsAsync(null, world.Token);
+
+        AIFunction function = Assert.IsAssignableFrom<AIFunction>(
+            Assert.Single(tools, candidate => string.Equals(candidate.Name, tool, StringComparison.Ordinal)));
+
+        object? result = await function.InvokeAsync(new AIFunctionArguments(arguments), world.Token);
+
+        return Convert.ToString(result, CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Labels the seeded Saga memories, and the Lexicon entries when asked, through the one production
+    /// writer of sensitivity labels, leaving out whatever the row keeps unlabelled.
+    /// </summary>
+    private static async Task LabelAsync(IsolationWorld world, bool lexicon, SeededItem unlabelled)
+    {
+        if (!unlabelled.HasFlag(SeededItem.SagaOne))
+        {
+            await LabelSagaAsync(world, world.SagaOneId, SagaOneContent);
+        }
+
+        if (!unlabelled.HasFlag(SeededItem.SagaTwo))
+        {
+            await LabelSagaAsync(world, world.SagaTwoId, SagaTwoContent);
+        }
+
+        if (lexicon && !unlabelled.HasFlag(SeededItem.GlobalEntry))
+        {
+            await LabelLexiconAsync(world, GlobalEntry, null);
+        }
+
+        if (lexicon && !unlabelled.HasFlag(SeededItem.CampaignEntry))
+        {
+            await LabelLexiconAsync(world, CampaignEntry, world.Campaign);
+        }
+    }
+
+    private static Task LabelSagaAsync(IsolationWorld world, string id, string content) =>
+        LabelArtifactAsync(
+            world,
+            new DerivedArtifactWrite(
+                SensitiveArtifactKind.Saga,
+                Guid.Parse(id),
+                sessionId: null,
+                campaignId: null,
+                turnId: null,
+                artifactRevision: 1,
+                DerivedArtifactContentDigest.ForText(content),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.NewGuid()])));
+
+    private static async Task LabelLexiconAsync(IsolationWorld world, string name, Guid? campaignId)
+    {
+        LexiconEntryDto entry = (await ShowLexiconAsync(world, name, campaignId)).Entry;
+
+        LexiconCanonicalValue canonical = LexiconValueNormalizer.NormalizeCorrection(entry.Name, entry.Type, entry.Facts).Value;
+
+        await LabelArtifactAsync(
+            world,
+            new DerivedArtifactWrite(
+                SensitiveArtifactKind.Lexicon,
+                entry.Id,
+                sessionId: null,
+                entry.ScopeCampaignId,
+                turnId: null,
+                artifactRevision: 1,
+                DerivedArtifactContentDigest.ForBytes(LexiconSnapshotDigest.Encode(canonical)),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.NewGuid()])));
+    }
+
+    private static async Task LabelArtifactAsync(IsolationWorld world, DerivedArtifactWrite write)
+    {
+        using IServiceScope scope = world.Host.Services.CreateScope();
+
+        Result<LabeledArtifactWriteReceipt> labelled = await scope.ServiceProvider
+            .GetRequiredService<IArtifactSensitivityLedger>()
+            .LabelAsync(write, world.Token);
+
+        Assert.True(labelled.IsSuccess, labelled.IsFailure ? labelled.Error.Message : null);
     }
 
     /// <summary>Erases the store's first seeded item through its show, prepare and apply routes.</summary>
@@ -735,7 +1010,28 @@ public sealed class MemoryCrossStoreIsolationTests
         string Name,
         MemoryStoreFamily Target,
         Func<IsolationWorld, Task> Arrange,
-        Func<IsolationWorld, Task> Act);
+        Func<IsolationWorld, Task> Act)
+    {
+        /// <summary>Seeded items the row leaves unlabelled, because the verb treats a labelled one differently.</summary>
+        public SeededItem Unlabelled { get; init; }
+
+        /// <summary>Whether the verb needs the Annals, so it cannot run beside labelled Lexicon entries.</summary>
+        public bool NeedsAnnals { get; init; }
+
+        /// <summary>Whether the verb is an agent tool, which the host advertises only with the Lexicon feature on.</summary>
+        public bool AgentTool { get; init; }
+    }
+
+    /// <summary>The seeded Saga memories and Lexicon entries a row can leave unlabelled.</summary>
+    [Flags]
+    private enum SeededItem
+    {
+        None = 0,
+        SagaOne = 1,
+        SagaTwo = 2,
+        GlobalEntry = 4,
+        CampaignEntry = 8,
+    }
 
     /// <summary>
     /// The host a row runs in, the identities its baseline wrote, and the deadline every request and
