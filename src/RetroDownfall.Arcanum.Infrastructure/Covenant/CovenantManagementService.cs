@@ -132,6 +132,10 @@ internal sealed class CovenantManagementService(
             return cursor.Error;
         }
 
+        // One read of the published tier state serves the query and the health report it returns, so the
+        // rows and the report describe the same tier.
+        CovenantCapabilityState accelerator = availability.Current.Accelerator;
+
         CovenantSearchQuery query = new(
             compiled.Value,
             request.Scope,
@@ -139,7 +143,8 @@ internal sealed class CovenantManagementService(
             request.Lane,
             request.Lifecycle,
             request.EffectiveLimit,
-            cursor.Value?.Keyset);
+            cursor.Value?.Keyset,
+            accelerator);
 
         Result<CovenantSearchPage> searched = await availableSearchIndex
             .SearchAsync(query, readLease, cancellationToken)
@@ -206,13 +211,13 @@ internal sealed class CovenantManagementService(
                 next)) : null,
             Hex(filterDigest),
             new CovenantSearchHealthDto(
-                // The same rule status applies. A page answered from the index is the synchronized case,
-                // and one that was not is waiting on the outbox or on a rebuild, which status calls
-                // synchronizing too; the page cannot see the capability state, so it never reports a
-                // degraded accelerator.
+                // The same rule status applies, over the same published tier state the query was answered
+                // under. A page answered from the index is the synchronized case, and one that was not is
+                // waiting on the outbox or on a rebuild, which status calls synchronizing too, unless the
+                // tier itself is degraded, which status reports as degraded.
                 CovenantSearchHealthRule.State(
                     acceleratorUnavailable: page.Guidance is CovenantSearchRebuildGuidance.AcceleratorUnavailable,
-                    acceleratorDegraded: false,
+                    acceleratorDegraded: accelerator is CovenantCapabilityState.Degraded,
                     synchronized: page.ExecutionMode is CovenantSearchExecutionMode.Fts),
                 page.ExecutionMode,
                 page.Guidance),

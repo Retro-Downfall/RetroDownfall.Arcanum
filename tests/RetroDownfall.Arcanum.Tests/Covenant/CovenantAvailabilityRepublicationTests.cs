@@ -905,6 +905,51 @@ public sealed class CovenantAvailabilityRepublicationTests
     }
 
     /// <summary>
+    /// While the accelerator tier is degraded, only the canonical fallback answers queries, and both routes
+    /// say so together: a page must not report a healthy index that status reports as degraded, whether or
+    /// not a maintenance pass has run since the tier failed.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_page_and_status_agree_while_the_accelerator_tier_is_degraded()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory host = Host(new InMemoryOsCredentialStore());
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        _ = await new MemoryErasureRouteDriver(client).SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
+
+        await PassAsync(host);
+
+        AssertAnswersFromTheIndex(await SearchAsync(client));
+
+        AssertAnswersFromTheIndex((await QueryAsync(client, "vault")).Search);
+
+        DegradeAccelerator(host);
+
+        CovenantSearchHealthDto status = await SearchAsync(client);
+
+        CovenantSearchHealthDto page = (await QueryAsync(client, "vault")).Search;
+
+        Assert.Equal(CovenantSearchHealthState.Degraded, status.State);
+
+        Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, status.ExecutionMode);
+
+        Assert.Equal(status, page);
+
+        await PassAsync(host);
+
+        status = await SearchAsync(client);
+
+        page = (await QueryAsync(client, "vault")).Search;
+
+        Assert.Equal(CovenantSearchHealthState.Degraded, status.State);
+
+        Assert.Equal(status, page);
+    }
+
+    /// <summary>
     /// A host with the Covenant on and its background maintenance pass left out, so every pass a test needs
     /// is one it runs.
     /// </summary>

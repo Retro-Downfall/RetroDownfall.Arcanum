@@ -73,7 +73,9 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         Result<CovenantSearchPage> page;
 
-        if (acceleratorInstalled && sources.AcceleratorEligible)
+        // The published tier state is a fact no row carries: a tier the host found degraded still has its
+        // objects and a current tuple, and status already reports it as answering from the fallback.
+        if (acceleratorInstalled && sources.AcceleratorEligible && query.Accelerator is CovenantCapabilityState.Healthy)
         {
 
             page = await SearchFtsAsync(connection, transaction, query, scope.Value, sources, cancellationToken)
@@ -201,11 +203,15 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         bool truncated = candidates > FallbackCandidateLimit;
 
         // The same rule the status route applies, over the facts this page was answered from. A page the
-        // canonical scan answered was not answered by the index, so it is never the synchronized case.
+        // canonical scan answered was not answered by the index, so it is never the synchronized case. The
+        // published tier state joins the rows' own facts exactly where status reads it: an unavailable tier
+        // cannot be waited out, and the outbox only continues behind a healthy one.
         CovenantSearchRebuildGuidance guidance = CovenantSearchHealthRule.Guidance(
-            acceleratorUnavailable: !acceleratorInstalled,
+            acceleratorUnavailable: !acceleratorInstalled || query.Accelerator is CovenantCapabilityState.Unavailable,
             synchronized: false,
-            outboxCanContinue: acceleratorInstalled && sources.AppliedDatasetGeneration == sources.DatasetGeneration,
+            outboxCanContinue: acceleratorInstalled
+                && query.Accelerator is CovenantCapabilityState.Healthy
+                && sources.AppliedDatasetGeneration == sources.DatasetGeneration,
             rebuildOwed: rebuildOwed);
 
         return BuildPage(
