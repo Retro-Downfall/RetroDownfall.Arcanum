@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -706,6 +707,56 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(
             await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings" """),
             await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings_vec" """));
+
+    }
+
+    /// <summary>
+    /// The embedding and the removal of its stale mirror row commit together: when the mirror row cannot be
+    /// removed, the embedding is rolled back with it and the tick throws.
+    /// </summary>
+    /// <remarks>
+    /// This is the property that keeps a stale mirror row from outliving the embedding that replaced it. If
+    /// the removal were a separate step, the embedding would already be committed when the removal failed;
+    /// the entry would then hold an <c>entry_embeddings</c> row, never be selected for embedding again, and
+    /// its stale mirror row would stay forever. The trade is deliberate and has one consequence worth naming:
+    /// because nothing is committed, the entry has no embedding after the failed tick, so the next tick
+    /// fetches it again and re-embeds it, which is a second provider call for the same text, repeated every
+    /// tick until the mirror row can be removed. The trigger stands in for any refusal of that delete.
+    /// </remarks>
+    [SkippableFact]
+    public async Task RunTickAsync_RollsTheEmbeddingBackWhenTheStaleMirrorRowCannotBeRemoved()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "the entry whose stale mirror row cannot be removed");
+
+        await ExecuteAsync(
+            """CREATE TABLE "entry_embeddings_vec" ("EntryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)""");
+
+        await ExecuteAsync(
+            """INSERT INTO "entry_embeddings_vec" ("EntryId", "Embedding") SELECT "Id", X'0000803F' FROM "Entries" """);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER "entry_embeddings_vec_refuse_delete" BEFORE DELETE ON "entry_embeddings_vec"
+            BEGIN
+                SELECT RAISE(ABORT, 'the mirror row cannot be removed');
+            END
+            """);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        _ = await Assert.ThrowsAsync<SqliteException>(
+            () => service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, await CountMirrorRowsAsync());
 
     }
 

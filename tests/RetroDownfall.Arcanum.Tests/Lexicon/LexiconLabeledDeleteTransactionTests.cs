@@ -100,7 +100,9 @@ public sealed class LexiconLabeledDeleteTransactionTests(GrimoireFixture fixture
 
         Assert.True(refused.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+        // Unavailable, the 503 the route documents for a label that cannot be read, not the 403 a
+        // labelled entry is refused with.
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.Equal(1L, await CountAsync("lexicon_entries"));
 

@@ -340,7 +340,9 @@ public sealed class CovenantLabeledRetentionRouteTests
         bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
 
         await AssertGuardAskedInsideTheDeleteTransactionAsync(
-            saga,
+            saga ? SensitiveArtifactKind.Saga : SensitiveArtifactKind.Lexicon,
+            saga ? SeedSagaMemoryAsync : SeedLexiconEntryAsync,
+            saga ? "saga_memories" : "lexicon_entries",
             async client =>
             {
 
@@ -389,7 +391,9 @@ public sealed class CovenantLabeledRetentionRouteTests
         bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
 
         await AssertGuardAskedInsideTheDeleteTransactionAsync(
-            saga,
+            saga ? SensitiveArtifactKind.Saga : SensitiveArtifactKind.Lexicon,
+            saga ? SeedSagaMemoryAsync : SeedLexiconEntryAsync,
+            saga ? "saga_memories" : "lexicon_entries",
             async client =>
             {
 
@@ -415,11 +419,93 @@ public sealed class CovenantLabeledRetentionRouteTests
     }
 
     /// <summary>
+    /// The retention prune asks the label guard inside the transaction that deletes each assistant Entry
+    /// it selects, so a label written after the answer cannot be removed along with the Entry it names.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task A_prune_asks_the_label_guard_inside_each_entrys_transaction()
+    {
+
+        RequireSqlCipher();
+
+        await AssertGuardAskedInsideTheDeleteTransactionAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            SeedSessionWithEntryAsync,
+            "Entries",
+            async client =>
+            {
+
+                HttpResponseMessage enabled = await client.PutAsync(
+                    "/api/data/retention",
+                    Json(
+                        new RetentionRuleUpdateRequest("entries", true, 1),
+                        ArcanumJsonContext.Default.RetentionRuleUpdateRequest));
+
+                Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+
+                HttpResponseMessage pruned = await client.PostAsync(
+                    "/api/data/prune",
+                    Json(
+                        new DataRetentionApplyRequest(
+                            new DataRetentionRequest(DataRetentionOperation.Prune)),
+                        ArcanumJsonContext.Default.DataRetentionApplyRequest));
+
+                Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
+
+            });
+
+    }
+
+    /// <summary>
+    /// A Session delete asks the label guard about each of its assistant Entries inside the transaction
+    /// that deletes them, so a label written after the answer cannot be removed along with its Entry.
+    /// </summary>
+    /// <remarks>
+    /// A Session delete is all or nothing, so the guard has to ask about the Entries the transaction will
+    /// actually remove, which is the set read inside it.
+    /// </remarks>
+    [SkippableFact]
+
+    public async Task A_session_delete_asks_the_label_guard_inside_its_transaction()
+    {
+
+        RequireSqlCipher();
+
+        Guid sessionId = Guid.NewGuid();
+
+        await AssertGuardAskedInsideTheDeleteTransactionAsync(
+            SensitiveArtifactKind.AssistantEntry,
+            async (connection, entryId) =>
+            {
+
+                await SeedSessionAsync(connection, sessionId);
+
+                await SeedEntryAsync(connection, sessionId, entryId);
+
+            },
+            "Entries",
+            async client =>
+            {
+
+                HttpResponseMessage deleted = await client.DeleteAsync($"/api/data/sessions/{sessionId:D}");
+
+                ApiResponse<DataRetentionApplyResult> body = await ReadAsync(deleted);
+
+                Assert.True(body.IsSuccess, body.Error?.Message);
+
+            });
+
+    }
+
+    /// <summary>
     /// Seeds one unlabelled memory or entry the operation deletes, runs the operation with a second
     /// writer trying to label it right after the guard answers, and asserts that writer was blocked.
     /// </summary>
     private static async Task AssertGuardAskedInsideTheDeleteTransactionAsync(
-        bool saga,
+        SensitiveArtifactKind kind,
+        Func<SqliteConnection, Guid, Task> seed,
+        string table,
         Func<HttpClient, Task> operation)
     {
 
@@ -427,20 +513,22 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         LabelIntruder intruder = new(
             _ => Task.FromResult(intruderConnection!),
-            saga ? SensitiveArtifactKind.Saga : SensitiveArtifactKind.Lexicon);
+            kind);
 
         await using ArcanumWebApplicationFactory factory = new()
         {
             ServiceOverrides = services =>
             {
 
+                // The transaction form is the registration that builds the guard; the Core form forwards to
+                // it, so replacing this one puts the intruder in front of every caller.
                 Func<IServiceProvider, object> real = services
-                    .Last(static descriptor => descriptor.ServiceType == typeof(ICovenantLabeledArtifactGuard))
+                    .Last(static descriptor => descriptor.ServiceType == typeof(ICovenantLabeledArtifactTransactionGuard))
                     .ImplementationFactory
                     ?? throw new InvalidOperationException("The guard is registered by a factory.");
 
-                services.AddScoped<ICovenantLabeledArtifactGuard>(
-                    sp => new LabelIntrusionGuard((ICovenantLabeledArtifactGuard)real(sp), intruder));
+                services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
+                    sp => new LabelIntrusionGuard((ICovenantLabeledArtifactTransactionGuard)real(sp), intruder));
 
             },
         };
@@ -456,18 +544,7 @@ public sealed class CovenantLabeledRetentionRouteTests
 
             SqliteConnection connection = await OpenAsync(scope);
 
-            if (saga)
-            {
-
-                await SeedSagaMemoryAsync(connection, artifactId);
-
-            }
-            else
-            {
-
-                await SeedLexiconEntryAsync(connection, artifactId);
-
-            }
+            await seed(connection, artifactId);
 
         }
 
@@ -491,9 +568,9 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         SqliteConnection verify = await OpenAsync(after);
 
-        Assert.Equal(0, await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
+        Assert.Equal(0, await CountAsync(verify, table, "Id", artifactId));
 
-        // No label survives the memory it names.
+        // No label survives the artifact it names.
         Assert.Equal(0, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", artifactId));
 
         Assert.Equal(1, intruder.AskedInsideTransaction);
@@ -559,6 +636,17 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$created", Backdated);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private static async Task SeedSessionWithEntryAsync(SqliteConnection connection, Guid entryId)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        await SeedSessionAsync(connection, sessionId);
+
+        await SeedEntryAsync(connection, sessionId, entryId);
 
     }
 

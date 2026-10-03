@@ -796,6 +796,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireRequestAdmissionScope.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireSqlCommandFactory.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireWalCheckpoint.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IAuthenticatedCovenantErasureRecoveryHandler.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/ICovenantLabeledArtifactTransactionGuard.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/ISqliteNativeRuntime.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyClaimStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyStore.cs

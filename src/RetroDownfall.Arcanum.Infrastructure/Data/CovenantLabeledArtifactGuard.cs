@@ -36,8 +36,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </remarks>
 internal sealed class CovenantLabeledArtifactGuard(
     IArtifactSensitivityLedger labels,
-    ICovenantConnectionSource connections,
-    ILogger<CovenantLabeledArtifactGuard> logger) : ICovenantLabeledArtifactGuard
+    ILogger<CovenantLabeledArtifactGuard> logger) : ICovenantLabeledArtifactTransactionGuard
 {
 
     public async ValueTask<Result> EnsureUnlabeledAsync(
@@ -54,30 +53,6 @@ internal sealed class CovenantLabeledArtifactGuard(
                 await labels
                     .TryReadLabelAsync(kind, artifactId, cancellationToken)
                     .ConfigureAwait(false));
-
-        }
-        catch (SqliteException exception)
-        {
-
-            return Unreadable(kind, exception);
-
-        }
-
-    }
-
-    public async ValueTask<Result> EnsureNoneLabeledAsync(
-        SensitiveArtifactKind kind,
-        CancellationToken cancellationToken = default)
-    {
-
-        try
-        {
-
-            SqliteConnection connection = await connections
-                .GetOpenConnectionAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            return await AnyLabeledAsync(connection, transaction: null, kind, cancellationToken).ConfigureAwait(false);
 
         }
         catch (SqliteException exception)
@@ -158,7 +133,7 @@ internal sealed class CovenantLabeledArtifactGuard(
 
     private static async Task<Result> AnyLabeledAsync(
         SqliteConnection connection,
-        SqliteTransaction? transaction,
+        SqliteTransaction transaction,
         SensitiveArtifactKind kind,
         CancellationToken cancellationToken)
     {
@@ -199,8 +174,13 @@ internal sealed class CovenantLabeledArtifactGuard(
     /// The refusal for a label table that could not be read.
     /// </summary>
     /// <remarks>
-    /// The log line carries the kind and the provider's result codes and nothing else, so it names no
-    /// artifact and copies no content into application logs.
+    /// <c>Covenant.Unavailable</c>, the 503, rather than the <c>Covenant.ForbiddenAuthority</c> a labelled
+    /// artifact is refused with: nothing was found to be protected, so there is no authority to lack. The
+    /// protection could not be checked, which is the Grimoire's condition and not the caller's, and the
+    /// operator's action is to repair it.
+    ///
+    /// <para>The log line carries the kind and the provider's result codes and nothing else, so it names no
+    /// artifact and copies no content into application logs.</para>
     /// </remarks>
     private Error Unreadable(SensitiveArtifactKind kind, SqliteException exception)
     {
@@ -212,7 +192,7 @@ internal sealed class CovenantLabeledArtifactGuard(
             exception.SqliteExtendedErrorCode);
 
         return new Error(
-            ErrorCodes.Covenant.ForbiddenAuthority,
+            ErrorCodes.Covenant.Unavailable,
             $"The sensitivity labels for {kind} artifacts could not be read, so a raw delete cannot be "
                 + "shown to leave no labelled artifact behind and was refused.");
 

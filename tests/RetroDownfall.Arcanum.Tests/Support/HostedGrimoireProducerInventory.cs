@@ -826,7 +826,6 @@ internal static class HostedGrimoireProducerInventory
         "System.Buffers.Text.Base64.DecodeFromUtf8",
         "System.Buffers.Text.Base64.EncodeToUtf8",
         "System.Buffers.Text.Base64Url.DecodeFromChars",
-        "System.Buffers.Text.Base64Url.TryDecodeFromChars",
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove",
         "System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue",
         "System.Collections.Generic.Dictionary`2.Remove",

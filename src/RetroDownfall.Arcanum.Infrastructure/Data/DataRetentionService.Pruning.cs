@@ -4239,9 +4239,9 @@ internal sealed partial class DataRetentionService
 
             // The Session delete refuses a labelled Entry outright, which is right for the route that
             // names one Session and wrong for a sweep that named this one among many. Nothing has
-            // been mutated when it refuses — the guard asks before the transaction opens — so the
-            // sweep leaves this Session alone and carries on, the way it does for any other candidate
-            // it may not take.
+            // been mutated when it refuses — the guard asks inside the transaction that would delete,
+            // before its first write, and the refusal rolls it back — so the sweep leaves this Session
+            // alone and carries on, the way it does for any other candidate it may not take.
             DataRetentionApplyResult result;
 
             try
@@ -5298,18 +5298,6 @@ internal sealed partial class DataRetentionService
             "Entries_fts",
             cancellationToken).ConfigureAwait(false);
 
-        // A sweep is not a targeted deletion: one protected member is a reason to leave that member
-        // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
-        // Skipping keeps the label pointing at content that still exists, which is the invariant the
-        // raw delete broke (§10.20.2).
-        if ((await EnsureArtifactUnlabeledAsync(
-                SensitiveArtifactKind.AssistantEntry,
-                entryId,
-                cancellationToken).ConfigureAwait(false)).IsFailure)
-        {
-            return CandidateDeleteResult.Empty;
-        }
-
         await using DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
@@ -5320,6 +5308,21 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            // A sweep is not a targeted deletion: one protected member is a reason to leave that member
+            // where it is, exactly as a pin or an operator hold is, not to abandon every other candidate.
+            // Skipping keeps the label pointing at content that still exists, which is the invariant the
+            // raw delete broke (§10.20.2). Asked first, inside the transaction that deletes, so no label
+            // can be committed between the answer and the delete.
+            if ((await EnsureArtifactUnlabeledAsync(
+                    SensitiveArtifactKind.AssistantEntry,
+                    entryId,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false)).IsFailure)
+            {
+                // Nothing has been written, and disposing the transaction on the way out rolls it back.
+                return CandidateDeleteResult.Empty;
+            }
+
             string? boundarySessionId = await ScalarStringInTransactionAsync(
                 connection,
                 transaction,

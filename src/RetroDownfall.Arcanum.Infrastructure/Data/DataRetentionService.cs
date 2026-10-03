@@ -60,7 +60,7 @@ internal sealed partial class DataRetentionService(
     ILongRunningOperationStore operations,
     TimeProvider timeProvider,
     ILogger<DataRetentionService> logger,
-    ICovenantLabeledArtifactGuard labeledArtifactGuard,
+    ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard,
     string? attachmentsRootOverride = null,
     string? filesRootOverride = null,
     string? logsRootOverride = null,
@@ -1538,11 +1538,12 @@ internal sealed partial class DataRetentionService(
         }
         catch (RetentionCovenantLabelException ex)
         {
-            // Nothing was mutated: every guard asks before its transaction opens. The operation is
-            // terminalized under the guard's own code so a client can tell protected state that must
-            // leave through the purge boundary from an ordinary retention hold, and the refusal
-            // itself is returned verbatim because its message names the boundary rather than the
-            // artifact (§10.20.2).
+            // The refused delete mutated nothing: every guard asks inside the transaction that would
+            // delete, ahead of that transaction's first write, so a refusal rolls it back untouched.
+            // The operation is terminalized under the guard's own code so a client can tell protected
+            // state that must leave through the purge boundary from an ordinary retention hold, and
+            // the refusal itself is returned verbatim because its message names the boundary rather
+            // than the artifact (§10.20.2).
             LongRunningOperation refused = await operations.GetAsync(
                 operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
@@ -2921,10 +2922,6 @@ internal sealed partial class DataRetentionService(
             return EmptyApply(operationId, plan);
         }
 
-        await RefuseLabeledSessionEntriesAsync(
-            snapshot,
-            cancellationToken).ConfigureAwait(false);
-
         bool ftsTableExists = await TableExistsAsync(
             "Entries_fts",
             cancellationToken).ConfigureAwait(false);
@@ -2964,6 +2961,13 @@ internal sealed partial class DataRetentionService(
             }
 
             snapshot = transactionSnapshot;
+
+            // Asked about the Entries this transaction will remove, now that it holds the write lock, so
+            // no label can be committed between the answer and the delete below.
+            await RefuseLabeledSessionEntriesAsync(
+                snapshot,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
 
             if (ageCutoff is DateTimeOffset cutoff
                 && !await SessionCandidateOldEnoughInTransactionAsync(
@@ -5995,33 +5999,19 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// Whether the labelled-artifact guard permits removing one named artifact by raw delete.
-    /// </summary>
-    /// <remarks>
-    /// Asked before the mutation transaction opens, so it is for a delete that has no transaction of
-    /// its own to ask in. A delete that does owns the question inside it, through the overload below:
-    /// the guard reads through the transaction it is handed, which is what a command issued on a
-    /// connection that already holds a transaction has to do.
-    ///
-    /// <para>The guard is required rather than optional. Every composition has the Core label table,
-    /// so the guard always has something to read, and what an optional guard cost was every
-    /// composition that forgot the argument skipping the refusal in silence.</para>
-    /// </remarks>
-    private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
-        SensitiveArtifactKind kind,
-        Guid artifactId,
-        CancellationToken cancellationToken) =>
-        await labeledArtifactGuard
-            .EnsureUnlabeledAsync(kind, artifactId, cancellationToken)
-            .ConfigureAwait(false);
-
-    /// <summary>
     /// Whether the labelled-artifact guard permits removing one named artifact, asked inside the
     /// transaction that removes it.
     /// </summary>
     /// <remarks>
     /// The answer and the delete are one moment: a label cannot be committed between them, because the
-    /// transaction already holds the write lock every label writer needs.
+    /// transaction already holds the write lock every label writer needs. The guard reads through the
+    /// transaction it is handed, which is what a command issued on a connection that already holds a
+    /// transaction has to do. Every delete in this service owns a transaction, so there is no form of
+    /// the question that is asked outside one.
+    ///
+    /// <para>The guard is required rather than optional. Every composition has the Core label table,
+    /// so the guard always has something to read, and what an optional guard cost was every
+    /// composition that forgot the argument skipping the refusal in silence.</para>
     /// </remarks>
     private async ValueTask<Result> EnsureArtifactUnlabeledAsync(
         SensitiveArtifactKind kind,
@@ -6148,9 +6138,13 @@ internal sealed partial class DataRetentionService(
     /// transaction — so a protected member is a reason to refuse the whole operation rather than to
     /// leave a Session deleted around Entries that are still there. The single-entry route already
     /// dispatches through the purge boundary; this is the bulk twin that did not.
+    ///
+    /// <para>Asked inside that transaction, about the snapshot it read, so the Entries asked about are
+    /// the Entries it removes and no label can be committed between an answer and the delete.</para>
     /// </remarks>
     private async Task RefuseLabeledSessionEntriesAsync(
         SessionPlanSnapshot snapshot,
+        DbTransaction transaction,
         CancellationToken cancellationToken)
     {
         foreach (Guid entryId in snapshot.EntryIds)
@@ -6158,6 +6152,7 @@ internal sealed partial class DataRetentionService(
             Result unlabeled = await EnsureArtifactUnlabeledAsync(
                 SensitiveArtifactKind.AssistantEntry,
                 entryId,
+                transaction,
                 cancellationToken).ConfigureAwait(false);
 
             if (unlabeled.IsFailure)
@@ -7687,8 +7682,8 @@ internal sealed partial class DataRetentionService(
     /// <c>Data.Blocked</c> would tell an operator their deletion hit an ordinary retention hold
     /// rather than protected state that must be dispatched through the purge boundary (§10.20.2).
     ///
-    /// <para>Every throw site runs before its transaction is opened, so unwinding this leaves
-    /// nothing half-applied.</para>
+    /// <para>Every throw site is inside the transaction that would delete, ahead of that transaction's
+    /// first write, so unwinding this rolls it back and leaves nothing half-applied.</para>
     /// </remarks>
     private sealed class RetentionCovenantLabelException(Error error)
         : Exception(error.Message)

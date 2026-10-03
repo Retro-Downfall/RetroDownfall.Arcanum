@@ -268,6 +268,120 @@ public sealed class SagaVectorMirrorTests
         Assert.Equal(0, await harness.CountAsync("example_embeddings_vec", "1 = 1"));
     }
 
+    /// <summary>
+    /// The keyed table-named delete interpolates its table and its key column into the statement, so it
+    /// refuses a table that is not a vector mirror's and a key column that carries a quote, and the row
+    /// of whatever table the name points at survives the refusal.
+    /// </summary>
+    /// <remarks>
+    /// Each refused table is a real table holding one row, so without the refusal it would be classified
+    /// as a plain mirror and reach the statement. The last case is a genuine mirror name with a key
+    /// column that would end its quoted identifier early, which only the key-column refusal stops.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("victim", "Id")]
+    [InlineData("victim_vec_copy", "Id")]
+    [InlineData("victim\"_vec", "Id")]
+    [InlineData("example_embeddings_vec", "Id\"")]
+    public async Task Deleting_one_keyed_row_refuses_a_table_or_key_column_that_is_not_a_mirrors(
+        string table,
+        string keyColumn)
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        string quoted = "\"" + table.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+
+        await ExecuteAsync(harness, $"CREATE TABLE {quoted} (\"Id\" TEXT PRIMARY KEY)");
+
+        await ExecuteAsync(harness, $"INSERT INTO {quoted} (\"Id\") VALUES ('survivor')");
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(
+            () => SagaVectorMirror.DeleteAsync(harness.Connection, null, table, keyColumn, "survivor", Token));
+
+        Assert.Equal(1, await harness.CountAsync(quoted, "1 = 1"));
+    }
+
+    [SkippableFact]
+    public async Task Deleting_one_keyed_row_removes_exactly_that_row_of_a_table_named_like_a_vector_mirror()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        await ExecuteAsync(harness, "CREATE TABLE \"example_embeddings_vec\" (\"ChunkId\" TEXT PRIMARY KEY)");
+
+        await ExecuteAsync(harness, "INSERT INTO \"example_embeddings_vec\" (\"ChunkId\") VALUES ('one'), ('two')");
+
+        Assert.Equal(
+            1,
+            await SagaVectorMirror.DeleteAsync(harness.Connection, null, "example_embeddings_vec", "ChunkId", "one", Token));
+
+        Assert.Equal(0, await harness.CountAsync("example_embeddings_vec", "\"ChunkId\" = 'one'"));
+
+        Assert.Equal(1, await harness.CountAsync("example_embeddings_vec", "\"ChunkId\" = 'two'"));
+    }
+
+    /// <summary>
+    /// A writer handed no transaction runs in the one the connection already holds, for every statement it
+    /// issues and not only for the classification that precedes them.
+    /// </summary>
+    /// <remarks>
+    /// <c>CreateCommand</c> attaches the connection's current transaction, and assigning null would detach
+    /// it, which the provider refuses while one is pending. Classification already tolerates a caller that
+    /// names none, because a retention probe runs inside its caller's transaction without holding the object,
+    /// so a writer that tolerated it for the classification and then threw at its own statement would read
+    /// as if null were accepted and refuse at the delete or the insert. Every case here commits afterwards
+    /// and reads the result, so the statement that ran is proved to have run in that transaction.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("delete-one")]
+    [InlineData("delete-all")]
+    [InlineData("insert")]
+    public async Task A_writer_handed_no_transaction_joins_the_one_the_connection_holds(string verb)
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        await harness.CreatePlainVectorMirrorAsync();
+
+        string id = Guid.NewGuid().ToString();
+
+        if (verb != "insert")
+        {
+            await harness.SeedVectorMirrorRowAsync(id);
+        }
+
+        await using (DbTransaction transaction = await harness.Connection.BeginTransactionAsync(Token))
+        {
+            switch (verb)
+            {
+                case "delete-one":
+                    Assert.Equal(1, await SagaVectorMirror.DeleteAsync(harness.Connection, null, id, Token));
+
+                    break;
+
+                case "delete-all":
+                    Assert.Equal(1, await SagaVectorMirror.DeleteAllAsync(harness.Connection, null, Token));
+
+                    break;
+
+                default:
+                    Assert.Equal(
+                        SagaVectorMirrorKind.PlainTable,
+                        await SagaVectorMirror.UpsertAsync(
+                            harness.Connection,
+                            null,
+                            id,
+                            harness.Embedding(1),
+                            vecAvailable: true,
+                            Token));
+
+                    break;
+            }
+
+            await transaction.CommitAsync(Token);
+        }
+
+        Assert.Equal(verb == "insert" ? 1 : 0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1"));
+    }
+
     private static async Task ExecuteAsync(SagaStoreHarness harness, string sql)
     {
         await using DbCommand command = harness.Connection.CreateCommand();

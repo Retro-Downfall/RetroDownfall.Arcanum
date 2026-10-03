@@ -28,7 +28,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 ///
 /// <para>The two arms answer different questions on purpose. A single delete can name the artifact it is
 /// about; a set-based <c>DELETE FROM</c> examines no identity at all, so the only honest question there
-/// is whether the kind has any protected member left (§10.20.2).</para>
+/// is whether the kind has any protected member left (§10.20.2). The bulk arm exists only inside a
+/// transaction, because a bulk delete always owns one.</para>
 /// </remarks>
 [Collection("Grimoire")]
 
@@ -86,7 +87,7 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        ICovenantLabeledArtifactGuard guard = CreateGuard();
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
 
         Result unlabeled = await guard.EnsureUnlabeledAsync(
             SensitiveArtifactKind.Saga,
@@ -95,8 +96,11 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         Assert.True(unlabeled.IsSuccess);
 
+        await using SqliteTransaction transaction = await BeginAsync();
+
         Result none = await guard.EnsureNoneLabeledAsync(
             SensitiveArtifactKind.Saga,
+            transaction,
             CancellationToken.None);
 
         Assert.True(none.IsSuccess);
@@ -120,7 +124,7 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         await SeedLabelAsync(kind, artifactId, CancellationToken.None);
 
-        ICovenantLabeledArtifactGuard guard = CreateGuard();
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
 
         Result refused = await guard.EnsureUnlabeledAsync(
             kind,
@@ -153,24 +157,29 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        ICovenantLabeledArtifactGuard guard = CreateGuard();
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        await using SqliteTransaction transaction = await BeginAsync();
 
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, CancellationToken.None))
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction, CancellationToken.None))
                 .IsSuccess);
 
-        await SeedLabelAsync(SensitiveArtifactKind.Saga, Guid.NewGuid(), CancellationToken.None);
+        await SeedLabelAsync(SensitiveArtifactKind.Saga, Guid.NewGuid(), CancellationToken.None, transaction);
 
         Result refused = await guard.EnsureNoneLabeledAsync(
             SensitiveArtifactKind.Saga,
+            transaction,
             CancellationToken.None);
 
         Assert.True(refused.IsFailure);
 
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
         // A different kind is unaffected: the bulk arm is per kind, not per installation, so labelling a
         // Saga fact must not block a Lexicon reset that has nothing protected in it.
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, CancellationToken.None))
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Lexicon, transaction, CancellationToken.None))
                 .IsSuccess);
 
     }
@@ -186,20 +195,18 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
     /// </remarks>
     [SkippableTheory]
 
-    [InlineData(false, false)]
+    [InlineData("single")]
 
-    [InlineData(false, true)]
+    [InlineData("single-in-transaction")]
 
-    [InlineData(true, false)]
+    [InlineData("bulk-in-transaction")]
 
-    [InlineData(true, true)]
-
-    public async Task An_unreadable_label_table_refuses_the_delete_instead_of_passing_it(bool bulk, bool inTransaction)
+    public async Task An_unreadable_label_table_refuses_the_delete_instead_of_passing_it(string arm)
     {
 
         RequireSqlCipher();
 
-        ICovenantLabeledArtifactGuard guard = CreateGuard();
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
 
         Guid artifactId = Guid.NewGuid();
 
@@ -207,26 +214,28 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
-        await using SqliteTransaction? transaction = inTransaction
-            ? connection.BeginTransaction(deferred: false)
-            : null;
+        await using SqliteTransaction? transaction = arm == "single"
+            ? null
+            : connection.BeginTransaction(deferred: false);
 
-        Result refused = (bulk, inTransaction) switch
+        Result refused = arm switch
         {
 
-            (false, false) => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None),
+            "single" => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, CancellationToken.None),
 
-            (false, true) => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction!, CancellationToken.None),
+            "single-in-transaction" => await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction!, CancellationToken.None),
 
-            (true, false) => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, CancellationToken.None),
-
-            (true, true) => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction!, CancellationToken.None),
+            _ => await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, transaction!, CancellationToken.None),
 
         };
 
         Assert.True(refused.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+        // Unavailable, not ForbiddenAuthority: nothing was found to be protected, so there is no
+        // authority to lack. The protection could not be checked, which is a 503 the operator can act on
+        // by repairing the Grimoire, where ForbiddenAuthority says a labelled artifact must leave through
+        // the purge boundary.
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.DoesNotContain(artifactId.ToString("D"), refused.Error.Message, StringComparison.OrdinalIgnoreCase);
 
@@ -247,20 +256,13 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        ICovenantLabeledArtifactGuard guard = CreateGuard();
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
 
         Guid artifactId = Guid.NewGuid();
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
-        if (connection.State is not System.Data.ConnectionState.Open)
-        {
-
-            await connection.OpenAsync(CancellationToken.None);
-
-        }
-
-        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+        await using SqliteTransaction transaction = await BeginAsync();
 
         Assert.True(
             (await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.Saga, artifactId, transaction, CancellationToken.None)).IsSuccess);
@@ -285,12 +287,15 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         await transaction.RollbackAsync();
 
+        // The rolled-back label is gone for a transaction that begins afterwards.
+        await using SqliteTransaction after = connection.BeginTransaction(deferred: false);
+
         Assert.True(
-            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, CancellationToken.None)).IsSuccess);
+            (await guard.EnsureNoneLabeledAsync(SensitiveArtifactKind.Saga, after, CancellationToken.None)).IsSuccess);
 
     }
 
-    private ICovenantLabeledArtifactGuard CreateGuard()
+    private ICovenantLabeledArtifactTransactionGuard CreateGuard()
     {
 
         ICovenantConnectionSource connections = new CovenantConnectionSource(
@@ -299,8 +304,24 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         return new CovenantLabeledArtifactGuard(
             new ArtifactSensitivityLedger(connections),
-            connections,
             NullLogger<CovenantLabeledArtifactGuard>.Instance);
+
+    }
+
+    /// <summary>Opens the connection if it is not open and begins a write transaction on it.</summary>
+    private async Task<SqliteTransaction> BeginAsync()
+    {
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        return connection.BeginTransaction(deferred: false);
 
     }
 

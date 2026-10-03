@@ -27,7 +27,7 @@ internal sealed class CovenantLaunchGapRecovery
         ILongRunningOperationStore operations,
         TimeProvider timeProvider,
         ILogger<DataRetentionService> logger,
-        ICovenantLabeledArtifactGuard labeledArtifactGuard,
+        ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard,
         CovenantErasureCoordinator covenantErasureCoordinator)
     {
         _retention = new DataRetentionService(

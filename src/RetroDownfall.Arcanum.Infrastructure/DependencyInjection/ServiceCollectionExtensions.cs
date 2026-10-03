@@ -333,7 +333,7 @@ public static class ServiceCollectionExtensions
                 sp.GetService<CovenantMutationKernel>(),
                 sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
+                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -1491,7 +1491,7 @@ public static class ServiceCollectionExtensions
                 sp.GetService<CovenantMutationKernel>(),
                 sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                sp.GetRequiredService<ICovenantLabeledArtifactGuard>()));
+                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -2246,11 +2246,17 @@ public static class ServiceCollectionExtensions
 
         // One scope per request, so the object a filter publishes into is the same one the purger reads
         // and there is nothing process-wide two requests could race on.
-        services.AddScoped<ICovenantLabeledArtifactGuard>(
+        //
+        // One guard behind two interfaces. The Core form is what a caller outside the database layer sees;
+        // the transaction forms name an ADO.NET transaction and live on an Infrastructure interface so Core
+        // does not. Both resolve to the same scoped instance.
+        services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
             static sp => new CovenantLabeledArtifactGuard(
                 sp.GetRequiredService<IArtifactSensitivityLedger>(),
-                sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<ILogger<CovenantLabeledArtifactGuard>>()));
+
+        services.AddScoped<ICovenantLabeledArtifactGuard>(
+            static sp => sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>());
 
         services.AddScoped<CovenantSensitivePurgeAuthorityScope>();
 

@@ -4,9 +4,9 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
-using RetroDownfall.Arcanum.Core.DataLifecycle;
-
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
@@ -120,8 +120,8 @@ internal sealed class LabelIntruder(
 /// check and the delete would. A delete that asked outside its transaction leaves the intruder free to
 /// commit; one that asked inside it holds the write lock, and the intruder is blocked.
 /// </remarks>
-internal sealed class LabelIntrusionGuard(ICovenantLabeledArtifactGuard inner, LabelIntruder intruder)
-    : ICovenantLabeledArtifactGuard
+internal sealed class LabelIntrusionGuard(ICovenantLabeledArtifactTransactionGuard inner, LabelIntruder intruder)
+    : ICovenantLabeledArtifactTransactionGuard
 {
 
     public async ValueTask<Result> EnsureUnlabeledAsync(
@@ -131,19 +131,6 @@ internal sealed class LabelIntrusionGuard(ICovenantLabeledArtifactGuard inner, L
     {
 
         Result answer = await inner.EnsureUnlabeledAsync(kind, artifactId, cancellationToken).ConfigureAwait(false);
-
-        await intruder.IntrudeAsync(askedInsideTransaction: false, cancellationToken).ConfigureAwait(false);
-
-        return answer;
-
-    }
-
-    public async ValueTask<Result> EnsureNoneLabeledAsync(
-        SensitiveArtifactKind kind,
-        CancellationToken cancellationToken = default)
-    {
-
-        Result answer = await inner.EnsureNoneLabeledAsync(kind, cancellationToken).ConfigureAwait(false);
 
         await intruder.IntrudeAsync(askedInsideTransaction: false, cancellationToken).ConfigureAwait(false);
 

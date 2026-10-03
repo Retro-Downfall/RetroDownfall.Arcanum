@@ -91,8 +91,11 @@ public sealed class EmbeddingsResetService(
     /// directly because that table <em>is</em> the answer to "which of these rows is protected" — asking
     /// the embedding tables instead would be a second opinion about it.
     ///
-    /// <para>A composition with no purger, or an installation whose label table is absent, purges
-    /// nothing and leaves the reset exactly as it was.</para>
+    /// <para>A composition with no purger purges nothing and leaves the reset exactly as it was. A label
+    /// table that cannot be read stops the reset instead, with <c>Covenant.Unavailable</c>: the table is a
+    /// Core object at every schema version, so a scan that fails is a Grimoire whose protection cannot be
+    /// checked, and the set-based truncation that follows would remove rows nothing had been asked
+    /// about.</para>
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeLabeledScopeAsync(
         EmbeddingsResetScope scope,
@@ -269,10 +272,17 @@ public sealed class EmbeddingsResetService(
                     catch (SqliteException)
                     {
 
-                        // No label table on this installation: there is nothing protected to dispatch and
-                        // the ordinary reset below is the whole operation.
-                        return Result<CovenantSensitivePurgeOutcome>.Success(
-                            new CovenantSensitivePurgeOutcome(results, progress));
+                        // Not "no label table, so nothing is protected": the table is a Core object at every
+                        // schema version, so this is a Grimoire whose protection cannot be checked. The
+                        // reset stops here, before the truncation that would remove whatever it never
+                        // examined. Artifacts an earlier kind's pages already purged stay purged, so the
+                        // message claims no more than that, and it names no artifact and carries no
+                        // provider detail.
+                        return Result<CovenantSensitivePurgeOutcome>.Failure(
+                            new Error(
+                                ErrorCodes.Covenant.Unavailable,
+                                "The sensitivity labels could not be read, so this embeddings reset was "
+                                    + "refused before its truncation ran."));
 
                     }
 

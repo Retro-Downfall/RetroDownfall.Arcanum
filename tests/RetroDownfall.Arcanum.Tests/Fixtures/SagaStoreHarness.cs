@@ -115,10 +115,10 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// Builds the labelled-artifact guard the store's deletes ask, from the harness's own context. Left
     /// out, the store is built with none, as every other suite on this harness expects.
     /// </param>
-    public static Task<SagaStoreHarness> CreateAsync(
+    internal static Task<SagaStoreHarness> CreateAsync(
         bool annalsEnabled,
         IMemoryErasureKeyProvider? erasureKeys = null,
-        Func<ArcanumDbContext, ICovenantLabeledArtifactGuard>? labeledArtifactGuard = null)
+        Func<ArcanumDbContext, ICovenantLabeledArtifactTransactionGuard>? labeledArtifactGuard = null)
     {
 
         // Must run before the fixture is constructed: GrimoireFixture's constructor silently no-ops

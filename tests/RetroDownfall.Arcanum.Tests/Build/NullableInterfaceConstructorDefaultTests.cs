@@ -334,7 +334,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         Assert.Contains(parameters, static parameter => parameter.ParameterType == typeof(IGrimoireOrdinaryConnectionFactory));
 
-        Assert.Contains(parameters, static parameter => parameter.ParameterType == typeof(ICovenantLabeledArtifactGuard));
+        Assert.Contains(parameters, static parameter => parameter.ParameterType == typeof(ICovenantLabeledArtifactTransactionGuard));
 
         Assert.Empty(
             parameters

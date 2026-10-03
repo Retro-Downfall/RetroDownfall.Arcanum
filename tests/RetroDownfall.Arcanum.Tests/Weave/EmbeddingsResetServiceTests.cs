@@ -270,6 +270,80 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A reset whose label scan cannot read the label table stops before it truncates anything, rather
+    /// than reading the failure as "nothing here is labelled".
+    /// </summary>
+    /// <remarks>
+    /// The label table is a Core object at every schema version, so a read that fails is a Grimoire whose
+    /// protection cannot be checked, not an installation that has no labels. A scan that answered success
+    /// there let the set-based truncation below it remove rows nothing had been asked about. The failure is
+    /// real: a temporary table of the same name shadows the label table on this connection, so the scan
+    /// fails on a column that table does not have. The purger is present and is never called, because the
+    /// scan fails before it has a page to dispatch.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(EmbeddingsResetScope.Saga)]
+    [InlineData(EmbeddingsResetScope.All)]
+    public async Task ResetAsync_RefusesWhenTheLabelTableCannotBeRead_AndKeepsTheSagaRows(EmbeddingsResetScope scope)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _ = await _sagaStore!.InsertAsync(
+            "mem-kept",
+            "a memory the reset must not reach",
+            DateTimeOffset.UtcNow,
+            Guid.NewGuid(),
+            null,
+            "extraction",
+            Vec(1f),
+            CancellationToken.None);
+
+        await ExecuteAsync("CREATE TEMP TABLE artifact_sensitivity (Unreadable INTEGER);");
+
+        CountingPurger purger = new();
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(new RecordingScopedOrdinaryConnectionFactory());
+
+        EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
+
+        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.ResetAsync(scope, CancellationToken.None));
+
+        Assert.DoesNotContain("mem-kept", refused.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, purger.Calls);
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
+
+    }
+
+    /// <summary>A purger that records how often it was asked and removes nothing.</summary>
+    private sealed class CountingPurger : ICovenantSensitiveArtifactPurger
+    {
+
+        public int Calls { get; private set; }
+
+        public ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
+            IReadOnlyList<CovenantSensitivePurgeTarget> targets,
+            CancellationToken cancellationToken = default)
+        {
+
+            Calls++;
+
+            return ValueTask.FromResult(
+                Result<CovenantSensitivePurgeOutcome>.Success(
+                    new CovenantSensitivePurgeOutcome([], CovenantArtifactErasureProgress.Empty)));
+
+        }
+
+    }
+
+    /// <summary>
     /// An embeddings reset that clears the Saga scope takes the claims describing the memories it
     /// clears, in the same transaction.
     /// </summary>

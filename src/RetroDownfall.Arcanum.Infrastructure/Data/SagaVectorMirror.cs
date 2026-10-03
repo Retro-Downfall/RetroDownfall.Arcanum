@@ -88,13 +88,7 @@ internal static class SagaVectorMirror
 
         await using DbCommand command = connection.CreateCommand();
 
-        // CreateCommand attaches the connection's current transaction, and assigning null would detach
-        // it, which the provider refuses while one is pending. A caller with no transaction of its own to
-        // name, a retention probe that runs inside its caller's, still gets the one the connection holds.
-        if (transaction is not null)
-        {
-            command.Transaction = transaction;
-        }
+        AttachTransaction(command, transaction);
 
         // sqlite_master records a virtual table as an ordinary 'table', so the type alone cannot tell a
         // legacy vec0 mirror from a plain one. Its CREATE text can, and reading that text never opens
@@ -192,7 +186,7 @@ internal static class SagaVectorMirror
 
         await using DbCommand command = connection.CreateCommand();
 
-        command.Transaction = transaction;
+        AttachTransaction(command, transaction);
 
         command.CommandText = $"""DELETE FROM "{table}" """;
 
@@ -242,7 +236,7 @@ internal static class SagaVectorMirror
 
         await using DbCommand command = connection.CreateCommand();
 
-        command.Transaction = transaction;
+        AttachTransaction(command, transaction);
 
         command.CommandText =
             """
@@ -269,13 +263,32 @@ internal static class SagaVectorMirror
     {
         await using DbCommand command = connection.CreateCommand();
 
-        command.Transaction = transaction;
+        AttachTransaction(command, transaction);
 
         command.CommandText = $"""DELETE FROM "{table}" WHERE "{keyColumn}" = @id""";
 
         AddParameter(command, "@id", id);
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Attaches the caller's transaction to a command, or leaves the connection's own in place when the
+    /// caller names none.
+    /// </summary>
+    /// <remarks>
+    /// <c>CreateCommand</c> attaches the connection's current transaction, and assigning null would detach
+    /// it, which the provider refuses while one is pending. A caller with no transaction of its own to
+    /// name, a retention probe that runs inside its caller's, still gets the one the connection holds.
+    /// Every statement this class issues goes through here, so null is tolerated uniformly and not only
+    /// by the classification that precedes the others.
+    /// </remarks>
+    private static void AttachTransaction(DbCommand command, DbTransaction? transaction)
+    {
+        if (transaction is not null)
+        {
+            command.Transaction = transaction;
+        }
     }
 
     /// <summary>

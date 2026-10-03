@@ -392,6 +392,10 @@ public sealed class CovenantArchitectureBoundaryTests
             "System.Net.Http",
 
             "Microsoft.Extensions.AI",
+
+            // ADO.NET is storage too: a Core contract that names DbTransaction has learned that its
+            // implementation is a database, which is the same coupling Microsoft.Data.Sqlite would be.
+            "System.Data.Common",
         ];
 
         AssemblyName[] referenced = CoreAssembly.GetReferencedAssemblies();

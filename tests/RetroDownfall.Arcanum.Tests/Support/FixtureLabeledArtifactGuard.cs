@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
 
-using RetroDownfall.Arcanum.Core.DataLifecycle;
-
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -27,14 +25,13 @@ internal static class FixtureLabeledArtifactGuard
 {
 
     /// <summary>Builds the guard over the supplied fixture context.</summary>
-    internal static ICovenantLabeledArtifactGuard For(ArcanumDbContext db)
+    internal static ICovenantLabeledArtifactTransactionGuard For(ArcanumDbContext db)
     {
 
         CovenantConnectionSource connections = new(db, FixtureOrdinaryConnectionFactory.For(db));
 
         return new CovenantLabeledArtifactGuard(
             new ArtifactSensitivityLedger(connections),
-            connections,
             NullLogger<CovenantLabeledArtifactGuard>.Instance);
 
     }

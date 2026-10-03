@@ -62,7 +62,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     /// documented it as live. A guard whose absence is representable is a guard some composition will
     /// eventually be missing, and nothing about that composition will look wrong.
     /// </remarks>
-    private readonly ICovenantLabeledArtifactGuard _labeledArtifactGuard;
+    private readonly ICovenantLabeledArtifactTransactionGuard _labeledArtifactGuard;
 
     /// <summary>
     /// The durable finalization-guard capacity ledger.
@@ -102,7 +102,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         CovenantMutationKernel? covenantKernel,
         CovenantAvailabilityRepublisher? availabilityRepublisher,
         IGrimoireOrdinaryConnectionFactory connections,
-        ICovenantLabeledArtifactGuard labeledArtifactGuard)
+        ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard)
     {
         _db = db;
 
@@ -703,9 +703,14 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
     {
         if (SagaVectorMirror.IsMirrorName(table))
         {
+            // The connection is the one the ambient transaction is on, so it is read from the transaction
+            // rather than acquired again.
+            System.Data.Common.DbTransaction transaction = ambient.GetDbTransaction();
+
             return await SagaVectorMirror.ClassifyAsync(
-                _db.Database.GetDbConnection(),
-                ambient.GetDbTransaction(),
+                transaction.Connection
+                    ?? throw new InvalidOperationException("The ambient entry-embedding transaction has no connection."),
+                transaction,
                 table,
                 cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
         }
@@ -851,31 +856,35 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
-        // The guard, not the purge. This method is reachable from anywhere in the process, and a caller
-        // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
-        // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
-        // integrity state that cannot be told apart from data loss (§10.20.2).
-        Result unlabeled = await _labeledArtifactGuard
-            .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (unlabeled.IsFailure)
-        {
-            throw new InvalidOperationException(unlabeled.Error.Message);
-        }
-
         using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         using IDisposable attachmentGate = await _attachments
             .AcquireSessionGateAsync(sessionId, cancellationToken)
             .ConfigureAwait(false);
 
+        // The provider opens this with BEGIN IMMEDIATE, so the write lock is held from here on and every
+        // label writer waits behind it.
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
         try
         {
+            // The guard, not the purge. This method is reachable from anywhere in the process, and a caller
+            // that skipped the sensitivity purge boundary would remove a labelled Entry without appending
+            // its erasure receipt — leaving a finalization guard pointing at nothing, which is the one
+            // integrity state that cannot be told apart from data loss (§10.20.2). Asked inside the
+            // transaction, ahead of its first write, so no label can be committed between the answer and
+            // the delete; a refusal rolls the transaction back untouched.
+            Result unlabeled = await _labeledArtifactGuard
+                .EnsureUnlabeledAsync(SensitiveArtifactKind.AssistantEntry, entryId, tx.GetDbTransaction(), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+                throw new InvalidOperationException(unlabeled.Error.Message);
+            }
+
             Entry? entry = await ReadEntryAsync(sessionId, entryId, cancellationToken)
                 .ConfigureAwait(false);
 
