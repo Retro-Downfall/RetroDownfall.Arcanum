@@ -755,9 +755,11 @@ public sealed class MemoryErasureLifecycleSurvivalTests
         /// writer stamps "now", and only the timestamp the rule reads is moved back afterwards; for a
         /// dated audit file that is its last-write time.</para>
         ///
-        /// <para>Two executors have no victim here. A standalone cost adjustment has no production writer
-        /// at all, and daemon history is process-local and stamped by its repository's own clock. Neither
-        /// executor opens a Grimoire connection, and the compiled-statement pin covers their source.</para>
+        /// <para>Nothing in production writes a standalone cost adjustment, so that executor's victim is
+        /// the one row here seeded directly; its executor still runs its own <c>DELETE FROM
+        /// CostAdjustments</c> on the Grimoire with the evidence present. Daemon history alone has no
+        /// victim: it is process-local, stamped by its repository's own clock, and its executor touches no
+        /// Grimoire table. The compiled-statement pin covers both executors' source.</para>
         /// </remarks>
         private async Task<IReadOnlyList<PruneVictim>> SeedPruneVictimsAsync()
         {
@@ -947,6 +949,16 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
             victims.Add(new("budget alert", "SELECT count(*) FROM BudgetAlerts WHERE Id = $id;", alert));
 
+            // A standalone cost adjustment. No production code writes one, so this row is seeded directly.
+            string adjustment = Guid.NewGuid().ToString("D");
+
+            await AgeAsync(
+                "INSERT INTO CostAdjustments (Id, BillableOperationId, RunId, Reason, CreatedAt, AmountUsd) VALUES ($id, NULL, NULL, 'survival', $at, '0');",
+                adjustment,
+                accountingAge);
+
+            victims.Add(new("standalone cost adjustment", "SELECT count(*) FROM CostAdjustments WHERE Id = $id;", adjustment));
+
             // A terminal long-running operation, written with its own old timestamps.
             ILongRunningOperationStore operations = services.GetRequiredService<ILongRunningOperationStore>();
 
@@ -1046,7 +1058,10 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             return aged;
         }
 
-        /// <summary>Moves one timestamp back on rows a production writer just wrote. Setup-only.</summary>
+        /// <summary>
+        /// Moves one timestamp back on rows a production writer just wrote, or seeds the one row no
+        /// production code writes. Setup-only.
+        /// </summary>
         private async Task AgeAsync(string sql, string id, DateTimeOffset at)
         {
             await using AsyncServiceScope scope = Factory.Services.CreateAsyncScope();

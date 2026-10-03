@@ -29,7 +29,10 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 ///
 /// <para>What no compiled-string pin can see is a name built at run time from non-constant parts, such
 /// as an interpolation over a variable. That case is caught only by the lifecycle survival rows in
-/// <c>MemoryErasureLifecycleSurvivalTests</c>, which run the paths and compare every evidence row.</para>
+/// <c>MemoryErasureLifecycleSurvivalTests</c>, which run the paths and compare every evidence row. The
+/// cheapest such part is a non-constant string member of the owner itself: its literal is the owner's,
+/// and any caller could concatenate it into SQL. So the owner may expose exactly one string member,
+/// <c>InventoryStore</c>, the status label, which must never be used to build SQL.</para>
 ///
 /// <para>The owner lists are closed. <c>MemoryErasureEvidence</c> holds every evidence statement and
 /// is the only type that names the tables at all: every other caller, including the retention
@@ -40,11 +43,13 @@ public sealed class MemoryErasureEvidenceCompiledPinTests
 {
     private const string Owner = "RetroDownfall.Arcanum.Infrastructure.Data.MemoryErasureEvidence";
 
+    private const string OwnerAssembly = "RetroDownfall.Arcanum.Infrastructure.dll";
+
     /// <summary>Closed: the types whose compiled code may hold a statement that writes evidence.</summary>
-    private static readonly string[] StatementOwners = [Owner];
+    private static readonly (string Assembly, string Type)[] StatementOwners = [(OwnerAssembly, Owner)];
 
     /// <summary>Closed: the types whose compiled code may name an evidence table at all.</summary>
-    private static readonly string[] NameOwners = [Owner];
+    private static readonly (string Assembly, string Type)[] NameOwners = [(OwnerAssembly, Owner)];
 
     private const string EvidenceTable =
         @"memory_erasure_(?:fingerprints|receipts|receipt_subjects)\b";
@@ -82,7 +87,7 @@ public sealed class MemoryErasureEvidenceCompiledPinTests
         string[] violations =
         [
             .. statements
-                .Where(static found => !StatementOwners.Contains(found.Owner, StringComparer.Ordinal))
+                .Where(static found => !StatementOwners.Contains((found.Assembly, found.Owner)))
                 .Select(static found => found.ToString()),
         ];
 
@@ -99,11 +104,41 @@ public sealed class MemoryErasureEvidenceCompiledPinTests
         string[] violations =
         [
             .. names
-                .Where(static found => !NameOwners.Contains(found.Owner, StringComparer.Ordinal))
+                .Where(static found => !NameOwners.Contains((found.Assembly, found.Owner)))
                 .Select(static found => found.ToString()),
         ];
 
         Assert.True(violations.Length == 0, "Evidence table names outside the evidence store:\n  " + string.Join("\n  ", violations));
+    }
+
+    /// <summary>
+    /// The owner exposes no string but the inventory label, so no caller can take a table name from it
+    /// and build a statement the compiled-string pins never see.
+    /// </summary>
+    [Fact]
+    public void The_evidence_store_exposes_no_string_member_but_the_inventory_label()
+    {
+        const BindingFlags members = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static
+            | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+
+        Type owner = typeof(ArcanumDbContext).Assembly.GetType(Owner, throwOnError: true)!;
+
+        string[] fields =
+        [
+            .. owner.GetFields(members)
+                .Where(static field => field.FieldType == typeof(string) && !field.IsPrivate)
+                .Select(static field => field.Name),
+        ];
+
+        string[] properties =
+        [
+            .. owner.GetProperties(members)
+                .Where(static property => property.PropertyType == typeof(string)
+                    && property.GetMethod is { IsPrivate: false })
+                .Select(static property => property.Name),
+        ];
+
+        Assert.Equal(["InventoryStore"], fields.Concat(properties).Order(StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -148,6 +183,10 @@ public sealed class MemoryErasureEvidenceCompiledPinTests
         Assert.Contains(strings, static found => found.Value == "memory_erasure_fingerprints");
 
         Assert.Contains(strings, static found => found.Value == "UPDATE \"main\".memory_erasure_receipt_subjects SET SubjectDigest = SubjectDigest");
+
+        Assert.Contains(strings, static found => found.Value == "memory_erasure_receipts" && found.Method == "FoldedAsyncLambda");
+
+        Assert.Contains(strings, static found => found.Value == "DELETE FROM memory_erasure_receipts WHERE 0" && found.Method == "FoldedDeleteAsync");
 
         Assert.Matches(EvidenceRowWrite, "DELETE FROM memory_erasure_receipts WHERE 0");
 
@@ -213,6 +252,15 @@ internal static class MemoryErasureCompiledPinFixture
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static string FoldedUpdate() => $"UPDATE \"main\".{Subjects} SET SubjectDigest = SubjectDigest";
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static Func<Task<string>> FoldedAsyncLambda() =>
+        static async () =>
+        {
+            await Task.Yield();
+
+            return "memory_erasure_" + "receipts";
+        };
 }
 
 /// <summary>One string a compiled method body loads, and where it lives.</summary>
@@ -352,9 +400,13 @@ internal static class CompiledStringScanner
 
         string generated = typeName.StartsWith('<') ? typeName : name;
 
-        int close = generated.IndexOf('>', StringComparison.Ordinal);
+        // An async lambda's state machine nests one generated name in another (<<Outer>b__0>d), so
+        // every leading bracket goes before the source name is read.
+        string trimmed = generated.TrimStart('<');
 
-        return generated.StartsWith('<') && close > 1 ? generated[1..close] : name;
+        int close = trimmed.IndexOf('>', StringComparison.Ordinal);
+
+        return generated.StartsWith('<') && close > 0 ? trimmed[..close] : name;
     }
 
     private static void SkipOperand(ref BlobReader il, OperandType operand)
