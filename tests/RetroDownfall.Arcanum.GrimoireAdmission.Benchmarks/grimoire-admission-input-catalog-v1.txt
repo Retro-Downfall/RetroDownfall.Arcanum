@@ -376,6 +376,7 @@ R	src/RetroDownfall.Arcanum.Core/Performance/BenchmarkStatistics.cs
 R	src/RetroDownfall.Arcanum.Core/Performance/BenchmarkWorkload.cs
 R	src/RetroDownfall.Arcanum.Core/Platform/IProcessResourceLimiter.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/ApiResponse.cs
+R	src/RetroDownfall.Arcanum.Core/Primitives/CanonicalBase64Url.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/EmbeddingBlobCodec.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/Error.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/ErrorCodes.cs

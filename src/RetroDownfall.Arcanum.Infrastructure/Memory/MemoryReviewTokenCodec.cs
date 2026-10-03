@@ -441,41 +441,20 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
     {
         int expectedBytes = HeaderBytes + payloadBytes + TagBytes;
 
-        if (string.IsNullOrEmpty(token)
-            || token.Length > MemoryReviewLimits.MaxTokenCharacters
-            || token.AsSpan().IndexOfAnyExcept(
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".AsSpan()) >= 0)
+        if (string.IsNullOrEmpty(token) || token.Length > MemoryReviewLimits.MaxTokenCharacters)
         {
             return InvalidToken;
         }
 
-        byte[] decoded = new byte[Base64Url.GetMaxDecodedLength(token.Length)];
-
-        int written;
-
-        try
-        {
-            if (!Base64Url.TryDecodeFromChars(token, decoded, out written))
-            {
-                return InvalidToken;
-            }
-        }
-        catch (FormatException)
+        // The token comes from whoever calls the route, so every way it can be malformed, from a length
+        // no decoder can read to a respelling of a signed token, is the same refusal and never an
+        // exception.
+        if (!CanonicalBase64Url.TryDecodeExact(token, expectedBytes, out byte[] decoded))
         {
             return InvalidToken;
         }
 
-        if (written != expectedBytes)
-        {
-            return InvalidToken;
-        }
-
-        ReadOnlySpan<byte> complete = decoded.AsSpan(0, written);
-
-        if (!string.Equals(Base64Url.EncodeToString(complete), token, StringComparison.Ordinal))
-        {
-            return InvalidToken;
-        }
+        ReadOnlySpan<byte> complete = decoded;
 
         ReadOnlySpan<byte> unsigned = complete[..^TagBytes];
 

@@ -323,7 +323,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         }
 
         if (result.Value is not { Length: EncodedKeyCharacters } encoded
-            || !TryDecodeCanonical(encoded, out byte[] decoded))
+            || !CanonicalBase64Url.TryDecodeExact(encoded, KeyBytes, out byte[] decoded))
         {
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
@@ -334,44 +334,5 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         }
 
         return decoded;
-    }
-
-    private static bool TryDecodeCanonical(string encoded, out byte[] decoded)
-    {
-        decoded = [];
-
-        foreach (char value in encoded)
-        {
-            bool allowed = value is >= 'A' and <= 'Z'
-                or >= 'a' and <= 'z'
-                or >= '0' and <= '9'
-                or '-'
-                or '_';
-
-            if (!allowed)
-            {
-                return false;
-            }
-        }
-
-        byte[] buffer = new byte[KeyBytes];
-
-        if (!Base64Url.TryDecodeFromChars(encoded, buffer, out int written) || written != KeyBytes)
-        {
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-        }
-
-        if (!string.Equals(Base64Url.EncodeToString(buffer), encoded, StringComparison.Ordinal))
-        {
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-        }
-
-        decoded = buffer;
-
-        return true;
     }
 }

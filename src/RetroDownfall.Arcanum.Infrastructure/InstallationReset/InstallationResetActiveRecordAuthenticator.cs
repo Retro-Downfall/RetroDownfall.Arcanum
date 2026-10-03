@@ -1677,133 +1677,17 @@ internal static class InstallationResetActiveRecordAuthenticator
 
         decoded = [];
 
-        if (value is null
-            || value.Length != expectedCharacters
-            || !IsUnpaddedBase64Url(value))
-        {
-
-            return false;
-
-        }
-
-        byte[] buffer = new byte[expectedBytes];
-
-        if (!TryDecodeBase64Url(value, buffer, out int written)
-            || written != expectedBytes
-            || !string.Equals(
-                Base64Url.EncodeToString(buffer),
-                value,
-                StringComparison.Ordinal))
-        {
-
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-
-        }
-
-        decoded = buffer;
-
-        return true;
+        return value is not null
+            && value.Length == expectedCharacters
+            && CanonicalBase64Url.TryDecodeExact(value, expectedBytes, out decoded);
 
     }
 
     private static bool TryDecodeBounded(
         string? value,
         int maximumBytes,
-        out byte[] decoded)
-    {
-
-        decoded = [];
-
-        if (string.IsNullOrEmpty(value)
-            || !IsUnpaddedBase64Url(value)
-            || value.Length > Base64Url.GetEncodedLength(maximumBytes))
-        {
-
-            return false;
-
-        }
-
-        byte[] buffer = new byte[Base64Url.GetMaxDecodedLength(value.Length)];
-
-        if (!TryDecodeBase64Url(value, buffer, out int written))
-        {
-
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-
-        }
-
-        byte[] exact = buffer[..written];
-
-        CryptographicOperations.ZeroMemory(buffer);
-
-        if (!string.Equals(Base64Url.EncodeToString(exact), value, StringComparison.Ordinal))
-        {
-
-            CryptographicOperations.ZeroMemory(exact);
-
-            return false;
-
-        }
-
-        decoded = exact;
-
-        return true;
-
-    }
-
-    private static bool TryDecodeBase64Url(
-        string value,
-        Span<byte> destination,
-        out int written)
-    {
-
-        try
-        {
-
-            return Base64Url.TryDecodeFromChars(value, destination, out written);
-
-        }
-        catch (FormatException)
-        {
-
-            CryptographicOperations.ZeroMemory(destination);
-
-            written = 0;
-
-            return false;
-
-        }
-
-    }
-
-    private static bool IsUnpaddedBase64Url(string token)
-    {
-
-        foreach (char value in token)
-        {
-
-            bool allowed = value is >= 'A' and <= 'Z'
-                or >= 'a' and <= 'z'
-                or >= '0' and <= '9'
-                or '-'
-                or '_';
-
-            if (!allowed)
-            {
-
-                return false;
-
-            }
-
-        }
-
-        return token.Length % 4 != 1;
-
-    }
+        out byte[] decoded) =>
+        CanonicalBase64Url.TryDecodeBounded(value, 1, maximumBytes, out decoded);
 
     private static void AppendLengthPrefixed(IncrementalHash hash, ReadOnlySpan<byte> value)
     {

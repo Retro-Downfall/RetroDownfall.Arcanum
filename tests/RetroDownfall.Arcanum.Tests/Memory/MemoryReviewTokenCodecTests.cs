@@ -164,6 +164,73 @@ public sealed class MemoryReviewTokenCodecTests
         Assert.True(codec.ReadPreparedPlan(token).IsFailure);
     }
 
+    /// <summary>
+    /// Each of these is base64url's own alphabet at a length a short final group can take, so the
+    /// character filter passes it. Two set bits no encoder emits in the last group and two are a length
+    /// no decoder can read. The framework's throwing decoder raises <see cref="FormatException"/> for
+    /// all four, and a token arrives from whoever calls the route.
+    /// </summary>
+    [Theory]
+    [InlineData("AB")]
+    [InlineData("AAB")]
+    [InlineData("AAAAA")]
+    [InlineData("AAAAAB")]
+    public void A_token_no_decoder_can_read_is_refused_rather_than_thrown(string token)
+    {
+        MemoryReviewTokenCodec codec = new(FrozenTime());
+
+        IMemoryReviewTokenCodec review = codec;
+
+        IMemoryErasureTokenCodec erasure = codec;
+
+        Assert.Equal(ErrorCodes.MemoryReview.InvalidToken, review.ReadCursor(token).Error.Code);
+
+        Assert.Equal(ErrorCodes.MemoryReview.InvalidToken, review.ReadObservation(token).Error.Code);
+
+        Assert.Equal(ErrorCodes.MemoryReview.InvalidToken, review.ReadPreparedPlan(token).Error.Code);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.InvalidPreflight, erasure.ReadErasurePlan(token).Error.Code);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.InvalidPreflight, erasure.ReadErasureKeyReset(token).Error.Code);
+    }
+
+    /// <summary>
+    /// A real token with one unused bit set in its last character decodes to exactly the bytes the codec
+    /// signed, so the signature still verifies. It is the second spelling of an issued token, and the
+    /// codec exists to give every token one name.
+    /// </summary>
+    [Fact]
+    public void A_signed_token_respelled_with_an_unused_trailing_bit_is_refused_though_its_bytes_verify()
+    {
+        MemoryReviewTokenCodec codec = new(FrozenTime());
+
+        IMemoryReviewTokenCodec review = codec;
+
+        string observation = review.IssueObservation(Observation()).Value;
+
+        string cursor = review.IssueCursor(Cursor()).Value;
+
+        string prepared = review.IssuePreparedPlan(PreparedPlan()).Value;
+
+        Assert.True(review.ReadObservation(observation).IsSuccess);
+
+        Assert.True(review.ReadCursor(cursor).IsSuccess);
+
+        Assert.True(review.ReadPreparedPlan(prepared).IsSuccess);
+
+        Assert.Equal(
+            ErrorCodes.MemoryReview.InvalidToken,
+            review.ReadObservation(NonCanonicalBase64Url.WithUnusedBitSet(observation)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.MemoryReview.InvalidToken,
+            review.ReadCursor(NonCanonicalBase64Url.WithUnusedBitSet(cursor)).Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.MemoryReview.InvalidToken,
+            review.ReadPreparedPlan(NonCanonicalBase64Url.WithUnusedBitSet(prepared)).Error.Code);
+    }
+
     [Fact]
     public void An_oversized_token_is_rejected_before_decoding()
     {

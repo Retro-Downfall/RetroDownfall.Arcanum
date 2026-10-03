@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
 public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDisposable
@@ -721,6 +723,105 @@ public sealed class GrimoireOfflineTransitionJournalAuthenticationTests : IDispo
         Assert.Equal("not-canonical", _credentials.TryGet(
             ArcanumCredentialIdentity.Service,
             account).Value);
+
+    }
+
+    [Fact]
+    public void Recovery_key_with_unused_trailing_bits_set_is_a_typed_integrity_failure_not_an_exception()
+    {
+
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        GrimoireOfflineTransitionJournalKeyProvider provider = new(_credentials);
+
+        using GrimoireOfflineTransitionJournalKeyLease created = CreateLease();
+
+        string account = ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(profile.AccountSuffix);
+
+        string stored = _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Value!;
+
+        // Forty-three characters of the alphabet, so only a canonical decode can tell this from the key
+        // itself. The framework's throwing decoder raises FormatException here instead of reporting
+        // failure, and a credential-store value that was corrupted or tampered with has to be a refusal.
+        string noncanonical = NonCanonicalBase64Url.WithUnusedBitSet(stored);
+
+        Assert.Equal(stored.Length, noncanonical.Length);
+
+        _credentials.Set(ArcanumCredentialIdentity.Service, account, noncanonical);
+
+        Result<GrimoireOfflineTransitionJournalKeyLease> opened = provider.OpenExisting(profile);
+
+        Assert.True(opened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, opened.Error.Code);
+
+        Result<GrimoireOfflineTransitionJournalKeyLease> reopened = provider.CreateOrOpen(_lock, _guarded, profile);
+
+        Assert.True(reopened.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reopened.Error.Code);
+
+        Result<bool> present = provider.IsPresent(profile);
+
+        Assert.True(present.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, present.Error.Code);
+
+        Assert.Equal(noncanonical, _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Value);
+
+    }
+
+    [Fact]
+    public void Envelope_with_noncanonical_trailing_bits_or_an_impossible_length_is_refused_not_thrown()
+    {
+
+        GrimoireOfflineTransitionEnvelopeV1 envelope = Seal();
+
+        using (GrimoireOfflineTransitionJournalKeyLease control = OpenLease())
+        {
+
+            Assert.True(GrimoireOfflineTransitionJournalAuthenticator.Open(
+                control,
+                Digest(1),
+                Installation,
+                Digest(3),
+                envelope).IsSuccess);
+
+        }
+
+        // The tag is sixteen bytes: twenty-two characters whose last has four unused bits. The
+        // ciphertext cut to one character past a group boundary is a length nothing can decode. Both
+        // come from a corrupted or tampered journal file.
+        foreach (GrimoireOfflineTransitionEnvelopeV1 tampered in
+                 (GrimoireOfflineTransitionEnvelopeV1[])
+                 [
+                     envelope with
+                     {
+                         AuthenticationTagBase64Url =
+                             NonCanonicalBase64Url.WithUnusedBitSet(envelope.AuthenticationTagBase64Url),
+                     },
+                     envelope with
+                     {
+                         CiphertextBase64Url =
+                             NonCanonicalBase64Url.WithAnImpossibleLength(envelope.CiphertextBase64Url),
+                     },
+                 ])
+        {
+
+            using GrimoireOfflineTransitionJournalKeyLease opening = OpenLease();
+
+            Result<byte[]> opened = GrimoireOfflineTransitionJournalAuthenticator.Open(
+                opening,
+                Digest(1),
+                Installation,
+                Digest(3),
+                tampered);
+
+            Assert.True(opened.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, opened.Error.Code);
+
+        }
 
     }
 

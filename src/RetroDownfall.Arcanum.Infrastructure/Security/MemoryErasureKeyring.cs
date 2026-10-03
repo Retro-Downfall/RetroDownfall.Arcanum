@@ -1,10 +1,10 @@
-using System.Buffers;
-
 using System.Buffers.Text;
 
 using System.Security.Cryptography;
 
 using RetroDownfall.Arcanum.Core.Memory;
+
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Secrets.Security;
 
@@ -346,7 +346,7 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
 
         // An Ok with an empty value is malformed, not absent: an absent slot reports NotFound.
         return result.Value is { Length: EncodedKeyCharacters } encoded
-            && TryDecodeCanonical(encoded, out byte[] decoded)
+            && CanonicalBase64Url.TryDecodeExact(encoded, KeyBytes, out byte[] decoded)
                 ? (MemoryErasureKeyState.Present, decoded)
                 : (MemoryErasureKeyState.Malformed, null);
     }
@@ -368,52 +368,6 @@ internal sealed class MemoryErasureKeyring(IOsCredentialStore credentials)
             or UnauthorizedAccessException
             or InvalidOperationException
             or NotSupportedException;
-
-    private static bool TryDecodeCanonical(string encoded, out byte[] decoded)
-    {
-        decoded = [];
-
-        foreach (char value in encoded)
-        {
-            bool allowed = value is >= 'A' and <= 'Z'
-                or >= 'a' and <= 'z'
-                or >= '0' and <= '9'
-                or '-'
-                or '_';
-
-            if (!allowed)
-            {
-                return false;
-            }
-        }
-
-        byte[] buffer = new byte[KeyBytes];
-
-        // The status overload rather than TryDecodeFromChars, which throws FormatException instead of
-        // returning false when the unused low bits of the final character are set.
-        if (Base64Url.DecodeFromChars(encoded, buffer, out int consumed, out int written)
-                is not OperationStatus.Done
-            || consumed != encoded.Length
-            || written != KeyBytes)
-        {
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-        }
-
-        // Re-encoding is what rejects a noncanonical final character. Two spellings of one key would
-        // be two keys as far as a byte comparison is concerned, and one of them would be unwritable.
-        if (!string.Equals(Base64Url.EncodeToString(buffer), encoded, StringComparison.Ordinal))
-        {
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-        }
-
-        decoded = buffer;
-
-        return true;
-    }
 
     /// <summary>One published latch. <see cref="Key"/> is set exactly when the state is Present.</summary>
     private sealed record Latched(MemoryErasureKeyState State, byte[]? Key, byte[]? KeyId);

@@ -221,7 +221,7 @@ internal sealed class GrimoireOfflineTransitionJournalKeyProvider(IOsCredentialS
 
         if (result.Status is not OsCredentialStoreStatus.Ok
             || result.Value is not { Length: EncodedKeyCharacters } encoded
-            || !TryDecodeCanonical(encoded, out byte[] decoded))
+            || !CanonicalBase64Url.TryDecodeExact(encoded, KeyBytes, out byte[] decoded))
         {
 
             return new Error(
@@ -233,39 +233,6 @@ internal sealed class GrimoireOfflineTransitionJournalKeyProvider(IOsCredentialS
         }
 
         return decoded;
-
-    }
-
-    private static bool TryDecodeCanonical(string encoded, out byte[] decoded)
-    {
-
-        decoded = [];
-
-        if (encoded.Any(static value => value is not (>= 'A' and <= 'Z')
-            and not (>= 'a' and <= 'z')
-            and not (>= '0' and <= '9')
-            and not '-' and not '_'))
-        {
-
-            return false;
-
-        }
-
-        byte[] buffer = new byte[KeyBytes];
-
-        if (!Base64Url.TryDecodeFromChars(encoded, buffer, out int written) || written != KeyBytes
-            || !string.Equals(Base64Url.EncodeToString(buffer), encoded, StringComparison.Ordinal))
-        {
-
-            CryptographicOperations.ZeroMemory(buffer);
-
-            return false;
-
-        }
-
-        decoded = buffer;
-
-        return true;
 
     }
 
