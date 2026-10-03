@@ -822,7 +822,10 @@ public sealed class CovenantAvailabilityRepublicationTests
     /// Authors two Global entries on a host whose maintenance pass never runs, so the archived projection
     /// is empty while its heads exist, then archives it and restores it in place with its protected state.
     /// </summary>
-    private static async Task RestoreUnprojectedArchiveAsync(MemoryErasureRestoreHarness harness)
+    /// <param name="beforeArchive">Runs on the stopped source installation just before it is archived.</param>
+    internal static async Task RestoreUnprojectedArchiveAsync(
+        MemoryErasureRestoreHarness harness,
+        Func<Task>? beforeArchive = null)
     {
         await using (ArcanumWebApplicationFactory source = Host(harness.Credentials, harness.Profile))
         {
@@ -836,6 +839,13 @@ public sealed class CovenantAvailabilityRepublicationTests
         }
 
         SqliteConnection.ClearAllPools();
+
+        if (beforeArchive is not null)
+        {
+            await beforeArchive();
+
+            SqliteConnection.ClearAllPools();
+        }
 
         string archive = await harness.CreateArchiveAsync("covenant-unprojected.arcbackup");
 

@@ -123,6 +123,19 @@ internal static class BackupCovenantRestoreReconciler
     private const long EpochCeiling = long.MaxValue;
 
     /// <summary>
+    /// The search row counter a reissued dataset keeps: past every ID a head or an outbox delta holds,
+    /// and never below the archived counter, which reserved every ID the projection was given.
+    /// </summary>
+    private const string NextUnusedSearchRowId = """
+        SELECT MAX(
+            NextSearchRowId,
+            COALESCE((SELECT MAX(SearchRowId) FROM covenant_heads), 0) + 1,
+            COALESCE((SELECT MAX(SearchRowId) FROM covenant_search_outbox), 0) + 1)
+        FROM covenant_state
+        WHERE StateKey = 1;
+        """;
+
+    /// <summary>
     /// Reissues this generation's identities, joins the destination's authority evidence into it, and
     /// retires everything the source machine left in flight.
     /// </summary>
@@ -446,6 +459,12 @@ internal static class BackupCovenantRestoreReconciler
     /// generation's reset exception precisely so a captured epoch cannot survive the dataset it was
     /// captured against.
     ///
+    /// <para>The canonical search sequence restarts at zero with the drained outbox, but the search row
+    /// counter does not restart at 1. The restored heads keep the row IDs the archive gave them, and
+    /// <c>covenant_heads</c> holds those unique, so the counter stays past every ID a head or an outbox
+    /// delta holds, and at or above the archived counter, which reserved every ID the archive's
+    /// projection rows were given.</para>
+    ///
     /// <para>The applied FTS tuple is nulled and the rebuild state set to
     /// <see cref="CovenantFtsRebuildState.FullRebuildRequired"/> rather than trusted. An accelerator
     /// projection is a cache of canonical rows under a generation that no longer exists, and the
@@ -526,6 +545,17 @@ internal static class BackupCovenantRestoreReconciler
             "DELETE FROM covenant_search_outbox;",
             cancellationToken).ConfigureAwait(false);
 
+        // The restored heads keep the search row IDs the archive gave them, and covenant_heads holds
+        // those IDs unique, so the counter does not restart at 1. It stays past every ID a head or a
+        // delta holds, and at or above the archived counter, which never moves backward within a
+        // generation and so already reserved every ID the archive's projection rows were given. An
+        // archive whose own counter an earlier build restarted is still carried past its heads.
+        long nextSearchRowId = await CountAsync(
+            staged,
+            transaction,
+            NextUnusedSearchRowId,
+            cancellationToken).ConfigureAwait(false);
+
         await using SqliteCommand update = staged.CreateCommand();
 
         update.Transaction = transaction;
@@ -538,7 +568,7 @@ internal static class BackupCovenantRestoreReconciler
                 AppliedSearchSequence = NULL,
                 AcceleratorEpoch = $accelerator,
                 EnvelopeKeyEpoch = $envelope,
-                NextSearchRowId = 1,
+                NextSearchRowId = $nextSearchRowId,
                 RebuildStateCode = $rebuild,
                 RebuildTargetSequence = NULL,
                 RebuildCursor = NULL,
@@ -551,6 +581,8 @@ internal static class BackupCovenantRestoreReconciler
         _ = update.Parameters.AddWithValue("$accelerator", checked(accelerator + 1));
 
         _ = update.Parameters.AddWithValue("$envelope", checked(envelope + 1));
+
+        _ = update.Parameters.AddWithValue("$nextSearchRowId", nextSearchRowId);
 
         _ = update.Parameters.AddWithValue("$rebuild", FullRebuildRequiredCode);
 
