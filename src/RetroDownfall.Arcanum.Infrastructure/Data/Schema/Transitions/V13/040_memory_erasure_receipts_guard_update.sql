@@ -2,7 +2,9 @@
 -- is written. The scrub columns make exactly two moves: the WalCheckpointPending bit clears once a
 -- checkpoint truncates the WAL, and Pending becomes Verified once no reason remains. The other reasons
 -- are not upgradable, so a receipt that carries one can never read Verified, and Verified never returns
--- to Pending. The guard fires before the table's checks, so every refused update reports its message.
+-- to Pending. The guard fires before the table's checks, so every update it refuses reports its message.
+-- An update it permits can still fail a table check: clearing the last reason must move the receipt to
+-- Verified in the same statement, because a Pending receipt always names a reason.
 CREATE TRIGGER IF NOT EXISTS memory_erasure_receipts_guard_update
 BEFORE UPDATE ON memory_erasure_receipts
 WHEN NEW.MutationId IS NOT OLD.MutationId

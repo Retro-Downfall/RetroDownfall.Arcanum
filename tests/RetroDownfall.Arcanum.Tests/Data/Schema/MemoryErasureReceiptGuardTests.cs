@@ -17,8 +17,10 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// <remarks>
 /// No production writer exists yet, so each receipt is inserted with raw SQL. The guard permits
 /// exactly two changes, clearing the WAL checkpoint reason and moving Pending to Verified once no
-/// reason remains; everything else it refuses with its own message, because it fires before any
-/// table check can.
+/// reason remains; every other change it refuses with its own message, because it fires before any
+/// table check can. What the guard permits can still fail the table's checks: clearing the last
+/// reason while the receipt stays Pending is allowed by the guard and refused by the table, which
+/// requires a Pending receipt to name a reason.
 /// </remarks>
 public sealed class MemoryErasureReceiptGuardTests
 {
@@ -139,6 +141,31 @@ public sealed class MemoryErasureReceiptGuardTests
         Assert.Equal(before, await SnapshotAsync(connection));
     }
 
+    /// <summary>
+    /// The guard permits clearing the WAL reason, so clearing the last reason while the receipt stays
+    /// Pending reaches the table's own check, which is what refuses it.
+    /// </summary>
+    [Fact]
+    public async Task Clearing_the_last_reason_without_verifying_is_refused_by_the_table_check_not_the_guard()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await OpenInstalledAsync(file);
+
+        await InsertReceiptAsync(connection, MutationId, 1, 1);
+
+        string before = await SnapshotAsync(connection);
+
+        SqliteException error = await Assert.ThrowsAsync<SqliteException>(
+            () => UpdateReceiptAsync(connection, "ScrubPendingReasonMask = 0"));
+
+        Assert.Equal(raw.SQLITE_CONSTRAINT_CHECK, error.SqliteExtendedErrorCode);
+
+        Assert.DoesNotContain(GuardMessage, error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(before, await SnapshotAsync(connection));
+    }
+
     [Theory]
     [InlineData("MutationId", "'7C9E6679-7425-40DE-944B-E07FC1F90AE7'")]
     [InlineData("StoreCode", "3")]
@@ -178,9 +205,22 @@ public sealed class MemoryErasureReceiptGuardTests
     [InlineData("receipt key of 15 bytes")]
     [InlineData("lowercase mutation")]
     [InlineData("undashed mutation")]
+    [InlineData("mutation without the dash at position 9")]
+    [InlineData("mutation without the dash at position 14")]
+    [InlineData("mutation without the dash at position 19")]
+    [InlineData("mutation without the dash at position 24")]
+    [InlineData("request digest of 31 bytes")]
+    [InlineData("effect digest of 31 bytes")]
     [InlineData("no erased item")]
     [InlineData("no removed row")]
+    [InlineData("negative removed label count")]
+    [InlineData("negative removed retirement suppression count")]
+    [InlineData("negative retained copies mask")]
     [InlineData("evidence code 5")]
+    [InlineData("context evidence code 5")]
+    [InlineData("embedding evidence code 5")]
+    [InlineData("backup evidence code 5")]
+    [InlineData("other external evidence code 5")]
     [InlineData("verified with a reason")]
     [InlineData("pending with no reason")]
     [InlineData("unknown reason bit")]
@@ -301,11 +341,49 @@ public sealed class MemoryErasureReceiptGuardTests
                 "memory_erasure_receipts",
                 ReceiptInsertSql(("MutationId", "'0F8FAD5BD9CB469FA16570867728950E'"))),
 
+            // A thirty-six character upper-case identifier that is dashed everywhere but at one position,
+            // so the length and case checks pass and only that position's check can refuse it.
+            "mutation without the dash at position 9" => (
+                "memory_erasure_receipts",
+                ReceiptInsertSql(("MutationId", "'0F8FAD5BAD9CB-469F-A165-70867728950E'"))),
+
+            "mutation without the dash at position 14" => (
+                "memory_erasure_receipts",
+                ReceiptInsertSql(("MutationId", "'0F8FAD5B-D9CBA469F-A165-70867728950E'"))),
+
+            "mutation without the dash at position 19" => (
+                "memory_erasure_receipts",
+                ReceiptInsertSql(("MutationId", "'0F8FAD5B-D9CB-469FAA165-70867728950E'"))),
+
+            "mutation without the dash at position 24" => (
+                "memory_erasure_receipts",
+                ReceiptInsertSql(("MutationId", "'0F8FAD5B-D9CB-469F-A165A70867728950E'"))),
+
+            "request digest of 31 bytes" => ("memory_erasure_receipts", ReceiptInsertSql(("RequestDigest", "randomblob(31)"))),
+
+            "effect digest of 31 bytes" => ("memory_erasure_receipts", ReceiptInsertSql(("EffectDigest", "randomblob(31)"))),
+
             "no erased item" => ("memory_erasure_receipts", ReceiptInsertSql(("ErasedItemCount", "0"))),
 
             "no removed row" => ("memory_erasure_receipts", ReceiptInsertSql(("RemovedRowCount", "0"))),
 
+            "negative removed label count" => ("memory_erasure_receipts", ReceiptInsertSql(("RemovedLabelCount", "-1"))),
+
+            "negative removed retirement suppression count" => (
+                "memory_erasure_receipts",
+                ReceiptInsertSql(("RemovedRetirementSuppressionCount", "-1"))),
+
+            "negative retained copies mask" => ("memory_erasure_receipts", ReceiptInsertSql(("RetainedCopiesMask", "-1"))),
+
             "evidence code 5" => ("memory_erasure_receipts", ReceiptInsertSql(("AuthorshipEvidenceCode", "5"))),
+
+            "context evidence code 5" => ("memory_erasure_receipts", ReceiptInsertSql(("ContextEvidenceCode", "5"))),
+
+            "embedding evidence code 5" => ("memory_erasure_receipts", ReceiptInsertSql(("EmbeddingEvidenceCode", "5"))),
+
+            "backup evidence code 5" => ("memory_erasure_receipts", ReceiptInsertSql(("BackupEvidenceCode", "5"))),
+
+            "other external evidence code 5" => ("memory_erasure_receipts", ReceiptInsertSql(("OtherExternalEvidenceCode", "5"))),
 
             "verified with a reason" => (
                 "memory_erasure_receipts",
