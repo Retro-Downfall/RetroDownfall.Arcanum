@@ -305,8 +305,9 @@ internal sealed partial class BackupRestoreService
     /// </summary>
     /// <remarks>
     /// Total: every way it can fail to answer is an answer. A key no longer in hand or not the evidence's,
-    /// a committed identity the match cannot read, or a match that throws all report that absence could not
-    /// be proven, so a restore that has already committed is never left by an exception.
+    /// a committed identity the match cannot read, or a match that throws, a storage error included, all
+    /// report that absence could not be proven, so a restore that has already committed is never left by an
+    /// exception and a failure of the proof is never reported as a failure to re-open the generation.
     /// </remarks>
     /// <returns>Null when the committed generation is proven clean; otherwise the issue that says why not.</returns>
     private async Task<string?> ProveCommittedAbsenceAsync(
@@ -330,7 +331,8 @@ internal sealed partial class BackupRestoreService
                 .ConfigureAwait(false);
         }
         catch (Exception exception) when (
-            exception is ArgumentException
+            exception is SqliteException
+                or ArgumentException
                 or InvalidOperationException
                 or InvalidDataException
                 or FormatException)

@@ -78,11 +78,12 @@ internal sealed record BackupRestoreErasureApplicationReceipt(
 /// <para><b>Inside the caller's one <c>BEGIN IMMEDIATE</c>, in a fixed order.</b> Full-text secure delete
 /// is enabled first, so every later delete scrubs. The archived disclosure tails are folded and the
 /// destination's buckets joined. Every candidate row is read and fingerprinted before anything is
-/// deleted, so a purge never changes what the match sees. The purge then mirrors the live erases: Saga and
-/// Lexicon rows through the shared artifact plan with their labels, a Saga memory's retirement pair, the
-/// owning Sessions' taint recounted; Covenant entries through the shared entry plan, key reclamation and
-/// the key's curation included. The evidence tables are then replaced by the destination's, not joined.
-/// Last come the post-conditions, and any that fails rolls the whole transaction back.</para>
+/// deleted, so a purge never changes what the match sees. The purge then follows the live erases' plans:
+/// Saga and Lexicon rows through the shared artifact plan with their labels and a Saga memory's retirement
+/// pair, Covenant entries through the shared entry plan, key reclamation and the key's curation included.
+/// It takes one step the live erases do not: each owning Session's taint is recounted from the labels that
+/// remain. The evidence tables are then replaced by the destination's, not joined. Last come the
+/// post-conditions, and any that fails rolls the whole transaction back.</para>
 ///
 /// <para><b>The same identity everywhere.</b> Each candidate is fingerprinted with the destination's key
 /// exactly as the chokepoints and the erase routes fingerprint it: Saga by exact content in its scope,
@@ -104,6 +105,9 @@ internal static class BackupRestoreErasureEvidenceApplier
     private const string CovenantEntries = "covenant_entries";
 
     private const int FullRebuildRequired = (int)CovenantFtsRebuildState.FullRebuildRequired;
+
+    /// <summary>How many content rowids one full-text count statement binds, far below any build's variable limit.</summary>
+    private const int FullTextCountChunkSize = 500;
 
     private const string StagedProofFailed =
         "The restore could not prove that the staged archive no longer holds the items this installation erased, "
@@ -987,34 +991,47 @@ internal static class BackupRestoreErasureEvidenceApplier
     /// <c>lexicon_fts_docsize</c> row for every row it indexes, keyed by the content rowid, so that row's
     /// absence is the exact proof the live Lexicon erase rests on too.
     /// </summary>
-    private static async Task<long> FullTextRowCountAsync(
+    /// <remarks>
+    /// Counted in chunks, because each rowid is one bound parameter and one statement binds a bounded
+    /// number: an archive that purged more entries than that would otherwise make the proof throw and the
+    /// restore refuse a purge that was fine. The chunks are disjoint and every one is read, so the sum is
+    /// the count a single statement would give, and a survivor in any chunk still fails the proof.
+    /// </remarks>
+    internal static async Task<long> FullTextRowCountAsync(
         SqliteConnection staged,
         SqliteTransaction transaction,
         IReadOnlyList<long> rowIds,
         CancellationToken cancellationToken)
     {
-        await using SqliteCommand command = Command(staged, transaction, string.Empty);
+        long indexed = 0;
 
-        List<string> parameters = new(rowIds.Count);
-
-        int index = 0;
-
-        foreach (long rowId in rowIds)
+        for (int start = 0; start < rowIds.Count; start += FullTextCountChunkSize)
         {
-            string name = $"$r{index}";
+            int length = Math.Min(FullTextCountChunkSize, rowIds.Count - start);
 
-            parameters.Add(name);
+            await using SqliteCommand command = Command(staged, transaction, string.Empty);
 
-            _ = command.Parameters.AddWithValue(name, rowId);
+            List<string> parameters = new(length);
 
-            index++;
+            for (int offset = 0; offset < length; offset++)
+            {
+                string name = $"$r{offset}";
+
+                parameters.Add(name);
+
+                _ = command.Parameters.AddWithValue(name, rowIds[start + offset]);
+            }
+
+            command.CommandText = $"SELECT COUNT(*) FROM lexicon_fts_docsize WHERE id IN ({string.Join(", ", parameters)});";
+
+            indexed = checked(
+                indexed
+                + (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rows
+                    ? rows
+                    : throw new InvalidDataException("The full-text row count did not return an integer.")));
         }
 
-        command.CommandText = $"SELECT COUNT(*) FROM lexicon_fts_docsize WHERE id IN ({string.Join(", ", parameters)});";
-
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rows
-            ? rows
-            : throw new InvalidDataException("The full-text row count did not return an integer.");
+        return indexed;
     }
 
     /// <summary>One statement over an artifact's labels, matched by kind and normalised artifact identity.</summary>

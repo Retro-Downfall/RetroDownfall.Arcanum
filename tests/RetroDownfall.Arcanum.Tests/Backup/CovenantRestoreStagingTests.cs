@@ -547,6 +547,51 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A destination whose disclosure state cannot be read has no exposure to preview, and the restore
+    /// refuses to run over it. The plan says so as a blocker rather than as an installation that has
+    /// disclosed nothing, which is the one answer an operator deciding to purge must never be given
+    /// falsely.
+    /// </summary>
+    [Fact]
+    public async Task The_plan_blocks_rather_than_reporting_no_exposure_when_the_destination_disclosure_cannot_be_read()
+    {
+
+        Harness harness = await CreateHarnessAsync(seedProtectedState: true);
+
+        harness.Options = harness.Options with
+        {
+
+            ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
+
+            ProtectedStateConfirmed = true,
+
+        };
+
+        await harness.ExecuteOnInstallationAsync(
+            "DROP TABLE external_disclosure_state; CREATE TABLE external_disclosure_state (Unreadable INTEGER NOT NULL);");
+
+        BackupRestorePlan plan = await harness.PlanAsync();
+
+        Assert.Null(plan.DestinationDisclosure);
+
+        BackupVerifyIssue blocker = Assert.Single(
+            plan.Blockers,
+            static issue => issue.Code == BackupRestoreErasureCodes.VerificationFailed);
+
+        Assert.Contains("external_disclosure_state", blocker.Message, StringComparison.Ordinal);
+
+        // The restore that would act on this plan refuses the same way, with nothing displaced.
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(result.Issues, static issue => issue.Code == BackupRestoreErasureCodes.VerificationFailed);
+
+        Assert.Empty(harness.StagingRoots());
+
+    }
+
     private async Task<Harness> CreateHarnessAsync(
         bool covenant = true,
         bool seedProtectedState = false,
@@ -778,7 +823,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         private static BackupArchiveCodec Codec() =>
             new(new BackupArchiveCodecOptions { KdfIterations = 10_000, ChunkSize = 64 * 1024 });
 
-        private async Task ExecuteOnInstallationAsync(string sql)
+        internal async Task ExecuteOnInstallationAsync(string sql)
         {
 
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(

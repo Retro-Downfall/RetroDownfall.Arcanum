@@ -290,6 +290,62 @@ public sealed class BackupRestoreErasureMatchTests
         Assert.True(unmatched.Value.IsEmpty);
     }
 
+    /// <summary>
+    /// The proof that no full-text row outlived a purged Lexicon entry binds one parameter per content
+    /// rowid, and one statement binds a bounded number. An archive that purges more entries than that is
+    /// counted in full: a count that threw would refuse a restore that was fine, and one that stopped early
+    /// would pass a restore that was not.
+    /// </summary>
+    [Fact]
+    public async Task The_full_text_residue_count_covers_more_row_ids_than_one_statement_can_bind()
+    {
+        // Above SQLite's default bound-variable limit of 32,766.
+        const int Matched = 40_000;
+
+        await using SqliteConnection connection = await OpenAsync();
+
+        await ExecuteAsync(connection, "CREATE TABLE lexicon_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);");
+
+        long[] rowIds = [.. Enumerable.Range(1, Matched).Select(static id => (long)id)];
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        // Clean: no matched rowid is still indexed.
+        Assert.Equal(
+            0L,
+            await BackupRestoreErasureEvidenceApplier.FullTextRowCountAsync(connection, transaction, rowIds, Token));
+
+        // One survivor in the last position, and one in the first: whichever chunk holds it is counted.
+        await ExecuteAsync(
+            connection,
+            "INSERT INTO lexicon_fts_docsize (id, sz) VALUES ($first, x'00'), ($last, x'00');",
+            ("$first", 1L),
+            ("$last", (long)Matched));
+
+        Assert.Equal(
+            2L,
+            await BackupRestoreErasureEvidenceApplier.FullTextRowCountAsync(connection, transaction, rowIds, Token));
+
+        // Every matched rowid still indexed: the count is the whole of them, not the first chunk's.
+        await ExecuteAsync(
+            connection,
+            """
+            WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40000)
+            INSERT OR IGNORE INTO lexicon_fts_docsize (id, sz) SELECT i, x'00' FROM n;
+            """);
+
+        Assert.Equal(
+            (long)Matched,
+            await BackupRestoreErasureEvidenceApplier.FullTextRowCountAsync(connection, transaction, rowIds, Token));
+
+        // Rows of other entries are never counted.
+        await ExecuteAsync(connection, "INSERT INTO lexicon_fts_docsize (id, sz) VALUES (50000, x'00');");
+
+        Assert.Equal(
+            (long)Matched,
+            await BackupRestoreErasureEvidenceApplier.FullTextRowCountAsync(connection, transaction, rowIds, Token));
+    }
+
     private static MemoryErasureEvidenceSnapshot Destination(MemoryErasureKey key, MemoryErasureIdentity identity) =>
         new([new MemoryErasureFingerprintRow(key.Fingerprint(identity), identity.Store, key.KeyId.ToArray())], [], []);
 

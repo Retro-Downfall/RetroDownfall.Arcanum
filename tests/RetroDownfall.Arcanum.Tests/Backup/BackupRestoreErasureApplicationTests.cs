@@ -1642,6 +1642,74 @@ public sealed class BackupRestoreErasureApplicationTests
     }
 
     /// <summary>
+    /// A storage error inside the post-commit proof leaves the committed generation unproven, and the
+    /// restore says so. It used to surface as a failure to re-open the generation, which was untrue and
+    /// carried no word about the erasure or how to finish it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_storage_error_in_the_post_commit_proof_is_reported_as_unproven_absence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using MemoryErasureRestoreHarness harness = await MemoryErasureRestoreHarness.CreateAsync();
+
+        harness.StartHost();
+
+        await ScribeAsync(harness, "Vault Keeper", null, ["keeps the vault key"]);
+
+        await harness.StopHostAsync();
+
+        string archive = await harness.CreateArchiveAsync("storage-error-committed.arcbackup");
+
+        harness.StartHost();
+
+        _ = await harness.EraseLexiconAsync("Vault Keeper", null);
+
+        await harness.StopHostAsync();
+
+        string database = harness.DatabasePath;
+
+        BackupRestoreService service = harness.CreateRestoreService(
+            options: new BackupRestoreServiceOptions
+            {
+                BeforePhaseForTests = phase =>
+                {
+                    if (phase != BackupRestorePhase.Reconcile)
+                    {
+                        return;
+                    }
+
+                    using SqliteConnection committed = BackupRestoreDatabaseWorker
+                        .OpenAsync(database, GrimoireFixture.TestGrimoireSecret, readOnly: false, Token)
+                        .GetAwaiter()
+                        .GetResult();
+
+                    using SqliteCommand command = committed.CreateCommand();
+
+                    // The match reads this column and nothing else the reconciliation opens does, so the
+                    // generation still opens and reconciles but the proof's own query is refused.
+                    command.CommandText = "ALTER TABLE lexicon_entries RENAME COLUMN ScopeCampaignId TO ScopeCampaignIdMoved;";
+
+                    _ = command.ExecuteNonQuery();
+                },
+            });
+
+        BackupRestoreResult result = await RestoreAsync(service, archive);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        AssertExecuteTimeEvidence(result, saga: 0, lexicon: 1, covenant: 0, receipts: 1);
+
+        string issue = Assert.Single(result.Reconciliation!.Issues);
+
+        Assert.StartsWith(CommittedUnproven, issue, StringComparison.Ordinal);
+
+        Assert.Contains("run the same restore again", issue, StringComparison.Ordinal);
+
+        Assert.Equal(BackupRestoreErasureScrubStatus.ScrubPending, result.Reconciliation.ErasureApplication!.Scrub);
+    }
+
+    /// <summary>
     /// The destination's disclosure buckets are joined into every replacement. A destination that opens
     /// but whose disclosure state cannot be read would otherwise contribute nothing, and the restored
     /// installation would under-report what has already left this machine, so the restore refuses.

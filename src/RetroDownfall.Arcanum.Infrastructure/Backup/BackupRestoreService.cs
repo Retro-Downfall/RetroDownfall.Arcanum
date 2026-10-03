@@ -715,8 +715,19 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         }
 
-        BackupRestoreDisclosureExposure? exposure =
+        Result<BackupRestoreDisclosureExposure?> disclosure =
             await ReadDestinationDisclosureAsync(request, cancellationToken).ConfigureAwait(false);
+
+        // An exposure nobody could read is not an exposure of none. The restore that would act on this plan
+        // refuses on the same read, so the plan blocks with that refusal and previews no exposure at all.
+        if (disclosure.IsFailure)
+        {
+
+            blockers.Add(new BackupVerifyIssue(disclosure.Error.Code, disclosure.Error.Message));
+
+        }
+
+        BackupRestoreDisclosureExposure? exposure = disclosure.IsSuccess ? disclosure.Value : null;
 
         return new BackupRestorePlan(
             generatedAt,
@@ -762,8 +773,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// read-only open of the destination — and therefore a key derivation — so paying it on every plan
     /// would slow the default path for a number only a destructive choice is ever shown. A restore that
     /// does not enter the Covenant arm has no such choice to make and reports nothing.
+    ///
+    /// <para>A destination that opens but whose state cannot be read is a failure here, carrying the
+    /// refusal the restore itself gives, because an empty exposure would tell an operator deciding to
+    /// purge that nothing has left this installation.</para>
     /// </remarks>
-    private async Task<BackupRestoreDisclosureExposure?> ReadDestinationDisclosureAsync(
+    private async Task<Result<BackupRestoreDisclosureExposure?>> ReadDestinationDisclosureAsync(
         BackupRestoreRequest request,
         CancellationToken cancellationToken)
     {
@@ -772,16 +787,22 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             || !ReconcilesProtectedState(request))
         {
 
-            return null;
+            return Result<BackupRestoreDisclosureExposure?>.Success(null);
 
         }
 
         Result<BackupCovenantRestoreDestinationState> destination =
             await ReadDestinationCovenantStateAsync(cancellationToken).ConfigureAwait(false);
 
-        // A plan only previews; the restore that would act on this refuses when the read cannot answer.
-        return BackupRestoreProtectedStateInspector.Exposure(
-            destination.IsSuccess ? destination.Value.DisclosureBuckets : []);
+        if (destination.IsFailure)
+        {
+
+            return destination.Error;
+
+        }
+
+        return Result<BackupRestoreDisclosureExposure?>.Success(
+            BackupRestoreProtectedStateInspector.Exposure(destination.Value.DisclosureBuckets));
 
     }
 
