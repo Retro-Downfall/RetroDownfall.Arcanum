@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -199,7 +200,6 @@ internal sealed class McpBridgeTool : AIFunction
         string.Equals(toolName, "ask_human", StringComparison.Ordinal)
         || string.Equals(toolName, "execute_command", StringComparison.Ordinal)
         || string.Equals(toolName, ArcanumBuiltInToolNames.RunSpellScript, StringComparison.Ordinal);
-
 }
 
 /// <summary>
@@ -221,7 +221,18 @@ internal static class McpToolResultFormatter
             return McpSecurityLimits.TruncateUtf8(fallback, maxUtf8Bytes);
         }
 
+        if (maxUtf8Bytes <= 0L)
+        {
+            return string.Empty;
+        }
+
+        // Accumulate only as far as the UTF-8 budget reaches. Building the whole joined text and cutting
+        // it afterwards bounds the output but not the allocation: a result of many large blocks cost the
+        // host a full copy first. The text produced is identical to joining every block and passing it
+        // through McpSecurityLimits.TruncateUtf8, so the caller sees no difference.
         StringBuilder sb = new();
+
+        long usedBytes = 0L;
 
         foreach (ContentBlock block in content)
         {
@@ -229,16 +240,41 @@ internal static class McpToolResultFormatter
                 ? textBlock.Text
                 : $"[{block.Type} content omitted]";
 
-            if (sb.Length > 0)
+            string separator = sb.Length > 0 ? global::System.Environment.NewLine : string.Empty;
+
+            long separatorBytes = Encoding.UTF8.GetByteCount(separator);
+
+            long blockBytes = separatorBytes + Encoding.UTF8.GetByteCount(piece);
+
+            if (usedBytes + blockBytes <= maxUtf8Bytes)
             {
-                sb.AppendLine();
+                sb.Append(separator).Append(piece);
+
+                usedBytes += blockBytes;
+
+                continue;
             }
 
-            sb.Append(piece);
+            // This block crosses the budget: keep the part of it that still fits, mark the cut, and
+            // read no further block.
+            long remaining = maxUtf8Bytes - usedBytes;
+
+            if (remaining < separatorBytes)
+            {
+                sb.Append(separator, 0, Utf8Truncation.ChooseSafeCharCount(separator, remaining));
+            }
+            else
+            {
+                sb.Append(separator);
+
+                sb.Append(piece, 0, Utf8Truncation.ChooseSafeCharCount(piece, remaining - separatorBytes));
+            }
+
+            sb.Append(McpSecurityLimits.TruncationMarker(maxUtf8Bytes));
+
+            break;
         }
 
-        string formatted = sb.Length == 0 ? string.Empty : sb.ToString();
-
-        return McpSecurityLimits.TruncateUtf8(formatted, maxUtf8Bytes);
+        return sb.ToString();
     }
 }
