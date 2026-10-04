@@ -554,8 +554,6 @@ public sealed partial class McpConnectionManager :
 
                     RemoveServerMetadataFromPartition(entry);
 
-                    cancellationToken.ThrowIfCancellationRequested();
-
                     if (!disposalCompleted)
                     {
                         entry.State = McpServerState.Error;
@@ -572,6 +570,16 @@ public sealed partial class McpConnectionManager :
                         result = new Error(
                             "Mcp.ClientDisposalIncomplete",
                             entry.ErrorMessage);
+                    }
+                    else if (cancellationToken.IsCancellationRequested)
+                    {
+                        // The old server is already stopped, so this is no longer "nothing happened":
+                        // throwing here would leave the caller unable to tell a restart that never began
+                        // from one that stopped the server and then lost its caller. Say what state the
+                        // server is in instead, and do not start a replacement for a caller that left.
+                        result = new Error(
+                            "Mcp.RestartCanceled",
+                            $"The restart of MCP server '{entry.Name}' was canceled after the server was stopped; the server is stopped. Start it again to restore it.");
                     }
                     else if (entry.Transport is McpServerTransport.Sse)
                     {
