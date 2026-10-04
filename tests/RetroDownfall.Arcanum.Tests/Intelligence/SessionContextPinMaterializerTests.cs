@@ -110,7 +110,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     }
 
     [Fact]
-    public async Task Large_file_pin_streams_a_bounded_preview_and_full_hash()
+    public async Task Large_file_pin_streams_a_bounded_preview_and_skips_the_full_hash()
     {
         string file = Path.Combine(_workspace, "oversized.bin");
 
@@ -125,18 +125,119 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             "oversized",
             null);
 
-        SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
-            pin.SessionId,
-            _workspace,
-            CancellationToken.None);
-
-        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+        string text = await MaterializeSingleAsync(pin);
 
         Assert.Contains("status: Truncated", text, StringComparison.Ordinal);
 
-        Assert.Contains("sha256=", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("sha256=", text, StringComparison.Ordinal);
+
+        Assert.Contains($"size={64L * 1024L * 1024L + 1L};", text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("safe materialization limit", text, StringComparison.Ordinal);
+
+        SessionContextPinRecord stale = Pin(
+            SessionContextPinKind.File,
+            "oversized.bin",
+            "oversized",
+            "size=1;mtime=1");
+
+        Assert.Contains(
+            "Content changed; current freshness token size=",
+            await MaterializeSingleAsync(stale),
+            StringComparison.Ordinal);
+
+        SessionContextPinRecord unverifiable = Pin(
+            SessionContextPinKind.File,
+            "oversized.bin",
+            "oversized",
+            new string('0', 64));
+
+        Assert.DoesNotContain(
+            "Content changed",
+            await MaterializeSingleAsync(unverifiable),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task File_pin_below_the_hash_cap_still_reports_a_full_content_hash()
+    {
+        byte[] payload = new byte[SessionContextPinMaterializer.MaxBytesPerPin + 4_096];
+
+        Array.Fill(payload, (byte)'y');
+
+        await File.WriteAllBytesAsync(Path.Combine(_workspace, "mid.txt"), payload);
+
+        string text = await MaterializeSingleAsync(
+            Pin(SessionContextPinKind.File, "mid.txt", "mid", null));
+
+        Assert.Contains("status: Truncated", text, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "sha256=" + Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(),
+            text,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Huge_file_pin_does_not_read_beyond_the_hash_cap()
+    {
+        const int byteLimit = 4_096;
+
+        const long hashCap = 1024 * 1024;
+
+        // A seekable stream over the cap is previewed without reading past the preview at all.
+        using CountingZeroStream seekable = new(64L * 1024 * 1024, canSeek: true);
+
+        SessionContextPinMaterializer.BoundedFileRead huge =
+            await SessionContextPinMaterializer.ReadBoundedFileAsync(
+                seekable,
+                byteLimit,
+                hashCap,
+                CancellationToken.None);
+
+        Assert.Null(huge.Sha256);
+
+        Assert.True(huge.Truncated);
+
+        Assert.Equal(byteLimit, Encoding.UTF8.GetByteCount(huge.Content));
+
+        Assert.True(
+            seekable.BytesRead <= byteLimit,
+            $"Read {seekable.BytesRead} bytes of a stream over the hash cap; the preview needs {byteLimit}.");
+
+        // A stream that cannot report its length is read only until the cap is crossed.
+        using CountingZeroStream opaque = new(64L * 1024 * 1024, canSeek: false);
+
+        SessionContextPinMaterializer.BoundedFileRead unknownLength =
+            await SessionContextPinMaterializer.ReadBoundedFileAsync(
+                opaque,
+                byteLimit,
+                hashCap,
+                CancellationToken.None);
+
+        Assert.Null(unknownLength.Sha256);
+
+        Assert.True(unknownLength.Truncated);
+
+        Assert.True(
+            opaque.BytesRead <= hashCap + (64 * 1024),
+            $"Read {opaque.BytesRead} bytes of an unsized stream; the hash cap is {hashCap}.");
+
+        // At or under the cap the whole stream is still hashed.
+        using CountingZeroStream underCap = new(512 * 1024, canSeek: true);
+
+        SessionContextPinMaterializer.BoundedFileRead hashed =
+            await SessionContextPinMaterializer.ReadBoundedFileAsync(
+                underCap,
+                byteLimit,
+                hashCap,
+                CancellationToken.None);
+
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(new byte[512 * 1024])).ToLowerInvariant(),
+            hashed.Sha256);
+
+        Assert.Equal(512 * 1024, underCap.BytesRead);
     }
 
     [Fact]
@@ -1059,6 +1160,61 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         }
 
         return count;
+    }
+
+    /// <summary>A zero-filled stream of a declared length that counts every byte handed to the reader.</summary>
+    private sealed class CountingZeroStream(long length, bool canSeek) : Stream
+    {
+        private long _position;
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => canSeek;
+
+        public override bool CanWrite => false;
+
+        public override long Length => canSeek
+            ? length
+            : throw new NotSupportedException("This stream does not report its length.");
+
+        public override long Position
+        {
+            get => canSeek ? _position : throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            int count = (int)Math.Min(buffer.Length, length - _position);
+
+            buffer[..count].Clear();
+
+            _position += count;
+
+            BytesRead += count;
+
+            return count;
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Read(buffer.Span));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class StaticPinStore(

@@ -39,6 +39,14 @@ public sealed class SessionContextPinMaterializer(
     /// <summary>Longest source label, id or diagnostic echoed into a block header.</summary>
     private const int MaxHeaderValueChars = 256;
 
+    /// <summary>
+    /// Largest file whose whole content is hashed to decide freshness. A larger file is previewed without
+    /// reading past the preview, and its size and last-write time stand in for the hash.
+    /// </summary>
+    internal const long FileHashCapBytes = 8L * 1024 * 1024;
+
+    private const string FreshnessTokenPrefix = "size=";
+
     private const string DirectoryTruncationSuffix =
         "[TRUNCATED BY CONTEXT MATERIALIZATION BUDGET]";
 
@@ -198,15 +206,30 @@ public sealed class SessionContextPinMaterializer(
 
         await using (stream)
         {
+            long length = stream.Length;
+
             BoundedFileRead source = await ReadBoundedFileAsync(
                 stream,
                 byteLimit,
+                FileHashCapBytes,
                 cancellationToken).ConfigureAwait(false);
 
-            string hash = source.Sha256;
+            // Above the hash cap the file is previewed without reading the rest, so the freshness
+            // token is its size and last-write time rather than a content hash.
+            string? hash = source.Sha256;
+
+            string freshnessToken = hash
+                ?? $"{FreshnessTokenPrefix}{length};mtime={File.GetLastWriteTimeUtc(path).Ticks}";
+
+            // A pinned content hash cannot be checked against a size/mtime token, so it is not
+            // reported as a change.
+            bool versionComparable = hash is not null
+                || pin.ContentVersion?.StartsWith(FreshnessTokenPrefix, StringComparison.OrdinalIgnoreCase) == true;
 
             SessionContextPinStatus freshness =
-                pin.ContentVersion is not null && !string.Equals(pin.ContentVersion, hash, StringComparison.OrdinalIgnoreCase)
+                pin.ContentVersion is not null
+                && versionComparable
+                && !string.Equals(pin.ContentVersion, freshnessToken, StringComparison.OrdinalIgnoreCase)
                     ? SessionContextPinStatus.Modified
                     : SessionContextPinStatus.Current;
 
@@ -214,12 +237,15 @@ public sealed class SessionContextPinMaterializer(
                 ? SessionContextPinStatus.Truncated
                 : freshness;
 
-            return new(
-                status,
-                source.Content,
-                freshness == SessionContextPinStatus.Modified
+            string diagnostic = hash is not null
+                ? freshness == SessionContextPinStatus.Modified
                     ? $"Content changed; current sha256={hash}."
-                    : $"sha256={hash}.");
+                    : $"sha256={hash}."
+                : freshness == SessionContextPinStatus.Modified
+                    ? $"Content changed; current freshness token {freshnessToken}."
+                    : $"Content hash skipped above the {FileHashCapBytes}-byte cap; freshness token {freshnessToken}.";
+
+            return new(status, source.Content, diagnostic);
         }
     }
 
@@ -510,53 +536,123 @@ public sealed class SessionContextPinMaterializer(
             truncated ? $"Limited to {byteLimit} bytes." : null);
     }
 
+    internal static Task<BoundedFileRead> ReadBoundedFileAsync(
+        Stream stream,
+        int byteLimit,
+        CancellationToken cancellationToken) =>
+        ReadBoundedFileAsync(
+            stream,
+            byteLimit,
+            hashCapBytes: long.MaxValue,
+            cancellationToken);
+
+    /// <summary>
+    /// Reads at most <paramref name="byteLimit"/> bytes of preview and hashes the whole stream only while
+    /// it stays within <paramref name="hashCapBytes"/>. A seekable stream that declares more than the cap
+    /// is never read past the preview; an unsized stream is read until the cap is crossed. Beyond the cap
+    /// <see cref="BoundedFileRead.Sha256"/> is <see langword="null"/>.
+    /// </summary>
     internal static async Task<BoundedFileRead> ReadBoundedFileAsync(
         Stream stream,
         int byteLimit,
+        long hashCapBytes,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
         ArgumentOutOfRangeException.ThrowIfNegative(byteLimit);
 
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        ArgumentOutOfRangeException.ThrowIfNegative(hashCapBytes);
 
-        using MemoryStream content = new(Math.Min(byteLimit, 16 * 1024));
+        long declaredLength = stream.CanSeek ? stream.Length : -1;
 
-        byte[] buffer = new byte[64 * 1024];
+        IncrementalHash? hash = declaredLength > hashCapBytes
+            ? null
+            : IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        long totalRead = 0;
-
-        int read;
-
-        while ((read = await stream
-            .ReadAsync(buffer, cancellationToken)
-            .ConfigureAwait(false)) > 0)
+        try
         {
-            hash.AppendData(buffer, 0, read);
+            using MemoryStream content = new(Math.Min(byteLimit, 16 * 1024));
 
-            totalRead += read;
+            byte[] buffer = new byte[64 * 1024];
 
-            int remaining = byteLimit - (int)content.Length;
+            long totalRead = 0;
 
-            if (remaining > 0)
+            while (true)
             {
-                content.Write(buffer, 0, Math.Min(remaining, read));
+                int wanted = buffer.Length;
+
+                if (hash is null)
+                {
+                    // Only the preview is still needed, plus one byte to learn that the stream is
+                    // longer when its length is not already known to exceed the limit.
+                    bool longerKnown = totalRead > byteLimit || declaredLength > byteLimit;
+
+                    int needed = byteLimit - (int)content.Length;
+
+                    if (needed <= 0 && longerKnown)
+                    {
+                        break;
+                    }
+
+                    wanted = Math.Min(buffer.Length, Math.Max(needed, 0) + (longerKnown ? 0 : 1));
+                }
+
+                int read = await stream
+                    .ReadAsync(buffer.AsMemory(0, wanted), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+                    break;
+                }
+
+                totalRead += read;
+
+                if (hash is not null)
+                {
+                    if (totalRead > hashCapBytes)
+                    {
+                        hash.Dispose();
+
+                        hash = null;
+                    }
+                    else
+                    {
+                        hash.AppendData(buffer, 0, read);
+                    }
+                }
+
+                int remaining = byteLimit - (int)content.Length;
+
+                if (remaining > 0)
+                {
+                    content.Write(buffer, 0, Math.Min(remaining, read));
+                }
             }
+
+            string text = Encoding.UTF8.GetString(content.GetBuffer(), 0, (int)content.Length);
+
+            text = TruncateUtf8(text, byteLimit);
+
+            string? sha256 = hash is null
+                ? null
+                : Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+
+            return new BoundedFileRead(
+                text,
+                sha256,
+                totalRead > byteLimit || declaredLength > byteLimit);
         }
-
-        string text = Encoding.UTF8.GetString(content.GetBuffer(), 0, (int)content.Length);
-
-        text = TruncateUtf8(text, byteLimit);
-
-        string sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-
-        return new BoundedFileRead(text, sha256, totalRead > byteLimit);
+        finally
+        {
+            hash?.Dispose();
+        }
     }
 
     internal sealed record BoundedFileRead(
         string Content,
-        string Sha256,
+        string? Sha256,
         bool Truncated);
 
     private async Task<MaterializedPin> MaterializeEntryAsync(
