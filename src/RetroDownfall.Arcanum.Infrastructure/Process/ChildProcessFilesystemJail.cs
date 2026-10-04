@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
@@ -12,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </summary>
 internal enum ChildProcessSandboxApplyStatus
 {
-
     /// <summary>macOS Seatbelt / sandbox-exec profile is active.</summary>
     Applied,
 
@@ -27,12 +27,10 @@ internal enum ChildProcessSandboxApplyStatus
 
     /// <summary>Legacy status retained for serialized/result compatibility.</summary>
     NoFilesystemJail,
-
 }
 
 internal sealed class ChildProcessSandboxApplyResult
 {
-
     internal ChildProcessSandboxApplyStatus Status { get; init; }
 
     /// <summary>
@@ -48,8 +46,9 @@ internal sealed class ChildProcessSandboxApplyResult
     /// </summary>
     internal string? WindowsRestoreJournalPath { get; init; }
 
-    internal string? Detail { get; init; }
+    internal string? WindowsJobAssignedSignalPath { get; init; }
 
+    internal string? Detail { get; init; }
 }
 
 /// <summary>
@@ -61,7 +60,6 @@ internal sealed class ChildProcessSandboxApplyResult
 /// </summary>
 internal static class ChildProcessFilesystemJail
 {
-
     internal const string HelperArg = "__sandbox-exec";
 
     /// <summary>Public model-visible denial when Linux FS jail is inactive (fail-closed).</summary>
@@ -73,63 +71,47 @@ internal static class ChildProcessFilesystemJail
         ChildProcessSandboxRequest request,
         ILogger? logger)
     {
-
         ArgumentNullException.ThrowIfNull(startInfo);
 
         ArgumentNullException.ThrowIfNull(request);
 
         if (OperatingSystem.IsWindows())
         {
-
             return ApplyWindows(startInfo, request, logger);
-
         }
 
         if (OperatingSystem.IsMacOS())
         {
-
             return ApplyMacOs(startInfo, request, logger);
-
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return ApplyLinux(request, logger);
-
         }
 
         return FailClosedOrEscape(request, logger, "Unsupported OS for child-process filesystem jail.");
-
     }
 
     internal static bool CleanupTempPaths(
         IReadOnlyList<IdentityOwnedFileSystemArtifact>? artifacts)
     {
-
         if (artifacts is null || artifacts.Count == 0)
         {
-
             return true;
-
         }
 
         bool complete = true;
 
         foreach (IdentityOwnedFileSystemArtifact artifact in artifacts)
         {
-
             if (!IdentityOwnedFileSystemCleanup.TryDelete(artifact))
             {
-
                 complete = false;
-
             }
-
         }
 
         return complete;
-
     }
 
     internal static async Task<bool> CleanupTempPathsAsync(
@@ -195,6 +177,54 @@ internal static class ChildProcessFilesystemJail
         return ReplayWindowsRestoreJournal(journalPath, logger);
     }
 
+    /// <summary>
+    /// Tells the Windows broker that the host has assigned it to this run's own Job Object. Called by
+    /// the runner only after <c>AssignProcessToJobObject</c> succeeded for the started broker; until
+    /// then the broker refuses to create the target, whatever job it may have inherited. A run without
+    /// a Windows broker has nothing to confirm. Returns <c>false</c> when the confirmation could not be
+    /// written, in which case the broker will refuse the run.
+    /// </summary>
+    internal static bool ConfirmWindowsJobAssignment(
+        ChildProcessSandboxApplyResult? sandboxResult)
+    {
+        string? signalPath = sandboxResult?.WindowsJobAssignedSignalPath;
+        if (string.IsNullOrWhiteSpace(signalPath))
+        {
+            return true;
+        }
+
+        try
+        {
+            WindowsAppContainerJobAssignment.Confirm(signalPath);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Lets the Windows-lane broker smoke run the real broker from a published apphost: the xunit host
+    /// cannot broker, because re-executing it starts the test platform. Scoped to the calling async
+    /// flow and never set in production.
+    /// </summary>
+    internal static IDisposable UseWindowsBrokerExecutableForTests(string brokerExecutable)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(brokerExecutable);
+
+        string? previous = WindowsBrokerExecutableForTests.Value;
+        WindowsBrokerExecutableForTests.Value = brokerExecutable;
+        return new BrokerExecutableScope(previous);
+    }
+
+    private static readonly AsyncLocal<string?> WindowsBrokerExecutableForTests = new();
+
+    private sealed class BrokerExecutableScope(string? previous) : IDisposable
+    {
+        public void Dispose() => WindowsBrokerExecutableForTests.Value = previous;
+    }
+
     [SupportedOSPlatform("windows")]
     private static bool ReplayWindowsRestoreJournal(
         string journalPath,
@@ -205,7 +235,7 @@ internal static class ChildProcessFilesystemJail
         {
             restored = WindowsAppContainerRestoreJournal.Replay(
                 journalPath,
-                WindowsAppContainerLauncher.RestoreDirectorySecurity,
+                WindowsAppContainerLauncher.RemoveGrant,
                 WindowsAppContainerLauncher.DeleteProfile);
         }
         catch (Exception ex)
@@ -234,7 +264,8 @@ internal static class ChildProcessFilesystemJail
         // the tool — File.Exists on Environment.ProcessPath cannot tell the difference. Refuse before
         // touching startInfo, so an operator-escaped run still starts the untouched target rather than a
         // half-rewritten one.
-        if (!SandboxExecHelper.IsBrokerCapableHost)
+        string? brokerOverride = WindowsBrokerExecutableForTests.Value;
+        if (brokerOverride is null && !SandboxExecHelper.IsBrokerCapableHost)
         {
             return WindowsFailClosedOrEscape(request, logger, "This host process cannot act as the Windows sandbox broker.");
         }
@@ -244,14 +275,41 @@ internal static class ChildProcessFilesystemJail
             return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer APIs are unavailable.");
         }
 
+        // The broker starts the target with a non-null lpApplicationName, which Win32 uses as-is: no
+        // PATH search, no default extension. Resolve it here, against the child's scrubbed PATH, so the
+        // payload carries an absolute path. A target that cannot run that way is a refusal, not a
+        // sandbox outage, so the operator escape hatch does not apply to it.
+        Result<WindowsBrokerTarget> target = WindowsBrokerTargetResolver.Resolve(
+            startInfo.FileName,
+            startInfo.Environment.TryGetValue("PATH", out string? searchPath) ? searchPath : null,
+            startInfo.Environment.TryGetValue("PATHEXT", out string? pathExt) ? pathExt : null,
+            File.Exists,
+            startInfo.WorkingDirectory,
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        if (target.IsFailure)
+        {
+            logger?.LogWarning(
+                "Windows sandboxed tool child refused before brokering: {Code}.",
+                target.Error.Code);
+            return new ChildProcessSandboxApplyResult
+            {
+                Status = ChildProcessSandboxApplyStatus.Unavailable,
+                Detail = target.Error.Message,
+            };
+        }
+
         IdentityOwnedFileSystemArtifact? temp = null;
         IdentityOwnedFileSystemArtifact? config = null;
         IdentityOwnedFileSystemArtifact? journal = null;
+        IdentityOwnedFileSystemArtifact? jobSignal = null;
         try
         {
             List<string> readWrite = NormalizeExistingRoots(request.ReadWriteRoots);
             List<string> readOnly = NormalizeExistingRoots(request.ReadOnlyRoots);
-            List<string> readExecute = NormalizeExistingRoots(request.ReadExecuteRoots);
+            List<string> readExecute = NormalizeExistingRoots(
+                target.Value.ReadExecuteRoot is null
+                    ? request.ReadExecuteRoots
+                    : [.. request.ReadExecuteRoots, target.Value.ReadExecuteRoot]);
             if (readWrite.Concat(readOnly).Concat(readExecute)
                 .Any(static root => !WindowsAppContainerPolicy.IsSafeRoot(root)))
             {
@@ -267,9 +325,12 @@ internal static class ChildProcessFilesystemJail
             // survives the broker being terminated without ever being reachable from the child.
             journal = WriteOwnerOnlyTempFile("arcanum-win-acl-", ".journal", string.Empty);
 
+            // Written by the runner only once the started broker is in this run's Job Object.
+            jobSignal = WriteOwnerOnlyTempFile("arcanum-win-job-", ".signal", string.Empty);
+
             SandboxExecHelperPayload payload = new()
             {
-                Target = startInfo.FileName,
+                Target = target.Value.Path,
                 Arguments = [.. startInfo.ArgumentList],
                 WorkingDirectory = startInfo.WorkingDirectory,
                 ReadWriteRoots = [.. readWrite],
@@ -277,13 +338,14 @@ internal static class ChildProcessFilesystemJail
                 ReadExecuteRoots = [.. readExecute],
                 WindowsProfileName = WindowsAppContainerPolicy.CreateProfileName(),
                 WindowsRestoreJournalPath = journal.Value.Path,
+                WindowsJobAssignedSignalPath = jobSignal.Value.Path,
             };
             string json = System.Text.Json.JsonSerializer.Serialize(
                 payload,
                 SandboxExecJsonContext.Default.SandboxExecHelperPayload);
             config = WriteOwnerOnlyTempFile("arcanum-win-sb-", ".json", json);
 
-            string? host = Environment.ProcessPath;
+            string? host = brokerOverride ?? Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(host) || !File.Exists(host))
             {
                 throw new InvalidOperationException("Trusted sandbox broker executable is unavailable.");
@@ -299,8 +361,9 @@ internal static class ChildProcessFilesystemJail
             return new ChildProcessSandboxApplyResult
             {
                 Status = ChildProcessSandboxApplyStatus.Applied,
-                OwnedArtifactsToCleanup = [config.Value, temp.Value, journal.Value],
+                OwnedArtifactsToCleanup = [config.Value, temp.Value, journal.Value, jobSignal.Value],
                 WindowsRestoreJournalPath = journal.Value.Path,
+                WindowsJobAssignedSignalPath = jobSignal.Value.Path,
             };
         }
         catch (Exception ex)
@@ -309,11 +372,11 @@ internal static class ChildProcessFilesystemJail
             if (config is not null) cleanup.Add(config.Value);
             if (temp is not null) cleanup.Add(temp.Value);
             if (journal is not null) cleanup.Add(journal.Value);
+            if (jobSignal is not null) cleanup.Add(jobSignal.Value);
             CleanupTempPaths(cleanup);
             logger?.LogError(ex, "Failed to prepare Windows AppContainer broker.");
             return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer setup failed.");
         }
-
     }
 
     private static ChildProcessSandboxApplyResult WindowsFailClosedOrEscape(
@@ -349,17 +412,14 @@ internal static class ChildProcessFilesystemJail
         ChildProcessSandboxRequest request,
         ILogger? logger)
     {
-
         const string sandboxExecPath = "/usr/bin/sandbox-exec";
 
         if (!File.Exists(sandboxExecPath))
         {
-
             return FailClosedOrEscape(
                 request,
                 logger,
                 "macOS sandbox-exec is not present on this host (deprecated Apple tool; may be absent on future releases).");
-
         }
 
         IdentityOwnedFileSystemArtifact? invocationTempArtifact = null;
@@ -368,7 +428,6 @@ internal static class ChildProcessFilesystemJail
 
         try
         {
-
             List<string> readWriteRoots = NormalizeExistingRoots(request.ReadWriteRoots);
 
             List<string> readOnlyRoots = NormalizeExistingRoots(request.ReadOnlyRoots);
@@ -379,35 +438,26 @@ internal static class ChildProcessFilesystemJail
                 && readOnlyRoots.Count == 0
                 && readExecuteRoots.Count == 0)
             {
-
                 return FailClosedOrEscape(request, logger, "No allowed filesystem roots for the child-process jail.");
-
             }
 
             if (!string.IsNullOrWhiteSpace(startInfo.WorkingDirectory))
             {
-
                 try
                 {
-
                     string cwdFull = Path.GetFullPath(startInfo.WorkingDirectory);
 
                     if (Directory.Exists(cwdFull))
                     {
-
                         string? resolved = Directory.ResolveLinkTarget(cwdFull, returnFinalTarget: true)?.FullName
                                            ?? new DirectoryInfo(cwdFull).FullName;
 
                         startInfo.WorkingDirectory = Path.GetFullPath(resolved);
-
                     }
-
                 }
                 catch (Exception)
                 {
-
                 }
-
             }
 
             invocationTempArtifact =
@@ -439,7 +489,6 @@ internal static class ChildProcessFilesystemJail
 
             return new ChildProcessSandboxApplyResult
             {
-
                 Status = ChildProcessSandboxApplyStatus.Applied,
 
                 OwnedArtifactsToCleanup =
@@ -447,27 +496,20 @@ internal static class ChildProcessFilesystemJail
                     profileArtifact.Value,
                     invocationTempArtifact.Value,
                 ],
-
             };
-
         }
         catch (Exception ex)
         {
-
             List<IdentityOwnedFileSystemArtifact> cleanup = [];
 
             if (profileArtifact is not null)
             {
-
                 cleanup.Add(profileArtifact.Value);
-
             }
 
             if (invocationTempArtifact is not null)
             {
-
                 cleanup.Add(invocationTempArtifact.Value);
-
             }
 
             CleanupTempPaths(cleanup);
@@ -475,9 +517,7 @@ internal static class ChildProcessFilesystemJail
             logger?.LogError(ex, "Failed to prepare macOS sandbox-exec wrapper.");
 
             return FailClosedOrEscape(request, logger, "Failed to prepare macOS sandbox-exec wrapper.");
-
         }
-
     }
 
     private static ChildProcessSandboxApplyResult FailClosedOrEscape(
@@ -485,10 +525,8 @@ internal static class ChildProcessFilesystemJail
         ILogger? logger,
         string detail)
     {
-
         if (request.AllowUnsandboxed)
         {
-
             logger?.LogWarning(
                 "Filesystem jail disabled by operator (AllowUnsandboxedToolChildren=true). Platform={Platform} Tool={ToolName} Workspace={Workspace} Campaign={CampaignId}. Detail={Detail}. {Note}",
                 GetPlatformLabel(),
@@ -500,13 +538,10 @@ internal static class ChildProcessFilesystemJail
 
             return new ChildProcessSandboxApplyResult
             {
-
                 Status = ChildProcessSandboxApplyStatus.EscapedByOperator,
 
                 Detail = detail,
-
             };
-
         }
 
         logger?.LogWarning(
@@ -518,66 +553,48 @@ internal static class ChildProcessFilesystemJail
 
         return new ChildProcessSandboxApplyResult
         {
-
             Status = ChildProcessSandboxApplyStatus.Unavailable,
 
             Detail = detail,
-
         };
-
     }
 
     private static string GetPlatformLabel()
     {
-
         if (OperatingSystem.IsMacOS())
         {
-
             return "macOS";
-
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return "Linux";
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return "Windows";
-
         }
 
         return "Unknown";
-
     }
 
     private static string RedactPathForLog(string path)
     {
-
         // Keep only the last path segment for diagnostics — avoid dumping full home trees.
         try
         {
-
             return Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
                    ?? "(path)";
-
         }
         catch (Exception)
         {
-
             return "(path)";
-
         }
-
     }
 
     private static void WrapWithSandboxExec(ProcessStartInfo startInfo, string sandboxExecPath, string profilePath)
     {
-
         string target = startInfo.FileName;
 
         List<string> originalArgs = [.. startInfo.ArgumentList];
@@ -592,20 +609,16 @@ internal static class ChildProcessFilesystemJail
 
         foreach (string arg in originalArgs)
         {
-
             startInfo.ArgumentList.Add(arg);
-
         }
 
         startInfo.FileName = sandboxExecPath;
-
     }
 
     private static IdentityOwnedFileSystemArtifact
         CreateOwnerOnlyTempDirectory(
             string prefix)
     {
-
         // Unix-domain socket paths are length-bounded on macOS. dotnet format's MSBuild build host
         // creates CoreFxPipe sockets beneath TMPDIR, so the normal per-user /var/folders path plus
         // our invocation name can exceed that limit and leave the host waiting forever. A unique
@@ -644,7 +657,6 @@ internal static class ChildProcessFilesystemJail
 
             throw;
         }
-
     }
 
     private static IdentityOwnedFileSystemArtifact
@@ -653,7 +665,6 @@ internal static class ChildProcessFilesystemJail
             string extension,
             string contents)
     {
-
         string path = Path.Combine(Path.GetTempPath(), prefix + Guid.NewGuid().ToString("N") + extension);
 
         byte[] bytes = Encoding.UTF8.GetBytes(contents);
@@ -706,114 +717,90 @@ internal static class ChildProcessFilesystemJail
         {
             Array.Clear(bytes);
         }
-
     }
 
     private static List<string> NormalizeExistingRoots(IReadOnlyList<string> roots)
     {
-
         List<string> result = [];
 
         HashSet<string> seen = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
         foreach (string root in roots)
         {
-
             if (string.IsNullOrWhiteSpace(root))
             {
-
                 continue;
-
             }
 
             // Reject control characters / newlines before profile generation.
             foreach (char c in root)
             {
-
                 if (char.IsControl(c))
                 {
-
                     throw new InvalidOperationException(
                         "Sandbox root paths must not contain control characters or newlines.");
-
                 }
-
             }
 
             string full;
 
             try
             {
-
                 full = Path.GetFullPath(root.Trim());
+
+                // Honour the name: a root that is neither a directory nor a file is dropped on every
+                // platform. Kept, it is inert in a Seatbelt profile but makes the Windows broker's
+                // grant throw, failing the run with no output.
+                if (!Directory.Exists(full) && !File.Exists(full))
+                {
+                    continue;
+                }
 
                 if (File.Exists(full) && !Directory.Exists(full))
                 {
-
                     string? parent = Path.GetDirectoryName(full);
 
                     if (!string.IsNullOrEmpty(parent))
                     {
-
                         full = Path.GetFullPath(parent);
-
                     }
-
                 }
 
                 string? resolved = null;
 
                 try
                 {
-
                     if (Directory.Exists(full))
                     {
-
                         resolved = Directory.ResolveLinkTarget(full, returnFinalTarget: true)?.FullName
                                    ?? new DirectoryInfo(full).FullName;
-
                     }
-
                 }
                 catch (Exception)
                 {
-
                     resolved = null;
-
                 }
 
                 if (!string.IsNullOrEmpty(resolved))
                 {
-
                     full = Path.GetFullPath(resolved);
-
                 }
-
             }
             catch (InvalidOperationException)
             {
-
                 throw;
-
             }
             catch (Exception)
             {
-
                 continue;
-
             }
 
             if (seen.Add(full))
             {
-
                 result.Add(full);
-
             }
-
         }
 
         return result;
-
     }
-
 }

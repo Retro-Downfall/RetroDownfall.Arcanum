@@ -3,12 +3,13 @@ using System.Text;
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 /// <summary>
-/// One undo step: the security descriptor a directory carried before the broker granted the per-run
-/// AppContainer SID access to it.
+/// One undo step: a directory the broker granted the per-run AppContainer SID access to, and that SID.
+/// Undoing it removes this SID's explicit ACEs from the directory's current DACL — never a snapshot of
+/// the whole DACL, which would also erase or resurrect other runs' grants on a shared root.
 /// </summary>
 internal readonly record struct WindowsAppContainerGrantRecord(
     string Path,
-    byte[] Descriptor);
+    string Sid);
 
 /// <summary>
 /// Everything a killed broker left behind for the host to undo.
@@ -19,21 +20,29 @@ internal sealed record WindowsAppContainerRestorePlan(
     int UnreadableRecords);
 
 /// <summary>
-/// Kill-proof undo log for the Windows AppContainer jail. The broker restores the directory ACLs it
-/// granted and deletes the per-run profile in a <c>finally</c>, but the host kills it with
-/// TerminateProcess on timeout, cancellation, or a Job Object kill, and managed finally blocks do not
-/// run then — the original descriptors would exist only in the dead broker's memory, leaving one
-/// orphaned inheritable ACE on the workspace root per killed run. The broker therefore appends each
-/// undo step to this owner-only file, which the host created and still owns, <b>before</b> performing
-/// the matching mutation, and clears it once it has undone everything itself. Whatever is still in
-/// the log once the child is gone is residue the host replays.
+/// Kill-proof undo log for the Windows AppContainer jail. The broker removes the ACEs it granted and
+/// deletes the per-run profile in a <c>finally</c>, but the host kills it with TerminateProcess on
+/// timeout, cancellation, or a Job Object kill, and managed finally blocks do not run then — the grant
+/// would be remembered only by the dead broker, leaving one orphaned inheritable ACE on the workspace
+/// root per killed run. The broker therefore appends each undo step (the root and the per-run SID) to
+/// this owner-only file, which the host created and still owns, <b>before</b> performing the matching
+/// mutation, and clears it once it has undone everything itself. Whatever is still in the log once the
+/// child is gone is residue the host replays.
 /// </summary>
 internal static class WindowsAppContainerRestoreJournal
 {
     private const char FieldSeparator = ' ';
     private const char RecordTerminator = '\n';
     private const string ProfileTag = "P";
-    private const string GrantTag = "A";
+
+    /// <summary>
+    /// Grant records carry the per-run SID. The retired <c>A</c> tag carried a whole security
+    /// descriptor; such a record is reported as unreadable residue rather than reapplied.
+    /// </summary>
+    private const string GrantTag = "G";
+
+    /// <summary>Longest string-form SID: "S-1-" plus a 48-bit authority and 15 32-bit sub-authorities.</summary>
+    private const int MaxSidStringLength = 184;
 
     /// <summary>
     /// Records the profile that must be deleted. Called before the profile is created, so a kill in
@@ -43,13 +52,21 @@ internal static class WindowsAppContainerRestoreJournal
         Append(journalPath, ProfileTag + FieldSeparator + Encode(profileName));
 
     /// <summary>
-    /// Records the descriptor <paramref name="path"/> carries right now. Throws when the record
-    /// cannot be made durable — the caller must then refuse to mutate the ACL at all.
+    /// Records that <paramref name="sid"/> is about to be granted access to <paramref name="path"/>.
+    /// Throws when the record cannot be made durable — the caller must then refuse to mutate the ACL
+    /// at all.
     /// </summary>
-    internal static void RecordGrant(string journalPath, string path, byte[] descriptor) =>
+    internal static void RecordGrant(string journalPath, string path, string sid)
+    {
+        if (!IsSidString(sid))
+        {
+            throw new ArgumentException("The AppContainer SID is not in string form.", nameof(sid));
+        }
+
         Append(
             journalPath,
-            GrantTag + FieldSeparator + Encode(path) + FieldSeparator + Convert.ToBase64String(descriptor));
+            GrantTag + FieldSeparator + Encode(path) + FieldSeparator + sid);
+    }
 
     /// <summary>Drops every undo step, after the broker has performed them all itself.</summary>
     internal static void Clear(string journalPath) => File.WriteAllBytes(journalPath, []);
@@ -100,9 +117,9 @@ internal static class WindowsAppContainerRestoreJournal
             if (fields.Length == 3
                 && fields[0] == GrantTag
                 && TryDecode(fields[1], out string path)
-                && TryDecodeBytes(fields[2], out byte[] descriptor))
+                && IsSidString(fields[2]))
             {
-                grants.Add(new WindowsAppContainerGrantRecord(path, descriptor));
+                grants.Add(new WindowsAppContainerGrantRecord(path, fields[2]));
                 continue;
             }
 
@@ -113,16 +130,19 @@ internal static class WindowsAppContainerRestoreJournal
     }
 
     /// <summary>
-    /// Undoes every recorded step, newest first so nested roots unwind in grant order, and clears the
-    /// log only when nothing was left behind. Returns <c>false</c> when any step failed or any record
-    /// was unreadable, so the caller can report residue rather than claim a clean teardown.
+    /// Undoes every recorded step, newest first, by removing the recorded SID's ACEs from each root's
+    /// current DACL, and clears the log only when nothing was left behind. Removing a SID that was
+    /// never granted (a kill between the record and the mutation) is a no-op, so every record is safe
+    /// to replay, and another run's grant on the same root is never touched. Returns <c>false</c> when
+    /// any step failed or any record was unreadable, so the caller can report residue rather than
+    /// claim a clean teardown.
     /// </summary>
     internal static bool Replay(
         string journalPath,
-        Func<string, byte[], bool> restoreDescriptor,
+        Func<string, string, bool> removeGrant,
         Func<string, bool> deleteProfile)
     {
-        ArgumentNullException.ThrowIfNull(restoreDescriptor);
+        ArgumentNullException.ThrowIfNull(removeGrant);
         ArgumentNullException.ThrowIfNull(deleteProfile);
 
         WindowsAppContainerRestorePlan plan = Read(journalPath);
@@ -133,7 +153,7 @@ internal static class WindowsAppContainerRestoreJournal
             WindowsAppContainerGrantRecord grant = plan.Grants[index];
             try
             {
-                complete &= restoreDescriptor(grant.Path, grant.Descriptor);
+                complete &= removeGrant(grant.Path, grant.Sid);
             }
             catch (Exception)
             {
@@ -166,6 +186,44 @@ internal static class WindowsAppContainerRestoreJournal
         }
 
         return complete;
+    }
+
+    /// <summary>
+    /// The string form of a SID (<c>S-1-15-2-…</c>): what the broker records and what the restore
+    /// parses back. Anything else is not a record this broker wrote.
+    /// </summary>
+    internal static bool IsSidString(string? value)
+    {
+        if (string.IsNullOrEmpty(value)
+            || value.Length > MaxSidStringLength
+            || !value.StartsWith("S-1-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        bool previousWasSeparator = true;
+        foreach (char character in value.AsSpan(4))
+        {
+            if (character == '-')
+            {
+                if (previousWasSeparator)
+                {
+                    return false;
+                }
+
+                previousWasSeparator = true;
+                continue;
+            }
+
+            if (!char.IsAsciiDigit(character))
+            {
+                return false;
+            }
+
+            previousWasSeparator = false;
+        }
+
+        return !previousWasSeparator;
     }
 
     private static void Append(string journalPath, string record)

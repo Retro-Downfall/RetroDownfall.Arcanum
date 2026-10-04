@@ -522,6 +522,25 @@ internal static class CappedChildProcessRunner
                         ResourceLimitApplyError = assignError.Message,
                     };
                 }
+
+                // The Windows broker waits for this before creating the untrusted target: job
+                // membership alone cannot tell this run's job from one the host inherited.
+                if (!ChildProcessFilesystemJail.ConfirmWindowsJobAssignment(sandboxResult))
+                {
+                    ProcessTreeKiller.TryKillEntireTree(
+                        process,
+                        context: "execute_command/run_spell_script (Job Object confirmation failed)");
+
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        ResourceLimitApplyError =
+                            "execute_command: the sandbox broker could not be told it was assigned to the Sanctum Job Object; the command was not started.",
+                    };
+                }
             }
 
             CancellationTokenRegistration killRegistration = waitToken.Register(

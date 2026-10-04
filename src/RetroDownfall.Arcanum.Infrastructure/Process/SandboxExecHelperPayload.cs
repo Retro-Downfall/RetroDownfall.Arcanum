@@ -5,7 +5,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </summary>
 internal sealed class SandboxExecHelperPayload
 {
-
     public string Target { get; init; } = string.Empty;
 
     public string[] Arguments { get; init; } = [];
@@ -24,6 +23,12 @@ internal sealed class SandboxExecHelperPayload
     /// </summary>
     public string? WindowsRestoreJournalPath { get; init; }
 
-    public string[] ReadOnlyRoots { get; init; } = [];
+    /// <summary>
+    /// Owner-only file the host writes only after it has assigned the broker to the run's own Job
+    /// Object. The broker refuses to start the target until it reads that confirmation, because
+    /// membership of <em>some</em> job proves nothing when the host itself runs inside one.
+    /// </summary>
+    public string? WindowsJobAssignedSignalPath { get; init; }
 
+    public string[] ReadOnlyRoots { get; init; } = [];
 }
