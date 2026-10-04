@@ -3464,9 +3464,10 @@ internal sealed partial class DataRetentionService(
         {
             // First, once the transaction holds the write lock, so no label can be committed between
             // the answer and the deletes below.
-            await RefuseLabeledUntargetedResetAsync(
+            await RefuseLabeledMemoryResetAsync(
                 scope,
                 campaignId,
+                selections,
                 connection,
                 transaction,
                 cancellationToken).ConfigureAwait(false);
@@ -6084,13 +6085,21 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// Refuses an untargeted memory reset over a store that still holds a labelled member.
+    /// Refuses a memory reset that would take a labelled member of the store with it.
     /// </summary>
     /// <remarks>
     /// An untargeted reset hands one bare <c>DELETE FROM</c> the whole table, which is the exact
     /// shape the guard's bulk arm exists for: the statement examines no identity, so no per-artifact
     /// check can see the rows it never enumerated and the only safe answer for a labelled member is
-    /// to refuse. A Campaign-targeted reset takes the predicate arm instead and is left alone.
+    /// to refuse.
+    ///
+    /// <para>A Campaign-targeted reset deletes by predicate, so it is asked about exactly the rows that
+    /// predicate selects: their identities are read inside this transaction and handed to the guard's
+    /// batched arm. The question is about the artifact set rather than the label's own
+    /// <c>CampaignId</c>, because that column records a historical owner and a memory can have moved
+    /// scope since it was labelled; a label filter would miss exactly that memory and the delete would
+    /// orphan its label. A row whose identity is not a Guid cannot carry a label (the label table names
+    /// artifacts by Guid), so it is not asked about.</para>
     ///
     /// <para>Saga and Lexicon are the two stores asked about, because they are the two kinds the
     /// label table names for a store's own rows. The embedding scopes truncate derived rows whose
@@ -6098,42 +6107,115 @@ internal sealed partial class DataRetentionService(
     /// distinguish an Entry embedding from an attachment one — asking it here would refuse an
     /// attachment reset for a labelled Entry embedding it never touches.</para>
     /// </remarks>
-    private async Task RefuseLabeledUntargetedResetAsync(
+    private async Task RefuseLabeledMemoryResetAsync(
         MemoryResetScope scope,
         Guid? campaignId,
+        IReadOnlyList<MemoryResetSelection> selections,
         DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
-        if (campaignId is not null)
+        (SensitiveArtifactKind Kind, string Table)? store = scope switch
         {
-            return;
-        }
+            MemoryResetScope.Saga => (SensitiveArtifactKind.Saga, "saga_memories"),
 
-        SensitiveArtifactKind? kind = scope switch
-        {
-            MemoryResetScope.Saga => SensitiveArtifactKind.Saga,
-
-            MemoryResetScope.Lexicon => SensitiveArtifactKind.Lexicon,
+            MemoryResetScope.Lexicon => (SensitiveArtifactKind.Lexicon, "lexicon_entries"),
 
             _ => null,
         };
 
-        if (kind is not { } protectedKind)
+        if (store is not { } protectedStore)
         {
             return;
         }
 
-        Result unlabeled = await EnsureKindUnlabeledAsync(
-            protectedKind,
-            connection,
-            transaction,
-            cancellationToken).ConfigureAwait(false);
+        Result unlabeled;
+
+        if (campaignId is null)
+        {
+            unlabeled = await EnsureKindUnlabeledAsync(
+                protectedStore.Kind,
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            MemoryResetSelection? members = null;
+
+            foreach (MemoryResetSelection selection in selections)
+            {
+                if (string.Equals(selection.Table, protectedStore.Table, StringComparison.Ordinal))
+                {
+                    members = selection;
+                }
+            }
+
+            if (members is not { } targeted)
+            {
+                return;
+            }
+
+            Guid[] memberIds = await ReadResetMemberIdsInTransactionAsync(
+                connection,
+                transaction,
+                targeted,
+                cancellationToken).ConfigureAwait(false);
+
+            unlabeled = await labeledArtifactGuard
+                .EnsureAllUnlabeledAsync(
+                    protectedStore.Kind,
+                    memberIds,
+                    connection,
+                    transaction,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (unlabeled.IsFailure)
         {
             throw new RetentionCovenantLabelException(unlabeled.Error);
         }
+    }
+
+    /// <summary>
+    /// The identities of the store rows one Campaign-targeted reset selects, read inside its
+    /// transaction by the same predicate and bindings the delete uses.
+    /// </summary>
+    private static async Task<Guid[]> ReadResetMemberIdsInTransactionAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        MemoryResetSelection selection,
+        CancellationToken cancellationToken)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = selection.Predicate is null
+            ? $"SELECT \"Id\" FROM \"{selection.Table}\""
+            : $"SELECT \"Id\" FROM \"{selection.Table}\" WHERE {selection.Predicate}";
+
+        foreach ((string name, object value) in selection.Parameters)
+        {
+            Add(command, name, value);
+        }
+
+        List<Guid> ids = [];
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(
+            cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!reader.IsDBNull(0)
+                && Guid.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, out Guid id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return [.. ids];
     }
 
     /// <summary>

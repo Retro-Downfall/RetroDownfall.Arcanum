@@ -5,12 +5,15 @@ using Microsoft.EntityFrameworkCore;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -28,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 public sealed partial class DataRetentionServiceTests
 {
-
     private static readonly Guid ResetCampaignA = new("A0000000-0000-4000-8000-000000000A11");
 
     private static readonly Guid ResetCampaignB = new("B0000000-0000-4000-8000-000000000B22");
@@ -192,7 +194,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_LeavesEveryOtherCampaignsSagaMemoriesAlone()
     {
-
         RequireSqlCipher();
 
         string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
@@ -208,7 +209,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountSagaAsync(ownedByB));
 
         Assert.Equal(1, await CountSagaAsync(installationScoped));
-
     }
 
     /// <summary>
@@ -217,7 +217,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_RemovesOnlyThatCampaignsEmbeddings()
     {
-
         RequireSqlCipher();
 
         string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
@@ -229,7 +228,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountAsync("saga_memory_embeddings", "MemoryId", ownedByA));
 
         Assert.Equal(1, await CountAsync("saga_memory_embeddings", "MemoryId", ownedByB));
-
     }
 
     /// <summary>
@@ -239,7 +237,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_LeavesOtherLexiconTiersIntactAndIndexed()
     {
-
         RequireSqlCipher();
 
         await SeedScopedLexiconEntryAsync("config", ResetCampaignA.ToString());
@@ -260,7 +257,6 @@ public sealed partial class DataRetentionServiceTests
         // outright would leave those two entities present and unfindable, which no assertion about
         // lexicon_entries alone can see.
         Assert.Equal(2, await CountLexiconFtsMatchesAsync("config"));
-
     }
 
     /// <summary>
@@ -270,7 +266,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task PlanAsync_ResetMemory_ForACampaign_IsRefusedForStoresThatRecordNoOwner()
     {
-
         RequireSqlCipher();
 
         DataRetentionPlan plan = await CreateService().PlanAsync(
@@ -283,7 +278,6 @@ public sealed partial class DataRetentionServiceTests
         DataRetentionBlocker blocker = Assert.Single(plan.Blockers);
 
         Assert.Equal(ErrorCodes.Data.InvalidRequest, blocker.ReasonCode);
-
     }
 
     /// <summary>
@@ -299,7 +293,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task PlanAsync_ResetMemory_PinsTheCampaignInTheCandidateItPreviews()
     {
-
         RequireSqlCipher();
 
         _ = await SeedScopedSagaMemoryAsync(ResetCampaignA);
@@ -323,7 +316,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal([$"Saga:{ResetCampaignA:D}"], targeted.CandidateIds);
 
         Assert.Equal(["Saga"], untargeted.CandidateIds);
-
     }
 
     /// <summary>
@@ -359,7 +351,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_ClearsTheWatermarkOfEverySessionBoundToIt()
     {
-
         RequireSqlCipher();
 
         await SeedCampaignRowAsync(ResetCampaignA);
@@ -381,11 +372,9 @@ public sealed partial class DataRetentionServiceTests
 
         foreach (Guid session in new[] { boundByRepository, boundByInitializer, inAnotherCampaign })
         {
-
             await store.SetWatermarkAsync(session, extractedAt, CancellationToken.None);
 
             Assert.NotNull(await store.GetWatermarkAsync(session, CancellationToken.None));
-
         }
 
         // A reset with no memories to delete still has to clear these, so the Campaign carries one.
@@ -398,7 +387,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Null(await store.GetWatermarkAsync(boundByInitializer, CancellationToken.None));
 
         Assert.NotNull(await store.GetWatermarkAsync(inAnotherCampaign, CancellationToken.None));
-
     }
 
     /// <summary>
@@ -423,7 +411,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_RemovesOnlyThatCampaignsSuppressions()
     {
-
         RequireSqlCipher();
 
         await SeedCampaignRowAsync(ResetCampaignA);
@@ -476,12 +463,144 @@ public sealed partial class DataRetentionServiceTests
             await store.InsertAsync(
                 Guid.NewGuid().ToString(), retiredGlobally, DateTimeOffset.UtcNow, sessionId: null,
                 tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
-
     }
+
+    /// <summary>
+    /// A Campaign-targeted Saga reset that would take a labelled memory with it is refused, and leaves
+    /// the memory and its label exactly where they were.
+    /// </summary>
+    /// <remarks>
+    /// The label names a different historical Campaign from the one the memory is scoped to now, so a
+    /// guard that asked <c>artifact_sensitivity.CampaignId</c> rather than the set of memories the reset
+    /// deletes would answer "nothing labelled here" and let the delete orphan the label.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Campaign_scoped_saga_reset_refuses_when_a_member_is_labelled()
+    {
+        RequireSqlCipher();
+
+        string labelled = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        string unlabelled = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        await LabelArtifactAsync(SensitiveArtifactKind.Saga, Guid.Parse(labelled), ResetCampaignB);
+
+        Result<DataRetentionApplyResult> applied = await TryApplyCampaignResetAsync(MemoryResetScope.Saga, ResetCampaignA);
+
+        Assert.True(applied.IsFailure, "The Campaign reset deleted a labelled Saga memory through a raw delete.");
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, applied.Error.Code);
+
+        Assert.Equal(1, await CountSagaAsync(labelled));
+
+        Assert.Equal(1, await CountSagaAsync(unlabelled));
+
+        Assert.Equal(1, await CountAllAsync("artifact_sensitivity"));
+    }
+
+    /// <summary>
+    /// The Lexicon twin: a Campaign-targeted Lexicon reset over a labelled entry is refused and removes
+    /// nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task Campaign_scoped_lexicon_reset_refuses_when_a_member_is_labelled()
+    {
+        RequireSqlCipher();
+
+        Guid labelled = Guid.NewGuid();
+
+        await SeedScopedLexiconEntryAsync(labelled, "warded", ResetCampaignA.ToString());
+
+        await SeedScopedLexiconEntryAsync("unwarded", ResetCampaignA.ToString());
+
+        await LabelArtifactAsync(SensitiveArtifactKind.Lexicon, labelled, campaignId: null);
+
+        Result<DataRetentionApplyResult> applied = await TryApplyCampaignResetAsync(MemoryResetScope.Lexicon, ResetCampaignA);
+
+        Assert.True(applied.IsFailure, "The Campaign reset deleted a labelled Lexicon entry through a raw delete.");
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, applied.Error.Code);
+
+        Assert.Equal(2, await CountAsync("lexicon_entries", "ScopeCampaignId", ResetCampaignA.ToString()));
+
+        Assert.Equal(1, await CountAllAsync("artifact_sensitivity"));
+    }
+
+    /// <summary>
+    /// A label on a memory outside the targeted Campaign does not refuse the reset: the guard asks about
+    /// the rows the reset deletes, not about the whole kind.
+    /// </summary>
+    [SkippableFact]
+    public async Task Campaign_scoped_saga_reset_ignores_a_label_on_another_campaigns_memory()
+    {
+        RequireSqlCipher();
+
+        string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
+
+        string labelledInB = await SeedScopedSagaMemoryAsync(ResetCampaignB);
+
+        await LabelArtifactAsync(SensitiveArtifactKind.Saga, Guid.Parse(labelledInB), ResetCampaignA);
+
+        await ApplyCampaignResetAsync(MemoryResetScope.Saga, ResetCampaignA);
+
+        Assert.Equal(0, await CountSagaAsync(ownedByA));
+
+        Assert.Equal(1, await CountSagaAsync(labelledInB));
+
+        Assert.Equal(1, await CountAllAsync("artifact_sensitivity"));
+    }
+
+    /// <summary>One live label, written through the production ledger.</summary>
+    private async Task LabelArtifactAsync(SensitiveArtifactKind kind, Guid artifactId, Guid? campaignId)
+    {
+        ArtifactSensitivityLedger ledger = new(
+            new CovenantConnectionSource(_db!, FixtureOrdinaryConnectionFactory.For(_db!)));
+
+        byte[] digest = new byte[32];
+
+        digest[0] = 11;
+
+        Result<LabeledArtifactWriteReceipt> receipt = await ledger.LabelAsync(
+            new DerivedArtifactWrite(
+                kind,
+                artifactId,
+                sessionId: null,
+                campaignId,
+                turnId: null,
+                1,
+                new CovenantDigest(digest),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.Parse("5E6F7081-92A3-4B5C-8D9E-0F1A2B3C4D5E")])),
+            CancellationToken.None);
+
+        Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> TryApplyCampaignResetAsync(MemoryResetScope scope, Guid campaignId)
+    {
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, campaignId, scope);
+
+        DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
+
+        return await service.ApplyAsync(new DataRetentionApplyRequest(request, plan.PlanId), CancellationToken.None);
+    }
+
+    private Task SeedScopedLexiconEntryAsync(Guid id, string nameNormalized, string scopeCampaignId) =>
+        ExecuteAsync(
+            """
+            INSERT INTO lexicon_entries
+                (Id, Name, NameNormalized, ScopeCampaignId, Type, FactsJson, FactsText, UpdatedAt)
+            VALUES (@id, @name, @name, @scope, 'Concept', '[]', @name, @at)
+            """,
+            ("@id", id.ToString("N")),
+            ("@name", nameNormalized),
+            ("@scope", scopeCampaignId),
+            ("@at", OldTimestamp));
 
     private async Task ApplyCampaignResetAsync(MemoryResetScope scope, Guid campaignId)
     {
-
         IDataRetentionService service = CreateService();
 
         DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, campaignId, scope);
@@ -495,7 +614,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
         Assert.True(applied.Value.Reconciled);
-
     }
 
     /// <summary>
@@ -540,37 +658,27 @@ public sealed partial class DataRetentionServiceTests
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
-
                     Integrations = new IntegrationSettings
                     {
-
                         Embeddings = new EmbeddingIntegrationSettings
                         {
-
                             Dimensions = SagaEmbeddingDimensions,
-
                         },
-
                     },
-
                 }),
             MemoryErasureTestKeys.Isolated());
 
     /// <summary>A deterministic vector of the length the store is configured to accept.</summary>
     private static float[] SagaEmbedding()
     {
-
         float[] vector = new float[SagaEmbeddingDimensions];
 
         for (int i = 0; i < vector.Length; i++)
         {
-
             vector[i] = i / (float)SagaEmbeddingDimensions;
-
         }
 
         return vector;
-
     }
 
     /// <summary>
@@ -584,7 +692,6 @@ public sealed partial class DataRetentionServiceTests
     /// </remarks>
     private async Task<string> WriteAndRetireSagaMemoryAsync(Guid? sessionId, string content)
     {
-
         ISagaMemoryStore store = CreateSagaMemoryStore();
 
         string id = Guid.NewGuid().ToString();
@@ -610,14 +717,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(SagaCurationOutcomeKind.Applied, retired.Kind);
 
         return id;
-
     }
 
     private Task<string> SeedGlobalSagaMemoryAsync() => SeedSagaMemoryAsync(1, null);
 
     private async Task<string> SeedSagaMemoryAsync(int scopeKindCode, string? campaignId)
     {
-
         string id = Guid.NewGuid().ToString();
 
         await ExecuteAsync(
@@ -639,7 +744,6 @@ public sealed partial class DataRetentionServiceTests
             ("@id", id));
 
         return id;
-
     }
 
     private Task SeedScopedLexiconEntryAsync(string nameNormalized, string scopeCampaignId) =>
@@ -659,7 +763,6 @@ public sealed partial class DataRetentionServiceTests
 
     private async Task<int> CountLexiconFtsMatchesAsync(string term)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -671,7 +774,5 @@ public sealed partial class DataRetentionServiceTests
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
-
     }
-
 }
