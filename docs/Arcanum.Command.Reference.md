@@ -1181,7 +1181,7 @@ Inspects and changes `arcanum.json` through descriptor-backed parsing and valida
 | `arcanum config get <key>` | Show one value selected by its dotted descriptor path. | None beyond global or inherited family options. |
 | `arcanum config set <key> [<value>]` | Parse, validate, and atomically set one dotted descriptor path; sensitive values use redirected stdin or a hidden prompt. Under `-p/--print` or `--output-format json` the hidden prompt is skipped and a sensitive value must arrive on redirected stdin, otherwise the command returns `2`. | None beyond global or inherited family options. |
 | `arcanum config validate` | Validate the complete effective configuration without writing it. | None beyond global or inherited family options. |
-| `arcanum config edit` | Edit an owner-only temporary copy, validate it, and atomically apply it. | None beyond global or inherited family options. |
+| `arcanum config edit` | Edit an owner-only temporary copy, validate it, and atomically apply it. Ctrl+C ends the editor too, rather than leaving it running against the temporary copy, and a failure to remove that copy afterwards never changes the exit status of an edit that was applied. | None beyond global or inherited family options. |
 | `arcanum config open` | Launch Compendium for visual configuration editing. | None beyond global or inherited family options. |
 
 ### `arcanum watch`

@@ -20,12 +20,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ConfigCommandTests
 {
-
     [Fact]
 
     public void Editor_command_preserves_configured_arguments_without_using_a_shell()
     {
-
         ProcessStartInfo startInfo = ConfigEditor.CreateStartInfo(
             "code --wait",
             "/tmp/arcanum.json");
@@ -35,14 +33,12 @@ public sealed class ConfigCommandTests
         Assert.False(startInfo.UseShellExecute);
 
         Assert.Equal(["--wait", "/tmp/arcanum.json"], startInfo.ArgumentList);
-
     }
 
     [Fact]
 
     public void Help_exposes_complete_config_command_family()
     {
-
         ServiceCollection services = Services();
 
         CliTestResult result = CliTestHarness.Run(services, "config", "--help");
@@ -62,14 +58,12 @@ public sealed class ConfigCommandTests
         Assert.Contains("edit", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("open", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Path_prints_exact_configuration_path()
     {
-
         ServiceCollection services = Services();
 
         CliTestResult result = CliTestHarness.Run(services, "config", "path", "--plain");
@@ -77,30 +71,24 @@ public sealed class ConfigCommandTests
         Assert.Equal(0, result.ExitCode);
 
         Assert.EndsWith("arcanum.json", result.Output.Trim(), StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Show_redacts_sensitive_values_and_identifies_local_bootstrap()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings
             {
-
                 Providers =
                 [
                     new ProviderSettings
                     {
-
                         Name = "openai",
 
                         Endpoint = "https://secret-endpoint.example/v1",
-
                     },
                 ],
-
             },
             ConfigurationAccessMode.LocalBootstrap);
 
@@ -115,14 +103,12 @@ public sealed class ConfigCommandTests
         Assert.DoesNotContain("secret-endpoint", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("local configuration bootstrap", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Set_parses_validates_writes_and_displays_effective_value()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings(),
             ConfigurationAccessMode.HostApi);
@@ -144,7 +130,6 @@ public sealed class ConfigCommandTests
         Assert.Equal(1, fake.ValidateCount);
 
         Assert.Contains("host.port = 6123", result.Output, StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -161,7 +146,6 @@ public sealed class ConfigCommandTests
         string key,
         string value)
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings(),
             ConfigurationAccessMode.HostApi);
@@ -187,14 +171,12 @@ public sealed class ConfigCommandTests
         Assert.Contains("was removed", result.Error, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("Remove this Ward approval setting", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Set_rejects_removed_ward_approval_path_without_a_value_before_value_validation()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings(),
             ConfigurationAccessMode.HostApi);
@@ -221,14 +203,12 @@ public sealed class ConfigCommandTests
         Assert.Contains("Remove this Ward approval setting", result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("A configuration value is required", result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Set_rejects_invalid_sensitive_shaped_path_before_sensitive_argv_validation()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings(),
             ConfigurationAccessMode.HostApi);
@@ -260,14 +240,12 @@ public sealed class ConfigCommandTests
         Assert.DoesNotContain(secret, result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("must not be passed", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Set_rejects_invalid_sensitive_shaped_path_before_sensitive_value_input()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings(),
             ConfigurationAccessMode.HostApi);
@@ -294,30 +272,24 @@ public sealed class ConfigCommandTests
         Assert.DoesNotContain("A configuration value is required", result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Enter the value", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Set_rejects_sensitive_argv_without_echoing_value()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings
             {
-
                 Providers =
                 [
                     new ProviderSettings
                     {
-
                         Name = "openai",
 
                         Endpoint = "https://old.example/v1",
-
                     },
                 ],
-
             },
             ConfigurationAccessMode.HostApi);
 
@@ -342,30 +314,24 @@ public sealed class ConfigCommandTests
         Assert.DoesNotContain(secret, result.Error, StringComparison.Ordinal);
 
         Assert.Contains("must not be passed", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Set_reads_sensitive_value_from_stdin_and_only_displays_mask()
     {
-
         FakeConfigurationCommandService fake = new(
             new ArcanumSettings
             {
-
                 Providers =
                 [
                     new ProviderSettings
                     {
-
                         Name = "openai",
 
                         Endpoint = "https://old.example/v1",
-
                     },
                 ],
-
             },
             ConfigurationAccessMode.HostApi);
 
@@ -387,14 +353,12 @@ public sealed class ConfigCommandTests
         Assert.DoesNotContain(secret, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain(secret, result.Error, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void Edit_preserves_masks_for_host_to_merge_against_authoritative_secrets()
     {
-
         ArcanumSettings masked = SettingsWithEndpoint("***");
 
         ConfigurationCommandSnapshot snapshot = new(
@@ -409,14 +373,12 @@ public sealed class ConfigCommandTests
         Assert.True(result.IsSuccess, result.Error);
 
         Assert.Equal("***", result.Settings!.Providers[0].Endpoint);
-
     }
 
     [Fact]
 
     public void Edit_restores_local_masks_before_validation_and_write()
     {
-
         ConfigurationCommandSnapshot snapshot = new(
             SettingsWithEndpoint("https://local.example/v1"),
             ConfigurationAccessMode.LocalBootstrap,
@@ -429,31 +391,186 @@ public sealed class ConfigCommandTests
         Assert.True(result.IsSuccess, result.Error);
 
         Assert.Equal("https://local.example/v1", result.Settings!.Providers[0].Endpoint);
-
     }
 
     private static ArcanumSettings SettingsWithEndpoint(string endpoint) =>
         new()
         {
-
             Providers =
             [
                 new ProviderSettings
                 {
-
                     Name = "openai",
 
                     Endpoint = endpoint,
-
                 },
             ],
-
         };
+
+    /// <summary>
+    /// R-339: removing the temporary file is housekeeping after the edit was applied. A refusal to delete
+    /// it (permissions, a lock) is not a reason to turn an applied edit into a failing exit status.
+    /// </summary>
+    [Fact]
+
+    public async Task Edit_cleanup_failure_does_not_change_a_successful_exit()
+    {
+        FakeConfigurationCommandService service = new(
+            SettingsWithEndpoint("https://local.example/v1"),
+            ConfigurationAccessMode.LocalBootstrap);
+
+        using ServiceProvider provider = Services(service).BuildServiceProvider();
+
+        ConfigCommands commands = provider.GetRequiredService<ConfigCommands>();
+
+        string? editedPath = null;
+
+        // An editor that changes nothing: the document it was handed is already valid.
+        commands.RunEditorAsync = (path, _) =>
+        {
+            editedPath = path;
+
+            return Task.FromResult(Result.Success());
+        };
+
+        commands.DeleteTemporaryFile = _ => throw new UnauthorizedAccessException("The file is locked.");
+
+        int exitCode = await commands.Edit(CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.Success, exitCode);
+
+        Assert.NotNull(service.Written);
+
+        // The test's own double refused to delete it, so remove it here.
+        if (editedPath is not null && File.Exists(editedPath))
+        {
+            File.Delete(editedPath);
+        }
+    }
+
+    /// <summary>
+    /// R-339: cancelling while the editor is open must end the editor too, not leave it running against a
+    /// temporary file the command is about to delete.
+    /// </summary>
+    [SkippableFact]
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+
+    public async Task Cancelling_the_edit_terminates_the_spawned_editor()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The fake editor is a /bin/sh script.");
+
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-editor-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string pidFile = Path.Combine(directory, "editor.pid");
+
+        string script = Path.Combine(directory, "editor.sh");
+
+        await File.WriteAllTextAsync(
+            script,
+            $"#!/bin/sh\necho $$ > \"{pidFile}\"\nexec sleep 60\n");
+
+        File.SetUnixFileMode(
+            script,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        int? editorPid = null;
+
+        try
+        {
+            using CancellationTokenSource cancellation = new();
+
+            Task<Result> run = ConfigEditor.RunAsync(
+                script,
+                Path.Combine(directory, "arcanum.json"),
+                cancellation.Token);
+
+            DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+
+            while (!File.Exists(pidFile) && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(25);
+            }
+
+            Assert.True(File.Exists(pidFile), "The fake editor never started.");
+
+            // The script writes its pid and then execs, so wait until the file is complete.
+            string pidText = string.Empty;
+
+            while (string.IsNullOrWhiteSpace(pidText) && DateTime.UtcNow < deadline)
+            {
+                pidText = (await File.ReadAllTextAsync(pidFile)).Trim();
+
+                await Task.Delay(25);
+            }
+
+            editorPid = int.Parse(pidText, System.Globalization.CultureInfo.InvariantCulture);
+
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+
+            Assert.True(
+                await ExitedWithinAsync(editorPid.Value, TimeSpan.FromSeconds(10)),
+                "The editor was still running after the edit was cancelled.");
+        }
+        finally
+        {
+            if (editorPid is int pid)
+            {
+                try
+                {
+                    using System.Diagnostics.Process leftover = System.Diagnostics.Process.GetProcessById(pid);
+
+                    leftover.Kill(entireProcessTree: true);
+                }
+                catch (ArgumentException)
+                {
+                    // Already gone: the behaviour under test.
+                }
+                catch (InvalidOperationException)
+                {
+                    // Exited between the lookup and the kill.
+                }
+            }
+
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task<bool> ExitedWithinAsync(int pid, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(pid);
+
+                if (process.HasExited)
+                {
+                    return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+
+            await Task.Delay(50);
+        }
+
+        return false;
+    }
 
     private static ServiceCollection Services(
         IConfigurationCommandService? configurationService = null)
     {
-
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -462,20 +579,16 @@ public sealed class ConfigCommandTests
 
         if (configurationService is not null)
         {
-
             services.AddSingleton(configurationService);
-
         }
 
         return services;
-
     }
 
     private sealed class FakeConfigurationCommandService(
         ArcanumSettings settings,
         ConfigurationAccessMode accessMode) : IConfigurationCommandService
     {
-
         public string ConfigurationPath => "/tmp/arcanum.json";
 
         public ArcanumSettings? Written { get; private set; }
@@ -496,11 +609,9 @@ public sealed class ConfigCommandTests
             ArcanumSettings candidate,
             CancellationToken cancellationToken)
         {
-
             ValidateCount++;
 
             return Task.FromResult(Result.Success());
-
         }
 
         public async Task<Result> WriteAsync(
@@ -508,7 +619,6 @@ public sealed class ConfigCommandTests
             ArcanumSettings candidate,
             CancellationToken cancellationToken)
         {
-
             Result validation = await ValidateAsync(
                 snapshot,
                 candidate,
@@ -516,15 +626,10 @@ public sealed class ConfigCommandTests
 
             if (validation.IsSuccess)
             {
-
                 Written = candidate;
-
             }
 
             return validation;
-
         }
-
     }
-
 }
