@@ -77,7 +77,9 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         Table table = new();
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Id")));
+        // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
+        // `saga delete`, and a fragment of it is not something any verb accepts.
+        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Id"))).NoWrap());
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Content")));
 
@@ -95,8 +97,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         foreach (SagaMemoryDto memory in memories)
         {
-            string shortId = memory.Id.Length > 8 ? memory.Id[..8] : memory.Id;
-
             string preview = memory.Content.Length > ContentPreviewChars
                 ? string.Concat(memory.Content.AsSpan(0, Utf8Truncation.SafeCharSliceLength(memory.Content, ContentPreviewChars)), "...")
                 : memory.Content;
@@ -104,7 +104,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             string sessionText = memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-";
 
             table.AddRow(
-                new Markup(themePalette.MutedMarkup(Markup.Escape(shortId))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Id))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(preview))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Source ?? "-"))),

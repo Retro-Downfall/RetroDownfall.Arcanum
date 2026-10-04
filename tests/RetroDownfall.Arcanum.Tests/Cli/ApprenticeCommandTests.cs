@@ -166,9 +166,11 @@ public sealed class ApprenticeCommandTests
     {
         DateTimeOffset firstUpdated = new(2026, 7, 2, 12, 0, 0, TimeSpan.Zero);
 
-        ApprenticeSummaryDto first = new(SampleId, null, "Task", "First page goal", "Idle", 0, 0, firstUpdated, firstUpdated);
+        ApprenticeSummaryDto first = new(SampleId, null, "Task", "firstgoal", "Idle", 0, 0, firstUpdated, firstUpdated);
 
-        ApprenticeSummaryDto second = new(Guid.NewGuid(), null, "Task", "Second page goal", "Idle", 0, 0, firstUpdated.AddDays(-1), firstUpdated.AddDays(-1));
+        Guid secondId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+
+        ApprenticeSummaryDto second = new(secondId, null, "Task", "secondgoal", "Idle", 0, 0, firstUpdated.AddDays(-1), firstUpdated.AddDays(-1));
 
         RecordingHandler handler = new(request => CreateResponse(
             new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(
@@ -187,9 +189,9 @@ public sealed class ApprenticeCommandTests
 
         Assert.Contains("beforeUpdatedAt=", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
 
-        Assert.Contains("First page goal", result.Output, StringComparison.Ordinal);
+        Assert.Contains(SampleId.ToString("D"), result.Output, StringComparison.Ordinal);
 
-        Assert.Contains("Second page goal", result.Output, StringComparison.Ordinal);
+        Assert.Contains(secondId.ToString("D"), result.Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -229,6 +231,44 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("--campaign-id", result.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The list is where an operator reads the identifier to hand to <c>show</c>, <c>cancel</c> or
+    /// <c>delete</c>, so what it prints must be something those verbs accept. An eight-character
+    /// fragment of the identifier is none of an exact ID, a name or a name prefix.
+    /// </summary>
+    [Fact]
+    public void List_prints_an_identifier_that_show_accepts()
+    {
+        ApprenticeSummaryDto summary = new(SampleId, null, "Task", "Do the thing", "Idle", 0, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler listHandler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(new ListPageResult<ApprenticeSummaryDto>([summary], false), true, null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult list = RunCommand(listHandler, ["apprentice", "list"]);
+
+        Assert.Equal(0, list.ExitCode);
+
+        string printed = System.Text.RegularExpressions.Regex
+            .Match(list.Output, "[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+            .Value;
+
+        Assert.Equal(SampleId.ToString("D"), printed, ignoreCase: true);
+
+        ApprenticeDetailDto detail = new(
+            SampleId, null, null, "Do the thing", "Do the thing", [], 0, "Idle", null, "/tmp/ws", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler showHandler = new(_ => CreateResponse(
+            new ApiResponse<ApprenticeDetailDto>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult show = RunCommand(showHandler, ["apprentice", "show", printed]);
+
+        Assert.Equal(0, show.ExitCode);
+
+        Assert.Equal($"/api/apprentices/{SampleId:D}", Assert.Single(showHandler.Requests).RequestUri!.AbsolutePath);
     }
 
     private static CliTestResult RunCommand(

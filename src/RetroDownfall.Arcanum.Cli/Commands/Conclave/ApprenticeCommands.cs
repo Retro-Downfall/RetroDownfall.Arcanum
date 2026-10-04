@@ -161,7 +161,9 @@ public sealed class ApprenticeCommands(
 
         Table table = new();
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("ID")));
+        // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
+        // show, cancel or delete, and a fragment of it is not an ID, a name or a name prefix.
+        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("ID"))).NoWrap());
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Goal")));
 
@@ -173,10 +175,8 @@ public sealed class ApprenticeCommands(
 
         foreach (ApprenticeSummaryDto apprentice in apprentices)
         {
-            string idShort = apprentice.Id.ToString("N")[..8].ToUpperInvariant();
-
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(idShort))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(apprentice.Id.ToString("D")))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(apprentice.Goal))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.Status))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.CampaignId?.ToString("D") ?? "-"))),

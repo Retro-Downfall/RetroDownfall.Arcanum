@@ -172,6 +172,29 @@ public sealed class SagaCommandTests
         Assert.DoesNotContain("--offset", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The listing is where an operator reads the identifier to hand to <c>saga delete</c>, so it
+    /// prints the whole identifier rather than a fragment no verb accepts.
+    /// </summary>
+    [Fact]
+    public void List_prints_the_full_memory_identifier()
+    {
+        const string FullId = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>(
+                [new SagaMemoryDto(FullId, "payload1", DateTimeOffset.UnixEpoch, null, null, null)],
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(FullId, result.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Saga_list_rejects_invalid_session_guid()
     {
