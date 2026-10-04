@@ -4,14 +4,13 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 
 /// <summary>
 /// Direct <see cref="ProcessStartInfo"/> spawn — no shell, no reflection, no P/Invoke.
-/// Perfect session/process-group detachment is a follow-up.
+/// The child is deliberately not detached: it shares the launching terminal's session and process
+/// group, so Ctrl+C or closing that terminal ends the host (DESIGN 4.4.1, host lifetime).
 /// </summary>
 internal sealed class ServeProcessLauncher : IServeProcessLauncher
 {
-
     public Task<StartedProcess> StartServeAsync(ServeProcessStartOptions options, CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(options);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -40,7 +39,5 @@ internal sealed class ServeProcessLauncher : IServeProcessLauncher
             ?? throw new InvalidOperationException($"Failed to start process '{options.ExecutablePath}'.");
 
         return Task.FromResult(new StartedProcess(process.Id));
-
     }
-
 }
