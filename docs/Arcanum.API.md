@@ -295,6 +295,11 @@ The established §8 contract numbers are retained in this extracted reference so
 | `GET /api/sessions/{id}/stream` | SSE entry frames (`text/event-stream`) | DESIGN §11.16 |
 | `GET /api/apprentices/{id}/chronicle` | SSE Chronicle frames (`text/event-stream`) | DESIGN §5.7 |
 | `GET /api/openapi/v1.json` / `GET /api/scalar` | OpenAPI document and Scalar UI (not application `ApiResponse`). The OpenAPI document is always mapped; the Scalar UI is mapped only when `Arcanum:Features:ScalarUi` is true (default false) | DESIGN §11.5 |
+| `GET /api/sessions/{id}/attachments/{attachmentId}/content` | The stored attachment snapshot's raw bytes under its stored MIME type (`application/octet-stream` when none), as a download with `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; no range processing | §8.18.1 |
+| `GET /api/presence` | Bodyless: **204** with `X-Arcanum-Presence-Version`, `-Authority`, `-Proof` and `-Capability` response headers, or an empty **400** / **404** / **503** | §1 table |
+| `GET /metrics` | Prometheus text exposition (`text/plain; version=0.0.4`); outside `/api`, and a **404** when metrics are disabled | §8.22 |
+| `GET /api/conclave/a2a/agent-card` | The A2A SDK's `AgentCard` JSON, not an envelope. Mapped only when `Arcanum:Features:Conclave` and `Arcanum:Features:A2AServer` are true | §1 table / DESIGN §5.7.1 |
+| `POST /api/conclave/a2a` | A2A JSON-RPC 2.0 over POST, with SSE (`text/event-stream`) for the streaming methods. Same feature gates; the mount point follows `Arcanum:Integrations:A2A:ServerPath` | §1 table / DESIGN §5.7.1 |
 | `POST /v1/chat/completions` | OpenAI-shaped JSON or `text/event-stream` | §1 table |
 | `GET /v1/models` | OpenAI-shaped JSON list | §1 table |
 
