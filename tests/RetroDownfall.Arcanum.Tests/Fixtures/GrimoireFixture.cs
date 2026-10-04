@@ -197,7 +197,7 @@ public sealed class GrimoireFixture : IDisposable
                     if (AbandonableDirectoryName.IsMatch(name)
                         && Directory.GetLastWriteTimeUtc(entry) < cutoff)
                     {
-                        Directory.Delete(entry, recursive: true);
+                        TestDirectoryCleanup.DeleteTree(entry);
 
                         removed++;
                     }

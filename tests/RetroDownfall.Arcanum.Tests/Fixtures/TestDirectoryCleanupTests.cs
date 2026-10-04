@@ -1,7 +1,9 @@
+using System.Runtime.Versioning;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
+[Collection("ProcessEnvironment")]
 public sealed class TestDirectoryCleanupTests
 {
     [Fact]
@@ -64,6 +66,39 @@ public sealed class TestDirectoryCleanupTests
         finally
         {
             Directory.Delete(path, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    [UnsupportedOSPlatform("windows")]
+    public void DeleteTree_removes_a_tree_a_killed_run_left_with_a_read_only_directory()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX permission bits do not apply on Windows.");
+
+        string root = Path.Combine(Path.GetTempPath(), $"arcanum-cleanup-{Guid.NewGuid():N}");
+
+        string readOnly = Path.Combine(root, "restore", "extract");
+
+        Directory.CreateDirectory(readOnly);
+
+        File.WriteAllText(Path.Combine(readOnly, "arcanum.db"), "left behind");
+
+        File.SetUnixFileMode(readOnly, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        try
+        {
+            TestDirectoryCleanup.DeleteTree(root);
+
+            Assert.False(Directory.Exists(root));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                File.SetUnixFileMode(readOnly, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+                Directory.Delete(root, recursive: true);
+            }
         }
     }
 

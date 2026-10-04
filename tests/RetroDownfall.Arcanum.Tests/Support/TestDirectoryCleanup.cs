@@ -1,3 +1,5 @@
+using System.Runtime.Versioning;
+
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static class TestDirectoryCleanup
@@ -21,7 +23,7 @@ internal static class TestDirectoryCleanup
                 return true;
             }
 
-            (delete ?? DeleteRecursively)(path);
+            (delete ?? DeleteTree)(path);
 
             return true;
         }
@@ -34,6 +36,42 @@ internal static class TestDirectoryCleanup
         }
     }
 
-    private static void DeleteRecursively(string path) =>
-        Directory.Delete(path, recursive: true);
+    /// <summary>
+    /// Deletes a directory tree, first restoring owner access when a test left part of it read-only. A
+    /// run killed between making a directory read-only and restoring it (the failure-injection shape
+    /// several suites use) would otherwise leave a tree no later run could ever delete.
+    /// </summary>
+    internal static void DeleteTree(string path)
+    {
+        try
+        {
+            Directory.Delete(path, recursive: true);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                throw;
+            }
+
+            RestoreOwnerAccess(path);
+
+            Directory.Delete(path, recursive: true);
+        }
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private static void RestoreOwnerAccess(string path)
+    {
+        const UnixFileMode OwnerAll = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        EnumerationOptions options = new() { RecurseSubdirectories = true, AttributesToSkip = 0, IgnoreInaccessible = true };
+
+        File.SetUnixFileMode(path, File.GetUnixFileMode(path) | OwnerAll);
+
+        foreach (string directory in Directory.EnumerateDirectories(path, "*", options))
+        {
+            File.SetUnixFileMode(directory, File.GetUnixFileMode(directory) | OwnerAll);
+        }
+    }
 }
