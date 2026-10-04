@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -17,7 +18,6 @@ internal sealed record WorkspaceCheckRuntimeRequest(
 
 internal interface IWorkspaceCheckRuntime
 {
-
     WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot);
 
     Task<WorkspaceCheckToolResultEnvelope> RunAsync(
@@ -27,7 +27,6 @@ internal interface IWorkspaceCheckRuntime
 
 internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 {
-
     private readonly WorkspaceCheckSettings _settings;
 
     private readonly WorkspaceCheckProfileCatalog _profiles;
@@ -44,6 +43,54 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
     private readonly string _settingsFingerprint;
 
+    /// <summary>
+    /// Floor of the code-owned <c>workspace_check</c> memory ceiling. A <c>dotnet build</c> /
+    /// <c>dotnet test</c> tree (CLI host, MSBuild nodes, the VBCSCompiler server, test hosts) is summed
+    /// against one per-invocation ceiling, and the 512 MB Sanctum default that suits
+    /// <c>execute_command</c> and <c>run_spell_script</c> would kill ordinary builds.
+    /// </summary>
+    internal const int MemoryCeilingFloorMb = 4096;
+
+    /// <summary>
+    /// Hard maximum of the <c>workspace_check</c> memory ceiling, equal to the largest effective
+    /// Sanctum ceiling (<see cref="ResourceLimits.MaxProcessMemoryMb"/> is clamped to 8192).
+    /// </summary>
+    internal const int MemoryCeilingMaxMb = 8192;
+
+    /// <summary>
+    /// The limits handed to the runner for <c>workspace_check</c>: the campaign's limits with the
+    /// memory ceiling raised to <c>max(effective campaign ceiling, 4096 MB)</c>, capped at 8192 MB.
+    /// Both memory keys are set so <see cref="ProcessResourceLimiter.EffectiveMemoryLimitMb"/>
+    /// resolves to exactly that value. No configuration key controls it.
+    /// </summary>
+    internal static ResourceLimits ApplyMemoryCeiling(ResourceLimits campaignLimits)
+    {
+        ArgumentNullException.ThrowIfNull(campaignLimits);
+
+        int ceilingMb = Math.Min(
+            Math.Max(
+                ProcessResourceLimiter.EffectiveMemoryLimitMb(campaignLimits),
+                MemoryCeilingFloorMb),
+            MemoryCeilingMaxMb);
+
+        return campaignLimits with
+        {
+            MaxMemoryMb = ceilingMb,
+            MaxProcessMemoryMb = ceilingMb,
+        };
+    }
+
+    internal static string DescribeExceededLimit(
+        ResourceLimitKind? resource,
+        ResourceLimits runLimits) => resource switch
+        {
+            ResourceLimitKind.Memory =>
+                $"The workspace check exceeded its {ProcessResourceLimiter.EffectiveMemoryLimitMb(runLimits)} MB memory limit (summed across the build/test process tree) and was terminated.",
+            ResourceLimitKind.Cpu =>
+                $"The workspace check exceeded its {runLimits.MaxCpuSeconds}s CPU time limit and was terminated.",
+            _ => "The workspace check exceeded an OS-enforced resource limit.",
+        };
+
     internal WorkspaceCheckRuntime(
         WorkspaceCheckSettings settings,
         IServiceScopeFactory scopeFactory,
@@ -53,7 +100,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         TimeSpan? processTimeoutOverride = null,
         Func<WorkspaceCheckSettings>? currentSettingsProvider = null)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(scopeFactory);
 
@@ -73,7 +119,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
     public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot)
     {
-
         if (_currentSettingsProvider is not null
             && !string.Equals(
                 _settingsFingerprint,
@@ -82,7 +127,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                         _currentSettingsProvider()),
                 StringComparison.Ordinal))
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -102,7 +146,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         if (!platformStatus.IsEligible)
         {
-
             return platformStatus;
         }
 
@@ -119,7 +162,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         if (!baseline.IsEligible || executable.Snapshot is null)
         {
-
             return baseline with
             {
                 Reason = executable.Success
@@ -148,7 +190,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         WorkspaceCheckRuntimeRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -157,7 +198,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         if (!status.IsEligible)
         {
-
             return Outcome(
                 "unavailable",
                 "capability_unavailable",
@@ -175,7 +215,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         if (!profile.Success || profile.Profile is null)
         {
-
             return Outcome(
                 "invalid_request",
                 profile.Code,
@@ -186,7 +225,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         string? workspaceTarget;
 
         {
-
             WorkspaceCheckTargetResolution target =
                 string.IsNullOrWhiteSpace(
                     profile.Profile.TargetRelativePath)
@@ -198,7 +236,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
             if (!target.Success)
             {
-
                 return Outcome(
                     "invalid_request",
                     target.Code,
@@ -229,7 +266,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         if (!executable.Success || executable.Snapshot is null)
         {
-
             return Outcome(
                 "unavailable",
                 executable.Code,
@@ -308,13 +344,11 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         try
         {
-
             if (directories.SandboxWritableRoots.Any(root =>
                     WorkspaceRootPath.IsWithinOrEqual(
                         root,
                         request.WorkspaceRoot)))
             {
-
                 return Outcome(
                     "unavailable",
                     "output_root_unavailable",
@@ -334,6 +368,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     request.WorkspaceRoot,
                     preflightToken)
                 .ConfigureAwait(false);
+            ResourceLimits runLimits = ApplyMemoryCeiling(limits);
             WorkspaceCheckRestoreSeedOptions seedOptions =
                 WorkspaceCheckRestoreSeedOptions.Default with
                 {
@@ -352,7 +387,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
             if (!seeded.Success)
             {
-
                 return Outcome(
                     seeded.Code == "seed_cap_exceeded"
                         ? "failed"
@@ -424,7 +458,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 || !sdkRevalidation.Success
                 || !packageRevalidation.Success)
             {
-
                 return Outcome(
                     "unavailable",
                     executableRevalidation.Code
@@ -446,14 +479,13 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     ArcanumSettingClamps.WorkspaceCheckMaxOutputBytes(
                         _settings.MaxOutputBytes),
                     processTimeout,
-                    limits,
+                    runLimits,
                     resourceLimiter,
                     cancellationToken,
                     sandbox,
                     _logger,
                     preStartValidation: () =>
                     {
-
                         WorkspaceCheckExecutableRevalidation executableNow =
                             _executablePolicy.Revalidate(
                                 executable.Snapshot,
@@ -500,7 +532,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     or CappedChildProcessOutcome.CanceledBeforeStart
                     or CappedChildProcessOutcome.CanceledWhileReadingOutput)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
                 throw new OperationCanceledException(cancellationToken);
             }
@@ -511,18 +542,16 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 profile.Profile.Parser,
                 request.WorkspaceRoot,
                 directories.TestResultsSource!,
-                run);
+                run,
+                runLimits);
         }
         finally
         {
-
             if (directories is not null)
             {
-
                 await TryDeleteRunDirectoriesAsync(
                     directories).ConfigureAwait(false);
             }
-
         }
     }
 
@@ -532,7 +561,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         WorkspaceCheckDiagnosticParserKind parser,
         string workspaceRoot,
         WorkspaceCheckTrxSource testResultsSource,
-        CappedChildProcessRunResult run)
+        CappedChildProcessRunResult run,
+        ResourceLimits runLimits)
     {
         WorkspaceCheckDiagnosticParseResult parsed =
             ParseDiagnostics(
@@ -585,8 +615,9 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 {
                     Status = "failed",
                     Code = "resource_limit_exceeded",
-                    Message =
-                        "The workspace check exceeded an OS-enforced resource limit.",
+                    Message = DescribeExceededLimit(
+                        run.ExceededResource,
+                        runLimits),
                     ProfileId = profileId,
                     SelectedSdkVersion = sdkVersion,
                     Diagnostics = parsed.Diagnostics,
@@ -614,7 +645,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     Status = "unavailable",
                     Code = "resource_limit_unavailable",
                     Message =
-                        "OS resource limits could not be applied before process start.",
+                        "OS resource limits could not be applied or monitored, so the check did not run to completion (either it never started or it was killed immediately after start).",
                     ProfileId = profileId,
                     SelectedSdkVersion = sdkVersion,
                     Diagnostics = parsed.Diagnostics,
@@ -841,11 +872,9 @@ internal sealed record WorkspaceCheckPackageRootRevalidation(
 
 internal static class WorkspaceCheckPackageRootPolicy
 {
-
     internal static WorkspaceCheckPackageRootResolution Resolve(
         string workspaceRoot)
     {
-
         string userProfile = System.Environment.GetFolderPath(
             System.Environment.SpecialFolder.UserProfile);
         string configured = Path.Combine(
@@ -855,14 +884,12 @@ internal static class WorkspaceCheckPackageRootPolicy
 
         try
         {
-
             string? canonical = CanonicalizeDirectory(
                 configured,
                 resolutionDepth: 0);
 
             if (canonical is null)
             {
-
                 return Failure(
                     "restore_required",
                     "The canonical pre-existing global NuGet package root is unavailable.");
@@ -875,7 +902,6 @@ internal static class WorkspaceCheckPackageRootPolicy
                     canonical,
                     out FileHandleMetadata metadata))
             {
-
                 return Failure(
                     "untrusted_package_cache",
                     "The global NuGet package root is inside the workspace or its identity is unavailable.");
@@ -895,7 +921,6 @@ internal static class WorkspaceCheckPackageRootPolicy
                 or ArgumentException
                 or NotSupportedException)
         {
-
             return Failure(
                 "restore_required",
                 "The canonical pre-existing global NuGet package root could not be resolved.");
@@ -905,7 +930,6 @@ internal static class WorkspaceCheckPackageRootPolicy
     internal static WorkspaceCheckPackageRootRevalidation Revalidate(
         WorkspaceCheckPackageRootSnapshot snapshot)
     {
-
         if (!Directory.Exists(snapshot.CanonicalPath)
             || !FileHandleIdentityInterop.TryGetPathMetadata(
                 snapshot.CanonicalPath,
@@ -914,7 +938,6 @@ internal static class WorkspaceCheckPackageRootPolicy
                 snapshot.Identity,
                 metadata.Identity))
         {
-
             return new WorkspaceCheckPackageRootRevalidation(
                 false,
                 "package_cache_changed",
@@ -936,10 +959,8 @@ internal static class WorkspaceCheckPackageRootPolicy
         string path,
         int resolutionDepth)
     {
-
         if (resolutionDepth > 40)
         {
-
             return null;
         }
 
@@ -948,7 +969,6 @@ internal static class WorkspaceCheckPackageRootPolicy
 
         if (string.IsNullOrEmpty(root))
         {
-
             return null;
         }
 
@@ -961,13 +981,11 @@ internal static class WorkspaceCheckPackageRootPolicy
                      ],
                      StringSplitOptions.RemoveEmptyEntries))
         {
-
             string candidate = Path.Combine(current, component);
             DirectoryInfo directory = new(candidate);
 
             if (!directory.Exists)
             {
-
                 return null;
             }
 
@@ -982,13 +1000,10 @@ internal static class WorkspaceCheckPackageRootPolicy
 
             if (current.Length == 0)
             {
-
                 return null;
             }
-
         }
 
         return Path.TrimEndingDirectorySeparator(current);
     }
-
 }

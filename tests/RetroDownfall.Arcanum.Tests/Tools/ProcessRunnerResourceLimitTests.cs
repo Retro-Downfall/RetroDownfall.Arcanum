@@ -167,7 +167,7 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
     /// child that is never killed sleeps for 30 seconds and completes, failing the assertions.
     /// </summary>
     [SkippableFact]
-    public async Task MacOs_MemoryLimit_Is_Either_Enforced_Or_Reported_Unenforced()
+    public async Task MacOs_MemoryLimit_Is_Enforced_By_Footprint_Monitor()
     {
         Skip.IfNot(OperatingSystem.IsMacOS(), "The RLIMIT_AS gap and its footprint monitor are macOS behavior.");
 
