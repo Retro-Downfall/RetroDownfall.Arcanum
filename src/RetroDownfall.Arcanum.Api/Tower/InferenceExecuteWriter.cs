@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class InferenceExecuteWriter
 {
-
     /// <summary>
     /// Client-visible NDJSON Error text for caught streaming exceptions (not intentional
     /// provider Error events). Uses the centralized native inference-failure contract.
@@ -135,14 +134,12 @@ internal static class InferenceExecuteWriter
                         break;
                     }
                 }
-
             }
 
             if (!clientGone || continueThenReplay)
             {
                 TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
-
         }
         catch (OperationCanceledException)
         {
@@ -175,7 +172,8 @@ internal static class InferenceExecuteWriter
             {
                 IntelligenceEvent cancelEvent = new(
                     IntelligenceEventType.Error,
-                    PublicStreamFailureMessage);
+                    PublicStreamFailureMessage,
+                    ErrorCodes.Hub.Error);
 
                 eventBuffer.ResetWrittenCount();
                 jsonWriter.Reset();
@@ -214,7 +212,8 @@ internal static class InferenceExecuteWriter
 
             IntelligenceEvent errorEvent = new(
                 IntelligenceEventType.Error,
-                PublicStreamFailureMessage);
+                PublicStreamFailureMessage,
+                ErrorCodes.Hub.Error);
 
             // See the matching comment in the OperationCanceledException arm
             // above — a client still connected here (the common case for a provider-side fault)
@@ -247,12 +246,10 @@ internal static class InferenceExecuteWriter
                     writeEx.GetType().FullName,
                     httpContext.TraceIdentifier);
             }
-
         }
         finally
         {
             jsonWriter.Dispose();
         }
     }
-
 }

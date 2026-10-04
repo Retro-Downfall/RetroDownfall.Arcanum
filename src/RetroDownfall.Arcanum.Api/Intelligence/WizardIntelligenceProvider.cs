@@ -504,6 +504,8 @@ public sealed partial class WizardIntelligenceProvider(
                     yield break;
 
                 case IntelligenceEventType.Error:
+                    // Every error frame is built by ErrorFrame and carries its typed code; Hub.Error
+                    // is only the backstop for a frame that arrives without one.
                     yield return new RunFailed(
                         correlation,
                         new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message),
@@ -972,7 +974,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (guardrailsInput.IsFailure)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, guardrailsInput.Error.Message);
+            yield return ErrorFrame(guardrailsInput.Error);
 
             yield break;
         }
@@ -983,17 +985,14 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streamPreflight.IsFailure)
         {
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                streamPreflight.Error.Message,
-                streamPreflight.Error.Code);
+            yield return ErrorFrame(streamPreflight.Error);
 
             yield break;
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, "Prompt is required.");
+            yield return ErrorFrame(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
 
             yield break;
         }
@@ -1002,7 +1001,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streamBudgetGate.IsFailure)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamBudgetGate.Error.Message);
+            yield return ErrorFrame(streamBudgetGate.Error);
 
             yield break;
         }
@@ -1039,7 +1038,7 @@ public sealed partial class WizardIntelligenceProvider(
                     "Hub model resolution failed; exception type {ExceptionType}.",
                     resolveFailure.GetType().FullName);
 
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
+                yield return ErrorFrame(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
                 yield break;
             }
@@ -1056,10 +1055,7 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 singleLease.Dispose();
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    capabilityValidation.Error.Message,
-                    capabilityValidation.Error.Code);
+                yield return ErrorFrame(capabilityValidation.Error);
 
                 yield break;
             }
@@ -1122,9 +1118,7 @@ public sealed partial class WizardIntelligenceProvider(
                     "Streaming inference threw after start; exception type {ExceptionType}.",
                     singleMoveFailure.GetType().FullName);
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    PublicInferenceFailureMessage);
+                yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
             }
 
             yield break;
@@ -1137,7 +1131,7 @@ public sealed partial class WizardIntelligenceProvider(
         {
             logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
 
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
+            yield return ErrorFrame(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
             yield break;
         }
@@ -1161,10 +1155,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (capabilityValidation.IsFailure)
                 {
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        capabilityValidation.Error.Message,
-                        capabilityValidation.Error.Code);
+                    yield return ErrorFrame(capabilityValidation.Error);
 
                     yield break;
                 }
@@ -1211,9 +1202,9 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure));
+                    yield return ErrorFrame(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure)));
 
                     yield break;
                 }
@@ -1286,9 +1277,9 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
+                    yield return ErrorFrame(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)));
 
                     yield break;
                 }
@@ -1378,9 +1369,9 @@ public sealed partial class WizardIntelligenceProvider(
                         yield return buffered;
                     }
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
+                    yield return ErrorFrame(new Error(
+                        ErrorCodes.Hub.Error,
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)));
 
                     yield break;
                 }
@@ -1476,9 +1467,7 @@ public sealed partial class WizardIntelligenceProvider(
                         candidateProvider.Name,
                         midStreamFailure.GetType().FullName);
 
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        PublicInferenceFailureMessage);
+                    yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
                 }
 
                 if (classification.IsConnectivityFailure && !providerMarkedFailed)
@@ -1556,6 +1545,20 @@ public sealed partial class WizardIntelligenceProvider(
     /// out closed the fallback window on that frame, the gate never reached the terminal
     /// <c>error</c>, and streaming fallback never advanced to the next candidate.
     /// </summary>
+    /// <summary>
+    /// The one shape of an <c>error</c> frame for a typed failure: the message, with the failure's
+    /// code in <c>Data</c>.
+    /// </summary>
+    /// <remarks>
+    /// The streaming projection reads the code from <c>Data</c> and falls back to <c>Hub.Error</c>
+    /// when it is absent, so a frame built from a typed <see cref="Error"/> without it reports a
+    /// budget refusal, a busy Session, or a guardrail block as a generic failure that a client cannot
+    /// back off from or retry correctly. <c>Data</c> doubles as the payload of other frame types,
+    /// which is why the code is set here and only here.
+    /// </remarks>
+    private static IntelligenceEvent ErrorFrame(Error error) =>
+        new(IntelligenceEventType.Error, error.Message, error.Code);
+
     private static bool IsPreCommitStreamingEvent(IntelligenceEvent evt) =>
         evt.Type is IntelligenceEventType.Status
             or IntelligenceEventType.SessionBound
@@ -1669,10 +1672,7 @@ public sealed partial class WizardIntelligenceProvider(
                         clientToolAvailability.Error);
                 }
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    clientToolAvailability.Error.Message,
-                    clientToolAvailability.Error.Code);
+                yield return ErrorFrame(clientToolAvailability.Error);
 
                 yield break;
             }
@@ -1724,8 +1724,12 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 // Fail before prompt construction, tool advertisement, or provider dispatch. A turn
                 // whose Session or Campaign binding could not be honoured has no answer to give, and
-                // continuing would produce one nothing durable is attached to (§10.12).
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, begun.Error.Message);
+                // continuing would produce one nothing durable is attached to (§10.12). The typed
+                // begin failure is the terminal result: without it the drain reports the generic
+                // Hub.Error, and a client racing two turns on one Session never sees its 409.
+                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(begun.Error);
+
+                yield return ErrorFrame(begun.Error);
 
                 yield break;
             }
@@ -1752,7 +1756,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (begun.IsFailure)
             {
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, begun.Error.Message);
+                yield return ErrorFrame(begun.Error);
 
                 yield break;
             }
@@ -1796,9 +1800,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    streamAttachmentPrep.ErrorMessage);
+                yield return ErrorFrame(
+                    new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
             }
 
             await grimoireTurnWriter
@@ -2071,9 +2074,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    streamAccountingBegin.Error.Message);
+                yield return ErrorFrame(streamAccountingBegin.Error);
             }
 
             await grimoireTurnWriter
@@ -2148,9 +2149,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (streaming)
                 {
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        streamRoutedSpell.Error.Message);
+                    yield return ErrorFrame(streamRoutedSpell.Error);
                 }
 
                 yield break;
@@ -2366,7 +2365,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (lateBegun.IsFailure)
             {
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, lateBegun.Error.Message);
+                yield return ErrorFrame(lateBegun.Error);
 
                 yield break;
             }
@@ -2416,9 +2415,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            promoteError);
+                        yield return ErrorFrame(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
                     }
 
                     await grimoireTurnWriter
@@ -2508,10 +2505,7 @@ public sealed partial class WizardIntelligenceProvider(
                     CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                effectiveClientTools.Error.Message,
-                effectiveClientTools.Error.Code);
+            yield return ErrorFrame(effectiveClientTools.Error);
 
             yield break;
         }
@@ -2551,10 +2545,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            referenceError.Message,
-                            referenceError.Code);
+                        yield return ErrorFrame(referenceError);
                     }
 
                     await grimoireTurnWriter
@@ -2708,10 +2699,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            boundaryError.Message,
-                            boundaryError.Code);
+                        yield return ErrorFrame(boundaryError);
                     }
 
                     await grimoireTurnWriter
@@ -3870,10 +3858,7 @@ public sealed partial class WizardIntelligenceProvider(
                         covenantScope?.StagedCommit()).ConfigureAwait(false);
                 }
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    inferenceTypedError?.Message ?? inferenceError,
-                    inferenceTypedError?.Code);
+                yield return ErrorFrame(inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError));
 
                 yield break;
             }
@@ -4067,10 +4052,7 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     else
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            validationResult.Error.Message,
-                            validationResult.Error.Code);
+                        yield return ErrorFrame(validationResult.Error);
                     }
 
                     yield break;
@@ -4105,11 +4087,10 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         if (structuredOutput.StrictMode)
                         {
-                            yield return new IntelligenceEvent(
-                                IntelligenceEventType.Error,
+                            yield return ErrorFrame(new Error(
+                                ErrorCodes.StructuredOutput.ValidationFailed,
                                 "Streamed response failed JSON schema validation after generation: "
-                                    + string.Join("; ", streamValidation.Errors),
-                                ErrorCodes.StructuredOutput.ValidationFailed);
+                                    + string.Join("; ", streamValidation.Errors)));
 
                             yield break;
                         }
@@ -4121,10 +4102,9 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     if (structuredOutput.StrictMode)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message,
-                            ErrorCodes.StructuredOutput.SchemaInvalid);
+                        yield return ErrorFrame(new Error(
+                            ErrorCodes.StructuredOutput.SchemaInvalid,
+                            "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message));
 
                         yield break;
                     }
@@ -4160,10 +4140,7 @@ public sealed partial class WizardIntelligenceProvider(
                 .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                guardrailsStreamOutput.Error.Message,
-                guardrailsStreamOutput.Error.Code);
+            yield return ErrorFrame(guardrailsStreamOutput.Error);
 
             yield break;
         }
@@ -4218,9 +4195,7 @@ public sealed partial class WizardIntelligenceProvider(
                     new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
             }
 
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                GrimoireTurnWriter.PublicFinalizeFailureMessage);
+            yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
 
             yield break;
         }

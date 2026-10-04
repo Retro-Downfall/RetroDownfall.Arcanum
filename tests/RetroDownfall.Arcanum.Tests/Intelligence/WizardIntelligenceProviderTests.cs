@@ -229,6 +229,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("Daily budget limit", error.Message);
 
+        Assert.Equal(ErrorCodes.Budget.Exceeded, error.Data);
+
         Assert.Equal(0, chat.BufferedCallCount);
     }
 
@@ -2023,10 +2025,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(result.IsSuccess);
 
-        // The buffered projection reports in-turn aborts as Hub.Error; the begin failure's own message
-        // survives, and carrying the typed storage code all the way out is a turn-result change that
-        // belongs with the turn-publication slice.
-        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+        // R-050: the begin failure's typed code is the turn's terminal result, so the caller sees the
+        // storage failure rather than the generic Hub.Error the drain falls back to.
+        Assert.Equal(ErrorCodes.Grimoire.WriteFailed, result.Error.Code);
 
         // The provider was never dialled, so its scripted answer is still queued.
         Assert.Equal(0, chat.BufferedCallCount);
