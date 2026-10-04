@@ -1572,7 +1572,7 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
             : "A Covenant compiled fragment does not match its stored rendered hash.";
     }
 
-    private static CovenantHeadItem MaterializeHeadItem(SqliteDataReader reader, int offset) =>
+    internal static CovenantHeadItem MaterializeHeadItem(SqliteDataReader reader, int offset) =>
         new(
             ReadGuidText(reader, offset + 1)!.Value,
             ReadGuidText(reader, offset + 2)!.Value,

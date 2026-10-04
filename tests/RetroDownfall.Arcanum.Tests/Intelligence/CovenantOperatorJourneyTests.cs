@@ -55,7 +55,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Trait("Category", "Integration")]
 public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 {
-
     private const string ModelName = "covenant-journey-test-model";
 
     private const string GlobalKey = "preference.builds";
@@ -111,38 +110,29 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task A_global_preference_the_operator_stated_is_in_the_prompt_of_a_later_turn_in_another_campaign()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -159,13 +149,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         string prompt = await RunTurnAsync(CampaignB);
 
         Assert.Contains(GlobalPreference, prompt, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task A_campaign_preference_is_in_the_prompt_of_its_own_campaign_and_of_no_other()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -189,13 +177,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         string other = await RunTurnAsync(CampaignB);
 
         Assert.DoesNotContain(CampaignPreference, other, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task A_retired_preference_reaches_no_later_prompt_and_cannot_return_without_an_explicit_reactivation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -236,13 +222,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             reactivated.IsFailure ? $"{reactivated.Error.Code}: {reactivated.Error.Message}" : null);
 
         Assert.Contains("Deliberately back again.", await RunTurnAsync(CampaignA), StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task An_operator_can_discover_that_the_agent_left_a_proposal_waiting_for_them()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -266,13 +250,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         // The origin is what tells an operator this is a suggestion rather than something they wrote
         // and forgot. A proposal indistinguishable from their own statement is one they cannot judge.
         Assert.Equal(CovenantOrigin.AgentProposed, proposal.Origin);
-
     }
 
     [SkippableFact]
     public async Task An_operator_can_read_what_the_agent_proposed_before_deciding_what_to_do_about_it()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -288,13 +270,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         string[] surfaces = await OperatorReadableSurfacesAsync(CampaignA, ProposedKey);
 
         Assert.Contains(surfaces, surface => surface.Contains(ProposedContent, StringComparison.Ordinal));
-
     }
 
     [SkippableFact]
     public async Task A_full_proposed_lane_refuses_a_further_proposal_without_costing_the_operator_their_answer()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -306,7 +286,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
         while (filled < CovenantLimits.MaxCampaignProposedEntries)
         {
-
             int batch = Math.Min(
                 CovenantLimits.MaxStagedMutationsPerTurn,
                 CovenantLimits.MaxCampaignProposedEntries - filled);
@@ -324,7 +303,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             Assert.All(round.Failures, static failure => Assert.Null(failure));
 
             filled += batch;
-
         }
 
         Assert.Equal(
@@ -352,13 +330,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.Equal(
             CovenantLimits.MaxCampaignProposedEntries,
             (await ListAsync(CampaignA)).Items.Count(static item => item.Lane is CovenantLane.Proposed));
-
     }
 
     [SkippableFact]
     public async Task A_covenant_holding_its_documented_confirmed_maxima_still_reaches_the_model()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -369,13 +345,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         // an ordinary turn, and the preferences it stated are in the prompt. Nothing here is a
         // capacity edge case — these are the numbers the documentation tells an operator they may use.
         Assert.Contains("jg.00", await RunTurnAsync(CampaignA), StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task A_revision_on_a_fully_allocated_installation_still_leaves_the_operator_their_answer()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -402,13 +376,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             revision.Turn.IsFailure ? $"{revision.Turn.Error.Code}: {revision.Turn.Error.Message}" : null);
 
         Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(revision.SessionId));
-
     }
 
     [SkippableFact]
     public async Task An_agent_refining_its_own_proposal_does_not_cost_the_operator_the_answer()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -435,13 +407,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         CovenantPageDto page = await ListAsync(CampaignA);
 
         Assert.Single(page.Items, item => item.Key == "journey.refined");
-
     }
 
     [SkippableFact]
     public async Task An_operator_at_the_installation_ceiling_can_still_revise_what_they_already_wrote()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -475,7 +445,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.True(added.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, added.Error.Code);
-
     }
 
     /// <summary>
@@ -484,12 +453,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </summary>
     private async Task FillProposedToDocumentedMaximumAsync()
     {
-
         int filled = 0;
 
         while (filled < CovenantLimits.MaxCampaignProposedEntries)
         {
-
             int batch = Math.Min(
                 CovenantLimits.MaxStagedMutationsPerTurn,
                 CovenantLimits.MaxCampaignProposedEntries - filled);
@@ -509,9 +476,7 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                     : null);
 
             filled += batch;
-
         }
-
     }
 
     /// <summary>
@@ -524,10 +489,8 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private async Task FillConfirmedToDocumentedMaximaAsync()
     {
-
         for (int ordinal = 0; ordinal < CovenantLimits.MaxGlobalConfirmedEntries; ordinal++)
         {
-
             Result<CovenantMutationResultDto> written = await SetAsync(
                 CovenantScope.Global,
                 null,
@@ -537,12 +500,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 reactivate: false);
 
             Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : null);
-
         }
 
         for (int ordinal = 0; ordinal < CovenantLimits.MaxCampaignConfirmedEntries; ordinal++)
         {
-
             Result<CovenantMutationResultDto> written = await SetCampaignAsync(
                 CampaignA,
                 $"jc.{ordinal:D2}",
@@ -550,15 +511,12 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 expectedRevision: 0);
 
             Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : null);
-
         }
-
     }
 
     [SkippableFact]
     public async Task A_request_that_names_no_page_size_is_paged_by_the_default()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -594,7 +552,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.True(page.IsSuccess, page.IsFailure ? $"{page.Error.Code}: {page.Error.Message}" : null);
 
         Assert.Contains(page.Value.Items, item => item.Key == "journey.paged");
-
     }
 
     [SkippableFact]
@@ -661,10 +618,172 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Covenant.StaleCursor, mismatched.Error.Code);
     }
 
+    /// <summary>
+    /// A cursor is only a continuation of the dataset it was issued against.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_list_cursor_is_stale_after_the_dataset_changes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        Assert.True((await SetCampaignAsync(CampaignA, "journey.cursor.first", "first preference", expectedRevision: 0)).IsSuccess);
+
+        Assert.True((await SetCampaignAsync(CampaignA, "journey.cursor.second", "second preference", expectedRevision: 0)).IsSuccess);
+
+        CovenantManagementService management = ManagementService();
+
+        CovenantListRequest request = new(
+            CovenantCursorScopeSelection.Campaign,
+            CampaignA,
+            Lane: null,
+            CovenantLifecycle.Set,
+            CampaignA,
+            Limit: 1,
+            Cursor: null);
+
+        string cursor;
+
+        await using (CovenantInstallationReadLease read = await InstallationReadAsync())
+        {
+            Result<CovenantPageDto> first = await management.ListAsync(request, read, CancellationToken.None);
+
+            Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+            cursor = Assert.IsType<string>(first.Value.NextCursor);
+
+            // Nothing has moved yet, so the cursor continues.
+            Result<CovenantPageDto> unchanged = await management.ListAsync(
+                request with { Cursor = cursor },
+                read,
+                CancellationToken.None);
+
+            Assert.True(unchanged.IsSuccess, unchanged.IsFailure ? unchanged.Error.Message : null);
+        }
+
+        Assert.True((await SetCampaignAsync(CampaignA, "journey.cursor.third", "third preference", expectedRevision: 0)).IsSuccess);
+
+        await using (CovenantInstallationReadLease read = await InstallationReadAsync())
+        {
+            Result<CovenantPageDto> stale = await management.ListAsync(
+                request with { Cursor = cursor },
+                read,
+                CancellationToken.None);
+
+            Assert.True(stale.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.StaleCursor, stale.Error.Code);
+
+            // A fresh first page is never refused: staleness is a property of a continuation.
+            Result<CovenantPageDto> fresh = await management.ListAsync(request, read, CancellationToken.None);
+
+            Assert.True(fresh.IsSuccess, fresh.IsFailure ? fresh.Error.Message : null);
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_versions_cursor_is_stale_after_the_dataset_changes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        Assert.True((await SetCampaignAsync(CampaignA, "journey.versions", "first revision", expectedRevision: 0)).IsSuccess);
+
+        Assert.True((await SetCampaignAsync(CampaignA, "journey.versions", "second revision", expectedRevision: 1)).IsSuccess);
+
+        CovenantManagementService management = ManagementService();
+
+        Guid entryId;
+
+        await using (CovenantInstallationReadLease read = await InstallationReadAsync())
+        {
+            Result<CovenantDetailDto> detail = await management.DetailAsync(
+                new CovenantDetailRequest(CovenantScope.Campaign, CampaignA, "journey.versions"),
+                read,
+                CancellationToken.None);
+
+            Assert.True(detail.IsSuccess, detail.IsFailure ? detail.Error.Message : null);
+
+            entryId = Assert.IsType<CovenantHeadDto>(detail.Value.Confirmed).EntryId;
+        }
+
+        CovenantVersionsRequest request = new(entryId, CovenantLane.Confirmed, Limit: 1, Cursor: null);
+
+        string cursor;
+
+        await using (CovenantInstallationReadLease read = await InstallationReadAsync())
+        {
+            Result<CovenantVersionPageDto> first = await management.VersionsAsync(request, read, CancellationToken.None);
+
+            Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+            cursor = Assert.IsType<string>(first.Value.NextCursor);
+        }
+
+        Assert.True((await SetCampaignAsync(CampaignA, "journey.other", "another preference", expectedRevision: 0)).IsSuccess);
+
+        await using (CovenantInstallationReadLease read = await InstallationReadAsync())
+        {
+            Result<CovenantVersionPageDto> stale = await management.VersionsAsync(
+                request with { Cursor = cursor },
+                read,
+                CancellationToken.None);
+
+            Assert.True(stale.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.StaleCursor, stale.Error.Code);
+        }
+    }
+
+    /// <summary>
+    /// A turn lease the explanation took is released on every path that does not hand it to a caller.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Explain_releases_its_lease_when_the_snapshot_read_throws(bool throwFromLinker)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync(CampaignA, "journey-a");
+
+        CovenantOperationGate gate = OperationGate();
+
+        CovenantManagementService management = throwFromLinker
+            ? ManagementService(Store(), new ThrowingLinker())
+            : ManagementService(new CancellingSnapshotStore(Store()), new CovenantLinker());
+
+        CovenantExplainRequest request = new(CampaignA, ShowContent: false);
+
+        if (throwFromLinker)
+        {
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await management.ExplainAsync(request, CancellationToken.None));
+        }
+        else
+        {
+            _ = await Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await management.ExplainAsync(request, CancellationToken.None));
+        }
+
+        // The registration is the thing a leaked lease keeps alive, so it is counted directly, and an
+        // exclusive acquisition is the operation a leak wedges until restart.
+        Assert.Equal(0, gate.LiveRegistrationCount);
+
+        Result<CovenantExclusiveLease> exclusive = await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+            CancellationToken.None);
+
+        Assert.True(exclusive.IsSuccess, exclusive.IsFailure ? $"{exclusive.Error.Code}: {exclusive.Error.Message}" : null);
+
+        await exclusive.Value.DisposeAsync();
+    }
+
     [SkippableFact]
     public async Task A_turn_with_the_feature_off_sends_the_bytes_an_installation_that_never_had_a_covenant_sends()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -696,13 +815,11 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         // Byte-identical, not merely free of the two statements. "Injects nothing" has to mean the
         // prompt is the one the operator would have had, framing, headings and all.
         Assert.Equal(never, off);
-
     }
 
     [SkippableFact]
     public async Task An_operator_whose_canonical_tier_goes_down_is_told_the_count_was_not_taken()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync(CampaignA, "journey-a");
@@ -740,7 +857,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.Empty(degraded.Value.Counts);
 
         Assert.Equal("canonical-unavailable", degraded.Value.DegradationCode);
-
     }
 
     /// <summary>
@@ -754,7 +870,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private async Task<string> RunTurnAsync(Guid campaignId, bool withCovenantArm = true)
     {
-
         Guid sessionId = await SeedSessionAsync(campaignId);
 
         RecordingChatClient chat = new(AssistantAnswer);
@@ -784,7 +899,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.NotNull(chat.SystemPrompt);
 
         return chat.SystemPrompt!;
-
     }
 
     /// <summary>
@@ -794,7 +908,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Guid campaignId,
         IReadOnlyList<(string Key, string Content)> proposals)
     {
-
         Guid sessionId = await SeedSessionAsync(campaignId);
 
         CovenantToolCapabilityRegistry registry = new();
@@ -815,7 +928,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             CancellationToken.None);
 
         return new ProposalTurn(sessionId, turn, chat.Failures, chat.SawStagingCapability);
-
     }
 
     /// <summary>One turn's outcome, and what its scripted tool round observed while inside it.</summary>
@@ -835,14 +947,12 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private async Task<string[]> OperatorReadableSurfacesAsync(Guid campaignId, string key)
     {
-
         CovenantManagementService management = ManagementService();
 
         List<string> surfaces = [];
 
         await using (CovenantInstallationReadLease read = await InstallationReadAsync())
         {
-
             Result<CovenantPageDto> page = await management.ListAsync(
                 new CovenantListRequest(
                     CovenantCursorScopeSelection.Campaign,
@@ -887,7 +997,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             Assert.True(sources.IsSuccess, sources.IsFailure ? sources.Error.Message : null);
 
             surfaces.Add(sources.Value.ToString());
-
         }
 
         // The one surface that is documented to return content, asked with the privacy gate open and
@@ -900,7 +1009,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
         await using (explainLease)
         {
-
             Assert.True(payload.IsSuccess, payload.IsFailure ? payload.Error.Message : null);
 
             surfaces.Add(payload.Value.ToString());
@@ -908,16 +1016,13 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             surfaces.AddRange(payload.Value.Sections
                 .Select(static section => section.Content)
                 .OfType<string>());
-
         }
 
         return [.. surfaces];
-
     }
 
     private async Task<CovenantPageDto> ListAsync(Guid campaignId)
     {
-
         await using CovenantInstallationReadLease read = await InstallationReadAsync();
 
         Result<CovenantPageDto> page = await ManagementService().ListAsync(
@@ -935,19 +1040,16 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.True(page.IsSuccess, page.IsFailure ? $"{page.Error.Code}: {page.Error.Message}" : null);
 
         return page.Value;
-
     }
 
     private async Task<CovenantInstallationReadLease> InstallationReadAsync()
     {
-
         Result<CovenantInstallationReadLease> read = await OperationGate()
             .AcquireInstallationReadAsync(CancellationToken.None);
 
         Assert.True(read.IsSuccess, read.IsFailure ? $"{read.Error.Code}: {read.Error.Message}" : null);
 
         return read.Value;
-
     }
 
     private Task<Result<CovenantMutationResultDto>> SetGlobalAsync(
@@ -980,7 +1082,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         long expectedRevision,
         bool reactivate)
     {
-
         CovenantMutationService service = MutationService();
 
         Guid mutationId = Guid.CreateVersion7();
@@ -989,7 +1090,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
         await using (CovenantInstallationReadLease read = await InstallationReadAsync())
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(scope, campaignId, key, content, expectedRevision, mutationId, reactivate),
                 read,
@@ -997,13 +1097,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
             if (prepared.IsFailure)
             {
-
                 return prepared.Error;
-
             }
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write = await WriteAsync(scope, campaignId);
@@ -1012,12 +1109,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             new CovenantSetRequest(scope, campaignId, key, content, expectedRevision, mutationId, reactivate, preflight),
             write,
             CancellationToken.None);
-
     }
 
     private async Task<Result<CovenantMutationResultDto>> RetireGlobalAsync(long expectedRevision)
     {
-
         CovenantMutationService service = MutationService();
 
         Guid mutationId = Guid.CreateVersion7();
@@ -1026,7 +1121,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
         await using (CovenantInstallationReadLease read = await InstallationReadAsync())
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareRetireAsync(
                 new CovenantRetirePrepareRequest(
                     CovenantScope.Global,
@@ -1040,13 +1134,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
             if (prepared.IsFailure)
             {
-
                 return prepared.Error;
-
             }
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write = await WriteAsync(CovenantScope.Global, null);
@@ -1062,12 +1153,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 preflight),
             write,
             CancellationToken.None);
-
     }
 
     private async Task<CovenantWriteLease> WriteAsync(CovenantScope scope, Guid? campaignId)
     {
-
         CovenantOperationScope operationScope = scope is CovenantScope.Campaign && campaignId is { } id
             ? CovenantOperationScope.ForCampaign(id)
             : CovenantOperationScope.Global;
@@ -1078,7 +1167,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         Assert.True(write.IsSuccess, write.IsFailure ? $"{write.Error.Code}: {write.Error.Message}" : null);
 
         return write.Value;
-
     }
 
     private WizardIntelligenceProvider Wizard(
@@ -1086,7 +1174,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         CovenantDispatchGate gate,
         CovenantToolCapabilityRegistry registry)
     {
-
         ProviderSettings provider = new()
         {
             Name = "provider-covenant-journey",
@@ -1105,7 +1192,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             repository,
             repository,
             provider);
-
     }
 
     /// <summary>
@@ -1129,10 +1215,12 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             TimeProvider.System,
             NullLogger<CovenantDispatchGate>.Instance);
 
-    private CovenantManagementService ManagementService() =>
+    private CovenantManagementService ManagementService() => ManagementService(Store(), new CovenantLinker());
+
+    private CovenantManagementService ManagementService(ICovenantStore store, ICovenantLinker linker) =>
         new(
-            Store(),
-            new CovenantLinker(),
+            store,
+            linker,
             OperationGate(),
             _availability,
             _codec,
@@ -1156,12 +1244,9 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
     private CovenantOperationGate OperationGate()
     {
-
         if (_operationGate is not null)
         {
-
             return _operationGate;
-
         }
 
         _campaigns.Set(CampaignA, CovenantCampaignScopeState.Live);
@@ -1171,7 +1256,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         _operationGate = CovenantOperationGateFixture.CreateGate(_availability, _authority, _campaigns);
 
         return _operationGate;
-
     }
 
     /// <summary>
@@ -1185,7 +1269,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private ArcanumInvocationContext Invocation(Guid campaignId)
     {
-
         _ = OperationGate();
 
         CovenantAuthoritySnapshot authority = _authority.Current!;
@@ -1200,7 +1283,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 Guid.Parse(authority.InstallationIdentity),
                 authority.RuntimeAuthorityGeneration,
                 authority.AuthorityEpoch)).Value;
-
     }
 
     private GrimoireRepository Repository() =>
@@ -1216,27 +1298,21 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
     private SqliteConnection Connection()
     {
-
         if (_connection is not null)
         {
-
             return _connection;
-
         }
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             connection.Open();
-
         }
 
         _connection = connection;
 
         return connection;
-
     }
 
     /// <summary>
@@ -1249,7 +1325,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedCampaignAsync(Guid campaignId, string name)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         _ = _db!.Campaigns.Add(new Campaign
@@ -1264,7 +1339,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         });
 
         _ = await _db.SaveChangesAsync(CancellationToken.None);
-
     }
 
     /// <summary>
@@ -1283,7 +1357,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private async Task<Guid> SeedSessionAsync(Guid campaignId)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -1305,7 +1378,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
 
         try
         {
-
             using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
                 Connection(),
                 CovenantSqliteAuthorizationKind.SessionBindingWrite);
@@ -1337,28 +1409,22 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 now.ToString("o", System.Globalization.CultureInfo.InvariantCulture));
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
         finally
         {
-
             await SetForeignKeyEnforcementAsync(enabled: true);
-
         }
 
         return sessionId;
-
     }
 
     private async Task SetForeignKeyEnforcementAsync(bool enabled)
     {
-
         await using SqliteCommand pragma = Connection().CreateCommand();
 
         pragma.CommandText = enabled ? "PRAGMA foreign_keys = ON;" : "PRAGMA foreign_keys = OFF;";
 
         _ = await pragma.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task<string?> ReadLastAssistantContentAsync(Guid sessionId) =>
@@ -1377,7 +1443,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private sealed class RecordingChatClient(string answer) : IChatClient
     {
-
         public string? SystemPrompt { get; private set; }
 
         public void Dispose()
@@ -1391,7 +1456,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-
             MeAiChatMessage first = messages.First();
 
             Assert.Equal(ChatRole.System, first.Role);
@@ -1399,7 +1463,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             SystemPrompt = first.Text;
 
             return Task.FromResult(new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer)));
-
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -1407,7 +1470,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     /// <summary>
@@ -1424,7 +1486,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         IReadOnlyList<(string Key, string Content)> proposals,
         string answer) : IChatClient
     {
-
         private readonly List<CovenantMutationFailureResultWire?> _failures = [];
 
         public bool SawStagingCapability { get; private set; }
@@ -1442,12 +1503,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-
             SawStagingCapability = CovenantToolStagingAmbient.Current is not null;
 
             foreach ((string key, string content) in proposals)
             {
-
                 McpToolsCallResultWire result = await toolCall.ProposeAsync(key, content).ConfigureAwait(false);
 
                 _failures.Add(result.IsError
@@ -1455,11 +1514,9 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                         result.StructuredContent!.Value,
                         McpJsonSerializerContext.Default.CovenantMutationFailureResultWire)
                     : null);
-
             }
 
             return new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer));
-
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -1467,7 +1524,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     /// <summary>
@@ -1481,7 +1537,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private sealed class CovenantToolCall : IAsyncDisposable
     {
-
         private readonly InProcessMcpTransport _transport;
 
         private readonly Task _serverTask;
@@ -1498,7 +1553,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             CancellationTokenSource lifetime,
             string connectionKey)
         {
-
             _transport = transport;
 
             _serverTask = serverTask;
@@ -1506,14 +1560,12 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             _lifetime = lifetime;
 
             _connectionKey = connectionKey;
-
         }
 
         public static async Task<CovenantToolCall> CreateAsync(
             CovenantToolCapabilityRegistry registry,
             ICovenantAvailability availability)
         {
-
             ServiceCollection services = [];
 
             services.AddSingleton<ICovenantCompiler, CovenantCompiler>();
@@ -1559,12 +1611,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             await transport.StartAsync();
 
             return new CovenantToolCall(transport, serverTask, lifetime, server.AmbientConnectionKey);
-
         }
 
         public async Task<McpToolsCallResultWire> ProposeAsync(string key, string content)
         {
-
             int id = Interlocked.Increment(ref _nextId);
 
             JsonElement arguments = JsonSerializer.SerializeToElement(
@@ -1597,19 +1647,15 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             return JsonSerializer.Deserialize(
                 envelope.Response!.Result!.Value,
                 McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _lifetime.CancelAsync();
 
             try
             {
-
                 await _serverTask.ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
@@ -1618,9 +1664,7 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             await _transport.DisposeAsync().ConfigureAwait(false);
 
             _lifetime.Dispose();
-
         }
-
     }
 
     private sealed class SingleLeaseChatClientFactory(
@@ -1628,7 +1672,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
         ProviderSettings provider,
         string model) : IChatClientFactory
     {
-
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken) =>
             Task.FromResult(new ChatClientLease(client, provider, model, ownedHttpClient: null));
 
@@ -1637,7 +1680,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             string resolvedModel,
             CancellationToken cancellationToken) =>
             ResolveClientAsync(resolvedModel, cancellationToken);
-
     }
 
     /// <summary>A journal that accepts every disclosure it is handed.</summary>
@@ -1647,7 +1689,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private sealed class AcceptingDisclosureJournal : ICovenantDisclosureJournal
     {
-
         private long _sequence;
 
         public ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
@@ -1657,7 +1698,21 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantDisclosureReceipt>.Success(
                 new CovenantDisclosureReceipt(draft, (ulong)Interlocked.Increment(ref _sequence))));
+    }
 
+    private sealed class CancellingSnapshotStore(ICovenantStore inner) : DelegatingCovenantStore(inner)
+    {
+        public override ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
+            CanonicalCampaignContext campaign,
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken) =>
+            throw new OperationCanceledException("The client disconnected during the snapshot read.");
+    }
+
+    private sealed class ThrowingLinker : ICovenantLinker
+    {
+        public Result<CovenantTurnPlan> Link(CovenantTurnSnapshot snapshot) =>
+            throw new InvalidOperationException("The linker failed.");
     }
 
     /// <summary>
@@ -1670,7 +1725,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     /// </remarks>
     private sealed class PassthroughEnvelopeCodec : ICovenantEnvelopeCodec
     {
-
         private readonly Dictionary<string, CovenantEnvelopeBody> _issued = new(StringComparer.Ordinal);
 
         public CovenantEnvelopeKeySnapshot KeySnapshot { get; } =
@@ -1682,7 +1736,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             TimeSpan lifetime,
             DateTimeOffset? issuedAtUtc = null)
         {
-
             string token = Convert.ToHexStringLower(Guid.NewGuid().ToByteArray());
 
             // Honoured, not ignored: a stand-in that stamped its own clock would let the body and the
@@ -1699,7 +1752,6 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 payload.ToArray());
 
             return Result<string>.Success(token);
-
         }
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
@@ -1709,12 +1761,10 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
                 : Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
-
     }
 
     private sealed class SilentEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
@@ -1723,13 +1773,9 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
             where T : notnull
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
-
     }
-
 }

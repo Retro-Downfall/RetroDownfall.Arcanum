@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantStoreSql
 {
-
     internal const int CampaignOwnerKindCode = 1;
 
     /// <summary>
@@ -222,7 +221,6 @@ internal static class CovenantStoreSql
 
     internal static string QuotaSnapshot(bool campaignScoped, int excludedKeyCount)
     {
-
         // The keys this batch is about to rewrite, removed from the two counters that measure active
         // heads. A write to a key that already has one replaces that head rather than adding a head,
         // so counting the row it is about to supersede charges the write for a row it does not add,
@@ -274,7 +272,6 @@ internal static class CovenantStoreSql
                     AND {(campaignScoped ? "1 = 1" : notTouched)})
                     + {campaignSideOfTurnLoad};
             """;
-
     }
 
     internal static string SectionOccupancy(bool campaignScoped, int excludedKeyCount) => $"""
@@ -297,7 +294,6 @@ internal static class CovenantStoreSql
         CovenantLifecycle lifecycle,
         bool continued)
     {
-
         string scopeFilter = scope is null
             ? "1 = 1"
             : scope.Value.Kind == CovenantScope.Global
@@ -342,8 +338,23 @@ internal static class CovenantStoreSql
             WHERE st.StateKey = 1
             ORDER BY page.ScopeCode, COALESCE(page.CampaignId, ''), page.NormalizedKey, page.EntryId, page.LaneCode;
             """;
-
     }
+
+    /// <summary>
+    /// Every current head whose version is one of the named ones, in the list projection, in one read.
+    /// </summary>
+    /// <remarks>
+    /// The search path completes a page of ranked rows with this rather than one detail read per row.
+    /// Column positions match <see cref="ListPage"/> after its three leading snapshot columns, so one
+    /// materializer reads both.
+    /// </remarks>
+    internal static string HeadsByVersion(int versionCount) => $"""
+        SELECT {HeadProjection}, e.AuthoredKey AS AuthoredKey, e.CreatedAtUtc AS CreatedAtUtc
+        FROM covenant_heads h
+        JOIN covenant_entries e ON e.EntryId = h.EntryId
+        JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
+        WHERE h.CurrentVersionId IN ({string.Join(", ", Enumerable.Range(0, versionCount).Select(static index => $"$version{index}"))});
+        """;
 
     internal static string Detail(bool campaignScoped) => $"""
         SELECT st.DatasetGeneration, st.CanonicalSearchSequence, epochs.KeyEpoch, lanes.*
@@ -484,7 +495,6 @@ internal static class CovenantStoreSql
     /// </remarks>
     internal static string CurationEffectFacts(bool campaignScoped)
     {
-
         string campaignPredicate = campaignScoped ? "ch.CampaignId = $campaign" : "ch.CampaignId IS NULL";
 
         string scopedConfirmed = campaignScoped
@@ -515,7 +525,5 @@ internal static class CovenantStoreSql
                    AND ch.KeyEpoch = epoch.Binding
             WHERE st.StateKey = 1;
             """;
-
     }
-
 }
