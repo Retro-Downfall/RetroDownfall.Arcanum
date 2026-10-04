@@ -2958,6 +2958,7 @@ public sealed partial class WizardIntelligenceProvider(
                             .EnsureReservationForContextAsync(
                                 budgetReservationService,
                                 settings.Value.ResolvePricing(),
+                                settings.Value.ResolveBudget(),
                                 targetModel,
                                 callBreakdown,
                                 inferenceToken)
@@ -3974,6 +3975,7 @@ public sealed partial class WizardIntelligenceProvider(
                                 .EnsureReservationForContextAsync(
                                     budgetReservationService,
                                     settings.Value.ResolvePricing(),
+                                    settings.Value.ResolveBudget(),
                                     targetModel,
                                     retryContextBreakdown,
                                     ct)

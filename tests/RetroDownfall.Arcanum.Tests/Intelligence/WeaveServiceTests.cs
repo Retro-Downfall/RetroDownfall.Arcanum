@@ -12,24 +12,20 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class WeaveServiceTests
 {
-
     [Fact]
     public void IsAvailable_Disabled_ReturnsFalse()
     {
-
         WeaveService service = CreateService(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = false },
         });
 
         Assert.False(service.IsAvailable);
-
     }
 
     [Fact]
     public void IsAvailable_EnabledWithoutProvider_ReturnsFalse()
     {
-
         WeaveService service = CreateService(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -40,13 +36,11 @@ public sealed class WeaveServiceTests
         });
 
         Assert.False(service.IsAvailable);
-
     }
 
     [Fact]
     public void IsAvailable_EnabledWithoutModel_ReturnsFalse()
     {
-
         WeaveService service = CreateService(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -57,13 +51,11 @@ public sealed class WeaveServiceTests
         });
 
         Assert.False(service.IsAvailable);
-
     }
 
     [Fact]
     public void IsAvailable_EnabledWithProviderAndModel_ReturnsTrue()
     {
-
         WeaveService service = CreateService(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -78,13 +70,11 @@ public sealed class WeaveServiceTests
         });
 
         Assert.True(service.IsAvailable);
-
     }
 
     [Fact]
     public async Task EmbedAsync_Disabled_ReturnsFeatureDisabled_WithoutResolvingGenerator()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(
@@ -98,13 +88,11 @@ public sealed class WeaveServiceTests
         Assert.Equal(ErrorCodes.Embeddings.FeatureDisabled, result.Error.Code);
 
         Assert.Equal(0, factory.ResolveCount);
-
     }
 
     [Fact]
     public async Task EmbedBatchAsync_Disabled_ReturnsFeatureDisabled_WithoutResolvingGenerator()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(
@@ -118,13 +106,11 @@ public sealed class WeaveServiceTests
         Assert.Equal(ErrorCodes.Embeddings.FeatureDisabled, result.Error.Code);
 
         Assert.Equal(0, factory.ResolveCount);
-
     }
 
     [Fact]
     public async Task EmbedBatchAsync_Empty_ReturnsEmptySuccess()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(EnabledSettings(), factory);
@@ -136,13 +122,11 @@ public sealed class WeaveServiceTests
         Assert.Empty(result.Value);
 
         Assert.Equal(0, factory.ResolveCount);
-
     }
 
     [Fact]
     public async Task EmbedBatchAsync_SplitsAtCodeOwnedBatchSize()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         ArcanumSettings settings = EnabledSettings();
@@ -166,7 +150,6 @@ public sealed class WeaveServiceTests
         Assert.Equal(3, factory.ResolveCount);
 
         Assert.Equal([batchSize, batchSize, 1], factory.Generator.CallSizes);
-
     }
 
     [Fact]
@@ -251,7 +234,6 @@ public sealed class WeaveServiceTests
     [Fact]
     public async Task EmbedAsync_ProviderReturnsNoVectors_ReturnsProviderUnavailable_NeverThrows()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         factory.Generator.ReturnNoVectors = true;
@@ -263,13 +245,11 @@ public sealed class WeaveServiceTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
-
     }
 
     [Fact]
     public async Task EmbedAsync_ProviderThrows_ReturnsProviderUnavailable_NeverThrows()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         factory.Generator.ThrowOnGenerate = new InvalidOperationException("boom");
@@ -284,13 +264,11 @@ public sealed class WeaveServiceTests
 
         // Sanitized: the internal exception message never leaks into the returned error.
         Assert.DoesNotContain("boom", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task EmbedAsync_CallerCancellation_PropagatesAsOperationCanceled()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         factory.Generator.DelayOnGenerate = TimeSpan.FromSeconds(30);
@@ -302,13 +280,11 @@ public sealed class WeaveServiceTests
         cts.CancelAfter(TimeSpan.FromMilliseconds(50));
 
         await Assert.ThrowsAsync<TaskCanceledException>(() => service.EmbedAsync("hello", cts.Token));
-
     }
 
     [Fact]
     public async Task EmbedAsync_WithoutCallerCancellation_DoesNotCreateInternalDeadline()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(EnabledSettings(), factory);
@@ -320,13 +296,11 @@ public sealed class WeaveServiceTests
         Assert.False(factory.ResolveCancellationToken.CanBeCanceled);
 
         Assert.False(factory.Generator.GenerateCancellationToken.CanBeCanceled);
-
     }
 
     [Fact]
     public async Task EmbedAsync_Success_ReturnsGeneratedEmbedding()
     {
-
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(EnabledSettings(), factory);
@@ -336,13 +310,11 @@ public sealed class WeaveServiceTests
         Assert.True(result.IsSuccess);
 
         Assert.Equal(3, result.Value.Vector.Length);
-
     }
 
     [Fact]
     public async Task ChunkAsync_EmptyText_ReturnsEmpty()
     {
-
         WeaveService service = CreateService(new ArcanumSettings());
 
         Result<(string Chunk, int Offset)[]> result = await service.ChunkAsync(string.Empty, CancellationToken.None);
@@ -350,13 +322,11 @@ public sealed class WeaveServiceTests
         Assert.True(result.IsSuccess);
 
         Assert.Empty(result.Value);
-
     }
 
     [Fact]
     public async Task ChunkAsync_WorksRegardlessOfIsAvailable()
     {
-
         // Embeddings disabled entirely — ChunkAsync is pure CPU and must still succeed.
         WeaveService service = CreateService(new ArcanumSettings
         {
@@ -372,7 +342,6 @@ public sealed class WeaveServiceTests
         Assert.True(result.IsSuccess);
 
         Assert.NotEmpty(result.Value);
-
     }
 
     [Fact]
@@ -402,13 +371,11 @@ public sealed class WeaveServiceTests
         (string Chunk, int Offset) last = chunks[^1];
 
         Assert.Equal(text.Length, last.Offset + last.Chunk.Length);
-
     }
 
     [Fact]
     public async Task ChunkAsync_NeverSplitsASurrogatePairAtEitherEndOfAWindow()
     {
-
         WeaveService service = CreateService(new ArcanumSettings());
 
         int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
@@ -430,7 +397,6 @@ public sealed class WeaveServiceTests
 
         foreach ((string chunk, int offset) in result.Value)
         {
-
             Assert.False(
                 chunk.Length > 0 && char.IsLowSurrogate(chunk[0]),
                 $"chunk at offset {offset} begins with an unpaired low surrogate.");
@@ -438,12 +404,10 @@ public sealed class WeaveServiceTests
             Assert.False(
                 chunk.Length > 0 && char.IsHighSurrogate(chunk[^1]) && offset + chunk.Length < text.Length,
                 $"chunk at offset {offset} ends with an unpaired high surrogate.");
-
         }
 
         // The emoji must survive intact in whichever chunk claims it.
         Assert.Contains(result.Value, static entry => entry.Chunk.Contains("\U0001F600", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -461,11 +425,9 @@ public sealed class WeaveServiceTests
         int chunkSizeChars,
         int chunkOverlapChars)
     {
-
         int step = WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
 
         Assert.Equal(chunkSizeChars - (chunkSizeChars / 2), step);
-
     }
 
     /// <summary>
@@ -476,7 +438,6 @@ public sealed class WeaveServiceTests
     [Fact]
     public void ResolveChunkStep_OverlapAtOrAboveChunkSize_KeepsTheEmittedChunkCountBounded()
     {
-
         const int chunkSizeChars = 128;
 
         const int documentChars = 200_000;
@@ -488,7 +449,6 @@ public sealed class WeaveServiceTests
         int minimum = ((documentChars - 1) / chunkSizeChars) + 1;
 
         Assert.True(emitted <= minimum * 2, $"{emitted} chunks emitted for a {minimum}-chunk document.");
-
     }
 
     /// <summary>
@@ -508,7 +468,6 @@ public sealed class WeaveServiceTests
         int chunkSizeChars,
         int chunkOverlapChars)
     {
-
         const int documentChars = 200_000;
 
         int step = WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars);
@@ -520,7 +479,6 @@ public sealed class WeaveServiceTests
         int minimum = ((documentChars - 1) / chunkSizeChars) + 1;
 
         Assert.True(emitted <= minimum * 2, $"{emitted} chunks emitted for a {minimum}-chunk document.");
-
     }
 
     /// <summary>
@@ -537,9 +495,7 @@ public sealed class WeaveServiceTests
         int chunkOverlapChars,
         int expectedStep)
     {
-
         Assert.Equal(expectedStep, WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars));
-
     }
 
     /// <summary>
@@ -554,7 +510,6 @@ public sealed class WeaveServiceTests
     [Fact]
     public void ResolveChunkStep_ForTheOnlyReachableConfiguration_MatchesTheUnboundedStep()
     {
-
         // Everything an operator can say about embeddings, said at once.
         EmbeddingSettings resolved = new ArcanumSettings
         {
@@ -586,7 +541,6 @@ public sealed class WeaveServiceTests
         Assert.Equal(
             chunkSizeChars - chunkOverlapChars,
             WeaveService.ResolveChunkStep(chunkSizeChars, chunkOverlapChars));
-
     }
 
     [Fact]
@@ -785,6 +739,12 @@ public sealed class WeaveServiceTests
         public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0m);
 
+        public Task ExtendExpiryAsync(
+            Guid reservationId,
+            DateTimeOffset expiresAt,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default) =>
@@ -793,7 +753,6 @@ public sealed class WeaveServiceTests
 
     private sealed class FakeEmbeddingGeneratorFactory : IEmbeddingGeneratorFactory
     {
-
         public FakeEmbeddingGenerator Generator { get; } = new();
 
         public int ResolveCount { get; private set; }
@@ -802,20 +761,16 @@ public sealed class WeaveServiceTests
 
         public Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
         {
-
             ResolveCount++;
 
             ResolveCancellationToken = cancellationToken;
 
             return Task.FromResult(new EmbeddingGeneratorLease(Generator, ownsGenerator: false));
-
         }
-
     }
 
     private sealed class FakeEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
     {
-
         public List<int> CallSizes { get; } = [];
 
         public Exception? ThrowOnGenerate { get; set; }
@@ -835,7 +790,6 @@ public sealed class WeaveServiceTests
             EmbeddingGenerationOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-
             GenerateCancellationToken = cancellationToken;
 
             List<string> list = [.. values];
@@ -847,19 +801,16 @@ public sealed class WeaveServiceTests
             if (DelayOnGenerate is { } delay)
             {
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-
             }
 
             if (ThrowOnGenerate is not null || ThrowOnCallNumber == CallSizes.Count)
             {
                 throw ThrowOnGenerate ?? new InvalidOperationException("scripted embedding failure");
-
             }
 
             if (ReturnNoVectors)
             {
                 return new GeneratedEmbeddings<Embedding<float>>();
-
             }
 
             GeneratedEmbeddings<Embedding<float>> result = new(list.Count);
@@ -867,11 +818,9 @@ public sealed class WeaveServiceTests
             foreach (string _ in list)
             {
                 result.Add(new Embedding<float>(new float[] { 1f, 0f, 0f }));
-
             }
 
             return result;
-
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
@@ -879,7 +828,5 @@ public sealed class WeaveServiceTests
         public void Dispose()
         {
         }
-
     }
-
 }

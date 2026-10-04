@@ -222,6 +222,34 @@ internal sealed class BudgetReservationService(
         }
     }
 
+    public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default)
+    {
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                // Forward only, and only while Reserved: a renewal racing a reconcile or a sweep must
+                // never revive a settled reservation or pull a later expiry back.
+                cmd.CommandText =
+                    """
+                    UPDATE "BudgetReservations"
+                    SET "ExpiresAt" = @expires, "UpdatedAt" = @updated
+                    WHERE "Id" = @id AND "Status" = @reserved AND "ExpiresAt" < @expires
+                    """;
+
+                AddParameter(cmd, "@id", reservationId.ToString("N"));
+                AddParameter(cmd, "@expires", UtcInstantText.Format(expiresAt));
+                AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
+                AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            },
+            cancellationToken);
+    }
+
     public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(

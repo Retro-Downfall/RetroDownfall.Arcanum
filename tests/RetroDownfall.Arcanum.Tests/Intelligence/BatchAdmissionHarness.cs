@@ -327,6 +327,8 @@ internal sealed class BatchAdmissionAccounting(BatchAdmissionGate gate) : ITurnR
 
     public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
 
+    public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
     public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => Task.FromResult(0);
 }
 

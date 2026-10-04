@@ -364,6 +364,34 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         await AssertConnectionIsNotInATransactionAsync();
     }
 
+    /// <summary>
+    /// R-053: an owning turn renews its reservation before every provider call. Renewal moves a
+    /// Reserved expiry forward, never back, and leaves a settled reservation alone.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExtendExpiryAsync_MovesAReservedExpiryForwardOnly()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 100m,
+        });
+        DateTimeOffset admitted = DateTimeOffset.UtcNow.AddMinutes(15);
+        DateTimeOffset renewed = admitted.AddHours(1);
+        BudgetReservation reservation = await ReserveAsync(service, amount: 1m, admitted, "2035-02-03");
+        BudgetReservation settled = await ReserveAsync(service, amount: 1m, admitted, "2035-02-03");
+
+        await service.ExtendExpiryAsync(reservation.Id, renewed);
+        await service.ExtendExpiryAsync(reservation.Id, admitted);
+        await service.ReconcileAsync(settled.Id, actualCostUsd: 0.5m);
+        await service.ExtendExpiryAsync(settled.Id, renewed);
+
+        Assert.Equal(UtcInstantText.Format(renewed), await ReadExpiresAtAsync(reservation.Id));
+        Assert.Equal(UtcInstantText.Format(admitted), await ReadExpiresAtAsync(settled.Id));
+    }
+
     private async Task ArrangeCancelOnWriteAsync(string triggerScope, CancellationTokenSource cancellation)
     {
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
@@ -517,6 +545,21 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         return (
             (BudgetReservationStatus)reader.GetInt32(0),
             Convert.ToDecimal(reader.GetValue(1), CultureInfo.InvariantCulture));
+    }
+
+    private async Task<string> ReadExpiresAtAsync(Guid id)
+    {
+        await using DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
+        command.CommandText =
+            """
+            SELECT "ExpiresAt"
+            FROM "BudgetReservations"
+            WHERE "Id" = @id;
+            """;
+        AddParameter(command, "@id", id.ToString("N"));
+
+        object? scalar = await command.ExecuteScalarAsync();
+        return Assert.IsType<string>(scalar);
     }
 
     private static void AddParameter(DbCommand command, string name, object value)
