@@ -376,7 +376,7 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_label_whose_identity_normalises_to_nothing_is_refused_before_anything_is_deleted()
+    public async Task A_label_whose_identity_normalises_to_nothing_is_refused_after_the_transaction_rolls_back()
     {
 
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
@@ -409,6 +409,55 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             await _staged.ScalarLongAsync(
                 "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Summary\" IS NOT NULL;",
                 CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// A refusal is made before any label's statements run, so it holds whatever the caller then does with
+    /// its transaction. The rows are counted inside the transaction, before anything is rolled back.
+    /// </summary>
+    /// <remarks>
+    /// The label that cannot be named sorts after a valid one, because labels run in kind order. A refusal
+    /// reached in the middle of that walk would have already purged the first, and the caller's rollback
+    /// would be all that undid it.
+    /// </remarks>
+    [Fact]
+    public async Task A_label_whose_identity_normalises_to_nothing_is_refused_before_anything_is_deleted()
+    {
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedProtectedSummaryAsync();
+
+        await SeedLabelAsync(
+            "dddddddd-4444-4444-8444-dddddddddddd",
+            string.Empty,
+            SensitiveArtifactKind.SessionTitle,
+            LedgerSessionId);
+
+        await using SqliteTransaction transaction =
+            (SqliteTransaction)await _staged.Connection.BeginTransactionAsync(CancellationToken.None);
+
+        Result<BackupRestoreProtectedStatePurgeReceipt> purged = await BackupRestoreProtectedStatePurger.PurgeStagedAsync(
+            _staged.Connection,
+            transaction,
+            CovenantSqliteConnectionInitializer.Instance,
+            TimeProvider.System,
+            CancellationToken.None);
+
+        Assert.True(purged.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, purged.Error.Code);
+
+        Assert.Equal(2, await CountInAsync(transaction, "artifact_sensitivity"));
+
+        Assert.Equal(1, await CountInAsync(transaction, "session_summary_artifacts"));
+
+        Assert.Equal(1, await CountInAsync(transaction, "session_summary_state"));
+
+        Assert.Equal(1, await CountInAsync(transaction, "\"Sessions\" WHERE \"Summary\" IS NOT NULL"));
+
+        await transaction.RollbackAsync(CancellationToken.None);
 
     }
 
@@ -660,6 +709,22 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     private Task<long> CountAsync(string table) =>
         _staged.ScalarLongAsync($"SELECT COUNT(*) FROM {table};", CancellationToken.None);
+
+    /// <summary>Counts rows as the open transaction sees them, which a rollback has not yet undone.</summary>
+    private async Task<long> CountInAsync(SqliteTransaction transaction, string tableAndFilter)
+    {
+
+        await using SqliteCommand command = _staged.Connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = $"SELECT COUNT(*) FROM {tableAndFilter};";
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+    }
 
     private async Task<Result<BackupCovenantRestoreReconciliationReceipt>> ReconcileAsync(
         bool purgeProtectedState,

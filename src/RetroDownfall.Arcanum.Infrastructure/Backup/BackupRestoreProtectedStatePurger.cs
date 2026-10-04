@@ -142,13 +142,11 @@ internal static class BackupRestoreProtectedStatePurger
         List<StagedLabel> labels = await ReadLabelsAsync(staged, transaction, cancellationToken)
             .ConfigureAwait(false);
 
-        ulong removedArtifacts = 0;
-
-        HashSet<string> sessions = new(StringComparer.Ordinal);
-
+        // Every label is judged before the first one is purged, so a refusal never depends on the caller
+        // rolling back what earlier labels in the walk had already removed.
         foreach (StagedLabel label in labels)
         {
-            if (!RulesByCode.TryGetValue(label.KindCode, out CovenantSensitiveArtifactPurgeRule? rule))
+            if (!RulesByCode.ContainsKey(label.KindCode))
             {
                 // Fail closed. A label this build has no policy for describes Covenant-derived content
                 // whose storage it cannot enumerate, and removing the label alone would leave that
@@ -161,16 +159,23 @@ internal static class BackupRestoreProtectedStatePurger
 
             if (CovenantIdentitySql.Key(label.ArtifactId).Length == 0)
             {
-                // Fail closed, before any of this label's statements run. Every content, pointer, and
-                // projection delete compares a normalised column against this key, and an empty key would
-                // match any blank-keyed row in those tables rather than the one artifact the label names.
+                // Fail closed. Every content, pointer, and projection delete compares a normalised column
+                // against this key, and an empty key would match any blank-keyed row in those tables rather
+                // than the one artifact the label names.
                 return new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "The staged archive carries a sensitivity label whose artifact identity is empty, so "
                     + "the content it protects cannot be identified and its protected state cannot be removed.");
             }
+        }
 
-            if (await ApplyPlanAsync(staged, transaction, label, rule, cancellationToken)
+        ulong removedArtifacts = 0;
+
+        HashSet<string> sessions = new(StringComparer.Ordinal);
+
+        foreach (StagedLabel label in labels)
+        {
+            if (await ApplyPlanAsync(staged, transaction, label, RulesByCode[label.KindCode], cancellationToken)
                     .ConfigureAwait(false))
             {
                 removedArtifacts = checked(removedArtifacts + 1);
