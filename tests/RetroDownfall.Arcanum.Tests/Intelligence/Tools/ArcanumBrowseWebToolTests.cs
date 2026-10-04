@@ -148,6 +148,47 @@ public sealed class ArcanumBrowseWebToolTests
     }
 
     [Fact]
+    public async Task InvokeAsync_UrlLongerThanTheConfiguredLimit_ReturnsInvalidUrlWithoutRequesting()
+    {
+        bool handlerCalled = false;
+
+        ArcanumBrowseWebTool tool = CreateTool(
+            (_, _) =>
+            {
+                handlerCalled = true;
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            });
+
+        int maxUrlChars = ArcanumSettingClamps.WebBrowsingMaxUrlChars(
+            ArcanumRuntimeDefaults.WebBrowsing.MaxUrlChars);
+
+        string atLimit = "https://example.com/" + new string('a', maxUrlChars - "https://example.com/".Length);
+
+        string overLimit = atLimit + "b";
+
+        object? accepted = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?>(StringComparer.Ordinal) { ["url"] = atLimit }),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(ErrorCodes.WebBrowsing.InvalidUrl, Assert.IsType<string>(accepted), StringComparison.Ordinal);
+
+        Assert.True(handlerCalled);
+
+        handlerCalled = false;
+
+        object? rejected = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?>(StringComparer.Ordinal) { ["url"] = overLimit }),
+            CancellationToken.None);
+
+        BrowseWebResult? dto = Deserialize(rejected);
+
+        Assert.NotNull(dto);
+        Assert.Contains(ErrorCodes.WebBrowsing.InvalidUrl, dto.Content, StringComparison.Ordinal);
+        Assert.False(handlerCalled);
+    }
+
+    [Fact]
     public async Task InvokeAsync_HostResolvingToAPrivateAddress_ReturnsSsrfBlockedWithoutRequesting()
     {
         bool handlerCalled = false;

@@ -76,6 +76,63 @@ public sealed class ArcanumNativeWebToolTests
     }
 
     [Fact]
+    public void Schemas_ReflectConfiguredUrlAndQueryLimits()
+    {
+        // The advertised bound and the enforced bound come from the same effective settings.
+        WebBrowsingSettings effective = new ArcanumSettings().ResolveWebBrowsing();
+
+        StubCatalog catalog = new(
+            CreateSearchProvider(static (_, _, _) => throw new NotSupportedException()),
+            CreateReadProvider(static (_, _, _) => throw new NotSupportedException()));
+
+        ArcanumReadUrlTool read = new(catalog, Settings(), NullLogger.Instance);
+
+        ArcanumWebSearchTool search = new(catalog, Settings(), NullLogger.Instance);
+
+        Assert.Equal(
+            ArcanumSettingClamps.WebBrowsingMaxUrlChars(effective.MaxUrlChars),
+            UrlMaxLength(read.JsonSchema));
+
+        Assert.Equal(
+            ArcanumSettingClamps.WebBrowsingMaxQueryChars(effective.MaxQueryChars),
+            QueryMaxLength(search.JsonSchema));
+
+        // Limits other than the defaults flow into the schema, and out-of-range values are clamped
+        // exactly as the handlers clamp them.
+        WebBrowsingSettings tuned = effective with
+        {
+            MaxUrlChars = 1_234,
+            MaxQueryChars = 777,
+            MaxLinks = 3,
+        };
+
+        Assert.Equal(1_234, UrlMaxLength(ArcanumReadUrlTool.BuildSchema(tuned)));
+
+        Assert.Equal(1_234, UrlMaxLength(ArcanumBrowseWebTool.BuildSchema(tuned)));
+
+        Assert.Equal(777, QueryMaxLength(ArcanumWebSearchTool.BuildSchema(tuned)));
+
+        Assert.Equal(
+            ArcanumSettingClamps.WebBrowsingMaxUrlChars(int.MaxValue),
+            UrlMaxLength(ArcanumReadUrlTool.BuildSchema(tuned with { MaxUrlChars = int.MaxValue })));
+
+        Assert.Contains(
+            "3",
+            ArcanumBrowseWebTool.BuildSchema(tuned)
+                .GetProperty("properties")
+                .GetProperty("maxLinks")
+                .GetProperty("description")
+                .GetString(),
+            StringComparison.Ordinal);
+    }
+
+    private static int UrlMaxLength(JsonElement schema) =>
+        schema.GetProperty("properties").GetProperty("url").GetProperty("maxLength").GetInt32();
+
+    private static int QueryMaxLength(JsonElement schema) =>
+        schema.GetProperty("properties").GetProperty("query").GetProperty("maxLength").GetInt32();
+
+    [Fact]
     public async Task WebSearch_ReturnsFramedAnswerOrderedCitationIndicesAndUsage()
     {
         WebSearchOptions? observedOptions = null;
@@ -178,7 +235,6 @@ public sealed class ArcanumNativeWebToolTests
     [Fact]
     public async Task WebSearch_IdleTimeoutNamesTheBoundaryOwnerSavedStateAndRecovery()
     {
-
         StubProvider provider = CreateSearchProvider(
             static (_, _, _) => Task.FromResult(
                 Result<WebSearchResult>.Failure(
@@ -211,7 +267,6 @@ public sealed class ArcanumNativeWebToolTests
         Assert.Contains("Retry", message, StringComparison.Ordinal);
 
         Assert.DoesNotContain("raw transport detail", json, StringComparison.Ordinal);
-
     }
 
     [Fact]
@@ -573,5 +628,4 @@ public sealed class ArcanumNativeWebToolTests
                             "Unsupported.")))
                 : read(url, options, cancellationToken);
     }
-
 }
