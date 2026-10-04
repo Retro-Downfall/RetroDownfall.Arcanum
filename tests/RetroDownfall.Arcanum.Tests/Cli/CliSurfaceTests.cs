@@ -288,6 +288,127 @@ public sealed class CliSurfaceTests
     }
 
     /// <summary>
+    /// A command-reference row's options cell says what the command registers: "None beyond global or
+    /// inherited family options" is true only for a command with no options of its own, and an option
+    /// the cell names is one the parser accepts on that command.
+    /// </summary>
+    /// <remarks>
+    /// The row test above proves a spelling exists and nothing about what it accepts, so a command
+    /// that gained options after its row was written kept saying it had none. <c>open center</c> did
+    /// exactly that: it registers <c>-c</c> and <c>-r</c>, and its row told readers there were none
+    /// while the section below it documented them on the separate <c>center</c> command.
+    /// </remarks>
+    [Fact]
+    public void Every_documented_command_row_states_the_options_the_command_registers()
+    {
+        CliSurfaceMap map = BuildMap();
+
+        Dictionary<string, CliSurfaceCommand> registered = Walk(map)
+            .ToDictionary(static command => command.Path, StringComparer.Ordinal);
+
+        List<(int Number, string Command, string Options)> rows = [.. CommandReferenceOptionRows()];
+
+        // Asserted before the contents, so a table the reader found no options column in does not pass
+        // by checking nothing.
+        Assert.True(rows.Count > 50, $"Only {rows.Count} command rows with an options column were read.");
+
+        List<string> offenders = [];
+
+        // A command with several modes has one row per mode, each naming the options of its own mode, so
+        // what a command registers is compared with everything its rows name together.
+        Dictionary<string, HashSet<string>> namedByCommand = new(StringComparer.Ordinal);
+
+        foreach ((int number, string commandCell, string optionsCell) in rows)
+        {
+            Match match = DocumentedCommandCell.Match(commandCell);
+
+            if (!match.Success
+                || match.Groups["unregistered"].Success)
+            {
+                continue;
+            }
+
+            string path = VerbPath(match.Groups["spelling"].Value);
+
+            if (!registered.TryGetValue(path, out CliSurfaceCommand? command))
+            {
+                continue;
+            }
+
+            string[] own =
+            [
+                .. command.Options
+                    .Where(static option => !option.Recursive)
+                    .Select(static option => option.Name)
+                    .Order(StringComparer.Ordinal),
+            ];
+
+            // An option a command requires is written into its spelling, so the first cell names it too.
+            HashSet<string> namedInSpelling = new(
+                DocumentedOptionName.Matches(commandCell).Select(static match => match.Value),
+                StringComparer.Ordinal);
+
+            HashSet<string> named = new(
+                namedInSpelling.Concat(DocumentedOptionName.Matches(optionsCell).Select(static match => match.Value)),
+                StringComparer.Ordinal);
+
+            if (!namedByCommand.TryGetValue(path, out HashSet<string>? commandNames))
+            {
+                commandNames = new HashSet<string>(StringComparer.Ordinal);
+
+                namedByCommand[path] = commandNames;
+            }
+
+            commandNames.UnionWith(named);
+
+            if (optionsCell.StartsWith("None", StringComparison.Ordinal))
+            {
+                string[] unnamed = [.. own.Where(option => !namedInSpelling.Contains(option))];
+
+                if (unnamed.Length > 0)
+                {
+                    offenders.Add($"line {number}: arcanum {path} says it has no options of its own but registers {string.Join(", ", unnamed)}");
+                }
+
+                continue;
+            }
+
+            HashSet<string> accepted = new(own, StringComparer.Ordinal);
+
+            string[] segments = path.Split(' ');
+
+            for (int depth = 1; depth < segments.Length; depth++)
+            {
+                accepted.UnionWith(
+                    registered[string.Join(' ', segments[..depth])].Options
+                        .Where(static option => option.Recursive)
+                        .Select(static option => option.Name));
+            }
+
+            accepted.UnionWith(map.GlobalOptions.Select(static option => option.Name));
+
+            foreach (string option in named.Where(option => !accepted.Contains(option)).Order(StringComparer.Ordinal))
+            {
+                offenders.Add($"line {number}: arcanum {path} names {option}, which it does not register");
+            }
+        }
+
+        foreach ((string path, HashSet<string> names) in namedByCommand)
+        {
+            foreach (CliSurfaceOption option in registered[path].Options.Where(option => !option.Recursive && !names.Contains(option.Name)))
+            {
+                offenders.Add($"arcanum {path} registers {option.Name}, which none of its rows names");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A command-reference row disagrees with the options the command registers:"
+                + global::System.Environment.NewLine
+                + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
     /// The dedicated-Covenant heading states a count, and a count is a claim.
     /// </summary>
     /// <remarks>
@@ -361,6 +482,65 @@ public sealed class CliSurfaceTests
             }
 
             yield return (number, cells[1].Replace("\\|", "|", StringComparison.Ordinal).Trim());
+        }
+    }
+
+    private static readonly Regex DocumentedOptionName = new(
+        @"(?<=`[^`]*)(?<![\w-])--[a-z][a-z0-9-]*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The command cell and the options cell of every row, in the tables whose last column lists a
+    /// command's options, above the removed-spellings section.
+    /// </summary>
+    private static IEnumerable<(int Number, string Command, string Options)> CommandReferenceOptionRows()
+    {
+        int number = 0;
+
+        int optionsColumn = -1;
+
+        bool previousWasRow = false;
+
+        foreach (string line in File.ReadLines(CommandReferencePath()))
+        {
+            number++;
+
+            if (line.StartsWith("## Removed spellings", StringComparison.Ordinal))
+            {
+                yield break;
+            }
+
+            if (!line.StartsWith('|'))
+            {
+                previousWasRow = false;
+
+                continue;
+            }
+
+            string[] cells = UnescapedPipe.Split(line);
+
+            if (!previousWasRow)
+            {
+                // The first row of a table is its header; the options column is its last one when named so.
+                string last = cells.Length >= 3 ? cells[^2].Trim() : string.Empty;
+
+                optionsColumn = last is "Additional command options" or "Options"
+                    ? cells.Length - 2
+                    : -1;
+            }
+
+            previousWasRow = true;
+
+            if (optionsColumn < 2
+                || cells.Length - 2 != optionsColumn)
+            {
+                continue;
+            }
+
+            yield return (
+                number,
+                cells[1].Replace("\\|", "|", StringComparison.Ordinal).Trim(),
+                cells[optionsColumn].Replace("\\|", "|", StringComparison.Ordinal).Trim());
         }
     }
 

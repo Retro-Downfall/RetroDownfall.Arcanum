@@ -18,7 +18,7 @@ Options marked repeatable may be supplied more than once. System.CommandLine res
 
 | Option | Meaning |
 |---|---|
-| `--output-format <text\|json>` | Select the output shape. `json` makes non-streaming commands emit one JSON payload; watch streams emit one source event per line as NDJSON. Diagnostics and progress remain on stderr. |
+| `--output-format <text\|json>` | Select the output shape. `json` makes non-streaming commands emit one JSON payload, typed where the verb has one and otherwise the text envelope described in [Typed and text `--json` payloads](#typed-and-text---json-payloads); watch streams emit one source event per line as NDJSON. Diagnostics and progress remain on stderr. |
 | `--json` | Shorthand for `--output-format json`. Combining it with `--output-format text` is a contradiction and exits `2`. |
 | `--plain` | Disable ANSI color, styling, and terminal animations without changing persisted configuration. |
 | `--yes` | Automatically approve commands that otherwise require confirmation, including overwrites and explicit deletion flows. It is the only automatic confirmation switch; it does not change unrelated mutations. |
@@ -90,6 +90,30 @@ Command-specific refinements:
 - `backup create` returns `1` for an incomplete result and never labels it complete or publishes an archive; `backup verify` returns `1` when authentication, structure, checksums, or database verification fail. Typed backup-plan validation returns `2`. Commands that consume a passphrase also return `2` for invalid or conflicting passphrase-source options; `backup create --dry-run` does not consume or semantically validate those source options.
 - `preset list` still returns `0` when definitions can be listed but effective-state inspection is unavailable; that diagnostic stays on stderr and state is shown as unavailable. Unknown presets, missing prerequisites, invalid complete candidates, stale configuration, failed apply/reset, or failed rollback return `2`; a `Connection.*` service failure returns `3`.
 
+### Typed and text `--json` payloads
+
+Every direct command answers `--json` with exactly one JSON document, but only a verb with a typed payload (for example `session show`, `memory covenant list`, `budget`, `conclave status`, and `doctor`) puts fields in it. A verb with no typed payload prints its normal text, which the CLI captures at the process boundary, strips of ANSI sequences, and returns as `{ "output": "<text>", "exitCode": <n> }`. That document is valid and stable, but `output` is the table or sentence a person would read, not a listing a script can index. For typed data from those verbs, call the HTTP API instead ([Arcanum.API.md](Arcanum.API.md)).
+
+The families below emit the text envelope for every verb except the typed ones named beside them. The table is not exhaustive: verbs outside it may emit the envelope too, so rely on a typed shape only where a verb documents one.
+
+| Command family | Typed `--json` verbs |
+|---|---|
+| `arcanum ward` | none |
+| `arcanum model`, `arcanum provider` | none |
+| `arcanum operation` | none |
+| `arcanum daemon` | none |
+| `arcanum saga` | none |
+| `arcanum data encryption` | none |
+| `arcanum look` | none |
+| `arcanum apprentice` | none |
+| `arcanum trial` | none |
+| `arcanum tool` | none |
+| `arcanum mcp` | none |
+| `arcanum prompt` | none |
+| `arcanum campaign` | `campaign prompts`, `campaign sessions` |
+| `arcanum spell` | `spell validate` |
+| `arcanum workspace` | `workspace read` |
+
 ## Handler-validated required values
 
 Some options are nullable in the generated parser so handlers can resolve saved context, read a secure value, or produce a better error. The following requirements are therefore enforced after parsing even when short help displays square brackets:
@@ -124,7 +148,7 @@ Some options are nullable in the generated parser so handlers can resolve saved 
 
 A bare interactive invocation opens Command Center. A non-interactive invocation, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage instead. `ARCANUM_NO_AUTO_SERVE=1` disables interactive host auto-start; `NO_COLOR` or `ARCANUM_NO_COLOR` selects a monochrome theme but does not disable the UI. Command Center requires at least an 80-by-12 terminal after UI initialization; a smaller terminal or UI-bootstrap failure exits with code 1.
 
-`arcanum center` is the explicit alias, and `arcanum open center` reaches the same in-process host. Unlike the automatic bare launch, an explicit request is not suppressed by `ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply. All three accept `-c`/`--continue` to reopen the most recent Session and `-r`/`--resume [<id>]` to reopen a named one, matching the one-shot entry.
+`arcanum center` is the explicit spelling, and `arcanum open center` behaves the same and reaches the same in-process host. Unlike the automatic bare launch, an explicit request is not suppressed by `ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply. All three accept `-c`/`--continue` to reopen the most recent Session and `-r`/`--resume [<id>]` to reopen a named one, matching the one-shot entry.
 
 Command Center is the only interactive turn entry. A terminal that cannot host it — redirected stdin or stdout, `ARCANUM_NO_COMMAND_CENTER=1`, or a window under 80×12 — gets usage naming `arcanum run` rather than a degraded second REPL.
 
@@ -272,7 +296,7 @@ Launch Command Center, The Forge, or Compendium, optionally at one server-owned 
 
 | Command | Destination | Additional command options |
 |---|---|---|
-| `arcanum open center` | Command Center in the current `arcanum` process. | None beyond global or inherited family options. |
+| `arcanum open center` | Command Center in the current `arcanum` process. | `-c, --continue` — Reopen the most recent Session. Cannot be combined with `--resume`.<br>`-r, --resume [<session>]` — Reopen a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker. |
 | `arcanum open theforge` | The Forge shell. | None beyond global or inherited family options. |
 | `arcanum open compendium` | Compendium at configuration settings. | None beyond global or inherited family options. |
 | `arcanum open session [<session>]` | The Forge Workbench at the selected Session. | None beyond global or inherited family options. |
@@ -289,7 +313,7 @@ Discovery checks platform application bundles and executables, including Windows
 
 ### `arcanum center`
 
-Explicitly open Command Center in the current process. This is an alias for `arcanum open center`; the full interactive input table is in [Bare `arcanum`: Command Center](#bare-arcanum-command-center).
+Explicitly open Command Center in the current process. It behaves the same as `arcanum open center` (a separate command registered under both names, not an alias) and takes the same options; the full interactive input table is in [Bare `arcanum`: Command Center](#bare-arcanum-command-center).
 
 **Syntax:** `arcanum center [-c] [-r [<session>]]`
 
