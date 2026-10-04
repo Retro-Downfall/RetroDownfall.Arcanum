@@ -722,6 +722,95 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         }
     }
 
+    [SkippableFact]
+    public async Task File_pin_through_contained_symlink_succeeds_when_workspace_root_is_a_symlink()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink containment is exercised on Unix hosts.");
+
+        // The caller reaches the workspace through a symlink (a bind-mount style root such as /tmp or
+        // /var on macOS), while a link inside the workspace spells its target by the canonical path.
+        string real = Path.Combine(_workspace, "real");
+
+        string shared = Path.Combine(real, "shared");
+
+        Directory.CreateDirectory(shared);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(shared, "a.txt"),
+            "contained link content");
+
+        Directory.CreateSymbolicLink(Path.Combine(real, "inner"), shared);
+
+        string rootLink = Path.Combine(_workspace, "root-link");
+
+        Directory.CreateSymbolicLink(rootLink, real);
+
+        foreach ((SessionContextPinKind kind, string target) in new[]
+        {
+            (SessionContextPinKind.File, "inner/a.txt"),
+            (SessionContextPinKind.SymbolRange, "inner/a.txt:1-1"),
+        })
+        {
+            SessionContextPinRecord pin = Pin(kind, target, "through-inner-link", null);
+
+            SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+                pin.SessionId,
+                rootLink,
+                CancellationToken.None);
+
+            string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+            Assert.DoesNotContain("status: Unsafe", text, StringComparison.Ordinal);
+
+            Assert.Contains("contained link content", text, StringComparison.Ordinal);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Escaping_directory_symlink_is_still_Unsafe_when_workspace_root_is_a_symlink()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
+
+        string real = Path.Combine(_workspace, "real");
+
+        Directory.CreateDirectory(real);
+
+        string outside = Path.Combine(_workspace, "outside");
+
+        Directory.CreateDirectory(outside);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(outside, "secret.txt"),
+            "outside-canary-77ce");
+
+        Directory.CreateSymbolicLink(Path.Combine(real, "link"), outside);
+
+        string rootLink = Path.Combine(_workspace, "root-link");
+
+        Directory.CreateSymbolicLink(rootLink, real);
+
+        SessionContextPinRecord pin = Pin(
+            SessionContextPinKind.File,
+            "link/secret.txt",
+            "through-escaping-link",
+            null);
+
+        SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+            pin.SessionId,
+            rootLink,
+            CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Unsafe", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("outside-canary-77ce", text, StringComparison.Ordinal);
+    }
+
     private SessionContextPinMaterializer Create(
         params SessionContextPinRecord[] pins) =>
         new(new StaticPinStore(pins), new NoOpSessionAttachmentStore(), CreateSessions());

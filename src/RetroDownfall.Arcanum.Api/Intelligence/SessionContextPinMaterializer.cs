@@ -622,40 +622,31 @@ public sealed class SessionContextPinMaterializer(
         {
             string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDirectory));
             string candidate = Path.GetFullPath(target, root);
-            string prefix = root + Path.DirectorySeparatorChar;
-            if (!candidate.Equals(root, StringComparison.Ordinal)
-                && !candidate.StartsWith(prefix, StringComparison.Ordinal))
+
+            if (!WorkspacePathPolicy.IsPathUnderWorkspace(root, candidate))
             {
                 error = "Path escapes the workspace.";
+
                 return false;
             }
 
-            string relative = Path.GetRelativePath(root, candidate);
-            string current = root;
-            foreach (string component in relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+            // Canonical containment: the root and the candidate are each resolved through every link
+            // they traverse and then compared. Comparing a link's target text with the root as the
+            // caller spelled it rejected every internal link whenever the root itself was reached
+            // through a link, and an intermediate directory link that leaves the workspace must still
+            // fail here because the no-follow open only guards the final path component.
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    root,
+                    candidate,
+                    out string? resolvedFinalPath))
             {
-                current = Path.GetFullPath(Path.Combine(current, component));
-                if (!File.Exists(current) && !Directory.Exists(current))
-                {
-                    continue;
-                }
-                FileSystemInfo info = File.Exists(current)
-                    ? new FileInfo(current)
-                    : new DirectoryInfo(current);
-                FileSystemInfo? link = info.ResolveLinkTarget(returnFinalTarget: true);
-                if (link is not null)
-                {
-                    current = Path.GetFullPath(link.FullName);
-                    if (!current.Equals(root, StringComparison.Ordinal)
-                        && !current.StartsWith(prefix, StringComparison.Ordinal))
-                    {
-                        error = "Symlink target escapes the workspace.";
-                        path = string.Empty;
-                        return false;
-                    }
-                }
+                error = "Symlink target escapes the workspace.";
+
+                return false;
             }
-            path = current;
+
+            path = resolvedFinalPath ?? candidate;
+
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
