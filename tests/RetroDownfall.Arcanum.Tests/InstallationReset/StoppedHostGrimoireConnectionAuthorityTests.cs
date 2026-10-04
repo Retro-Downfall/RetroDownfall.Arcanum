@@ -16,53 +16,24 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 [Collection("ProcessEnvironment")]
 public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
 {
-
-    private readonly string? _originalTestHome;
-
-    private readonly string _testHome = Path.Combine(
-        Path.GetTempPath(),
-        "arcanum-stopped-host-authority-tests",
-        Guid.NewGuid().ToString("N"));
+    private readonly ArcanumTestHomeScope _home =
+        new("arcanum-stopped-host-authority-tests");
 
     public StoppedHostGrimoireConnectionAuthorityTests()
     {
-
-        _originalTestHome = global::System.Environment.GetEnvironmentVariable(
-            "ARCANUM_TEST_HOME");
-
-        global::System.Environment.SetEnvironmentVariable(
-            "ARCANUM_TEST_HOME",
-            _testHome);
-
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
-
     }
 
     public void Dispose()
     {
-
-        global::System.Environment.SetEnvironmentVariable(
-            "ARCANUM_TEST_HOME",
-            _originalTestHome);
-
-        try
-        {
-
-            Directory.Delete(_testHome, recursive: true);
-
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-
+        _home.Dispose();
     }
 
     public static TheoryData<int, int> WrongPurposeMatrix() =>
@@ -82,7 +53,6 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         int issuedOperation,
         int openedOperation)
     {
-
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         StoppedHostGrimoireAuthorityIssuer issuer = Issuer(held);
@@ -107,13 +77,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Foreign_authority_implementation_is_refused_before_provider_construction_or_open()
     {
-
         RecordingStoppedHostFactoryTestSeam seam = new();
 
         StoppedHostGrimoireConnectionFactory factory = Factory(
@@ -132,13 +100,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public void Authority_implementation_is_privately_constructible_only_by_the_issuer()
     {
-
         Type? nestedAuthority = typeof(StoppedHostGrimoireAuthorityIssuer)
             .GetNestedType(
                 "StoppedHostGrimoireConnectionAuthority",
@@ -155,14 +121,12 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
                 BindingFlags.Instance | BindingFlags.NonPublic));
 
         Assert.True(constructor.IsPrivate);
-
     }
 
     [Fact]
     public void Lock_for_wrong_root_cannot_authorize_the_real_grimoire_path()
     {
-
-        string wrongRoot = Path.Combine(_testHome, "wrong-root");
+        string wrongRoot = Path.Combine(_home.Root, "wrong-root");
 
         Directory.CreateDirectory(wrongRoot);
 
@@ -181,13 +145,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Wrong_canonical_path_is_refused_before_provider_construction_or_open()
     {
-
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         StoppedHostGrimoireAuthorityIssuer issuer = new(
@@ -214,13 +176,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Reused_authority_is_refused_before_a_second_provider_construction_or_open()
     {
-
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         await using IStoppedHostGrimoireConnectionAuthority authority = Issuer(held)
@@ -254,13 +214,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Disposed_authority_is_refused_before_provider_construction_or_open()
     {
-
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         IStoppedHostGrimoireConnectionAuthority authority = Issuer(held)
@@ -282,13 +240,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Disposed_original_lock_is_not_replaced_by_a_new_lock_instance()
     {
-
         ArcanumMaintenanceLock original = Acquire(ArcanumPaths.GrimoireDirectory);
 
         IStoppedHostGrimoireConnectionAuthority authority = Issuer(original)
@@ -314,13 +270,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Native_runtime_failure_constructs_and_opens_no_provider()
     {
-
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         await using IStoppedHostGrimoireConnectionAuthority authority = Issuer(held)
@@ -345,13 +299,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Cancellation_consumes_authority_and_retry_is_terminally_refused()
     {
-
         using ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         await using IStoppedHostGrimoireConnectionAuthority authority = Issuer(held)
@@ -384,13 +336,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Lock_is_revalidated_after_native_initialization_before_provider_construction()
     {
-
         ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         await using IStoppedHostGrimoireConnectionAuthority authority = Issuer(held)
@@ -413,13 +363,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(0, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     [Fact]
     public async Task Lock_is_revalidated_immediately_before_native_open()
     {
-
         ArcanumMaintenanceLock held = Acquire(ArcanumPaths.GrimoireDirectory);
 
         await using IStoppedHostGrimoireConnectionAuthority authority = Issuer(held)
@@ -442,7 +390,6 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
         Assert.Equal(1, seam.ProviderConstructionCount);
 
         Assert.Equal(0, seam.NativeOpenCount);
-
     }
 
     private StoppedHostGrimoireAuthorityIssuer Issuer(ArcanumMaintenanceLock held) =>
@@ -508,24 +455,19 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
 
     private sealed class ForeignAuthority : IStoppedHostGrimoireConnectionAuthority
     {
-
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class FixedPassphrase : IGrimoireDbPassphraseSource
     {
-
         public string Passphrase => "test-passphrase";
 
         public void SetPassphrase(string passphrase) => throw new NotSupportedException();
-
     }
 
     private sealed class RecordingNativeRuntime(bool initializeProvider = false)
         : ISqliteNativeRuntime
     {
-
         internal Action? AfterInitialize { get; init; }
 
         internal Exception? Failure { get; init; }
@@ -534,32 +476,24 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
 
         public void Initialize()
         {
-
             InitializeCount++;
 
             if (Failure is not null)
             {
-
                 throw Failure;
-
             }
 
             if (initializeProvider)
             {
-
                 SqliteNativeRuntime.Instance.Initialize();
-
             }
 
             AfterInitialize?.Invoke();
-
         }
-
     }
 
     private sealed class RecordingInitializer : ICovenantSqliteConnectionInitializer
     {
-
         public ValueTask InitializeAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
@@ -575,13 +509,11 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
             RestoreStagingManagedAuthoritySanitizationCapability authority,
             RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RecordingStoppedHostFactoryTestSeam
         : IStoppedHostGrimoireConnectionFactoryTestSeam
     {
-
         internal Action? OnAfterProviderConstruction { get; init; }
 
         internal int NativeOpenCount { get; private set; }
@@ -590,22 +522,16 @@ public sealed class StoppedHostGrimoireConnectionAuthorityTests : IDisposable
 
         public void AfterProviderConstruction()
         {
-
             ProviderConstructionCount++;
 
             OnAfterProviderConstruction?.Invoke();
-
         }
 
         public ValueTask BeforeNativeOpenAsync(CancellationToken cancellationToken)
         {
-
             NativeOpenCount++;
 
             return ValueTask.CompletedTask;
-
         }
-
     }
-
 }

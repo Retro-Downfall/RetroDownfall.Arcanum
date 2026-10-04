@@ -56,6 +56,15 @@ internal static class CliTestHarness
         string[] args,
         string? input = null)
     {
+        // Production dependency injection resolves every persistent path through ArcanumPaths, which
+        // outside a Testing environment is the developer's real profile directory: the command
+        // would read the operator's arcanum.json and a name-resolved selection would write
+        // recent-resources.txt there. Open a scope of the harness's own only when the ambient home
+        // is unredirected; a test that already redirected it (six classes do) keeps its own.
+        using ArcanumTestHomeScope? harnessHome = TestHomeGuard.AmbientHomeIsUnredirected()
+            ? new ArcanumTestHomeScope("arcanum-cli-harness")
+            : null;
+
         ApplyInstalledStartupProbe(services);
 
         ApplyInMemoryCredentialStore(services);
