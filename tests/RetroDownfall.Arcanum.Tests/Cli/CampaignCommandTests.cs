@@ -419,6 +419,109 @@ public sealed class CampaignCommandTests
         Assert.Equal(prompt.Name, Assert.Single(emitted).Name);
     }
 
+    /// <summary>
+    /// The host serves campaigns one page at a time and names the rest in <c>nextOffset</c>. A list that
+    /// stopped at the first page looked complete on the registry an operator reads before deleting.
+    /// </summary>
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        CampaignDto first = new(SampleId, "First-page-campaign", "/tmp/one", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        CampaignDto second = new(Guid.NewGuid(), "Second-page-campaign", "/tmp/two", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<CampaignDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<CampaignDto>([second], false)
+                    : new ListPageResult<CampaignDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("First-page-campaign", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Second-page-campaign", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_fails_without_a_partial_table_when_the_host_repeats_its_offset()
+    {
+        CampaignDto row = new(SampleId, "Looping-campaign", "/tmp/one", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<CampaignDto>>(
+                new ListPageResult<CampaignDto>([row], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "list"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("Api.PaginationNoProgress", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Looping-campaign", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Prompts_follows_hasMore_until_exhausted()
+    {
+        PromptSummaryDto first = new(Guid.NewGuid(), SampleId, "first-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        PromptSummaryDto second = new(Guid.NewGuid(), SampleId, "second-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<PromptSummaryDto>([second], false)
+                    : new ListPageResult<PromptSummaryDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "prompts", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Equal($"/api/campaigns/{SampleId:D}/prompts", handler.Requests[1].RequestUri!.AbsolutePath);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(2, document.RootElement.GetArrayLength());
+    }
+
+    /// <summary>
+    /// An update that names nothing to change is not a success: it used to send an empty update and print
+    /// "Campaign updated", so a mistyped or forgotten option looked applied.
+    /// </summary>
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["campaign", "update", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--name", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

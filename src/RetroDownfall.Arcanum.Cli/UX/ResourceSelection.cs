@@ -21,10 +21,17 @@ public enum ResourceSelectionStatus
     Error,
 }
 
+/// <summary>
+/// The outcome of resolving one resource. <see cref="ErrorCode"/> is the code of the host
+/// <see cref="Result"/> failure that stopped resolution (for example <c>Connection.Unreachable</c>), or
+/// null when the failure is the resolver's own verdict (no match, ambiguous, no picker); it is what lets
+/// a command map "the host could not be reached" to its exit code instead of a generic failure.
+/// </summary>
 public sealed record ResourceSelectionResult<T>(
     ResourceSelectionStatus Status,
     T? Value = default,
-    string? Error = null)
+    string? Error = null,
+    string? ErrorCode = null)
     where T : class
 {
     public static ResourceSelectionResult<T> Selected(T value) =>
@@ -33,8 +40,11 @@ public sealed record ResourceSelectionResult<T>(
     public static ResourceSelectionResult<T> Cancelled() =>
         new(ResourceSelectionStatus.Cancelled);
 
-    public static ResourceSelectionResult<T> Failure(string error) =>
-        new(ResourceSelectionStatus.Error, Error: error);
+    public static ResourceSelectionResult<T> Failure(string error, string? errorCode = null) =>
+        new(ResourceSelectionStatus.Error, Error: error, ErrorCode: errorCode);
+
+    public static ResourceSelectionResult<T> Failure(Error error) =>
+        Failure(error.Message, error.Code);
 }
 
 public sealed record ResourceDescriptor<T>(
@@ -140,7 +150,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
             if (scanned.IsFailure)
             {
-                return ResourceSelectionResult<T>.Failure(scanned.Error.Message);
+                return ResourceSelectionResult<T>.Failure(scanned.Error);
             }
 
             // The request carries only "not interactive", never why: redirection and the --json /
@@ -165,7 +175,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
             if (fetched.IsFailure)
             {
-                return ResourceSelectionResult<T>.Failure(fetched.Error.Message);
+                return ResourceSelectionResult<T>.Failure(fetched.Error);
             }
 
             ResourcePage<T> page = fetched.Value;
@@ -207,7 +217,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
             if (next.IsFailure)
             {
-                return ResourceSelectionResult<T>.Failure(next.Error.Message);
+                return ResourceSelectionResult<T>.Failure(next.Error);
             }
 
             token = next.Value;
@@ -232,7 +242,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
         if (scanned.IsFailure)
         {
-            return ResourceSelectionResult<T>.Failure(scanned.Error.Message);
+            return ResourceSelectionResult<T>.Failure(scanned.Error);
         }
 
         ResourceDescriptor<T> descriptor = request.Descriptor;
@@ -393,7 +403,6 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
         T value,
         CancellationToken cancellationToken)
     {
-
         string id = request.Descriptor.GetId(value);
 
         await recentStore
@@ -408,7 +417,6 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
             .ConfigureAwait(false);
 
         return ResourceSelectionResult<T>.Selected(value);
-
     }
 
     private static async Task<Result<bool>> RevalidateExactIdAsync(
@@ -416,7 +424,6 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
         string id,
         CancellationToken cancellationToken)
     {
-
         Result<ResourceScan> current = await ScanAsync(
                 request,
                 id,
@@ -426,7 +433,6 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
         return current.IsSuccess
             ? Result<bool>.Success(current.Value.ExactIds.Count > 0)
             : Result<bool>.Failure(current.Error);
-
     }
 
     private static ResourceSelectionResult<T> Ambiguous(
@@ -460,7 +466,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
             if (fetched.IsFailure)
             {
-                return ResourceSelectionResult<T>.Failure(fetched.Error.Message);
+                return ResourceSelectionResult<T>.Failure(fetched.Error);
             }
 
             ResourcePage<T> page = fetched.Value;
@@ -502,7 +508,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
 
             if (next.IsFailure)
             {
-                return ResourceSelectionResult<T>.Failure(next.Error.Message);
+                return ResourceSelectionResult<T>.Failure(next.Error);
             }
 
             token = next.Value;

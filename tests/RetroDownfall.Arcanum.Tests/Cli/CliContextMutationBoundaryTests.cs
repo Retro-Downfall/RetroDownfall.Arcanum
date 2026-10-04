@@ -140,9 +140,36 @@ public sealed class CliContextMutationBoundaryTests
         Assert.Equal(1, boundary.Calls);
     }
 
+    /// <summary>
+    /// The selection itself succeeded, then the host went away before the write could revalidate it.
+    /// That is still "the host could not be reached", so it exits 3 like every other host call, and the
+    /// saved context stays as it was.
+    /// </summary>
+    [Fact]
+    public async Task A_host_that_goes_away_during_revalidation_exits_3_and_keeps_the_saved_context()
+    {
+        FakeContextStore store = new(
+            CliContextDocument.Empty with { Model = "retained-model" });
+
+        RecordingArcanumClientMutationBoundary boundary = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            Services(store, boundary, new UnreachableHandler()),
+            ["use", "session", FakeResourceCatalog.SessionId.ToString("D")]);
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        Assert.Equal("retained-model", store.Load().Model);
+
+        Assert.Null(store.Load().SessionId);
+
+        Assert.Equal(0, store.ExclusiveSaves);
+    }
+
     private static ServiceCollection Services(
         FakeContextStore store,
-        RecordingArcanumClientMutationBoundary boundary)
+        RecordingArcanumClientMutationBoundary boundary,
+        HttpMessageHandler? handler = null)
     {
         ServiceCollection services = new();
 
@@ -167,7 +194,7 @@ public sealed class CliContextMutationBoundaryTests
 
         services.AddSingleton(
             new ArcanumApiClient(
-                new FakeHttpClientFactory(new SessionHandler()),
+                new FakeHttpClientFactory(handler ?? new SessionHandler()),
                 ArcanumApiCredentialLeaseTestFactory.Create("test-key")));
 
         services.RemoveAll<IArcanumClientMutationBoundary>();
@@ -175,6 +202,14 @@ public sealed class CliContextMutationBoundaryTests
         services.AddSingleton<IArcanumClientMutationBoundary>(boundary);
 
         return services;
+    }
+
+    private sealed class UnreachableHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            throw new HttpRequestException("Connection refused");
     }
 
     private sealed class SessionHandler : HttpMessageHandler

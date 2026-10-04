@@ -21,21 +21,17 @@ public sealed class ToolCommands(
     IRecentResourceStore recentStore,
     IThemePalette themePalette)
 {
-
     public async Task<int> List(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-
         Result<WorkspaceArsenalDto> result = await GetArsenalAsync(
             workingDirectory,
             cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         Table table = new();
@@ -48,18 +44,15 @@ public sealed class ToolCommands(
 
         foreach (string tool in result.Value.NativeTools.Order(StringComparer.Ordinal))
         {
-
             table.AddRow(
                 Markup.Escape(tool),
                 "built-in",
                 "direct API invocation");
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Show(
@@ -67,7 +60,6 @@ public sealed class ToolCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-
         ResourceSelectionResult<BuiltInTool> selection = await SelectToolAsync(
             toolIdentifier,
             workingDirectory,
@@ -75,16 +67,12 @@ public sealed class ToolCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return 0;
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
-            return WriteError(selection.Error!);
-
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         Table table = new Table().Border(TableBorder.None).HideHeaders();
@@ -106,7 +94,6 @@ public sealed class ToolCommands(
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Invoke(
@@ -115,15 +102,12 @@ public sealed class ToolCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-
         if (!ToolArgumentReader.TryRead(
                 argumentSource,
                 out JsonElement arguments,
                 out string? argumentError))
         {
-
             return WriteError(argumentError!);
-
         }
 
         ResourceSelectionResult<BuiltInTool> selection = await SelectToolAsync(
@@ -133,16 +117,12 @@ public sealed class ToolCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return 0;
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
-            return WriteError(selection.Error!);
-
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         Result<RetroDownfall.Arcanum.Api.Models.ToolInvokeResponse> result =
@@ -153,9 +133,7 @@ public sealed class ToolCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         // Raw stdout: Spectre would render the document as a Text renderable and hard-wrap it at the
@@ -163,7 +141,6 @@ public sealed class ToolCommands(
         Console.Out.WriteLine(result.Value.Result.GetRawText());
 
         return 0;
-
     }
 
     private async Task<ResourceSelectionResult<BuiltInTool>> SelectToolAsync(
@@ -171,17 +148,15 @@ public sealed class ToolCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-
         Result<WorkspaceArsenalDto> arsenal = await GetArsenalAsync(
             workingDirectory,
             cancellationToken).ConfigureAwait(false);
 
         if (arsenal.IsFailure)
         {
-
             return ResourceSelectionResult<BuiltInTool>.Failure(
-                $"{arsenal.Error.Code}: {arsenal.Error.Message}");
-
+                $"{arsenal.Error.Code}: {arsenal.Error.Message}",
+                arsenal.Error.Code);
         }
 
         BuiltInTool[] tools = arsenal.Value.NativeTools
@@ -207,7 +182,6 @@ public sealed class ToolCommands(
                     PickAmbiguousIdentifiers: true),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private Task<Result<WorkspaceArsenalDto>> GetArsenalAsync(
@@ -217,19 +191,20 @@ public sealed class ToolCommands(
             new OptionalWorkspaceRequest(workingDirectory),
             cancellationToken);
 
-    private int WriteError(Error error) =>
-        WriteError($"{error.Code}: {error.Message}");
-
-    private int WriteError(string error)
+    private int WriteError(Error error)
     {
+        _ = WriteError($"{error.Code}: {error.Message}");
 
+        return CliFailureExit.ExitCode(error);
+    }
+
+    private int WriteError(string error, string? errorCode = null)
+    {
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(Markup.Escape(error)));
 
-        return 1;
-
+        return CliFailureExit.ExitCode(errorCode);
     }
 
     private sealed record BuiltInTool(string Name);
-
 }

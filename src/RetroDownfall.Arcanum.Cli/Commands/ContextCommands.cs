@@ -19,13 +19,11 @@ public sealed class ContextCommands(
     ArcanumApiClient apiClient,
     ICliInferenceContextResolver contextResolver)
 {
-
     public async Task<int> Use(
         CliContextScope scope,
         string identifier,
         CancellationToken cancellationToken)
     {
-
         CliContextMutationResult result = await context
             .SelectAsync(scope, identifier, cancellationToken)
             .ConfigureAwait(false);
@@ -33,14 +31,12 @@ public sealed class ContextCommands(
         WriteMutation(result);
 
         return (int)result.ExitCode;
-
     }
 
     public async Task<int> Clear(
         CliContextScope scope,
         CancellationToken cancellationToken)
     {
-
         CliContextMutationResult result = await context
             .ClearAsync(scope, cancellationToken)
             .ConfigureAwait(false);
@@ -48,24 +44,20 @@ public sealed class ContextCommands(
         WriteMutation(result);
 
         return (int)result.ExitCode;
-
     }
 
     public int InvalidClearScope(string? scope)
     {
-
         CliContextMutationResult result = CliContextMutationResult.Failure(
             $"Unknown context scope '{scope}'. Expected campaign, workspace, model, or session.");
 
         WriteMutation(result);
 
         return (int)result.ExitCode;
-
     }
 
     public async Task<int> Current(CancellationToken cancellationToken)
     {
-
         CliContextStatusPayload status = await context
             .GetCurrentAsync(
                 CliInvocationContext.Current.NoContext,
@@ -74,13 +66,11 @@ public sealed class ContextCommands(
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 status,
                 CliJsonContext.Default.CliContextStatusPayload);
 
             return (int)CliExitCode.Success;
-
         }
 
         dispatcher.WritePayload(
@@ -99,17 +89,13 @@ public sealed class ContextCommands(
 
         foreach (string warning in status.Warnings)
         {
-
             dispatcher.WriteDiagnostic("Warning: " + warning);
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     public Task<int> Preview(
-
         ContextPreviewView view,
 
         string prompt,
@@ -129,7 +115,6 @@ public sealed class ContextCommands(
         CancellationToken cancellationToken)
 
         => PreviewCore(
-
             view,
 
             prompt,
@@ -169,7 +154,6 @@ public sealed class ContextCommands(
             cancellationToken);
 
     internal Task<int> PreviewRun(
-
         ContextPreviewView view,
 
         string prompt,
@@ -209,7 +193,6 @@ public sealed class ContextCommands(
         CancellationToken cancellationToken)
 
         => PreviewCore(
-
             view,
 
             prompt,
@@ -249,7 +232,6 @@ public sealed class ContextCommands(
             cancellationToken);
 
     private async Task<int> PreviewCore(
-
         ContextPreviewView view,
 
         string prompt,
@@ -289,7 +271,6 @@ public sealed class ContextCommands(
         CancellationToken cancellationToken)
 
     {
-
         string invocationDirectory = Environment.CurrentDirectory;
 
         CliEffectiveContext effective;
@@ -297,20 +278,15 @@ public sealed class ContextCommands(
         if (preparedContext is not null)
 
         {
-
             effective = preparedContext;
-
         }
         else
 
         {
-
             CliInferenceContextResult resolved = await contextResolver
 
                 .ResolveAsync(
-
                     new CliInferenceContextRequest(
-
                         campaign,
 
                         workspace,
@@ -332,37 +308,30 @@ public sealed class ContextCommands(
             if (!resolved.IsSuccess)
 
             {
-
                 if (resolved.IsCancelled)
 
                 {
-
                     return (int)CliExitCode.Success;
-
                 }
 
                 dispatcher.WriteDiagnostic(
-
                     resolved.Error ?? "CLI context could not be resolved.");
 
-                return (int)CliExitCode.ConfigurationError;
-
+                return (int)CliFailureExit.Classify(
+                    resolved.ErrorCode,
+                    CliExitCode.ConfigurationError);
             }
 
             foreach (string warning in resolved.Warnings)
 
             {
-
                 dispatcher.WriteDiagnostic("Warning: " + warning);
-
             }
 
             effective = resolved.Context!;
-
         }
 
         ContextPreviewRequest request = new(
-
             Prompt: prompt,
 
             Model: effective.Model.Value,
@@ -422,13 +391,10 @@ public sealed class ContextCommands(
         if (response.IsFailure)
 
         {
-
             dispatcher.WriteDiagnostic(
-
                 $"{response.Error.Code}: {response.Error.Message}");
 
-            return (int)CliExitCode.GenericError;
-
+            return CliFailureExit.ExitCode(response.Error);
         }
 
         ContextPreviewResult preview = response.Value;
@@ -436,21 +402,17 @@ public sealed class ContextCommands(
         if (CliInvocationContext.Current.Json)
 
         {
-
             dispatcher.WriteJson(
-
                 preview,
 
                 ArcanumJsonContext.Default.ContextPreviewResult);
 
             return (int)CliExitCode.Success;
-
         }
 
         switch (view)
 
         {
-
             case ContextPreviewView.Tools:
 
                 WriteTools(preview);
@@ -474,17 +436,14 @@ public sealed class ContextCommands(
                 WriteInspect(preview);
 
                 break;
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     private void WriteInspect(ContextPreviewResult preview)
 
     {
-
         dispatcher.WritePayload($"Provider:       {preview.Provider}");
 
         dispatcher.WritePayload($"Model:          {preview.Model}");
@@ -498,7 +457,6 @@ public sealed class ContextCommands(
         dispatcher.WritePayload($"Spell reason:   {preview.SpellReason}");
 
         dispatcher.WritePayload(
-
             $"Compression:    {(preview.Compression.Applied ? "applied" : "not applied")} — {preview.Compression.Reason}");
 
         WriteMana(preview);
@@ -506,11 +464,8 @@ public sealed class ContextCommands(
         if (preview.ResonantDependencies.Count > 0)
 
         {
-
             dispatcher.WritePayload(
-
                 "Resonant:       " + string.Join(", ", preview.ResonantDependencies));
-
         }
 
         dispatcher.WritePayload("Sources:");
@@ -524,17 +479,13 @@ public sealed class ContextCommands(
         foreach (ContextPreviewAuxiliaryCall call in preview.AuxiliaryCalls)
 
         {
-
             dispatcher.WritePayload(
-
                 $"Auxiliary:     {call.Purpose}: {call.Reason}");
-
         }
 
         if (preview.Content is not null)
 
         {
-
             dispatcher.WritePayload("Content:");
 
             dispatcher.WritePayload(preview.Content.SystemPrompt);
@@ -542,104 +493,74 @@ public sealed class ContextCommands(
             foreach (CoreChatMessage message in preview.Content.Messages)
 
             {
-
                 dispatcher.WritePayload($"[{message.Role}] {message.Content}");
-
             }
-
         }
-
     }
 
     private void WriteMana(ContextPreviewResult preview)
 
     {
-
         dispatcher.WritePayload(
-
             $"Mana:           {preview.Tokens.TotalTokens:N0} / {preview.ContextWindowLimit:N0} tokens ({preview.Tokens.Classification})");
 
         dispatcher.WritePayload(
-
             $"Reserved output: {preview.Tokens.ReservedOutputTokens:N0} tokens");
-
     }
 
     private void WriteTools(ContextPreviewResult preview)
 
     {
-
         foreach (ContextPreviewTool tool in preview.Tools)
 
         {
-
             dispatcher.WritePayload(
-
                 $"{(tool.Included ? "+" : "-")} {tool.Name} [{tool.Source}] — {tool.Reason}");
-
         }
-
     }
 
     private void WriteSources(ContextPreviewResult preview)
 
     {
-
         foreach (ContextPreviewSource source in preview.Sources)
 
         {
-
             dispatcher.WritePayload(
-
                 $"{source.Source}: {source.TokenCount:N0} tokens ({source.Classification}) — {source.Reason}");
 
             if (!string.IsNullOrEmpty(source.Content))
 
             {
-
                 dispatcher.WritePayload(source.Content);
-
             }
-
         }
-
     }
 
     private void WriteMutation(CliContextMutationResult result)
     {
-
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 result,
                 CliJsonContext.Default.CliContextMutationResult);
 
             return;
-
         }
 
         if (result.IsSuccess)
         {
-
             dispatcher.WritePayload(result.Message);
-
         }
         else
         {
-
             dispatcher.WriteDiagnostic(result.Message);
-
         }
-
     }
-
 }
 
 public enum ContextPreviewView
 
 {
-
     Inspect,
 
     Tools,
@@ -647,5 +568,4 @@ public enum ContextPreviewView
     Sources,
 
     Cost,
-
 }

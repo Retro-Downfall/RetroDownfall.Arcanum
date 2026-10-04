@@ -24,7 +24,6 @@ internal sealed class OpenCommands(
     CliSessionManager sessionManager,
     IConsoleDispatcher console)
 {
-
     public Task<int> Center(CancellationToken cancellationToken) =>
         Center(
             continueSession: false,
@@ -38,38 +37,30 @@ internal sealed class OpenCommands(
         string? resumeTarget,
         CancellationToken cancellationToken)
     {
-
         if (continueSession && resume)
         {
-
             console.WriteDiagnostic(
                 "--continue and --resume each select a session; supply exactly one.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Guid? startupSession = null;
 
         if (continueSession)
         {
-
             startupSession = sessionManager.GetLastSessionId(quiet: true);
 
             if (startupSession is null)
             {
-
                 console.WriteDiagnostic(
                     "No previous session to continue. Open Command Center with: arcanum");
 
                 return (int)CliExitCode.ConfigurationError;
-
             }
-
         }
         else if (resume)
         {
-
             ResourceSelectionResult<SessionSummaryDto> selection = await resources
                 .SelectSessionAsync(
                     string.IsNullOrWhiteSpace(resumeTarget) ? null : resumeTarget,
@@ -78,30 +69,24 @@ internal sealed class OpenCommands(
 
             if (selection.Status == ResourceSelectionStatus.Cancelled)
             {
-
                 return (int)CliExitCode.Success;
-
             }
 
             if (selection.Status != ResourceSelectionStatus.Selected
                 || selection.Value is null)
             {
-
                 console.WriteDiagnostic(
                     selection.Error ?? "The session could not be selected.");
 
-                return (int)CliExitCode.GenericError;
-
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             startupSession = selection.Value.Id;
-
         }
 
         return await commandCenter
             .RunAsync(startupSession, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public int TheForge() =>
@@ -152,14 +137,12 @@ internal sealed class OpenCommands(
         string? workspace,
         CancellationToken cancellationToken)
     {
-
         WorkspaceInfo? selectedWorkspace = null;
 
         string? serverWorkspacePath = null;
 
         if (!string.IsNullOrWhiteSpace(workspace))
         {
-
             ResourceSelectionResult<WorkspaceInfo> workspaceSelection =
                 await resources
                     .SelectWorkspaceAsync(workspace, cancellationToken)
@@ -167,24 +150,19 @@ internal sealed class OpenCommands(
 
             if (workspaceSelection.Status == ResourceSelectionStatus.Cancelled)
             {
-
                 return (int)CliExitCode.Success;
-
             }
 
             if (workspaceSelection.Status == ResourceSelectionStatus.Error)
             {
-
                 WriteSelectionError(workspaceSelection.Error, "Workspace selection failed.");
 
-                return (int)CliExitCode.GenericError;
-
+                return CliFailureExit.ExitCode(workspaceSelection.ErrorCode);
             }
 
             selectedWorkspace = workspaceSelection.Value!;
 
             serverWorkspacePath = selectedWorkspace.Path;
-
         }
 
         string? scopeId = selectedWorkspace?.Id;
@@ -203,7 +181,6 @@ internal sealed class OpenCommands(
                 spell => SpellFallback(spell.Name, scopeId),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public Task<int> Prompt(
@@ -239,24 +216,19 @@ internal sealed class OpenCommands(
         CancellationToken cancellationToken)
         where T : class
     {
-
         ResourceSelectionResult<T> selection = await select(cancellationToken)
             .ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return (int)CliExitCode.Success;
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
             WriteSelectionError(selection.Error, "Resource selection failed.");
 
-            return (int)CliExitCode.GenericError;
-
+            return CliFailureExit.ExitCode(selection.ErrorCode);
         }
 
         T resource = selection.Value!;
@@ -265,7 +237,6 @@ internal sealed class OpenCommands(
             DesktopApplication.TheForge,
             createDeepLink(resource),
             createFallback(resource));
-
     }
 
     private int Launch(
@@ -273,7 +244,6 @@ internal sealed class OpenCommands(
         ApplicationDeepLink? deepLink,
         string cliFallbackCommand)
     {
-
         ApplicationLaunchResult result = launcher.TryLaunch(
             new ApplicationLaunchRequest(
                 application,
@@ -282,45 +252,34 @@ internal sealed class OpenCommands(
 
         if (result.Launched)
         {
-
             if (!string.IsNullOrWhiteSpace(result.Message))
             {
-
                 console.WritePayload(result.Message);
-
             }
 
             return (int)CliExitCode.Success;
-
         }
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
-
             console.WriteDiagnostic(result.Message);
-
         }
 
         foreach (ApplicationDiscoveryCandidate candidate in result.TriedCandidates)
         {
-
             console.WriteDiagnostic(
                 $"Tried {candidate.Kind}: {candidate.DisplayPath}");
-
         }
 
         if (!string.IsNullOrWhiteSpace(result.DevelopmentFallbackCommand))
         {
-
             console.WriteDiagnostic(
                 $"Development fallback: {result.DevelopmentFallbackCommand}");
-
         }
 
         console.WriteDiagnostic($"CLI fallback: {result.CliFallbackCommand}");
 
         return (int)CliExitCode.GenericError;
-
     }
 
     private void WriteSelectionError(string? error, string fallback) =>
@@ -348,7 +307,6 @@ internal sealed class OpenCommands(
         string name,
         string? workspaceId)
     {
-
         string workspaceOption = workspaceId is null
             ? string.Empty
             : $"--workspace {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(workspaceId)} ";
@@ -358,7 +316,5 @@ internal sealed class OpenCommands(
             : string.Empty;
 
         return $"arcanum spell show {workspaceOption}{separator}{CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(name)}";
-
     }
-
 }

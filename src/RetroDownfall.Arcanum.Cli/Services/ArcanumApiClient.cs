@@ -2693,12 +2693,14 @@ public sealed partial class ArcanumApiClient(
         Guid campaignId,
         string? q = null,
         string? tag = null,
+        int? offset = null,
         CancellationToken cancellationToken = default)
     {
         string path = BuildQueryString(
             $"api/campaigns/{campaignId:D}/prompts",
             ("q", q),
-            ("tag", tag));
+            ("tag", tag),
+            ("offset", offset?.ToString(CultureInfo.InvariantCulture)));
 
         return await SendRequestAsync(
             HttpMethod.Get,

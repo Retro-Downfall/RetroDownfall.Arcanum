@@ -37,7 +37,6 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// </remarks>
 public sealed partial class MemoryCommands
 {
-
     /// <summary>
     /// Erases one Saga memory and every memory with byte-identical content in its scope.
     /// </summary>
@@ -51,16 +50,13 @@ public sealed partial class MemoryCommands
         string? expectedContentHash,
         CancellationToken cancellationToken)
     {
-
         Result<SagaMemoryDetail> shown = await apiClient
             .ShowSagaMemoryAsync(id, cancellationToken)
             .ConfigureAwait(false);
 
         if (shown.IsFailure)
         {
-
             return WriteErasureError(shown.Error);
-
         }
 
         Guid mutationId = Guid.CreateVersion7();
@@ -92,7 +88,6 @@ public sealed partial class MemoryCommands
                     cancellationToken),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -108,14 +103,11 @@ public sealed partial class MemoryCommands
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         LexiconCurationScope scope = ExactLexiconScope(campaignId);
 
         if (scope.Validate() is { IsFailure: true } invalid)
         {
-
             return WriteErasureInputError(invalid.Error.Message);
-
         }
 
         Result<LexiconEntryDetail> shown = await apiClient
@@ -124,9 +116,7 @@ public sealed partial class MemoryCommands
 
         if (shown.IsFailure)
         {
-
             return WriteErasureError(shown.Error);
-
         }
 
         Guid mutationId = Guid.CreateVersion7();
@@ -148,7 +138,6 @@ public sealed partial class MemoryCommands
                     cancellationToken),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -169,12 +158,9 @@ public sealed partial class MemoryCommands
         Func<MemoryErasurePreflightDto, Task<Result<MemoryErasureResultDto>>> apply,
         CancellationToken cancellationToken)
     {
-
         if (prepared.IsFailure)
         {
-
             return WriteErasureError(prepared.Error);
-
         }
 
         bool json = CliInvocationContext.Current.Json;
@@ -188,20 +174,9 @@ public sealed partial class MemoryCommands
                 .PromptForConfirmationAsync(question(prepared.Value.Plan), cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic($"{store} erasure cancelled.");
 
-            if (json)
-            {
-
-                dispatcher.WriteJson(
-                    new MemoryErasureCancellationPayload("erase", store, mutationId, Cancelled: true),
-                    CliJsonContext.Default.MemoryErasureCancellationPayload);
-
-            }
-
             return (int)CliExitCode.Success;
-
         }
 
         // A cancellation that lands before the apply is sent cancels an erase that never started, and
@@ -212,52 +187,39 @@ public sealed partial class MemoryCommands
 
         try
         {
-
             result = await apply(prepared.Value).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             // Ctrl-C after the request went out: the exit stays the cancellation, and the operator is
             // told the erase may still have happened.
             MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
 
             throw;
-
         }
 
         if (result.IsFailure)
         {
-
             int exitCode = WriteErasureError(result.Error);
 
             if (ArcanumApiClient.ErasureOutcomeUnknown(result.Error))
             {
-
                 MemoryErasureRenderer.WriteUnconfirmedApply(dispatcher, mutationId);
-
             }
 
             return exitCode;
-
         }
 
         if (json)
         {
-
             dispatcher.WriteJson(result.Value, ArcanumJsonContext.Default.MemoryErasureResultDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteResult(dispatcher, result.Value);
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -278,28 +240,21 @@ public sealed partial class MemoryCommands
         string? scope,
         CancellationToken cancellationToken)
     {
-
         Result<SagaMemoryScopeKind> scopeKind = SagaReleaseScope(scope, campaignId);
 
         if (scopeKind.IsFailure)
         {
-
             return WriteErasureInputError(scopeKind.Error.Message);
-
         }
 
         if (string.IsNullOrWhiteSpace(file))
         {
-
             return WriteErasureInputError("Saga release requires --file <path|->.");
-
         }
 
         if (file == "-" && !CliInvocationContext.Current.Yes)
         {
-
             return WriteErasureInputError("Saga release with --file - requires --yes before reading standard input.");
-
         }
 
         Result<string> content = await AuthoredContentReader
@@ -308,9 +263,7 @@ public sealed partial class MemoryCommands
 
         if (content.IsFailure)
         {
-
             return WriteErasureInputError(content.Error.Message);
-
         }
 
         SagaErasureReleaseRequest request = new(scopeKind.Value, campaignId, content.Value);
@@ -325,7 +278,6 @@ public sealed partial class MemoryCommands
                 onResent => apiClient.ReleaseSagaErasureAsync(request, cancellationToken, onResent),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -341,14 +293,11 @@ public sealed partial class MemoryCommands
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         LexiconCurationScope scope = ExactLexiconScope(campaignId);
 
         if (scope.Validate() is { IsFailure: true } invalid)
         {
-
             return WriteErasureInputError(invalid.Error.Message);
-
         }
 
         LexiconErasureReleaseRequest request = new(scope, name);
@@ -363,7 +312,6 @@ public sealed partial class MemoryCommands
                 onResent => apiClient.ReleaseLexiconErasureAsync(request, cancellationToken, onResent),
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -375,33 +323,25 @@ public sealed partial class MemoryCommands
     /// </remarks>
     public async Task<int> ErasureStatus(CancellationToken cancellationToken)
     {
-
         Result<MemoryErasureStatusDto> status = await apiClient
             .GetMemoryErasureStatusAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (status.IsFailure)
         {
-
             return WriteErasureError(status.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(status.Value, ArcanumJsonContext.Default.MemoryErasureStatusDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteStatus(dispatcher, status.Value);
-
         }
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -413,7 +353,6 @@ public sealed partial class MemoryCommands
     /// </remarks>
     public async Task<int> ErasureScrub(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         bool resent = false;
@@ -422,56 +361,43 @@ public sealed partial class MemoryCommands
 
         try
         {
-
             scrubbed = await apiClient
                 .ScrubMemoryErasuresAsync(cancellationToken, () => resent = true)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             WriteUnconfirmedScrub();
 
             throw;
-
         }
 
         if (scrubbed.IsFailure)
         {
-
             int exitCode = WriteErasureError(scrubbed.Error);
 
             if (ArcanumApiClient.ErasureOutcomeUnknown(scrubbed.Error))
             {
-
                 WriteUnconfirmedScrub();
-
             }
 
             WriteResentNote(resent, "scrub");
 
             return exitCode;
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(scrubbed.Value, ArcanumJsonContext.Default.MemoryErasureScrubResultDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteScrubResult(dispatcher, scrubbed.Value);
-
         }
 
         WriteResentNote(resent, "scrub");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -485,16 +411,13 @@ public sealed partial class MemoryCommands
     /// </remarks>
     public async Task<int> ErasureResetKey(CancellationToken cancellationToken)
     {
-
         Result<MemoryErasureKeyResetPreflightDto> prepared = await apiClient
             .PrepareMemoryErasureKeyResetAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (prepared.IsFailure)
         {
-
             return WriteKeyResetError(prepared.Error);
-
         }
 
         bool json = CliInvocationContext.Current.Json;
@@ -510,20 +433,9 @@ public sealed partial class MemoryCommands
                     cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Erasure key reset cancelled; nothing was discarded.");
 
-            if (json)
-            {
-
-                dispatcher.WriteJson(
-                    new MemoryErasureCancellationPayload("reset-key", Store: null, MutationId: null, Cancelled: true),
-                    CliJsonContext.Default.MemoryErasureCancellationPayload);
-
-            }
-
             return (int)CliExitCode.Success;
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -534,59 +446,46 @@ public sealed partial class MemoryCommands
 
         try
         {
-
             reset = await apiClient
                 .ResetMemoryErasureKeyAsync(
                     new MemoryErasureKeyResetRequest(prepared.Value.PreflightToken),
                     cancellationToken,
                     () => resent = true)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             WriteUnconfirmedKeyReset();
 
             throw;
-
         }
 
         if (reset.IsFailure)
         {
-
             int exitCode = WriteKeyResetError(reset.Error);
 
             if (ArcanumApiClient.ErasureOutcomeUnknown(reset.Error))
             {
-
                 WriteUnconfirmedKeyReset();
-
             }
 
             WriteResentNote(resent, "key reset");
 
             return exitCode;
-
         }
 
         if (json)
         {
-
             dispatcher.WriteJson(reset.Value, ArcanumJsonContext.Default.MemoryErasureKeyResetResultDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteKeyResetResult(dispatcher, reset.Value);
-
         }
 
         WriteResentNote(resent, "key reset");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -605,7 +504,6 @@ public sealed partial class MemoryCommands
         Func<Action, Task<Result<MemoryErasureReleaseResultDto>>> release,
         CancellationToken cancellationToken)
     {
-
         bool json = CliInvocationContext.Current.Json;
 
         MemoryErasureRenderer.WriteReleasePlan(dispatcher, store, scope, identity, json);
@@ -615,20 +513,9 @@ public sealed partial class MemoryCommands
                 .PromptForConfirmationAsync(question, cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic($"{store} release cancelled; nothing was released.");
 
-            if (json)
-            {
-
-                dispatcher.WriteJson(
-                    new MemoryErasureCancellationPayload("release", store, MutationId: null, Cancelled: true),
-                    CliJsonContext.Default.MemoryErasureCancellationPayload);
-
-            }
-
             return (int)CliExitCode.Success;
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -639,22 +526,17 @@ public sealed partial class MemoryCommands
 
         try
         {
-
             released = await release(() => resent = true).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             WriteUnconfirmedRelease(dispatcher);
 
             throw;
-
         }
 
         if (released.IsFailure)
         {
-
             int exitCode = WriteErasureError(released.Error);
 
             WriteReleaseRefusalGuidance(dispatcher, released.Error);
@@ -662,26 +544,20 @@ public sealed partial class MemoryCommands
             WriteResentNote(resent, "release");
 
             return exitCode;
-
         }
 
         if (json)
         {
-
             dispatcher.WriteJson(released.Value, ArcanumJsonContext.Default.MemoryErasureReleaseResultDto);
-
         }
         else
         {
-
             MemoryErasureRenderer.WriteReleaseResult(dispatcher, released.Value);
-
         }
 
         WriteResentNote(resent, "release");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -693,27 +569,19 @@ public sealed partial class MemoryCommands
     /// </remarks>
     internal static void WriteReleaseRefusalGuidance(IConsoleDispatcher dispatcher, Error error)
     {
-
         if (ArcanumApiClient.ErasureOutcomeUnknown(error))
         {
-
             WriteUnconfirmedRelease(dispatcher);
-
         }
-
     }
 
     /// <summary>Says a resend happened, so the outcome just reported describes only the resend.</summary>
     private void WriteResentNote(bool resent, string operation)
     {
-
         if (resent)
         {
-
             MemoryErasureRenderer.WriteResent(dispatcher, operation);
-
         }
-
     }
 
     internal static void WriteUnconfirmedRelease(IConsoleDispatcher dispatcher) =>
@@ -746,7 +614,6 @@ public sealed partial class MemoryCommands
     /// </remarks>
     private int WriteKeyResetError(Error error)
     {
-
         string? explanation = error.Code switch
         {
             ErrorCodes.MemoryErasure.StalePlan =>
@@ -762,7 +629,6 @@ public sealed partial class MemoryCommands
         };
 
         return WriteErasureError(explanation is null ? error : error with { Message = explanation });
-
     }
 
     /// <summary>
@@ -775,20 +641,15 @@ public sealed partial class MemoryCommands
     /// </remarks>
     private static Result<SagaMemoryScopeKind> SagaReleaseScope(string? scope, Guid? campaignId)
     {
-
         if (campaignId == Guid.Empty)
         {
-
             return InvalidSagaReleaseScope("--campaign must be a nonempty Campaign GUID.");
-
         }
 
         if (scope is null)
         {
-
             return Result<SagaMemoryScopeKind>.Success(
                 campaignId is null ? SagaMemoryScopeKind.Global : SagaMemoryScopeKind.Campaign);
-
         }
 
         SagaMemoryScopeKind? named = scope.Trim().ToLowerInvariant() switch
@@ -802,24 +663,19 @@ public sealed partial class MemoryCommands
 
         if (named is not { } kind)
         {
-
             return InvalidSagaReleaseScope("--scope must be global|campaign|unresolved|unclassified.");
-
         }
 
         if (kind is SagaMemoryScopeKind.Campaign)
         {
-
             return campaignId is null
                 ? InvalidSagaReleaseScope("--scope campaign requires --campaign <guid>.")
                 : Result<SagaMemoryScopeKind>.Success(kind);
-
         }
 
         return campaignId is null
             ? Result<SagaMemoryScopeKind>.Success(kind)
             : InvalidSagaReleaseScope($"--campaign names a Campaign scope, so it cannot be combined with --scope {scope}.");
-
     }
 
     private static Result<SagaMemoryScopeKind> InvalidSagaReleaseScope(string message) =>
@@ -854,20 +710,16 @@ public sealed partial class MemoryCommands
     /// </summary>
     private int WriteErasureFailure(string message, int exitCode)
     {
-
         dispatcher.WriteDiagnostic(message);
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 new CliErrorPayload(message, exitCode),
                 CliJsonContext.Default.CliErrorPayload);
-
         }
 
         return exitCode;
-
     }
 
     /// <summary>
@@ -878,5 +730,4 @@ public sealed partial class MemoryCommands
     /// constructor parameter of the writer's type would not compile.
     /// </remarks>
     private CovenantExternalRetentionDisclosureWriter DisclosureWriter => new(dispatcher, settings);
-
 }

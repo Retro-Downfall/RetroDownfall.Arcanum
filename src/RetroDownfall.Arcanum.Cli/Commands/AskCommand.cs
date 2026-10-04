@@ -146,7 +146,7 @@ public sealed class AskCommand(
                     return 1;
                 }
 
-                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(fullPath, maxImageBytes, allowedMimeTypes);
+                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(fullPath, maxImageBytes, allowedMimeTypes, cancellationToken);
 
                 if (staged.Error is not null)
                 {
@@ -270,7 +270,7 @@ public sealed class AskCommand(
                         palette.ErrorMarkup(
                             Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
 
-                    return 1;
+                    return CliFailureExit.ExitCode(contextResult.ErrorCode);
                 }
 
                 effectiveContext = contextResult.Context!;
@@ -314,7 +314,7 @@ public sealed class AskCommand(
                         Markup.Escape("Error:"),
                         Markup.Escape(synchronized.Error.Message)));
 
-                return 1;
+                return CliFailureExit.ExitCode(synchronized.Error);
             }
 
             ChronosyncReport chronosyncDelta = synchronized.Value;

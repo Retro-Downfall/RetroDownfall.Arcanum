@@ -252,6 +252,75 @@ public sealed class PromptCommandTests
             "The tool-call argument preview emitted an unpaired surrogate.");
     }
 
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        PromptSummaryDto first = new(Guid.NewGuid(), null, "first-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        PromptSummaryDto second = new(Guid.NewGuid(), null, "second-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<PromptSummaryDto>([second], false)
+                    : new ListPageResult<PromptSummaryDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["prompt", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("first-page-prompt", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("second-page-prompt", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The diagnostic names the option the operator typed. It used to name <c>--campaignId</c> and
+    /// <c>--sessionId</c>, spellings the parser has not accepted since the kebab-case rename.
+    /// </summary>
+    [Theory]
+    [InlineData("prompt list --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt versions greeting --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt create --name n --version 1 --template t --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt execute 22222222-2222-2222-2222-222222222222 --input hi --session-id not-a-guid", "--session-id")]
+    public void Invalid_guid_diagnostics_name_the_option_the_operator_typed(string commandLine, string option)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, commandLine.Split(' '));
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains(option, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--sessionId", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["prompt", "update", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--template", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

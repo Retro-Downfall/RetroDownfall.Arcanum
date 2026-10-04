@@ -574,7 +574,7 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.False(result.Value.Verification.Succeeded);
 
         Assert.Equal(
-            ErrorCodes.Data.RecoveryRequired,
+            ErrorCodes.Data.ResetCancelled,
             Assert.Single(result.Value.Verification.RemainingIssues).Code);
 
         Assert.False(File.Exists(first));
@@ -612,7 +612,7 @@ public sealed class InstallationResetOfflineCleanupTests : IAsyncLifetime
         Assert.False(result.Value.Verification.Succeeded);
 
         Assert.Equal(
-            ErrorCodes.Data.RecoveryRequired,
+            ErrorCodes.Data.ResetCancelled,
             Assert.Single(result.Value.Verification.RemainingIssues).Code);
 
         Assert.False(Directory.Exists(Path.Combine(selected, "nested")));

@@ -1362,6 +1362,12 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Value.ErrorCode);
 
+        // A client tells the operator's own cancellation from any other recovery-required condition by
+        // the issue's code, never by the wording of its message.
+        Assert.Equal(
+            ErrorCodes.Data.ResetCancelled,
+            Assert.Single(result.Value.Verification.RemainingIssues).Code);
+
         Assert.NotNull(active.Record);
 
         Assert.True(active.Record.PointOfNoReturn);

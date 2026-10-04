@@ -143,11 +143,6 @@ public sealed partial class MemoryCommands
         {
             dispatcher.WriteDiagnostic($"Lexicon {verb} cancelled.");
 
-            if (CliInvocationContext.Current.Json)
-            {
-                dispatcher.WriteJson(detail, ArcanumJsonContext.Default.LexiconEntryDetail);
-            }
-
             return (int)CliExitCode.Success;
         }
 

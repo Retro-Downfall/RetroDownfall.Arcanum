@@ -433,7 +433,7 @@ public sealed class WebWorkflowCommandTests
             handler,
             ["research", "What changed?"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
 
         Assert.Contains(
             ArcanumApiClient.StreamUnreachableMessage,

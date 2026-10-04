@@ -582,6 +582,13 @@ public static class ErrorCodes
 
         public const string RecoveryRequired = "Data.RecoveryRequired";
 
+        /// <summary>
+        /// The issue an installation reset reports when cancellation reached it after its active record
+        /// or a filesystem mutation was already in place. A client tells the operator's own cancellation
+        /// from any other recovery-required condition by this code, never by the wording of the message.
+        /// </summary>
+        public const string ResetCancelled = "Data.ResetCancelled";
+
         public const string FileLocked = "Data.FileLocked";
 
         public const string WorkspaceOverlap = "Data.WorkspaceOverlap";

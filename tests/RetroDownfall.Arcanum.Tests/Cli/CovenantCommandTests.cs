@@ -1214,6 +1214,156 @@ public sealed class CovenantCommandTests : IDisposable
         Assert.True(committed.RootElement.GetProperty("releasedErasureFingerprint").GetBoolean());
     }
 
+    /// <summary>
+    /// An unreachable host is exit 3 for every Covenant verb, in text and under <c>--json</c>.
+    /// </summary>
+    /// <remarks>
+    /// Only the two erase verbs classified a <c>Connection.*</c> failure, so a wrapper that retries on
+    /// 3 saw "the host is down" from <c>erase</c> and a generic failure from the other ten.
+    /// </remarks>
+    [Theory]
+    [InlineData("set")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("pin")]
+    [InlineData("unpin")]
+    [InlineData("mask")]
+    [InlineData("unmask")]
+    [InlineData("list")]
+    [InlineData("search")]
+    [InlineData("show")]
+    [InlineData("show-history")]
+    public async Task Host_unreachable_exits_3_for_every_verb(string verb)
+    {
+        RecordingHandler handler = new() { Unreachable = true };
+
+        string[] args = verb switch
+        {
+            "list" => ["memory", "covenant", "list", "--json"],
+            "search" => ["memory", "covenant", "search", "builds", "--json"],
+            "show" => ["memory", "covenant", "show", "preference.builds", "--json"],
+            "show-history" => ["memory", "covenant", "show", "preference.builds", "--history", "--json"],
+            _ => Invocation(verb, approve: "--yes"),
+        };
+
+        CliTestResult result = await RunCliAsync(handler, args);
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.NetworkError,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal((int)CliExitCode.NetworkError, document.RootElement.GetProperty("exitCode").GetInt32());
+    }
+
+    /// <summary>
+    /// Ctrl-C after the commit request went out keeps its cancellation (which the CLI maps to exit 130)
+    /// and says the mutation may still have been applied, naming it, so the operator checks the key
+    /// rather than assuming nothing happened.
+    /// </summary>
+    [Theory]
+    [InlineData("set")]
+    [InlineData("correct")]
+    [InlineData("retire")]
+    [InlineData("pin")]
+    public async Task Cancel_after_commit_sent_names_the_mutation_and_keeps_the_cancellation(string verb)
+    {
+        using CancellationTokenSource cancellation = new();
+
+        RecordingHandler handler = new() { CancelAtCommit = cancellation.Cancel };
+
+        CovenantCommands commands = Commands(handler, confirm: true, out RecordingDispatcher dispatcher);
+
+        string file = WriteTempFile("Run build commands from the repository root.");
+
+        CancellationToken token = cancellation.Token;
+
+        Func<Task<int>> run = verb switch
+        {
+            "set" => () => commands.Set("preference.builds", campaignId: null, file, expectedRevision: 0, reactivate: false, token),
+            "correct" => () => commands.Correct(
+                "preference.builds",
+                campaignId: null,
+                file,
+                RecordingHandler.DetailEntryId,
+                expectedRevision: 0,
+                RecordingHandler.RenderedHash,
+                token),
+            "retire" => () => commands.Retire("preference.builds", campaignId: null, CovenantLane.Confirmed, expectedRevision: 0, token),
+            _ => () => commands.Curate(CovenantCurationKind.Pin, "preference.builds", campaignId: null, CovenantLane.Confirmed, expectedRevision: 0, token),
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(run);
+
+        using JsonDocument prepare = JsonDocument.Parse(handler.Bodies[0]);
+
+        string mutationId = prepare.RootElement.GetProperty("mutationId").GetGuid().ToString("D");
+
+        string said = string.Join("\n", dispatcher.Diagnostics);
+
+        Assert.Contains(mutationId, said, StringComparison.Ordinal);
+
+        Assert.Contains("may have been applied", said, StringComparison.Ordinal);
+
+        Assert.Contains("memory covenant show preference.builds", said, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A cancellation that lands before the commit request is sent cancelled a mutation that never
+    /// started, and must not claim otherwise.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_before_the_commit_is_sent_does_not_claim_the_mutation_may_have_applied()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        RecordingHandler handler = new();
+
+        CovenantCommands commands = Commands(handler, new CancellingConfirmation(cancellation), out RecordingDispatcher dispatcher);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => commands.Retire(
+            "preference.builds",
+            campaignId: null,
+            CovenantLane.Confirmed,
+            expectedRevision: 0,
+            cancellation.Token));
+
+        Assert.DoesNotContain("may have been applied", string.Join("\n", dispatcher.Diagnostics), StringComparison.Ordinal);
+
+        Assert.Equal(["POST /api/memory/covenant/retire/prepare"], handler.Requests);
+    }
+
+    /// <summary>
+    /// A host whose cursors alternate A, B, A, B never repeats one immediately, so a guard that compares
+    /// only with the previous cursor follows it forever, accumulating pages without bound. Any cursor the
+    /// walk has already seen is the no-progress fault, and no partial listing is printed.
+    /// </summary>
+    [Theory]
+    [InlineData("list")]
+    [InlineData("search")]
+    [InlineData("show-history")]
+    public async Task List_stops_on_a_cursor_cycle(string verb)
+    {
+        RecordingHandler handler = new() { CursorCycle = true };
+
+        string[] args = verb switch
+        {
+            "list" => ["memory", "covenant", "list", "--json"],
+            "search" => ["memory", "covenant", "search", "builds", "--json"],
+            _ => ["memory", "covenant", "show", "preference.builds", "--history", "--json"],
+        };
+
+        CliTestResult result = await RunCliAsync(handler, args);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("Api.PaginationNoProgress", result.Output + result.Error, StringComparison.Ordinal);
+
+        // First page, the page behind A, the page behind B, and the page behind A again, which is the repeat.
+        Assert.InRange(handler.Requests.Count(request => !request.EndsWith("detail", StringComparison.Ordinal)), 1, 4);
+    }
+
     private static readonly Guid MaskCampaignId = new("55555555-5555-4555-8555-555555555555");
 
     private string[] Invocation(string verb, string? approve)
@@ -1544,6 +1694,21 @@ public sealed class CovenantCommandTests : IDisposable
         /// </remarks>
         internal List<string> Bodies { get; } = [];
 
+        /// <summary>Whether every request fails the way a refused connection does.</summary>
+        internal bool Unreachable { get; init; }
+
+        /// <summary>
+        /// Whether list, search and version pages hand back cursors that alternate between two values
+        /// forever, so no cursor repeats immediately but the walk never ends.
+        /// </summary>
+        internal bool CursorCycle { get; init; }
+
+        /// <summary>
+        /// Cancels the caller as a Ctrl-C would the moment a commit request (anything that is not a read
+        /// or a prepare) reaches the host, then lets the in-flight request observe it.
+        /// </summary>
+        internal Action? CancelAtCommit { get; init; }
+
         internal bool EmptyList { get; init; }
 
         /// <summary>Whether the stubbed detail is a Campaign key with no entry, carrying only curation.</summary>
@@ -1583,9 +1748,21 @@ public sealed class CovenantCommandTests : IDisposable
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (Unreachable)
+            {
+                throw new HttpRequestException("Connection refused");
+            }
+
             string path = request.RequestUri!.AbsolutePath;
 
             Requests.Add($"{request.Method} {path}");
+
+            if (CancelAtCommit is { } cancel && IsCommit(path))
+            {
+                cancel();
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             Bodies.Add(request.Content is null
                 ? string.Empty
@@ -1633,6 +1810,13 @@ public sealed class CovenantCommandTests : IDisposable
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
         }
+
+        private static bool IsCommit(string path) =>
+            !path.EndsWith("prepare", StringComparison.Ordinal)
+            && !path.EndsWith("list", StringComparison.Ordinal)
+            && !path.EndsWith("query", StringComparison.Ordinal)
+            && !path.EndsWith("versions", StringComparison.Ordinal)
+            && !path.EndsWith("detail", StringComparison.Ordinal);
 
         private static CovenantHeadDto Head(string key) =>
             new(
@@ -1731,16 +1915,22 @@ public sealed class CovenantCommandTests : IDisposable
             "bb",
             new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero));
 
-        private static string Versions() =>
+        private string Versions() =>
             JsonSerializer.Serialize(
                 ApiResponse<CovenantVersionPageDto>.FromResult(
                     Result<CovenantVersionPageDto>.Success(new CovenantVersionPageDto(
                         [HistoryVersion],
-                        NextCursor: null,
+                        NextCursor: CursorCycle ? CycleCursor(++_versionCalls) : null,
                         "cc",
                         Truncated: false)),
                     "trace"),
                 ArcanumJsonContext.Default.ApiResponseCovenantVersionPageDto);
+
+        private int _versionCalls;
+
+        /// <summary>A bound on the host's cycling, so a walk that never detects it ends rather than hangs the suite.</summary>
+        private static string? CycleCursor(int call) =>
+            call > 50 ? null : call % 2 == 1 ? "cursor-A" : "cursor-B";
 
         private static long ExpectedRevisionOf(string requestBody)
         {
@@ -1872,7 +2062,7 @@ public sealed class CovenantCommandTests : IDisposable
                 ApiResponse<CovenantPageDto>.FromResult(
                     Result<CovenantPageDto>.Success(new CovenantPageDto(
                         EmptyList ? [] : [Head($"preference.page{call}")],
-                        call < ListPages ? $"cursor-{call}" : null,
+                        CursorCycle ? CycleCursor(call) : call < ListPages ? $"cursor-{call}" : null,
                         "66",
                         new CovenantSearchHealthDto(
                             CovenantSearchHealthState.Healthy,
@@ -1907,6 +2097,17 @@ public sealed class CovenantCommandTests : IDisposable
 
         public void BeginJsonStream()
         {
+        }
+    }
+
+    /// <summary>Approves the question and cancels the caller in the same breath, as a Ctrl-C landing on the answer would.</summary>
+    private sealed class CancellingConfirmation(CancellationTokenSource cancellation) : IConfirmationPrompt
+    {
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            cancellation.Cancel();
+
+            return Task.FromResult(true);
         }
     }
 

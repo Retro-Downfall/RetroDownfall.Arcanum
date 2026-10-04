@@ -54,7 +54,6 @@ public sealed class CliResourceCatalog(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         ResourceSelectionResult<CampaignDto> result = await SelectAsync(
             new ResourceSelectionRequest<CampaignDto>(
                 "campaign",
@@ -80,9 +79,7 @@ public sealed class CliResourceCatalog(
         if (result.Status != ResourceSelectionStatus.Error
             || !string.IsNullOrWhiteSpace(identifier))
         {
-
             return result;
-
         }
 
         string? advice = await GetCampaignRegistrationAdviceAsync(cancellationToken)
@@ -91,14 +88,13 @@ public sealed class CliResourceCatalog(
         return advice is null
             ? result
             : ResourceSelectionResult<CampaignDto>.Failure(
-                $"{result.Error} {advice}");
-
+                $"{result.Error} {advice}",
+                result.ErrorCode);
     }
 
     private async Task<string?> GetCampaignRegistrationAdviceAsync(
         CancellationToken cancellationToken)
     {
-
         string currentDirectory = Path.GetFullPath(Environment.CurrentDirectory);
 
         Result<WorkspaceInfo[]> workspaces = await apiClient
@@ -107,9 +103,7 @@ public sealed class CliResourceCatalog(
 
         if (workspaces.IsFailure)
         {
-
             return null;
-
         }
 
         WorkspaceInfo? workspace = workspaces.Value
@@ -121,16 +115,13 @@ public sealed class CliResourceCatalog(
 
         if (workspace is null)
         {
-
             return null;
-
         }
 
         int offset = 0;
 
         for (int page = 0; page < 100; page++)
         {
-
             Result<ListPageResult<CampaignDto>> campaigns = await apiClient
                 .GetCampaignsPageAsync(
                     null,
@@ -141,9 +132,7 @@ public sealed class CliResourceCatalog(
 
             if (campaigns.IsFailure)
             {
-
                 return null;
-
             }
 
             if (campaigns.Value.Items.Any(
@@ -151,25 +140,19 @@ public sealed class CliResourceCatalog(
                         currentDirectory,
                         item.Path)))
             {
-
                 return null;
-
             }
 
             if (!campaigns.Value.HasMore
                 || campaigns.Value.NextOffset is not { } nextOffset)
             {
-
                 return $"This server path is registered as Workspace '{workspace.Name}' but no Campaign contains it. Register a Campaign with: arcanum campaign create --name <name> --path <server path>.";
-
             }
 
             offset = nextOffset;
-
         }
 
         return null;
-
     }
 
     public Task<ResourceSelectionResult<SessionSummaryDto>> SelectSessionAsync(
@@ -335,7 +318,6 @@ public sealed class CliResourceCatalog(
                     static value => [value.Name, value.Source.ToString()]),
                 async (token, ct) =>
                 {
-
                     Result<SpellCatalogPage> result = await apiClient
                         .GetSpellCatalogPageAsync(
                             workspace: workspace,
@@ -345,10 +327,8 @@ public sealed class CliResourceCatalog(
 
                     if (result.IsFailure)
                     {
-
                         return Result<ResourcePage<SpellSummary>>.Failure(
                             result.Error);
-
                     }
 
                     SpellCatalogPage page = result.Value;
@@ -359,7 +339,6 @@ public sealed class CliResourceCatalog(
                             page.HasMore
                                 ? page.NextCursor
                                 : null));
-
                 }),
             cancellationToken);
 

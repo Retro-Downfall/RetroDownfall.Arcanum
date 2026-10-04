@@ -426,6 +426,82 @@ public sealed class SpellCommandTests
             "The spell body preview emitted an unpaired surrogate.");
     }
 
+    /// <summary>
+    /// The host reports a failed validation as a successful result carrying <c>IsValid=false</c>; the
+    /// command is the only place that can turn it into an exit status, and a validation that can never
+    /// fail cannot gate a pipeline.
+    /// </summary>
+    [Fact]
+    public void Validate_returns_nonzero_when_the_host_reports_the_spell_invalid()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellValidationResultDto>(
+                new SpellValidationResultDto(false, ["frontmatter-problem"], []),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto));
+
+        CliTestResult result = RunCommand(handler, ["spell", "validate", "broken"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("frontmatter-problem", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_returns_zero_for_a_valid_spell()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellValidationResultDto>(
+                new SpellValidationResultDto(true, [], ["a-warning"]),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto));
+
+        CliTestResult result = RunCommand(handler, ["spell", "validate", "fine"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("a-warning", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_under_json_writes_the_validation_result_as_the_one_document()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellValidationResultDto>(
+                new SpellValidationResultDto(false, ["frontmatter-problem"], []),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "spell", "validate", "broken"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.False(document.RootElement.GetProperty("isValid").GetBoolean());
+
+        Assert.Equal("frontmatter-problem", document.RootElement.GetProperty("errors")[0].GetString());
+    }
+
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "update", "greet", "--workspace", "/tmp/ws"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--description", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

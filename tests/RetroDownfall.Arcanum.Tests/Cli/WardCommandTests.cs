@@ -121,6 +121,31 @@ public sealed class WardCommandTests
         Assert.Empty(handler.Requests);
     }
 
+    /// <summary>
+    /// A Ward that was already resolved is a refusal, so it is reported on stderr, in the error style, with
+    /// the exit code the reference documents; a success-styled line on stdout beside a failing exit made a
+    /// wrapper that reads either stream disagree with the other.
+    /// </summary>
+    [Fact]
+    public void Resolve_already_resolved_reports_on_stderr_and_matches_documented_exit()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<WardResolutionDto>(
+                null,
+                false,
+                new Error("Ward.AlreadyResolved", "The Ward was already resolved.")),
+            ArcanumJsonContext.Default.ApiResponseWardResolutionDto,
+            HttpStatusCode.Conflict));
+
+        CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("already resolved", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(string.Empty, result.Output.Trim());
+    }
+
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
         ServiceCollection services = new();

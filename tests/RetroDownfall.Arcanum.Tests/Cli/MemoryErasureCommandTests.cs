@@ -477,26 +477,54 @@ public sealed class MemoryErasureCommandTests
     [InlineData("saga")]
     [InlineData("lexicon")]
     [InlineData("covenant")]
-    public async Task Decline_writes_one_cancellation_document_and_exits_zero(string store)
+    public async Task Decline_exits_zero_and_never_applies(string store)
     {
         ErasureHandler handler = new();
 
-        CliTestResult result = await RunAsync(handler, [.. EraseArgs(store), "--json"], new RecordingPrompt(handler, answer: false));
+        CliTestResult result = await RunAsync(handler, EraseArgs(store), new RecordingPrompt(handler, answer: false));
 
         Assert.Equal(0, result.ExitCode);
-
-        MemoryErasureCancellationPayload payload =
-            JsonSerializer.Deserialize(result.Output, CliJsonContext.Default.MemoryErasureCancellationPayload)!;
-
-        Assert.Equal(("erase", Store(store), true), (payload.Operation, payload.Store, payload.Cancelled));
-
-        Assert.Equal(handler.PreparedMutationId, payload.MutationId);
 
         Assert.Contains("prompt", handler.Events);
 
         Assert.DoesNotContain(handler.Events, e => e.EndsWith("/erase", StringComparison.Ordinal));
 
         Assert.Contains($"{Store(store)} erasure cancelled.", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The shipped prompt itself, on handles that are neither redirected: <c>--json</c> alone is what
+    /// refuses the question, so a structured run without <c>--yes</c> is refused with exit 2 and the host
+    /// never sees an erase. There is no structured "declined" document because no structured run can decline.
+    /// </summary>
+    [Theory]
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task Json_without_yes_exits_2_and_applies_nothing(string store)
+    {
+        ErasureHandler handler = new();
+
+        ServiceCollection services = Services(handler);
+
+        services.AddSingleton<IConfirmationPrompt>(provider => new ConfirmationPrompt(
+            provider.GetRequiredService<IConsoleDispatcher>(),
+            new CliInvocationOptions(Json: true, Plain: false, Yes: false),
+            TextReader.Null,
+            isOutputRedirected: static () => false,
+            isInputRedirected: static () => false));
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, [.. EraseArgs(store), "--json"]);
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.DoesNotContain(handler.Events, e => e.EndsWith("/erase", StringComparison.Ordinal));
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(2, document.RootElement.GetProperty("exitCode").GetInt32());
+
+        Assert.False(document.RootElement.TryGetProperty("cancelled", out _));
     }
 
     [Theory]

@@ -14,13 +14,11 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 internal interface IRunAttachmentStager
 {
-
     Task<RunAttachmentStageResult> StageAsync(
         IReadOnlyList<string> withValues,
         string workingDirectory,
         string? pipedContent,
         CancellationToken cancellationToken);
-
 }
 
 internal sealed record RunAttachmentMetadata(
@@ -41,7 +39,6 @@ internal sealed record RunAttachmentStageResult(
 internal sealed class RunAttachmentStager(
     IOptions<ArcanumSettings> settings) : IRunAttachmentStager
 {
-
     internal const int MaxAttachedFileChunkBytes =
         (int)ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes;
 
@@ -67,33 +64,26 @@ internal sealed class RunAttachmentStager(
         string? pipedContent,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(withValues);
 
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-
             return Failure("A working directory is required to resolve --with paths.");
-
         }
 
         string fullWorkingDirectory;
 
         try
         {
-
             fullWorkingDirectory = Path.GetFullPath(workingDirectory);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException
                 or NotSupportedException
                 or PathTooLongException)
         {
-
             return Failure(
                 $"The working directory could not be resolved: {exception.Message}");
-
         }
 
         List<AttachedFileDto> attachedFiles = [];
@@ -113,65 +103,52 @@ internal sealed class RunAttachmentStager(
 
         foreach (string value in withValues)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (string.IsNullOrWhiteSpace(value))
             {
-
                 return Failure("Each --with value must use the @path form.");
-
             }
 
             if (value[0] != '@')
             {
-
                 return Failure(
                     $"The --with value '{value}' must use the @path form.");
-
             }
 
             string requestedPath = value[1..];
 
             if (string.IsNullOrWhiteSpace(requestedPath))
             {
-
                 return Failure("The --with @path value must include a file path.");
-
             }
 
             string fullPath;
 
             try
             {
-
                 fullPath = Path.IsPathRooted(requestedPath)
                     ? Path.GetFullPath(requestedPath)
                     : Path.GetFullPath(
                         Path.Combine(fullWorkingDirectory, requestedPath));
-
             }
             catch (Exception exception) when (
                 exception is ArgumentException
                     or NotSupportedException
                     or PathTooLongException)
             {
-
                 return Failure(
                     $"The --with path '{requestedPath}' could not be resolved: {exception.Message}");
-
             }
 
             if (!File.Exists(fullPath))
             {
-
                 string reason = Directory.Exists(fullPath)
                     ? "it is a directory, not a file"
                     : "the file does not exist";
 
                 return Failure(
                     $"The --with path '{requestedPath}' cannot be staged because {reason}.");
-
             }
 
             string relativePath = Path.GetRelativePath(
@@ -180,16 +157,13 @@ internal sealed class RunAttachmentStager(
 
             if (ScryingFocusStager.IsImagePath(fullPath))
             {
-
                 if (scryingFoci.Count >= maximumImages)
                 {
-
                     return Failure(
                         $"Provider request-shape boundary reached: measured {scryingFoci.Count + 1} images, "
                         + $"which exceeds the maximum of {maximumImages} images per request. "
                         + "No staged work was saved; send the remaining images in a later turn "
                         + "or choose a provider/model with a larger factual image capacity.");
-
                 }
 
                 RunAttachmentStageResult? imageFailure = StageImage(
@@ -198,17 +172,15 @@ internal sealed class RunAttachmentStager(
                     scrying,
                     scryingFoci,
                     metadata,
-                    diagnostics);
+                    diagnostics,
+                    cancellationToken);
 
                 if (imageFailure is not null)
                 {
-
                     return imageFailure;
-
                 }
 
                 continue;
-
             }
 
             TextSourceRead text = await ReadTextFileAsync(
@@ -217,10 +189,8 @@ internal sealed class RunAttachmentStager(
 
             if (!text.IsSuccess)
             {
-
                 return Failure(
                     $"The --with path '{requestedPath}' could not be staged: {text.Error}");
-
             }
 
             RunAttachmentStageResult? textFailure = AddTextSource(
@@ -235,16 +205,12 @@ internal sealed class RunAttachmentStager(
 
             if (textFailure is not null)
             {
-
                 return textFailure;
-
             }
-
         }
 
         if (pipedContent is not null)
         {
-
             RunAttachmentStageResult? pipeFailure = AddTextSource(
                 "stdin",
                 "stdin.txt",
@@ -257,11 +223,8 @@ internal sealed class RunAttachmentStager(
 
             if (pipeFailure is not null)
             {
-
                 return pipeFailure;
-
             }
-
         }
 
         return new RunAttachmentStageResult(
@@ -271,7 +234,6 @@ internal sealed class RunAttachmentStager(
             metadata,
             [.. diagnostics],
             null);
-
     }
 
     private RunAttachmentStageResult? StageImage(
@@ -280,9 +242,9 @@ internal sealed class RunAttachmentStager(
         ScryingSettings scrying,
         List<ScryingFocusDto> scryingFoci,
         List<RunAttachmentMetadata> metadata,
-        List<string> diagnostics)
+        List<string> diagnostics,
+        CancellationToken cancellationToken)
     {
-
         long maximumBytes = ArcanumSettingClamps.ScryingMaxImageBytes(
             scrying.MaxImageBytes);
 
@@ -293,40 +255,33 @@ internal sealed class RunAttachmentStager(
         ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(
             fullPath,
             maximumBytes,
-            allowedMimeTypes);
+            allowedMimeTypes,
+            cancellationToken);
 
         if (!staged.IsSuccess || staged.Focus is null)
         {
-
             return Failure(
                 $"The --with image '{relativePath}' could not be staged: {staged.Error ?? "unknown image error"}");
-
         }
 
         byte[] imageBytes;
 
         try
         {
-
             imageBytes = Convert.FromBase64String(staged.Focus.Data);
-
         }
         catch (FormatException exception)
         {
-
             return Failure(
                 $"The --with image '{relativePath}' could not be staged: {exception.Message}");
-
         }
 
         if (imageBytes.LongLength > maximumBytes)
         {
-
             return Failure(
                 $"Physical single-image allocation boundary reached for '{relativePath}': measured "
                 + $"{imageBytes.LongLength} bytes; limit {maximumBytes}. No staged work was saved. "
                 + "Resize the image or send it in a provider-supported form and retry.");
-
         }
 
         string digest = Sha256(imageBytes);
@@ -345,7 +300,6 @@ internal sealed class RunAttachmentStager(
             $"Staged image '{relativePath}' ({imageBytes.LongLength} bytes, SHA-256 {digest}).");
 
         return null;
-
     }
 
     private static RunAttachmentStageResult? AddTextSource(
@@ -358,35 +312,29 @@ internal sealed class RunAttachmentStager(
         List<string> diagnostics,
         ref long attachedUtf8Bytes)
     {
-
         int utf8Bytes = Encoding.UTF8.GetByteCount(content);
 
         if (utf8Bytes > maximumSourceBytes)
         {
-
             return Failure(
                 $"Physical single-source allocation boundary reached for '{source}': measured "
                 + $"{utf8Bytes} UTF-8 bytes; limit {maximumSourceBytes}. No staged work was saved. "
                 + "Split the source and retry with smaller chunks.");
-
         }
 
         List<string> chunks = SplitUtf8(content, MaxAttachedFileChunkBytes);
 
         if (attachedUtf8Bytes + utf8Bytes > MaxAttachedTotalBytes)
         {
-
             return Failure(
                 "Physical single-request allocation boundary reached for staged text: "
                 + $"measured {attachedUtf8Bytes + utf8Bytes} UTF-8 bytes; limit {MaxAttachedTotalBytes}. "
                 + "No staged work was saved. Send the remaining sources in a later turn "
                 + "or persist and reference session attachments.");
-
         }
 
         for (int index = 0; index < chunks.Count; index++)
         {
-
             string chunkPath = ChunkPath(
                 relativePath,
                 index,
@@ -394,18 +342,15 @@ internal sealed class RunAttachmentStager(
 
             if (chunkPath.Length > ArcanumRuntimeDefaults.CliMaxAttachedFileRelativePathChars)
             {
-
                 return Failure(
                     $"The generated attached-file path for '{source}' exceeds the server path limit "
                     + $"of {ArcanumRuntimeDefaults.CliMaxAttachedFileRelativePathChars} characters.");
-
             }
 
             attachedFiles.Add(
                 new AttachedFileDto(
                     chunkPath,
                     chunks[index]));
-
         }
 
         attachedUtf8Bytes += utf8Bytes;
@@ -424,17 +369,14 @@ internal sealed class RunAttachmentStager(
             $"Staged text '{source}' ({utf8Bytes} UTF-8 bytes, {chunks.Count} part(s), SHA-256 {digest}).");
 
         return null;
-
     }
 
     private static async Task<TextSourceRead> ReadTextFileAsync(
         string fullPath,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using FileStream stream = new(
                 fullPath,
                 FileMode.Open,
@@ -445,10 +387,8 @@ internal sealed class RunAttachmentStager(
 
             if (stream.Length > MaxTextFileSourceBytes + Utf8BomBytes)
             {
-
                 return TextSourceRead.Failure(
                     $"file exceeds the {MaxTextFileSourceBytes}-byte UTF-8 limit.");
-
             }
 
             using MemoryStream bytes = new(
@@ -460,41 +400,31 @@ internal sealed class RunAttachmentStager(
 
             try
             {
-
                 while (true)
                 {
-
                     int read = await stream
                         .ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
                         .ConfigureAwait(false);
 
                     if (read == 0)
                     {
-
                         break;
-
                     }
 
                     if (bytes.Length + read > MaxTextFileSourceBytes + Utf8BomBytes)
                     {
-
                         return TextSourceRead.Failure(
                             $"file exceeds the {MaxTextFileSourceBytes}-byte UTF-8 limit.");
-
                     }
 
                     await bytes
                         .WriteAsync(buffer.AsMemory(0, read), cancellationToken)
                         .ConfigureAwait(false);
-
                 }
-
             }
             finally
             {
-
                 ArrayPool<byte>.Shared.Return(buffer);
-
             }
 
             byte[] value = bytes.ToArray();
@@ -507,10 +437,8 @@ internal sealed class RunAttachmentStager(
 
             if (contentBytes > MaxTextFileSourceBytes)
             {
-
                 return TextSourceRead.Failure(
                     $"file exceeds the {MaxTextFileSourceBytes}-byte UTF-8 limit.");
-
             }
 
             string content = StrictUtf8.GetString(
@@ -519,14 +447,11 @@ internal sealed class RunAttachmentStager(
                 contentBytes);
 
             return TextSourceRead.Success(content);
-
         }
         catch (DecoderFallbackException exception)
         {
-
             return TextSourceRead.Failure(
                 $"file is not valid UTF-8 text: {exception.Message}");
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -534,11 +459,8 @@ internal sealed class RunAttachmentStager(
                 or NotSupportedException
                 or ArgumentException)
         {
-
             return TextSourceRead.Failure(exception.Message);
-
         }
-
     }
 
     private static bool HasUtf8Bom(byte[] bytes) =>
@@ -551,12 +473,9 @@ internal sealed class RunAttachmentStager(
         string content,
         int maximumBytes)
     {
-
         if (content.Length == 0)
         {
-
             return [string.Empty];
-
         }
 
         List<string> chunks = [];
@@ -569,7 +488,6 @@ internal sealed class RunAttachmentStager(
 
         while (offset < content.Length)
         {
-
             OperationStatus status = Rune.DecodeFromUtf16(
                 content.AsSpan(offset),
                 out Rune rune,
@@ -577,11 +495,9 @@ internal sealed class RunAttachmentStager(
 
             if (status != OperationStatus.Done)
             {
-
                 rune = Rune.ReplacementChar;
 
                 consumed = 1;
-
             }
 
             int runeBytes = rune.Utf8SequenceLength;
@@ -589,25 +505,21 @@ internal sealed class RunAttachmentStager(
             if (chunkBytes > 0
                 && chunkBytes + runeBytes > maximumBytes)
             {
-
                 chunks.Add(content[chunkStart..offset]);
 
                 chunkStart = offset;
 
                 chunkBytes = 0;
-
             }
 
             chunkBytes += runeBytes;
 
             offset += consumed;
-
         }
 
         chunks.Add(content[chunkStart..]);
 
         return chunks;
-
     }
 
     private static string ChunkPath(
@@ -635,13 +547,10 @@ internal sealed class RunAttachmentStager(
         string? Content,
         string? Error)
     {
-
         public static TextSourceRead Success(string content) =>
             new(true, content, null);
 
         public static TextSourceRead Failure(string error) =>
             new(false, null, error);
-
     }
-
 }

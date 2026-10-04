@@ -1269,11 +1269,7 @@ internal sealed class InstallationResetService(
 
             return checkpoint.IsFailure
                 ? Resumable(cancelled, checkpoint.Error)
-                : Resumable(
-                    cancelled,
-                    new Error(
-                        ErrorCodes.Data.RecoveryRequired,
-                        "Installation reset was cancelled after its active record was published."));
+                : ResumableAfterCancellation(cancelled);
         }
     }
 
@@ -1486,11 +1482,7 @@ internal sealed class InstallationResetService(
 
             return checkpoint.IsFailure
                 ? Resumable(cancelled, checkpoint.Error)
-                : Resumable(
-                    cancelled,
-                    new Error(
-                        ErrorCodes.Data.RecoveryRequired,
-                        "Installation reset was cancelled after its active record was published."));
+                : ResumableAfterCancellation(cancelled);
         }
     }
 
@@ -2195,6 +2187,26 @@ internal sealed class InstallationResetService(
             ? Result<InstallationResetResult>.Success(final)
             : Resumable(active, retired.Error);
     }
+
+    /// <summary>
+    /// The resumable result of a reset that cancellation reached after its active record was published.
+    /// The result still reports <see cref="ErrorCodes.Data.RecoveryRequired"/>, because recovery is what
+    /// the operator has to do; the issue carries <see cref="ErrorCodes.Data.ResetCancelled"/> so a client
+    /// can tell this was a cancellation without reading the message.
+    /// </summary>
+    private static Result<InstallationResetResult> ResumableAfterCancellation(
+        InstallationResetActiveRecord active) =>
+        Result<InstallationResetResult>.Success(BuildResult(
+            active with { LastErrorCode = ErrorCodes.Data.RecoveryRequired },
+            active.AcceptedBinding.PreservedBackups,
+            new InstallationResetVerification(
+                false,
+                [
+                    new InstallationResetIssueSummary(
+                        ErrorCodes.Data.ResetCancelled,
+                        "Installation reset was cancelled after its active record was published."),
+                ]),
+            resumeRequired: true));
 
     private static Result<InstallationResetResult> Resumable(
         InstallationResetActiveRecord active,

@@ -22,17 +22,14 @@ public sealed class ConclaveCommands(
     IConsoleDispatcher console,
     ICliInvocationContext invocationContext)
 {
-
     public async Task<int> Status(CancellationToken cancellationToken)
     {
-
         Result<ConclaveStatusDto> result = await apiClient
             .GetConclaveStatusAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             console.WriteDiagnostic(result.Error.Message);
 
             // Exit 3 means "the host was unreachable". A missing key or a server-side domain error
@@ -40,18 +37,15 @@ public sealed class ConclaveCommands(
             return result.Error.Code.StartsWith("Connection.", StringComparison.Ordinal)
                 ? (int)CliExitCode.NetworkError
                 : (int)CliExitCode.GenericError;
-
         }
 
         ConclaveStatusDto status = result.Value;
 
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(status, ArcanumJsonContext.Default.ConclaveStatusDto);
 
             return (int)CliExitCode.Success;
-
         }
 
         console.WritePayload($"Conclave: {status.State}");
@@ -71,7 +65,6 @@ public sealed class ConclaveCommands(
         console.WritePayload($"  {status.Detail}");
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -99,14 +92,11 @@ public sealed class ConclaveCommands(
         bool callback,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(agentUrl) || string.IsNullOrWhiteSpace(goal))
         {
-
             console.WriteDiagnostic("Both --agent-url and --goal are required.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Result<SendingDispatchDto> result = await apiClient
@@ -122,7 +112,6 @@ public sealed class ConclaveCommands(
             .ConfigureAwait(false);
 
         return Render(result, agentUrl.Trim());
-
     }
 
     /// <summary>
@@ -138,14 +127,11 @@ public sealed class ConclaveCommands(
         string[]? acceptedOutputModes,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(agentUrl) || string.IsNullOrWhiteSpace(message))
         {
-
             console.WriteDiagnostic("A task id plus --agent-url and --message are all required.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Result<SendingDispatchDto> result = await apiClient
@@ -160,32 +146,26 @@ public sealed class ConclaveCommands(
             .ConfigureAwait(false);
 
         return Render(result, agentUrl.Trim());
-
     }
 
     private int Render(Result<SendingDispatchDto> result, string agentUrl)
     {
-
         if (result.IsFailure)
         {
-
             // Error messages from the Archmage Client already name the owner (feature gate, allowlist,
             // outbound URL policy, remote failure) and the next action.
             console.WriteDiagnostic($"{result.Error.Code}: {result.Error.Message}");
 
-            return (int)CliExitCode.GenericError;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         SendingDispatchDto dispatch = result.Value;
 
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(dispatch, ArcanumJsonContext.Default.SendingDispatchDto);
 
             return (int)CliExitCode.Success;
-
         }
 
         console.WritePayload($"Sending dispatched to {dispatch.AgentUrl}");
@@ -196,14 +176,11 @@ public sealed class ConclaveCommands(
 
         if (DescribeDuration(dispatch) is { } duration)
         {
-
             console.WritePayload($"  Remote time: {duration}");
-
         }
 
         if (dispatch.ContinuationNeed is { Length: > 0 } need)
         {
-
             console.WritePayload(string.Empty);
 
             console.WritePayload(
@@ -211,7 +188,6 @@ public sealed class ConclaveCommands(
 
             console.WritePayload(
                 $"  arcanum conclave continue {dispatch.TaskId} --agent-url {agentUrl} --message \"…\"");
-
         }
 
         console.WritePayload(string.Empty);
@@ -219,7 +195,6 @@ public sealed class ConclaveCommands(
         console.WritePayload(dispatch.ResponseText);
 
         return (int)CliExitCode.Success;
-
     }
 
     /// <summary>
@@ -228,12 +203,9 @@ public sealed class ConclaveCommands(
     /// </summary>
     private static string DescribeCost(SendingDispatchDto dispatch)
     {
-
         if (!dispatch.CostKnown)
         {
-
             return "unknown (the remote agent reported no usage)";
-
         }
 
         string tokens = dispatch.RemoteTotalTokens is { } t ? $"{t:N0} tokens" : "tokens unknown";
@@ -241,7 +213,6 @@ public sealed class ConclaveCommands(
         string cost = dispatch.RemoteCostUsd is { } c ? $"${c:0.######} USD" : "cost unknown";
 
         return $"{tokens}, {cost} (external)";
-
     }
 
     private static string? DescribeDuration(SendingDispatchDto dispatch) =>
@@ -250,5 +221,4 @@ public sealed class ConclaveCommands(
             : null;
 
     private static string Describe(bool enabled) => enabled ? "enabled" : "disabled";
-
 }

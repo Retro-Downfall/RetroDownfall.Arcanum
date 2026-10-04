@@ -272,19 +272,15 @@ public sealed class MemoryLexiconCurationCommandTests
     [InlineData("reinstate")]
     [InlineData("pin")]
     [InlineData("unpin")]
-    public async Task Decline_sends_only_show_and_json_returns_one_detail(string verb)
+    public async Task Decline_sends_only_show_and_applies_nothing(string verb)
     {
         using LexiconCliFixture.Handler handler = new();
 
-        CliTestResult result = await RunAsync(handler, verb, ["--json"], new RecordingPrompt(handler, false));
+        CliTestResult result = await RunAsync(handler, verb, [], new RecordingPrompt(handler, false));
 
         Assert.Equal(0, result.ExitCode);
 
         Assert.Equal(["show", "prompt"], handler.Events);
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-
-        Assert.Equal("Server Name", output.RootElement.GetProperty("entry").GetProperty("name").GetString());
 
         Assert.Contains("cancelled", result.Error, StringComparison.OrdinalIgnoreCase);
     }
