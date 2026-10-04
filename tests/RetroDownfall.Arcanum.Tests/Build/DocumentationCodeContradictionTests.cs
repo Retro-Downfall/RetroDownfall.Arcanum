@@ -207,6 +207,27 @@ public sealed class DocumentationCodeContradictionTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_fingerprint_preimage_is_documented_with_the_campaign_presence_byte()
+    {
+        Assert.Contains(
+            "WriteByte(value is null ? (byte)0 : (byte)1);",
+            ReadSource("Core", "Memory", "MemoryErasureDigestGrammar.cs"),
+            StringComparison.Ordinal);
+
+        string section = DocumentSection(
+            ReadDocument("Arcanum.DESIGN.md"),
+            "#### 21.15.2 The fingerprint grammar",
+            "#### 21.15.3 The two-phase guard and its chokepoints");
+
+        Assert.DoesNotContain(
+            "the Campaign as sixteen GUID bytes when the scope is a Campaign",
+            section,
+            StringComparison.Ordinal);
+
+        Assert.Contains("presence byte", section, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
