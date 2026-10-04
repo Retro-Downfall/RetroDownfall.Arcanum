@@ -618,28 +618,15 @@ public sealed class SpellCommands(
             result.Value,
             RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.SpellExportDto);
 
-        if (string.IsNullOrWhiteSpace(output))
-        {
-            await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
-        }
-        else
-        {
-            try
-            {
-                await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
-
-                return 1;
-            }
-
-            AnsiConsole.MarkupLine(
-                themePalette.HighlightLabelMarkup(Markup.Escape("Spell exported to:"), Markup.Escape(output)));
-        }
-
-        return 0;
+        return await CliOutputFile
+            .WriteExportAsync(
+                json,
+                output,
+                "Spell exported to:",
+                confirmationPrompt,
+                themePalette,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -660,9 +647,23 @@ public sealed class SpellCommands(
 
         try
         {
-            json = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
+            CappedTextRead read = await CappedInputReader
+                .ReadFileAsync(file, CappedInputReader.MaxAuthoredBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read.TooLarge)
+            {
+                CliErrorOutput.WriteMarkupLine(
+                    themePalette.ErrorMarkup(
+                        Markup.Escape(
+                            CappedInputReader.TooLargeMessage($"File '{file}'", CappedInputReader.MaxAuthoredBytes))));
+
+                return 1;
+            }
+
+            json = read.Text;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 

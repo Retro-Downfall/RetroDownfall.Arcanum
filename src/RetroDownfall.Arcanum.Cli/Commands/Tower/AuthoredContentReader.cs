@@ -31,21 +31,25 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// </remarks>
 internal static class AuthoredContentReader
 {
-
-    public static async Task<Result<string>> ReadAsync(
+    public static Task<Result<string>> ReadAsync(
         string? file,
         string subject,
         string? emptyContentRemedy,
+        CancellationToken cancellationToken) =>
+        ReadAsync(file, subject, emptyContentRemedy, CappedInputReader.MaxAuthoredBytes, cancellationToken);
+
+    internal static async Task<Result<string>> ReadAsync(
+        string? file,
+        string subject,
+        string? emptyContentRemedy,
+        long maxBytes,
         CancellationToken cancellationToken)
     {
-
-        Result<string> authored = await ReadSourceAsync(file, subject, cancellationToken).ConfigureAwait(false);
+        Result<string> authored = await ReadSourceAsync(file, subject, maxBytes, cancellationToken).ConfigureAwait(false);
 
         if (authored.IsFailure)
         {
-
             return authored;
-
         }
 
         // Both sources meet this, and they must: the same payload was refused through the pipe and sent
@@ -53,9 +57,7 @@ internal static class AuthoredContentReader
         // caught. The remarks say why this surface refuses what the routes behind it may accept.
         if (!string.IsNullOrWhiteSpace(authored.Value))
         {
-
             return authored;
-
         }
 
         string refusal = emptyContentRemedy is { Length: > 0 } remedy
@@ -63,7 +65,6 @@ internal static class AuthoredContentReader
             : $"{subject} content was empty or whitespace-only, so nothing was sent.";
 
         return Result<string>.Failure(new Error(ErrorCodes.Validation.InvalidBody, refusal));
-
     }
 
     /// <summary>
@@ -72,18 +73,24 @@ internal static class AuthoredContentReader
     private static async Task<Result<string>> ReadSourceAsync(
         string? file,
         string subject,
+        long maxBytes,
         CancellationToken cancellationToken)
     {
-
         try
         {
             if (file is { Length: > 0 } && file != "-")
             {
-                return File.Exists(file)
-                    ? Result<string>.Success(await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false))
-                    : Result<string>.Failure(new Error(
+                if (!File.Exists(file))
+                {
+                    return Result<string>.Failure(new Error(
                         ErrorCodes.Validation.InvalidBody,
                         $"No file exists at '{file}'."));
+                }
+
+                return Capped(
+                    await CappedInputReader.ReadFileAsync(file, maxBytes, cancellationToken).ConfigureAwait(false),
+                    $"The {subject} file",
+                    maxBytes);
             }
 
             if (file != "-" && !Console.IsInputRedirected)
@@ -93,8 +100,10 @@ internal static class AuthoredContentReader
                     $"{subject} content comes from --file or piped standard input, not from a command-line argument."));
             }
 
-            return Result<string>.Success(
-                await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
+            return Capped(
+                await CappedInputReader.ReadTextAsync(Console.In, maxBytes, cancellationToken).ConfigureAwait(false),
+                $"The piped {subject} content",
+                maxBytes);
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException
@@ -108,4 +117,14 @@ internal static class AuthoredContentReader
         }
     }
 
+    /// <summary>
+    /// A read that went over its cap is a refusal naming the limit, so nothing is sent: the same
+    /// refusal the host would have given the oversized request, without the transfer.
+    /// </summary>
+    private static Result<string> Capped(CappedTextRead read, string source, long maxBytes) =>
+        read.TooLarge
+            ? Result<string>.Failure(new Error(
+                ErrorCodes.Validation.BodyTooLarge,
+                CappedInputReader.TooLargeMessage(source, maxBytes)))
+            : Result<string>.Success(read.Text);
 }

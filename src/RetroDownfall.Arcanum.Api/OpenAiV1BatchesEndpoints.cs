@@ -22,9 +22,8 @@ namespace RetroDownfall.Arcanum.Api;
 /// </summary>
 internal static partial class OpenAiV1Endpoints
 {
-
     /// <summary>Only chat-completion batches are supported; this mirrors the JSONL body contract <c>BatchProcessingService</c> understands.</summary>
-    private const string SupportedBatchEndpoint = "/v1/chat/completions";
+    private const string SupportedBatchEndpoint = BatchJsonlRules.SupportedEndpoint;
 
     private const string BatchIdPrefix = "batch_";
 
@@ -34,7 +33,6 @@ internal static partial class OpenAiV1Endpoints
 
     internal static void MapOpenAiV1Batches(this RouteGroupBuilder v1)
     {
-
         _ = v1.MapPost("/batches", HandleCreateBatchAsync)
             .WithName("PostOpenAiBatches");
 
@@ -49,7 +47,6 @@ internal static partial class OpenAiV1Endpoints
 
         _ = v1.MapPost("/batches/{id}/reset", HandleResetBatchAsync)
             .WithName("PostOpenAiBatchReset");
-
     }
 
     private static async Task<IResult> HandleResetBatchAsync(
@@ -57,19 +54,15 @@ internal static partial class OpenAiV1Endpoints
         IBatchRecoveryService batchRecovery,
         CancellationToken cancellationToken)
     {
-
         if (!TryParseBatchId(id, out Guid batchId))
         {
-
             return BatchNotFoundResult(id);
-
         }
 
         BatchRecoveryResult result = await batchRecovery.ResetStuckBatchAsync(batchId, cancellationToken).ConfigureAwait(false);
 
         switch (result.Status)
         {
-
             case BatchRecoveryStatus.NotFound:
                 return BatchNotFoundResult(id);
 
@@ -108,13 +101,11 @@ internal static partial class OpenAiV1Endpoints
                     "reset_failed",
                     "id",
                     StatusCodes.Status500InternalServerError);
-
         }
 
         BatchRecord record = result.Record!;
 
         return Results.Json(OpenAiBatchObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiBatchObject);
-
     }
 
     /// <summary>
@@ -130,81 +121,64 @@ internal static partial class OpenAiV1Endpoints
         IUploadedFileRepository files,
         CancellationToken cancellationToken)
     {
-
         if (!httpContext.Request.HasJsonContentType())
         {
-
             return JsonError(
                 "Request body must be sent with 'Content-Type: application/json'.",
                 "invalid_request_error",
                 "unsupported_media_type",
                 param: null,
                 StatusCodes.Status415UnsupportedMediaType);
-
         }
 
         OpenAiBatchRequest? body;
 
         try
         {
-
             body = await httpContext.Request
                 .ReadFromJsonAsync(ArcanumJsonContext.Default.OpenAiBatchRequest, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (JsonException)
         {
-
             return JsonError(
                 "Request body could not be parsed as a batch request.",
                 "invalid_request_error",
                 "invalid_json",
                 param: null,
                 StatusCodes.Status400BadRequest);
-
         }
 
         if (body is null || string.IsNullOrWhiteSpace(body.InputFileId))
         {
-
             return JsonError("Missing required parameter: 'input_file_id'.", "invalid_request_error", "missing_required_parameter", "input_file_id", StatusCodes.Status400BadRequest);
-
         }
 
         if (string.IsNullOrWhiteSpace(body.Endpoint))
         {
-
             return JsonError("Missing required parameter: 'endpoint'.", "invalid_request_error", "missing_required_parameter", "endpoint", StatusCodes.Status400BadRequest);
-
         }
 
         if (!string.Equals(body.Endpoint, SupportedBatchEndpoint, StringComparison.Ordinal))
         {
-
             return JsonError(
                 $"'endpoint' must be '{SupportedBatchEndpoint}'. Arcanum does not yet support batches for other endpoints.",
                 "invalid_request_error",
                 "invalid_value",
                 "endpoint",
                 StatusCodes.Status400BadRequest);
-
         }
 
         if (!TryParseFileId(body.InputFileId, out Guid inputFileId))
         {
-
             return JsonError($"No such file: '{body.InputFileId}'.", "invalid_request_error", "not_found", "input_file_id", StatusCodes.Status404NotFound);
-
         }
 
         UploadedFileRecord? inputFile = await files.GetByIdAsync(inputFileId, cancellationToken).ConfigureAwait(false);
 
         if (inputFile is null)
         {
-
             return JsonError($"No such file: '{body.InputFileId}'.", "invalid_request_error", "not_found", "input_file_id", StatusCodes.Status404NotFound);
-
         }
 
         BatchRecord record = new(
@@ -219,26 +193,21 @@ internal static partial class OpenAiV1Endpoints
 
         try
         {
-
             await batches.CreateAsync(record, cancellationToken).ConfigureAwait(false);
-
         }
         catch (BatchFileReferenceException)
         {
-
             return JsonError(
                 $"No such file: '{body.InputFileId}'.",
                 "invalid_request_error",
                 "not_found",
                 "input_file_id",
                 StatusCodes.Status404NotFound);
-
         }
 
         OpenAiBatchObject wire = OpenAiBatchObject.FromRecord(record);
 
         return Results.Json(wire, ArcanumJsonContext.Default.OpenAiBatchObject, statusCode: StatusCodes.Status200OK);
-
     }
 
     private static async Task<IResult> HandleGetBatchAsync(
@@ -246,25 +215,19 @@ internal static partial class OpenAiV1Endpoints
         IBatchRepository batches,
         CancellationToken cancellationToken)
     {
-
         if (!TryParseBatchId(id, out Guid batchId))
         {
-
             return BatchNotFoundResult(id);
-
         }
 
         BatchRecord? record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false);
 
         if (record is null)
         {
-
             return BatchNotFoundResult(id);
-
         }
 
         return Results.Json(OpenAiBatchObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiBatchObject);
-
     }
 
     private static async Task<IResult> HandleListBatchesAsync(
@@ -274,15 +237,12 @@ internal static partial class OpenAiV1Endpoints
         IBatchRepository batches,
         CancellationToken cancellationToken)
     {
-
         int pageSize = limit ?? DefaultBatchListPageSize;
 
         if (pageSize < 1 || pageSize > MaxBatchListPageSize)
 
         {
-
             return JsonError(
-
                 $"'limit' is a response-page allocation and must be between 1 and {MaxBatchListPageSize}. Continue through every page with 'next_cursor'; no total batch-history limit is applied.",
 
                 "invalid_request_error",
@@ -292,7 +252,6 @@ internal static partial class OpenAiV1Endpoints
                 "limit",
 
                 StatusCodes.Status400BadRequest);
-
         }
 
         string? normalizedStatus = string.IsNullOrWhiteSpace(status)
@@ -308,9 +267,7 @@ internal static partial class OpenAiV1Endpoints
             && !BatchListCursorCodec.TryDecode(after, normalizedStatus, out position))
 
         {
-
             return JsonError(
-
                 "The batch-list cursor is malformed or belongs to a different status query. Work was not changed; restart this read without 'after', then continue with the returned 'next_cursor'.",
 
                 "invalid_request_error",
@@ -320,11 +277,9 @@ internal static partial class OpenAiV1Endpoints
                 "after",
 
                 StatusCodes.Status400BadRequest);
-
         }
 
         BatchListPage page = await batches.ListPageAsync(
-
                 normalizedStatus,
 
                 position,
@@ -339,19 +294,15 @@ internal static partial class OpenAiV1Endpoints
 
         foreach (BatchRecord record in page.Records)
         {
-
             data.Add(OpenAiBatchObject.FromRecord(record));
-
         }
 
         string? nextCursor = page.HasMore && page.Records.Count > 0
 
             ? BatchListCursorCodec.Encode(
-
                 normalizedStatus,
 
                 new BatchListPosition(
-
                     page.Records[^1].CreatedAt,
 
                     page.Records[^1].Id))
@@ -359,9 +310,7 @@ internal static partial class OpenAiV1Endpoints
             : null;
 
         return Results.Json(
-
             new OpenAiBatchListResponse(
-
                 data,
 
                 page.HasMore,
@@ -369,7 +318,6 @@ internal static partial class OpenAiV1Endpoints
                 nextCursor),
 
             ArcanumJsonContext.Default.OpenAiBatchListResponse);
-
     }
 
     private static async Task<IResult> HandleCancelBatchAsync(
@@ -377,28 +325,22 @@ internal static partial class OpenAiV1Endpoints
         IBatchRepository batches,
         CancellationToken cancellationToken)
     {
-
         if (!TryParseBatchId(id, out Guid batchId))
         {
-
             return BatchNotFoundResult(id);
-
         }
 
         BatchRecord? record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false);
 
         if (record is null)
         {
-
             return BatchNotFoundResult(id);
-
         }
 
         // Idempotent: cancelling an already-terminal batch is a no-op that just returns its current
         // state, matching OpenAI's own behavior rather than erroring on a double-cancel.
         if (!BatchStatuses.IsTerminal(record.Status))
         {
-
             _ = await batches.TryCompareAndSetStatusAsync(
                 batchId,
 
@@ -415,27 +357,21 @@ internal static partial class OpenAiV1Endpoints
                 cancellationToken).ConfigureAwait(false);
 
             record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false) ?? record;
-
         }
 
         return Results.Json(OpenAiBatchObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiBatchObject);
-
     }
 
     private static bool TryParseBatchId(string wireId, out Guid id)
     {
-
         id = Guid.Empty;
 
         if (string.IsNullOrEmpty(wireId) || !wireId.StartsWith(BatchIdPrefix, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         return Guid.TryParseExact(wireId.AsSpan(BatchIdPrefix.Length), "N", out id);
-
     }
 
     private static IResult BatchNotFoundResult(string wireId) =>
@@ -511,5 +447,4 @@ internal static partial class OpenAiV1Endpoints
 
         return Result<OpenAiChatResponse>.Success(response);
     }
-
 }

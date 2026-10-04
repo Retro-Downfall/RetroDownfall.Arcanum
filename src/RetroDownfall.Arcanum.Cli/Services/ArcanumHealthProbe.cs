@@ -154,11 +154,37 @@ internal static class ArcanumHealthProbe
                 return new HealthProbeResult(HealthProbeState.Unauthorized, statusCode, sw.Elapsed, null);
             }
 
+            // The health endpoint answers 503 with the same full report a 200 carries, because overall
+            // Unhealthy is exactly when it answers 503. Read it, so the doctor can name the failing
+            // components instead of the bare status. A body that is not an Arcanum report (a foreign
+            // 503) or one cut short leaves the status-only verdict, which is still true.
+            IReadOnlyList<HealthComponentDto>? unhealthyComponents = null;
+
+            if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+            {
+                try
+                {
+                    unhealthyComponents = await TryReadComponentsAsync(
+                        response,
+                        cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                    when (exception is IOException
+                        || (exception is OperationCanceledException
+                            && !cancellationToken.IsCancellationRequested))
+                {
+                    // The status line already said unhealthy; a body that stalls or is cut short must
+                    // not turn that into a timeout verdict, which auto-serve treats differently.
+                    unhealthyComponents = null;
+                }
+            }
+
             return new HealthProbeResult(
                 HealthProbeState.UnhealthyStatus,
                 statusCode,
                 sw.Elapsed,
-                response.ReasonPhrase);
+                response.ReasonPhrase,
+                Components: unhealthyComponents);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

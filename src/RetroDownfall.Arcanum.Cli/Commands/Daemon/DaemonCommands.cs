@@ -12,14 +12,18 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Daemon;
 /// <summary>
 /// Manage the Arcanum background daemon.
 /// </summary>
-public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class DaemonCommands(
+    IDaemonManager daemonManager,
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    IConsoleDispatcher dispatcher)
 {
     /// <summary>
     /// Install and start the Arcanum background daemon.
     /// </summary>
     public async Task<int> Install(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Installing launchd agent\u2026")));
+        dispatcher.WriteDiagnostic("Installing the background daemon\u2026");
 
         Result result = await daemonManager.InstallAsync(cancellationToken).ConfigureAwait(false);
 
@@ -40,7 +44,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// </summary>
     public async Task<int> Uninstall(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Removing launchd agent\u2026")));
+        dispatcher.WriteDiagnostic("Removing the background daemon\u2026");
 
         Result result = await daemonManager.UninstallAsync(cancellationToken).ConfigureAwait(false);
 
@@ -61,7 +65,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// </summary>
     public async Task<int> Status(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Checking launchd status\u2026")));
+        dispatcher.WriteDiagnostic("Checking the background daemon status\u2026");
 
         Result<string> result = await daemonManager.GetStatusAsync(cancellationToken).ConfigureAwait(false);
 

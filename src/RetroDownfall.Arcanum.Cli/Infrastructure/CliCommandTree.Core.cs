@@ -64,17 +64,10 @@ internal static partial class CliCommandTree
         KeyCommands handler = sp.GetRequiredService<KeyCommands>();
         Command key = new("key", "Master and native-provider API key utilities (secure local stores; no HTTP).");
         Command show = new("show", "Print the stored master API key to stderr (stdout piping does not capture the secret).");
-        Command set = new("set", "Store a master API key in the OS credential store (mirrors to security.dat when possible).");
-        Argument<string?> apiKey = new("api-key")
-        {
-            Arity = ArgumentArity.ZeroOrOne,
-            Description = "The master API key to store; omit to read a single line from stdin or a secure prompt.",
-        };
-
-        set.Add(apiKey);
+        Command set = new("set", "Store a master API key in the OS credential store from redirected stdin or a secure prompt (mirrors to security.dat when possible).");
 
         show.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Show(ct).ConfigureAwait(false));
-        set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Set(ct, pr.GetValue(apiKey)).ConfigureAwait(false));
+        set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Set(ct).ConfigureAwait(false));
 
         Command list = new(
             "list",
@@ -185,7 +178,6 @@ internal static partial class CliCommandTree
 
     private static Command BuildWorkspace(IServiceProvider sp)
     {
-
         WorkspaceCommands handler = sp.GetRequiredService<WorkspaceCommands>();
 
         Command workspace = new(
@@ -210,25 +202,19 @@ internal static partial class CliCommandTree
 
         Argument<string?> registerPath = new("path")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Server-host filesystem path; defaults to the client current directory for the bundled local server.",
-
         };
 
         Option<string?> registerName = new("--name")
         {
-
             Description = "Workspace display name; defaults to the path's final segment.",
-
         };
 
         Option<string?> registerType = new("--type")
         {
-
             Description = "Workspace type: spell, campaign, data, or custom (default).",
-
         };
 
         register.Add(registerPath);
@@ -264,9 +250,7 @@ internal static partial class CliCommandTree
 
         Option<string?> treePath = new("--path")
         {
-
             Description = "Optional relative path inside the selected workspace.",
-
         };
 
         tree.Add(treeWorkspace);
@@ -283,9 +267,7 @@ internal static partial class CliCommandTree
 
         Argument<string> infoPath = new("path")
         {
-
             Description = "Relative path within the selected server workspace.",
-
         };
 
         Option<string?> infoWorkspace = WorkspaceOption();
@@ -304,9 +286,7 @@ internal static partial class CliCommandTree
 
         Argument<string> readPath = new("path")
         {
-
             Description = "Relative file path within the selected server workspace.",
-
         };
 
         Option<string?> readWorkspace = WorkspaceOption();
@@ -325,18 +305,14 @@ internal static partial class CliCommandTree
 
         Argument<string> searchQuery = new("query")
         {
-
             Description = "Semantic search query.",
-
         };
 
         Option<string?> searchWorkspace = WorkspaceOption();
 
         Option<int?> searchLimit = new("--limit")
         {
-
             Description = "Optional bounded result count.",
-
         };
 
         search.Add(searchQuery);
@@ -382,23 +358,17 @@ internal static partial class CliCommandTree
 
         Option<string?> chunksPath = new("--path")
         {
-
             Description = "Optional relative-path filter.",
-
         };
 
         Option<int?> chunksLimit = new("--limit")
         {
-
             Description = "Maximum number of chunks to return.",
-
         };
 
         Option<int?> chunksOffset = new("--offset")
         {
-
             Description = "Number of chunks to skip before returning results.",
-
         };
 
         chunks.Add(chunksWorkspace);
@@ -455,20 +425,16 @@ internal static partial class CliCommandTree
         workspace.Add(unregister);
 
         return workspace;
-
     }
 
     private static Option<string?> WorkspaceOption() =>
         new("--workspace")
         {
-
             Description = "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
-
         };
 
     private static Command BuildMcp(IServiceProvider sp)
     {
-
         McpCommands handler = sp.GetRequiredService<McpCommands>();
 
         Command mcp = new(
@@ -548,11 +514,9 @@ internal static partial class CliCommandTree
 
         Argument<string?> trustWorkspace = new("workspace")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Server-host workspace path; defaults to the current directory.",
-
         };
 
         trust.Add(trustWorkspace);
@@ -590,18 +554,14 @@ internal static partial class CliCommandTree
 
         Argument<string> invokeTool = new("tool")
         {
-
             Description = "External MCP tool name or unique prefix.",
-
         };
 
         Argument<string?> invokeArguments = ToolArgumentsArgument();
 
         Option<string?> invokeServer = new("--server")
         {
-
             Description = "External MCP server name or unique prefix; omit for tool-based selection.",
-
         };
 
         Option<string?> invokeWorkspace = WorkspaceOption();
@@ -642,7 +602,6 @@ internal static partial class CliCommandTree
         mcp.Add(invoke);
 
         return mcp;
-
     }
 
     private static Command BuildMcpLifecycleCommand(
@@ -651,7 +610,6 @@ internal static partial class CliCommandTree
         Func<string?, string?, CancellationToken, Task<int>> action,
         IServiceProvider serviceProvider)
     {
-
         Command command = new(name, description);
 
         Argument<string?> identifier = OptionalResourceArgument(
@@ -672,12 +630,10 @@ internal static partial class CliCommandTree
                     ct).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Command BuildTool(IServiceProvider sp)
     {
-
         ToolCommands handler = sp.GetRequiredService<ToolCommands>();
 
         Command tool = new(
@@ -704,9 +660,7 @@ internal static partial class CliCommandTree
 
         Argument<string> showTool = new("tool")
         {
-
             Description = "Built-in tool name or unique prefix.",
-
         };
 
         Option<string?> showWorkspace = WorkspaceOption();
@@ -728,9 +682,7 @@ internal static partial class CliCommandTree
 
         Argument<string> invokeTool = new("tool")
         {
-
             Description = "Built-in tool name or unique prefix.",
-
         };
 
         Argument<string?> invokeArguments = ToolArgumentsArgument();
@@ -758,17 +710,14 @@ internal static partial class CliCommandTree
         tool.Add(invoke);
 
         return tool;
-
     }
 
     private static Argument<string?> ToolArgumentsArgument() =>
         new("arguments")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Optional JSON object, @file, or redirected stdin; defaults to {} in an interactive terminal.",
-
         };
 
     private static Argument<string?> OptionalResourceArgument(string name, string accepted)

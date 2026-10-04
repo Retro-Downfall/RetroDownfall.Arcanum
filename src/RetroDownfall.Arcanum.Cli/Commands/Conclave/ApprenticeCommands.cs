@@ -104,7 +104,7 @@ public sealed class ApprenticeCommands(
     WatchCommands watchCommands,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
@@ -209,12 +209,6 @@ public sealed class ApprenticeCommands(
         Guid apprenticeId;
         if (!CliArgReader.TryParseGuid(id, out apprenticeId))
         {
-            if (resourceCatalog is null)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-                return 1;
-            }
-
             ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog
                 .SelectApprenticeAsync(id, cancellationToken)
                 .ConfigureAwait(false);
@@ -325,12 +319,6 @@ public sealed class ApprenticeCommands(
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
             return (true, false, id, 0);
-        }
-
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default, (int)CliExitCode.GenericError);
         }
 
         ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog

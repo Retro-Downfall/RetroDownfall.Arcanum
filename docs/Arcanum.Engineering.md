@@ -964,7 +964,7 @@ Repeat `--event-type <value>` or `--tool <value>` (`--tool-name` alias) for case
 
 ### MCP and diagnostic tools
 
-The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately omits subprocess commands/arguments, URLs, environment variables, and secrets. `--workspace` selects a workspace-local scope; an omitted selector can open the interactive picker.
+The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately omits subprocess commands/arguments, URLs, environment variables, and secrets; `mcp trust` is the one verb that prints a file's commands and URLs (and environment variable names, never values), because it asks the operator to approve them. `--workspace` selects a workspace-local scope; an omitted selector can open the interactive picker.
 
 ```bash
 arcanum mcp list
@@ -1138,7 +1138,7 @@ Persistent session context is managed with `/context`, `/context pin <kind> <tar
 | `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure policy, preview deletion plans, or perform confirmed durable deletion. Installation factory reset requires one of `--workspace`/`--global`/`--all` and one of `--dry-run`/`--apply`; noninteractive apply also requires `--yes --force`. Recognized backups and excluded nested Campaign roots are preserved. |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
-| `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
+| `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Redirected stdin or the interactive secret prompt only; never an argument. |
 | `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |
 | `search <query>` | Search without a chat prompt. Options: `--count`, `--freshness day\|week\|month\|year`, repeatable `--include-domain` / `--exclude-domain`, `--save`, `--attach-to-session`, and recursive `--json`. Final citations stay on stdout. |
 | `browse <url>` | Read bounded page Markdown through the typed server workflow. `--render static\|javascript` is explicit; unavailable JavaScript rendering degrades with a static retry hint. Supports `--save`, `--attach-to-session`, and `--json`. |

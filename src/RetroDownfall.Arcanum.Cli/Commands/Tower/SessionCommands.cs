@@ -32,7 +32,7 @@ public sealed class SessionCommands(
     IConfirmationPrompt confirmationPrompt,
     WatchCommands watchCommands,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
     public async Task<int> List(
         string? campaign,
@@ -702,13 +702,6 @@ public sealed class SessionCommands(
             return new SessionResolution(true, false, parsedId);
         }
 
-        if (resourceCatalog is null)
-        {
-            WriteArgumentError("<SESSION> must be a valid GUID.");
-
-            return default;
-        }
-
         ResourceSelectionResult<SessionSummaryDto> selection = await resourceCatalog
             .SelectSessionAsync(identifier, cancellationToken)
             .ConfigureAwait(false);
@@ -736,13 +729,6 @@ public sealed class SessionCommands(
         if (Guid.TryParse(identifier, out Guid parsedId))
         {
             return new EntryResolution(true, false, parsedId);
-        }
-
-        if (resourceCatalog is null)
-        {
-            WriteArgumentError("<ENTRY> must be a valid GUID.");
-
-            return default;
         }
 
         ResourceSelectionResult<EntryDto> selection = await resourceCatalog

@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Core.Hosting;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -64,6 +66,49 @@ public sealed class DaemonCommandTests
         Assert.Equal(0, result.ExitCode);
 
         _ = Assert.Single(handler.Requests);
+    }
+
+    /// <summary>
+    /// R-340: the daemon verbs run on every platform, so their progress is a platform-neutral diagnostic
+    /// on stderr rather than "launchd" text on stdout. The command's result stays on stdout.
+    /// </summary>
+    [Theory]
+    [InlineData("install", "Daemon installed and bootstrapped.")]
+    [InlineData("uninstall", "Daemon uninstall finished.")]
+    [InlineData("status", "Daemon is running (stub).")]
+    public void Install_progress_is_diagnostic_and_platform_neutral(string verb, string expectedResult)
+    {
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        services.RemoveAll<IDaemonManager>();
+
+        services.AddSingleton<IDaemonManager>(new StubDaemonManager());
+
+        CliTestResult result = CliTestHarness.Run(services, "daemon", verb);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(expectedResult, result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("launchd", result.Output + result.Error, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("\u2026", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("daemon", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class StubDaemonManager : IDaemonManager
+    {
+        public Task<Result> InstallAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result> UninstallAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result.Success());
+
+        public Task<Result<string>> GetStatusAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(Result<string>.Success("Daemon is running (stub)."));
     }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)

@@ -11,10 +11,11 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// </summary>
 internal static class CliArgReader
 {
+    public static bool TryReadInlineOrFile(string? value, out string result, out string? error) =>
+        TryReadInlineOrFile(value, CappedInputReader.MaxAuthoredBytes, out result, out error);
 
-    public static bool TryReadInlineOrFile(string? value, out string result, out string? error)
+    internal static bool TryReadInlineOrFile(string? value, long maxBytes, out string result, out string? error)
     {
-
         if (string.IsNullOrEmpty(value))
         {
             result = string.Empty;
@@ -37,7 +38,18 @@ internal static class CliArgReader
 
         try
         {
-            result = File.ReadAllText(path);
+            CappedTextRead read = CappedInputReader.ReadFile(path, maxBytes);
+
+            if (read.TooLarge)
+            {
+                result = string.Empty;
+
+                error = CappedInputReader.TooLargeMessage($"File '{path}'", maxBytes);
+
+                return false;
+            }
+
+            result = read.Text;
 
             error = null;
 
@@ -51,7 +63,6 @@ internal static class CliArgReader
 
             return false;
         }
-
     }
 
     public static bool TryParseGuid(string? value, out Guid id)
@@ -61,7 +72,6 @@ internal static class CliArgReader
 
     public static bool TryParseKeyValuePairs(string[]? values, out Dictionary<string, string> result, out string? error)
     {
-
         result = new Dictionary<string, string>(StringComparer.Ordinal);
 
         if (values is null)
@@ -73,7 +83,6 @@ internal static class CliArgReader
 
         foreach (string entry in values)
         {
-
             int eq = entry.IndexOf('=');
 
             if (eq <= 0)
@@ -88,13 +97,10 @@ internal static class CliArgReader
             string value = entry[(eq + 1)..];
 
             result[key] = value;
-
         }
 
         error = null;
 
         return true;
-
     }
-
 }

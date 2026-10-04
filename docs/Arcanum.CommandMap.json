@@ -1116,18 +1116,10 @@
         {
           "path": "key set",
           "name": "set",
-          "description": "Store a master API key in the OS credential store (mirrors to security.dat when possible).",
+          "description": "Store a master API key in the OS credential store from redirected stdin or a secure prompt (mirrors to security.dat when possible).",
           "runnable": true,
           "aliases": [],
-          "arguments": [
-            {
-              "name": "api-key",
-              "description": "The master API key to store; omit to read a single line from stdin or a secure prompt.",
-              "required": false,
-              "variadic": false,
-              "values": []
-            }
-          ],
+          "arguments": [],
           "options": [],
           "examples": [],
           "commands": []

@@ -57,6 +57,30 @@ public sealed class ServeCommand(
     }
 
     /// <summary>
+    /// Refuses <c>--json</c> (and <c>--output-format json</c>) before anything starts. <c>serve</c> runs
+    /// until it is stopped and has no result document, while the structured-output mode defers every
+    /// stdout write until the command returns, so the freshly generated master API key would be held
+    /// back until the host exits. Returns the exit code the process must stop with, or
+    /// <see langword="null"/> when the host may start.
+    /// </summary>
+    internal int? RefuseJsonOutput(CliInvocationOptions options)
+    {
+        if (!options.Json)
+        {
+            return null;
+        }
+
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(
+                Markup.Escape(
+                    "arcanum serve does not support --json or --output-format json: it runs until it is "
+                    + "stopped and has no result document, and buffering its output would hold back the "
+                    + "master API key it generates until the host exits. Run it without --json.")));
+
+        return (int)CliExitCode.ConfigurationError;
+    }
+
+    /// <summary>
     /// Applies the all-interfaces binding policy before Kestrel is built. Returns the exit code the
     /// process must stop with, or <see langword="null"/> when the host may start.
     /// </summary>
@@ -103,6 +127,13 @@ public sealed class ServeCommand(
     public async Task<int> Run(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        int? jsonRefusal = RefuseJsonOutput(CliInvocationContext.Current);
+
+        if (jsonRefusal is not null)
+        {
+            return jsonRefusal.Value;
+        }
 
         ConfigurationManager probeConfig = new();
 

@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 /// </summary>
 internal static class CliSuggestionEngine
 {
-
     /// <summary>
     /// Removed spelling (as a full command path) to its canonical replacement.
     /// </summary>
@@ -54,7 +53,6 @@ internal static class CliSuggestionEngine
     /// </summary>
     public static string? Describe(ParseResult parseResult, IReadOnlyList<string> arguments)
     {
-
         ArgumentNullException.ThrowIfNull(parseResult);
 
         ArgumentNullException.ThrowIfNull(arguments);
@@ -72,15 +70,24 @@ internal static class CliSuggestionEngine
 
         if (unrecognized is null)
         {
-
             // Every verb the operator typed is real. The parse failed for some other reason — a
             // missing argument, a rejected value — and System.CommandLine's own message names it
             // better than a spelling guess could.
             return null;
-
         }
 
         string matched = MatchedPath(parseResult);
+
+        // The credential verbs never take their value as an argument (`key set` once did). A leftover
+        // value is a credential, so the refusal names the supported routes and never repeats the token:
+        // the generic "unrecognized argument" line would print the secret back into terminal scrollback
+        // and CI logs.
+        if (matched is "key set" or "key provider set")
+        {
+            return $"`arcanum {matched}` does not take the credential as an argument, because a "
+                + "command-line value is recorded in shell history and visible in the process list. "
+                + "Pipe the value on stdin or run it in a terminal for the hidden prompt.";
+        }
 
         string typed = matched.Length == 0
             ? unrecognized
@@ -88,9 +95,7 @@ internal static class CliSuggestionEngine
 
         if (Removed.TryGetValue(typed, out string? replacement))
         {
-
             return $"`arcanum {typed}` was removed. Use {replacement} instead.";
-
         }
 
         // Past the removed-spelling table, a parse failure is only a naming problem when the
@@ -99,9 +104,7 @@ internal static class CliSuggestionEngine
         // the operator asked for.
         if (RequestsHelp(arguments))
         {
-
             return null;
-
         }
 
         // The resolved command is the deepest one that parsed, so its children are exactly the
@@ -118,7 +121,6 @@ internal static class CliSuggestionEngine
         return suggestion is null
             ? null
             : $"`{unrecognized}` is not an {prefix} command. Did you mean `{prefix} {suggestion}`?";
-
     }
 
     /// <summary>
@@ -134,16 +136,13 @@ internal static class CliSuggestionEngine
     /// </summary>
     public static string? DescribePromptOption(ParseResult parseResult, Argument prompt)
     {
-
         ArgumentNullException.ThrowIfNull(parseResult);
 
         ArgumentNullException.ThrowIfNull(prompt);
 
         if (parseResult.GetResult(prompt) is not ArgumentResult promptResult)
         {
-
             return null;
-
         }
 
         // Only tokens the prompt actually took: an option's own value can be dash-led (a `--stop`
@@ -160,9 +159,7 @@ internal static class CliSuggestionEngine
 
         if (offending is null)
         {
-
             return null;
-
         }
 
         string matched = MatchedPath(parseResult);
@@ -179,7 +176,6 @@ internal static class CliSuggestionEngine
 
         return $"`{offending}` is not an `{command}` option.{suggestion} "
             + "Put `--` before prompt text that begins with a dash.";
-
     }
 
     /// <summary>
@@ -199,41 +195,31 @@ internal static class CliSuggestionEngine
     /// </summary>
     private static IReadOnlyList<string> OptionSpellings(ParseResult parseResult)
     {
-
         List<string> spellings = [];
 
         for (SymbolResult? current = parseResult.CommandResult;
             current is not null;
             current = current.Parent)
         {
-
             if (current is not CommandResult commandResult)
             {
-
                 continue;
-
             }
 
             foreach (Option option in commandResult.Command.Options)
             {
-
                 if (option.Hidden)
                 {
-
                     continue;
-
                 }
 
                 spellings.Add(option.Name);
 
                 spellings.AddRange(option.Aliases);
-
             }
-
         }
 
         return [.. spellings.Where(static spelling => spelling.StartsWith('-'))];
-
     }
 
     /// <summary>
@@ -243,27 +229,21 @@ internal static class CliSuggestionEngine
     /// </summary>
     private static string MatchedPath(ParseResult parseResult)
     {
-
         List<string> names = [];
 
         for (SymbolResult? current = parseResult.CommandResult;
             current is not null;
             current = current.Parent)
         {
-
             if (current is CommandResult commandResult && commandResult.Parent is not null)
             {
-
                 names.Add(commandResult.Command.Name);
-
             }
-
         }
 
         names.Reverse();
 
         return string.Join(' ', names);
-
     }
 
     /// <summary>
@@ -294,12 +274,9 @@ internal static class CliSuggestionEngine
     /// </summary>
     internal static string? Nearest(string typed, IReadOnlyList<string> candidates)
     {
-
         if (string.IsNullOrWhiteSpace(typed) || candidates.Count == 0)
         {
-
             return null;
-
         }
 
         int ceiling = typed.Length <= 4 ? 1 : 2;
@@ -312,42 +289,32 @@ internal static class CliSuggestionEngine
             .OrderBy(static candidate => candidate.Length)
             .ThenBy(static candidate => candidate, StringComparer.Ordinal))
         {
-
             if (typed.Length >= 3
                 && candidate.StartsWith(typed, StringComparison.Ordinal))
             {
-
                 return candidate;
-
             }
 
             int distance = Distance(typed, candidate, ceiling);
 
             if (distance > ceiling || distance >= bestDistance)
             {
-
                 continue;
-
             }
 
             bestDistance = distance;
 
             best = candidate;
-
         }
 
         return best;
-
     }
 
     private static int Distance(string left, string right, int ceiling)
     {
-
         if (Math.Abs(left.Length - right.Length) > ceiling)
         {
-
             return ceiling + 1;
-
         }
 
         int[] beforePrevious = new int[right.Length + 1];
@@ -358,21 +325,17 @@ internal static class CliSuggestionEngine
 
         for (int column = 0; column <= right.Length; column++)
         {
-
             previous[column] = column;
-
         }
 
         for (int row = 1; row <= left.Length; row++)
         {
-
             current[0] = row;
 
             int rowBest = current[0];
 
             for (int column = 1; column <= right.Length; column++)
             {
-
                 int substitution = previous[column - 1]
                     + (left[row - 1] == right[column - 1] ? 0 : 1);
 
@@ -385,28 +348,20 @@ internal static class CliSuggestionEngine
                     && left[row - 1] == right[column - 2]
                     && left[row - 2] == right[column - 1])
                 {
-
                     current[column] = Math.Min(current[column], beforePrevious[column - 2] + 1);
-
                 }
 
                 rowBest = Math.Min(rowBest, current[column]);
-
             }
 
             if (rowBest > ceiling)
             {
-
                 return ceiling + 1;
-
             }
 
             (beforePrevious, previous, current) = (previous, current, beforePrevious);
-
         }
 
         return previous[right.Length];
-
     }
-
 }
