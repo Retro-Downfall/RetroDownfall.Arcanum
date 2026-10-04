@@ -25,9 +25,13 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// name or key would copy it into application logs, which an erase never reaches. The scan reads both
 /// halves of a line: every template placeholder must be on a short allow-list of known-safe names, and
 /// no argument may carry an identifier that could hold content unless a reviewer has read that exact
-/// argument. <see cref="ContentFreeLogFiles"/> is closed, and so is the set of files that may log on an
-/// erasure path: a file found on one of those paths that logs must be on that list, so a new logging file
-/// joins the scan rather than escaping it.</para>
+/// argument. <see cref="ContentFreeLogFiles"/> is closed, and so is the set of files that may log in the
+/// erasure family: a file found there that logs must be on that list, or on the small
+/// <see cref="ReviewedOlderLoggers"/> list, so a new logging file joins the scan rather than escaping it. The
+/// family is every file under <c>src</c> whose path names erasure or whose text names the erasure key,
+/// identity, guard or evidence types, plus the folders in <see cref="ErasurePaths"/>. A log call is
+/// recognized by what it calls, or by the declared type of its receiver, never by what the receiver is
+/// named.</para>
 ///
 /// <para><b>No memory item owns a managed file, and erase is its own verb.</b> A Saga or Lexicon erase
 /// is one database transaction, so neither kind may acquire a managed-file executor or reach the
@@ -42,11 +46,13 @@ public sealed class MemoryErasureStructuralTests
     /// <summary>
     /// Every erasure source file whose log lines this scan holds, relative to
     /// <c>src/RetroDownfall.Arcanum.Infrastructure/</c>. Closed: a new erasure source file joins it, and a
-    /// file the discovery finds on an erasure path that logs must already be here.
+    /// file the discovery finds in the erasure family that logs must already be here or on
+    /// <see cref="ReviewedOlderLoggers"/>.
     /// </summary>
     /// <remarks>
-    /// Existing chokepoint owners such as the Lexicon service are not listed. They already log names
-    /// under the rule that preceded this one, and the content-free rule covers new log lines.
+    /// Existing chokepoint owners such as the Lexicon service are not listed here. They already log names
+    /// under the rule that preceded this one, and the content-free rule covers new log lines. They are on
+    /// <see cref="ReviewedOlderLoggers"/> instead, so the discovery still knows every one of them.
     /// </remarks>
     internal static readonly string[] ContentFreeLogFiles =
     [
@@ -80,6 +86,31 @@ public sealed class MemoryErasureStructuralTests
         "Data/CovenantLabeledArtifactGuard.cs",
     ];
 
+    /// <summary>
+    /// The erasure-family files that log under the rule that preceded the content-free one, each by its
+    /// repository-relative path with the reason it is not scanned. Closed: a file the discovery finds that
+    /// logs and is on neither this list nor <see cref="ContentFreeLogFiles"/> fails the test, and an entry
+    /// that no longer logs, or no longer belongs to the family, fails it too, so the list only shrinks.
+    /// </summary>
+    internal static readonly (string File, string Reason)[] ReviewedOlderLoggers =
+    [
+        (
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantErasureCoordinator.cs",
+            "The older Covenant erasure kernels for managed files and protected artifacts, which log under the rule that preceded the content-free one."),
+        (
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs",
+            "The data retention service. It logs retention outcomes under the earlier rule and reaches the erasure family only through the evidence type it names."),
+        (
+            "src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs",
+            "Startup and shutdown. It logs lifecycle failures under the earlier rule and reaches the erasure family only by running the key warmup, which is scanned."),
+        (
+            "src/RetroDownfall.Arcanum.Infrastructure/Hosting/SagaExtractionService.cs",
+            "The Saga extraction consumer. It logs session identifiers and counts under the earlier rule and reaches the erasure family only through the guard context it hands the Saga store."),
+        (
+            "src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs",
+            "The Lexicon service. Its failure lines name the entity under the earlier rule; its erasure code is in Lexicon/LexiconService.Erasure.cs, which is scanned."),
+    ];
+
     private const string InfrastructureRoot = "src/RetroDownfall.Arcanum.Infrastructure";
 
     private const string SagaStore = "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs";
@@ -98,18 +129,6 @@ public sealed class MemoryErasureStructuralTests
     private static readonly Regex SagaInsert = new(
         @"\b(?:INSERT\s+(?:OR\s+\w+\s+)?|REPLACE\s+)INTO\s+(?:(?:""\w+""|\[\w+\]|`\w+`|'\w+'|\w+)\s*\.\s*)?[""\[`']?saga_memories\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    /// <summary>Serilog's level methods, called statically on <c>Log</c> or on a logger instance.</summary>
-    private static readonly HashSet<string> SerilogLevels = new(StringComparer.Ordinal)
-    {
-        "Verbose",
-        "Debug",
-        "Information",
-        "Warning",
-        "Error",
-        "Fatal",
-        "Write",
-    };
 
     /// <summary>
     /// The placeholder names a log template on an erasure path may use. Each names an enum, a count, a flag
@@ -159,9 +178,9 @@ public sealed class MemoryErasureStructuralTests
     ];
 
     /// <summary>
-    /// The erasure family's source paths, relative to <c>src/RetroDownfall.Arcanum.Infrastructure/</c>: the
-    /// folder, the file pattern, and whether the folder is read recursively. A file found here that logs
-    /// must be one <see cref="ContentFreeLogFiles"/> scans.
+    /// The erasure family's named source paths, relative to <c>src/RetroDownfall.Arcanum.Infrastructure/</c>:
+    /// the folder, the file pattern, and whether the folder is read recursively. They are read whatever a
+    /// file is called or says; <see cref="IsErasureFamily"/> finds the rest of <c>src</c> by name and text.
     /// </summary>
     private static readonly (string Directory, string Pattern, bool Recursive)[] ErasurePaths =
     [
@@ -187,6 +206,18 @@ public sealed class MemoryErasureStructuralTests
     private static readonly Regex Placeholder = new(
         @"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(?:[,:][^}]*)?\}",
         RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The erasure key, identity, guard and evidence types, by prefix so the provider and exception types
+    /// built on them are named too. A file that mentions one is part of the erasure family however it is
+    /// named and wherever it lives.
+    /// </summary>
+    private static readonly Regex ErasureFamilyText = new(
+        "MemoryErasure(?:Key|Identity|Guard|Evidence)",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>The empty set of declared logger names, for reading an expression that declares none.</summary>
+    private static readonly HashSet<string> NoLoggers = new(StringComparer.Ordinal);
 
     [Fact]
     public void Extraction_is_the_only_saga_writer()
@@ -510,15 +541,17 @@ public sealed class MemoryErasureStructuralTests
     }
 
     /// <summary>
-    /// Every file on an erasure path that logs is one the scan reads. The list above is closed by hand, so
-    /// this is what makes a new logging file join it instead of passing unread.
+    /// Every file in the erasure family that logs is one the scan reads, or one a reviewer has named as an
+    /// older logger. The lists are closed by hand, so this is what makes a new logging file join them instead
+    /// of passing unread.
     /// </summary>
     [Fact]
     public void Every_file_on_an_erasure_path_that_logs_is_in_the_scan()
     {
         (string Path, string Text)[] discovered = DiscoverErasureSources();
 
-        // The discovery is only as good as its paths, so it is shown to reach each kind of file it names.
+        // The discovery is only as good as its rules, so it is shown to reach each kind of file it names:
+        // the named folders, a path that says erasure, and a text that names the erasure types.
         string[] reached =
         [
             "Memory/MemoryErasureRelease.cs",
@@ -530,11 +563,168 @@ public sealed class MemoryErasureStructuralTests
             "Backup/BackupRestoreErasureEvidenceApplier.cs",
             "Data/CovenantLabeledArtifactGuard.cs",
             "Weave/EmbeddingsResetService.cs",
+            "Data/CovenantErasureCoordinator.cs",
+            "Lexicon/LexiconService.cs",
         ];
 
-        Assert.All(reached, path => Assert.Contains(discovered, source => source.Path == path));
+        Assert.All(reached, path => Assert.Contains(discovered, source => source.Path == $"{InfrastructureRoot}/{path}"));
 
-        Assert.Empty(UnscannedLoggingFiles(discovered, ContentFreeLogFiles));
+        Assert.Empty(UnscannedLoggingFiles(discovered, ScannedLogFiles()));
+    }
+
+    /// <summary>
+    /// The older loggers are a closed list of files that exist, still log, are still found by the discovery,
+    /// and are not also scanned, each with a reason. An entry that stops being true is removed, so the list
+    /// cannot excuse a file that has since changed.
+    /// </summary>
+    [Fact]
+    public void The_reviewed_older_loggers_are_closed_and_still_current()
+    {
+        string repositoryRoot = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string[] files = [.. ReviewedOlderLoggers.Select(static reviewed => reviewed.File)];
+
+        Assert.Equal(files.Length, files.Distinct(StringComparer.Ordinal).Count());
+
+        (string Path, string Text)[] discovered = DiscoverErasureSources();
+
+        Assert.All(
+            ReviewedOlderLoggers,
+            reviewed =>
+            {
+                Assert.False(string.IsNullOrWhiteSpace(reviewed.Reason), $"{reviewed.File} has no reason.");
+
+                Assert.True(File.Exists(Path.Combine(repositoryRoot, reviewed.File)), $"{reviewed.File} is listed but does not exist.");
+
+                Assert.True(
+                    discovered.Any(source => source.Path == reviewed.File),
+                    $"{reviewed.File} is no longer found by the erasure discovery, so it does not need to be listed.");
+
+                Assert.True(
+                    LogsAnything(File.ReadAllText(Path.Combine(repositoryRoot, reviewed.File))),
+                    $"{reviewed.File} no longer logs, so it does not need to be listed.");
+
+                Assert.DoesNotContain(
+                    ContentFreeLogFiles,
+                    file => $"{InfrastructureRoot}/{file}" == reviewed.File);
+            });
+    }
+
+    /// <summary>
+    /// A file belongs to the erasure family when its path says erasure or its text names the erasure key,
+    /// identity, guard or evidence types, wherever under <c>src</c> it lives.
+    /// </summary>
+    [Theory]
+    [InlineData("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaErasureProbe.cs", "internal sealed class Probe;", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Erasure/Probe.cs", "internal sealed class Probe;", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "using Secrets; MemoryErasureKeyState state;", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "IMemoryErasureKeyProvider keys;", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "MemoryErasureIdentity identity;", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "throw new MemoryErasureGuardException(error);", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "MemoryErasureEvidence.CountAsync(connection);", true)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "internal sealed class Probe;", false)]
+    [InlineData("src/RetroDownfall.Arcanum.Api/Tower/AuditProbe.cs", "MemoryErasureRelease release;", false)]
+    public void The_erasure_family_is_found_by_path_and_by_the_types_a_file_names(string path, string text, bool expected) =>
+        Assert.Equal(expected, IsErasureFamily(path, text));
+
+    /// <summary>
+    /// A logging file the scan does not read is found however its logger is named: by the declared type of
+    /// the receiver, whether that is a field, a property, a parameter, a primary-constructor parameter or a
+    /// local, and whether it is called plainly or through a null-conditional.
+    /// </summary>
+    [Fact]
+    public void The_discovery_finds_a_logging_file_whatever_its_logger_is_named()
+    {
+        (string Path, string Text)[] sources =
+        [
+            (
+                "Data/SagaErasureProbe.cs",
+                """
+                internal sealed class Probe(Serilog.ILogger audit)
+                {
+                    internal void Erase(string name) => audit.Information("Probe {Detail}.", name);
+                }
+                """),
+            (
+                "Data/Field.cs",
+                """
+                internal sealed class Probe
+                {
+                    private readonly Serilog.ILogger trail = Serilog.Log.Logger;
+
+                    internal void Erase(string name) => trail.Debug("Probe {Detail}.", name);
+                }
+                """),
+            (
+                "Data/Property.cs",
+                """
+                internal sealed class Probe
+                {
+                    private Serilog.ILogger? Ledger { get; init; }
+
+                    internal void Erase(string name) => Ledger?.Warning("Probe {Detail}.", name);
+                }
+                """),
+            (
+                "Data/Local.cs",
+                """
+                internal sealed class Probe
+                {
+                    internal void Erase(string name)
+                    {
+                        Serilog.ILogger journal = Serilog.Log.Logger;
+
+                        journal.Error("Probe {Detail}.", name);
+                    }
+                }
+                """),
+            (
+                "Data/Var.cs",
+                """
+                internal sealed class Probe
+                {
+                    internal void Erase(string name)
+                    {
+                        var scoped = Serilog.Log.ForContext<Probe>();
+
+                        scoped.Warning("Probe {Detail}.", name);
+                    }
+                }
+                """),
+            (
+                "Data/Enrich.cs",
+                """
+                internal sealed class Probe(Serilog.ILogger audit)
+                {
+                    internal void Erase(string name) => audit.ForContext("Subject", name);
+                }
+                """),
+        ];
+
+        Assert.Equal(
+            [.. sources.Select(static source => source.Path).Order(StringComparer.Ordinal)],
+            UnscannedLoggingFiles(sources, []).Order(StringComparer.Ordinal));
+
+        // A receiver is a logger by its type and never by its name: the same names on another type are
+        // not logging.
+        (string Path, string Text)[] quiet =
+        [
+            (
+                "Data/NotALogger.cs",
+                """
+                internal sealed class Probe(Recorder audit, Recorder logger)
+                {
+                    internal void Erase(string name)
+                    {
+                        audit.Information("Probe {Detail}.", name);
+
+                        logger.Warning("Probe {Detail}.", name);
+                    }
+                }
+                """),
+        ];
+
+        Assert.Empty(UnscannedLoggingFiles(quiet, []));
     }
 
     [Fact]
@@ -693,14 +883,30 @@ public sealed class MemoryErasureStructuralTests
     [InlineData("_ = LoggerMessage.Define<string>(LogLevel.Information, new EventId(1), \"Erased {Key}.\");", 1)]
     [InlineData("Log.Information($\"Erased {name}.\");", 1)]
     [InlineData("logger.LogInformation($\"Erased {name}.\");", 1)]
+    [InlineData("audit.Information(\"Erased {Name}.\", store);", 1)]
+    [InlineData("audit?.Warning(\"Erased {Name}.\", store);", 1)]
+    [InlineData("_audit.Error(\"Erased {Name}.\", store);", 1)]
+    [InlineData("this._audit.Error(\"Erased {Name}.\", store);", 1)]
+    [InlineData("audit.ForContext(\"Subject\", name);", 1)]
+    [InlineData("audit.ForContext<Fixture>().Information(\"Erased {Name}.\", store);", 1)]
+    [InlineData("logger?.LogWarning(\"Erased {Name}.\", store);", 1)]
+    [InlineData("var scoped = Log.ForContext<Fixture>(); scoped.Warning(\"Erased {Name}.\", store);", 1)]
+    [InlineData("recorder.Information(\"Erased {Name}.\", store);", 0)]
+    [InlineData("audit.Information(\"The erasure key is {KeyState}.\", state);", 0)]
     [InlineData("Log.Warning(\"The erasure key is {KeyState}.\", state);", 0)]
     [InlineData("logger.LogInformation(\"Checkpoint attempt: {WalCheckpointAttempt}.\", attempt);", 0)]
     [InlineData("_ = string.Format(\"Erased {Name}.\", name);", 0)]
     public void The_log_template_scan_reads_every_logging_call_shape(string call, int expected)
     {
         string source = $$"""
-            internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger, Serilog.ILogger _log)
+            internal sealed class Fixture(
+                Microsoft.Extensions.Logging.ILogger logger,
+                Serilog.ILogger _log,
+                Serilog.ILogger audit,
+                Recorder recorder)
             {
+                private readonly Serilog.ILogger _audit = Serilog.Log.Logger;
+
                 internal void Erase(string name)
                 {
                     {{call}}
@@ -728,9 +934,7 @@ public sealed class MemoryErasureStructuralTests
 
         List<string> violations = [];
 
-        foreach (InvocationExpressionSyntax invocation in root.DescendantNodes()
-            .OfType<InvocationExpressionSyntax>()
-            .Where(static invocation => IsLogCall(invocation)))
+        foreach (InvocationExpressionSyntax invocation in LogCalls(root))
         {
             foreach (ArgumentSyntax argument in invocation.ArgumentList.Arguments)
             {
@@ -747,8 +951,7 @@ public sealed class MemoryErasureStructuralTests
             if (attribute.Parent?.Parent is MethodDeclarationSyntax method)
             {
                 foreach (ParameterSyntax parameter in method.ParameterList.Parameters
-                    .Where(static parameter => parameter.Type?.ToString() is not ("ILogger" or "Exception")
-                        && parameter.Type?.ToString().EndsWith(".ILogger", StringComparison.Ordinal) is not true))
+                    .Where(static parameter => !IsLoggerType(parameter.Type) && parameter.Type?.ToString() is not "Exception"))
                 {
                     string name = parameter.Identifier.ValueText;
 
@@ -829,10 +1032,7 @@ public sealed class MemoryErasureStructuralTests
     /// <summary>The compacted text of every non-template argument of every log call in a file.</summary>
     private static List<string> LoggedArgumentExpressions(string source) =>
     [
-        .. ParseUnit(source)
-            .DescendantNodes()
-            .OfType<InvocationExpressionSyntax>()
-            .Where(static invocation => IsLogCall(invocation))
+        .. LogCalls(ParseUnit(source))
             .SelectMany(static invocation => invocation.ArgumentList.Arguments)
             .Select(static argument => Compact(argument.Expression)),
     ];
@@ -849,13 +1049,12 @@ public sealed class MemoryErasureStructuralTests
     {
         CompilationUnitSyntax root = ParseUnit(source);
 
-        return root.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(static invocation => IsLogCall(invocation))
-            || LoggerMessageAttributes(root).Any();
+        return LogCalls(root).Count > 0 || LoggerMessageAttributes(root).Any();
     }
 
     /// <summary>
-    /// The files on an erasure path that log, and are not among the files the scan reads. Each is a file
-    /// whose log lines nothing has checked.
+    /// The files in the erasure family that log, and are not among the files the scan reads or a reviewer
+    /// has named. Each is a file whose log lines nothing has checked.
     /// </summary>
     private static List<string> UnscannedLoggingFiles(
         IEnumerable<(string Path, string Text)> sources,
@@ -872,7 +1071,27 @@ public sealed class MemoryErasureStructuralTests
     }
 
     /// <summary>
-    /// Every source file on <see cref="ErasurePaths"/>, with the path relative to the Infrastructure root
+    /// Every file the scan reads or a reviewer has named, by repository-relative path: the content-free
+    /// files, which are listed relative to the Infrastructure root, and the reviewed older loggers.
+    /// </summary>
+    private static IEnumerable<string> ScannedLogFiles() =>
+    [
+        .. ContentFreeLogFiles.Select(static file => $"{InfrastructureRoot}/{file}"),
+        .. ReviewedOlderLoggers.Select(static reviewed => reviewed.File),
+    ];
+
+    /// <summary>
+    /// Whether a file under <c>src</c> belongs to the erasure family by what it is called or says: its path
+    /// names erasure, or its text names the erasure key, identity, guard or evidence types.
+    /// </summary>
+    /// <param name="path">The file's repository-relative path.</param>
+    /// <param name="text">The file's text.</param>
+    private static bool IsErasureFamily(string path, string text) =>
+        path.Contains("Erasure", StringComparison.OrdinalIgnoreCase) || ErasureFamilyText.IsMatch(text);
+
+    /// <summary>
+    /// Every erasure-family source file: the folders on <see cref="ErasurePaths"/> and every file anywhere
+    /// under <c>src</c> that <see cref="IsErasureFamily"/> finds, each with its repository-relative path
     /// and its text.
     /// </summary>
     private static (string Path, string Text)[] DiscoverErasureSources()
@@ -892,9 +1111,11 @@ public sealed class MemoryErasureStructuralTests
                 pattern,
                 recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly))
             {
-                found.Add((Path.GetRelativePath(root, file).Replace('\\', '/'), File.ReadAllText(file)));
+                found.Add(($"{InfrastructureRoot}/{Path.GetRelativePath(root, file).Replace('\\', '/')}", File.ReadAllText(file)));
             }
         }
+
+        found.AddRange(Sources("*.cs").Where(static source => IsErasureFamily(source.Path, source.Text)));
 
         Assert.NotEmpty(found);
 
@@ -904,16 +1125,26 @@ public sealed class MemoryErasureStructuralTests
     private static CompilationUnitSyntax ParseUnit(string source) =>
         CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview)).GetCompilationUnitRoot();
 
+    /// <summary>Every invocation in a file that writes a log line or declares a log template.</summary>
+    private static List<InvocationExpressionSyntax> LogCalls(CompilationUnitSyntax root)
+    {
+        HashSet<string> loggers = LoggerNames(root);
+
+        return [.. root.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(invocation => IsLogCall(invocation, loggers))];
+    }
+
     /// <summary>
     /// Whether an invocation writes a log line or declares a log template.
     /// </summary>
     /// <remarks>
-    /// <c>ILogger</c>'s extension methods (<c>LogWarning</c>, <c>Log</c>, …), Serilog's level methods
-    /// on the static <c>Log</c> or on any receiver named for a logger, <c>LoggerMessage.Define…</c>, and
-    /// <c>BeginScope</c>. Syntax alone cannot resolve a receiver's type, so a receiver is a logger when
-    /// its text names one: reading too many calls as logging is the safe direction to be wrong in.
+    /// An invocation logs when it calls a method of the logging method set (<c>Log…</c>,
+    /// <c>BeginScope</c>, <c>LoggerMessage.Define…</c>), whatever its receiver, or when its receiver is a
+    /// logger: the static Serilog <c>Log</c>, or anything the file declares with an <c>ILogger</c> type,
+    /// whatever the receiver is named. Every method of a logger counts, because <c>ForContext</c> copies an
+    /// argument into every later line as surely as a level method does. A logger a file inherits from a base
+    /// class is declared elsewhere, which a syntax-only scan cannot see.
     /// </remarks>
-    private static bool IsLogCall(InvocationExpressionSyntax invocation)
+    private static bool IsLogCall(InvocationExpressionSyntax invocation, HashSet<string> loggers)
     {
         string name = InvokedName(invocation);
 
@@ -922,21 +1153,96 @@ public sealed class MemoryErasureStructuralTests
             return true;
         }
 
-        if (invocation.Expression is not MemberAccessExpressionSyntax member)
+        if (ReceiverOf(invocation) is not { } receiver)
         {
             return false;
         }
 
-        string receiver = member.Expression.ToString();
+        string text = receiver.ToString();
 
-        return (SerilogLevels.Contains(name) && receiver.Contains("log", StringComparison.OrdinalIgnoreCase))
-            || (name.StartsWith("Define", StringComparison.Ordinal)
-                && (receiver == "LoggerMessage" || receiver.EndsWith(".LoggerMessage", StringComparison.Ordinal)));
+        return (name.StartsWith("Define", StringComparison.Ordinal)
+                && (text == "LoggerMessage" || text.EndsWith(".LoggerMessage", StringComparison.Ordinal)))
+            || IsLoggerReceiver(receiver, loggers);
     }
+
+    /// <summary>The expression an invocation is called on, through a null-conditional access too.</summary>
+    private static ExpressionSyntax? ReceiverOf(InvocationExpressionSyntax invocation) => invocation.Expression switch
+    {
+        MemberAccessExpressionSyntax member => member.Expression,
+        MemberBindingExpressionSyntax => invocation.Ancestors().OfType<ConditionalAccessExpressionSyntax>().FirstOrDefault()?.Expression,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Whether an expression is a logger: the static Serilog <c>Log</c>, a name the file declares with a
+    /// logger type, or a call or member access chained on one.
+    /// </summary>
+    private static bool IsLoggerReceiver(ExpressionSyntax? receiver, HashSet<string> loggers) => receiver switch
+    {
+        IdentifierNameSyntax identifier => identifier.Identifier.ValueText == "Log" || loggers.Contains(identifier.Identifier.ValueText),
+        MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText == "Log"
+            || loggers.Contains(member.Name.Identifier.ValueText)
+            || IsLoggerReceiver(member.Expression, loggers),
+        InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax inner } => IsLoggerReceiver(inner.Expression, loggers),
+        ParenthesizedExpressionSyntax parenthesized => IsLoggerReceiver(parenthesized.Expression, loggers),
+        PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression } suppressed => IsLoggerReceiver(suppressed.Operand, loggers),
+        CastExpressionSyntax cast => IsLoggerType(cast.Type) || IsLoggerReceiver(cast.Expression, loggers),
+        _ => false,
+    };
+
+    /// <summary>Whether a type is <c>ILogger</c> or <c>ILogger&lt;T&gt;</c>, Microsoft's or Serilog's, however qualified or nullable.</summary>
+    private static bool IsLoggerType(TypeSyntax? type) => type switch
+    {
+        NullableTypeSyntax nullable => IsLoggerType(nullable.ElementType),
+        QualifiedNameSyntax qualified => IsLoggerType(qualified.Right),
+        AliasQualifiedNameSyntax alias => IsLoggerType(alias.Name),
+        GenericNameSyntax generic => generic.Identifier.ValueText == "ILogger",
+        IdentifierNameSyntax identifier => identifier.Identifier.ValueText == "ILogger",
+        _ => false,
+    };
+
+    /// <summary>
+    /// Every name a file declares as a logger: a field, local, property or parameter of a logger type, and a
+    /// <c>var</c> local initialized from <c>ForContext</c> or the static <c>Log</c>.
+    /// </summary>
+    private static HashSet<string> LoggerNames(CompilationUnitSyntax root)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+
+        foreach (ParameterSyntax parameter in root.DescendantNodes().OfType<ParameterSyntax>().Where(static parameter => IsLoggerType(parameter.Type)))
+        {
+            _ = names.Add(parameter.Identifier.ValueText);
+        }
+
+        foreach (PropertyDeclarationSyntax property in root.DescendantNodes().OfType<PropertyDeclarationSyntax>().Where(static property => IsLoggerType(property.Type)))
+        {
+            _ = names.Add(property.Identifier.ValueText);
+        }
+
+        foreach (VariableDeclarationSyntax declaration in root.DescendantNodes().OfType<VariableDeclarationSyntax>())
+        {
+            foreach (VariableDeclaratorSyntax variable in declaration.Variables)
+            {
+                if (IsLoggerType(declaration.Type) || (declaration.Type.IsVar && MakesALogger(variable.Initializer?.Value)))
+                {
+                    _ = names.Add(variable.Identifier.ValueText);
+                }
+            }
+        }
+
+        return names;
+    }
+
+    /// <summary>Whether an initializer is <c>ForContext</c> on a logger, or the static <c>Log</c> itself.</summary>
+    private static bool MakesALogger(ExpressionSyntax? initializer) =>
+        initializer is not null
+        && (initializer.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().Any(static invocation => InvokedName(invocation) == "ForContext")
+            || IsLoggerReceiver(initializer, NoLoggers));
 
     private static string InvokedName(InvocationExpressionSyntax invocation) => invocation.Expression switch
     {
         MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText,
+        MemberBindingExpressionSyntax binding => binding.Name.Identifier.ValueText,
         IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
         GenericNameSyntax generic => generic.Identifier.ValueText,
         _ => string.Empty,

@@ -3467,7 +3467,7 @@ DELETE FROM covenant_mutation_receipts
     - `RunAsync(Delete, Live)` → `InsertFingerprintAsync(key.Fingerprint(ForCovenant(scope, campaign, key)), Covenant, key.KeyId)` → the receipt, whose mask is `WalCheckpointPending` plus `FullTextSecureDeleteUnverified` when `covenant_fts` exists and `!FullTextSecureDeleteVerified`;
     - `ProveAbsentAsync` must be empty, otherwise `ErasureIncomplete`;
     - `lease.RevalidateAsync` → `CommitForTesting ?? transaction.CommitAsync`.
-  - The erase publishes no availability, generation or authority transition, so `CommitAndReopen` needs no prior health publication. The dispositions:
+  - A committed erase appends absent deltas and moves the canonical search sequence, so a `CommitAndReopen` disposition republishes `CanonicalMutation` after the erase's own `COMMIT`: `availabilityRepublisher.RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)` on the committing connection, while the lease still holds the closure and before `CompleteAsync` reopens it. A refusal or rollback republishes nothing. The dispositions:
     - success → `CommitAndReopen`;
     - proven refusal → `RollbackAndReopen`;
     - a commit exception → dispose the transaction, then run `ReceiptReReadForTesting ?? ReadReceiptOnFreshConnectionAsync(mutationId, CancellationToken.None)`. That method opens `_freshConnections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, cancellationToken)`. Present → `CommitAndReopen` and the committed result; absent → `RollbackAndReopen` and the retryable `Covenant.MaintenanceFailed`, since nothing changed; a failed re-read → `KeepClosed` and `Covenant.ManualRecoveryRequired`.

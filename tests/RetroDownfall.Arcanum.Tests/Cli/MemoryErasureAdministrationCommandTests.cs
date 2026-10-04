@@ -39,6 +39,12 @@ public sealed class MemoryErasureAdministrationCommandTests
 
     private const string MayHaveApplied = "may have been applied";
 
+    private const string StatusVerb = "arcanum memory erasure status";
+
+    /// <summary>The message a host refuses a release with when the erasure key is lost, as it words it.</summary>
+    private const string HostKeyLostMessage =
+        "Erasure fingerprints exist for this store that the erasure key cannot verify, so nothing was released. Run 'arcanum memory erasure status'.";
+
     private const string ResentNote = "was cut off, so it was sent once more";
 
     [Theory]
@@ -339,34 +345,27 @@ public sealed class MemoryErasureAdministrationCommandTests
     }
 
     /// <summary>
-    /// A lost key always gets the CLI's own pointer to status, keyed on the error code and never on how the
-    /// host worded its message.
+    /// A lost key names the status verb exactly once, because the host's own message already ends with it
+    /// and the CLI adds no second line of its own.
     /// </summary>
     /// <remarks>
-    /// The host's message may or may not name the verb, and a reworded one must not change what the
-    /// operator is told, so the pointer is its own diagnostic line either way. A host that names the verb
-    /// too is a second mention, never a missing one.
+    /// The message is the shape every host <c>KeyLost</c> refusal has: a statement of what is wrong that
+    /// ends with the pointer. The count is over the verb itself, so a CLI line that worded the pointer
+    /// differently would still fail it.
     /// </remarks>
     [Theory]
-    [InlineData("saga", false)]
-    [InlineData("lexicon", false)]
-    [InlineData("covenant", false)]
-    [InlineData("saga", true)]
-    [InlineData("lexicon", true)]
-    [InlineData("covenant", true)]
-    public async Task A_KeyLost_refusal_exits_one_and_always_points_to_erasure_status_on_its_own_line(string store, bool hostNamesStatus)
+    [InlineData("saga")]
+    [InlineData("lexicon")]
+    [InlineData("covenant")]
+    public async Task A_KeyLost_refusal_exits_one_and_names_erasure_status_exactly_once(string store)
     {
         using ContentFile file = new(SagaContent);
-
-        string message = hostNamesStatus
-            ? "The erasure key is lost. Run 'arcanum memory erasure status'."
-            : "The erasure key is lost.";
 
         AdministrationHandler handler = new()
         {
             Failures =
             {
-                [$"/api/memory/{store}/release"] = (HttpStatusCode.Conflict, new Error(ErrorCodes.MemoryErasure.KeyLost, message)),
+                [$"/api/memory/{store}/release"] = (HttpStatusCode.Conflict, new Error(ErrorCodes.MemoryErasure.KeyLost, HostKeyLostMessage)),
             },
         };
 
@@ -374,11 +373,9 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains("The erasure key is lost.", result.Error, StringComparison.Ordinal);
+        Assert.Contains(HostKeyLostMessage, result.Error, StringComparison.Ordinal);
 
-        Assert.Single(
-            result.Error.Split('\n', StringSplitOptions.TrimEntries),
-            static line => line == "Run 'arcanum memory erasure status'.");
+        Assert.Equal(1, Regex.Count(result.Error, Regex.Escape(StatusVerb)));
 
         Assert.DoesNotContain(MayHaveApplied, result.Error, StringComparison.Ordinal);
     }
@@ -405,7 +402,7 @@ public sealed class MemoryErasureAdministrationCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.DoesNotContain("arcanum memory erasure status", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain(StatusVerb, result.Error, StringComparison.Ordinal);
     }
 
     [Theory]

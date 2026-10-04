@@ -600,7 +600,7 @@ Both come from `covenant show`. A Global entry with a Proposed expectation is in
 | Proven pre-commit refusal | `RollbackAndReopen` |
 | Commit uncertain | Re-read the receipt **on a fresh connection**, after disposing the failed transaction. Present means `CommitAndReopen`, absent means `RollbackAndReopen`. If the re-read itself fails, `KeepClosed` plus `Covenant.ManualRecoveryRequired`, which clears on host restart. |
 
-**Health evidence.** The erase publishes no availability, generation, or authority transition, so its evidence is `HealthPublished: true` by construction.
+**Health evidence.** A committed erase appends absent deltas and moves the canonical search sequence, so after its own `COMMIT`, while it still holds the closure, it republishes `CanonicalMutation` on the connection that committed, and only then reopens the closure, so no exclusive transition can publish between the two. A refused or rolled-back erase changes nothing and republishes nothing. DESIGN §21.15.7 states the same rule.
 
 **Availability costs.** These are stated in the preflight notes, the CLI text, and DESIGN:
 - The drain waits up to the gate's 30-second bound for covered turns to finish. If it cannot drain, the erase fails with 503 and changes nothing.

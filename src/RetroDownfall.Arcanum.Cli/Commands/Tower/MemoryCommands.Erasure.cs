@@ -685,23 +685,14 @@ public sealed partial class MemoryCommands
     }
 
     /// <summary>
-    /// What follows a refused release: the status verb when the key is lost, or the may-have-applied
-    /// note when nothing proves the release rolled back.
+    /// What follows a refused release: the may-have-applied note when nothing proves the release rolled back.
     /// </summary>
     /// <remarks>
-    /// The status verb is named for every lost-key refusal, keyed on the error code and never on how the
-    /// host worded its message, so a reworded message cannot change what the operator is told. A host
-    /// message that names the verb too is a second mention, never a missing one.
+    /// A lost-key refusal needs nothing added here: every host <c>KeyLost</c> message already ends with the
+    /// pointer to the status verb, so a line of the CLI's own would only print it twice.
     /// </remarks>
     internal static void WriteReleaseRefusalGuidance(IConsoleDispatcher dispatcher, Error error)
     {
-
-        if (error.Code == ErrorCodes.MemoryErasure.KeyLost)
-        {
-
-            dispatcher.WriteDiagnostic($"Run '{StatusCommand}'.");
-
-        }
 
         if (ArcanumApiClient.ErasureOutcomeUnknown(error))
         {
@@ -711,9 +702,6 @@ public sealed partial class MemoryCommands
         }
 
     }
-
-    /// <summary>The verb that reports the erasure key's state and what it cannot verify.</summary>
-    private const string StatusCommand = "arcanum memory erasure status";
 
     /// <summary>Says a resend happened, so the outcome just reported describes only the resend.</summary>
     private void WriteResentNote(bool resent, string operation)

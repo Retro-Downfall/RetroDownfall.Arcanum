@@ -206,6 +206,46 @@ public sealed class LexiconErasureSuppressionTests(GrimoireFixture fixture)
     }
 
     /// <summary>
+    /// The exemption is for names that start with <c>daemon_state:</c> and nothing else: a name that merely
+    /// contains it, has a prefix before it, or spells the separator differently is an ordinary name, and a
+    /// lost key still refuses it.
+    /// </summary>
+    /// <remarks>
+    /// The exemption exists because no erase can fingerprint a <c>daemon_state:</c> name. A looser match
+    /// would let an ordinary name through while the store's evidence cannot be verified.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("a daemon_state:b")]
+    [InlineData("xdaemon_state:a")]
+    [InlineData("daemon-state:a")]
+    [InlineData("daemon_state :a")]
+    public async Task A_name_that_only_resembles_a_daemon_state_name_is_refused_when_the_key_is_lost(string name)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore inner = new();
+
+        using MemoryErasureKey original = MemoryErasureTestKeys.CreateKey(inner);
+
+        _ = inner.Delete(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
+
+        using MemoryErasureKeyring keys = MemoryErasureTestKeys.Isolated(inner);
+
+        await using CorrectionFixture owner = new(fixture, annals: true, erasureKeys: keys);
+
+        await MemoryErasureTestKeys.SeedFingerprintAsync(
+            owner.Connection, original, MemoryErasureIdentity.ForLexicon(null, "Something the operator erased"), Token);
+
+        string[] snapshot = await owner.SnapshotAsync();
+
+        Result<LexiconEntryDto> scribed = await owner.Concrete.UpsertAsync(name, "State", ["cursor=42"], LexiconScope.Global);
+
+        Assert.Equal(ErrorCodes.MemoryErasure.KeyLost, scribed.Error.Code);
+
+        Assert.Equal(snapshot, await owner.SnapshotAsync());
+    }
+
+    /// <summary>
     /// A present key that did not record the store's evidence still refuses a <c>daemon_state:</c> name, as it
     /// refuses every other write to the store: the evidence cannot be verified at all, which is the store's
     /// integrity and not the key's availability.

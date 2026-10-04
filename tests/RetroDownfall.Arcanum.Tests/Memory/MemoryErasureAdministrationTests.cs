@@ -341,16 +341,23 @@ public sealed class MemoryErasureAdministrationTests
 
         int checkpoints = 0;
 
+        // What a second connection sees as pending when the checkpoint runs. Read inside the stub and asserted
+        // after the reset, so a failed observation is reported as itself and not swallowed as an unavailable
+        // checkpoint.
+        long? pendingSeenByCheckpoint = null;
+
         TestCapturingLogger<MemoryErasureAdministration> log = new();
 
         MemoryErasureAdministration admin = harness.Administration(
-            _ =>
+            async _ =>
             {
                 checkpoints++;
 
+                pendingSeenByCheckpoint = await harness.PendingReceiptsOnAnotherConnectionAsync();
+
                 return answer == "throws"
                     ? throw new IOException("the log could not be checkpointed")
-                    : Task.FromResult(Enum.Parse<MemoryErasureWalCheckpointAttempt>(answer));
+                    : Enum.Parse<MemoryErasureWalCheckpointAttempt>(answer);
             },
             log);
 
@@ -367,6 +374,11 @@ public sealed class MemoryErasureAdministrationTests
         Assert.Equal(new MemoryErasureKeyResetResultDto(MemoryErasureKeyStatus.Present, 1, 1, KeyCreated: true), reset.Value);
 
         Assert.Equal(1, checkpoints);
+
+        // The checkpoint ran after the reset committed. A checkpoint inside the reset's own transaction
+        // could not truncate the log the reset's frames sit in, and a second connection would still see
+        // the discarded receipt.
+        Assert.Equal<long?>(0, pendingSeenByCheckpoint);
 
         // The debt went with the receipt, which is why the reset has to checkpoint for it.
         Assert.Equal(0, (await admin.GetStatusAsync(Token)).Value.PendingScrubReceipts);
@@ -645,6 +657,25 @@ public sealed class MemoryErasureAdministrationTests
             Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
             return applied.Value;
+        }
+
+        /// <summary>
+        /// How many receipts a second, separately admitted connection to the same Grimoire sees as pending a
+        /// scrub: what is committed, and nothing a transaction still open on the harness's own connection holds.
+        /// </summary>
+        internal async Task<long> PendingReceiptsOnAnotherConnectionAsync()
+        {
+            await using ArcanumDbContext sibling = Harness.CreateSiblingContext();
+
+            await sibling.Database.OpenConnectionAsync(Token);
+
+            MemoryErasureEvidenceCounts counts = await MemoryErasureEvidence.CountAsync(
+                (SqliteConnection)sibling.Database.GetDbConnection(),
+                null,
+                null,
+                Token);
+
+            return counts.PendingScrubReceipts;
         }
 
         /// <summary>One receipt's scrub state and pending-reason mask, read through the evidence store.</summary>
