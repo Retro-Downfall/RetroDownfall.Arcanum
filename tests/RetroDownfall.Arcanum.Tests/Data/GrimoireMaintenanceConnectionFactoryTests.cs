@@ -534,6 +534,20 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         Assert.Equal(7L, await read.ExecuteScalarAsync());
     }
 
+    [Theory]
+    [InlineData('/', "/home/mat/.config/arcanum/db/arcanum.db", "file:///home/mat/.config/arcanum/db/arcanum.db?immutable=1")]
+    [InlineData('/', "/tmp/a?b%c#d/x y.db", "file:///tmp/a%3Fb%25c%23d/x%20y.db?immutable=1")]
+    [InlineData('\\', "C:\\Users\\a b\\AppData\\arcanum.db", "file:///C%3A/Users/a%20b/AppData/arcanum.db?immutable=1")]
+    public void ImmutableFileUri_encodes_every_segment_for_either_platforms_paths(
+        char directorySeparator,
+        string canonicalPath,
+        string expected)
+    {
+        Assert.Equal(
+            expected,
+            GrimoireMaintenanceConnectionFactory.ImmutableFileUri(canonicalPath, directorySeparator));
+    }
+
     [Fact]
     public async Task Lease_disposal_closes_and_disposes_before_reporting_once()
     {

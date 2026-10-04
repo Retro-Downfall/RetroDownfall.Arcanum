@@ -273,13 +273,16 @@ internal sealed class GrimoireMaintenanceConnectionFactory
     /// <remarks>
     /// Every path segment is percent-encoded, because SQLite reads <c>?</c> as the start of the query, <c>#</c> as
     /// the start of a fragment and <c>%</c> as an escape, and a canonical path may legally hold all three. SQLite
-    /// decodes the escapes back, including the drive colon of a Windows path.
+    /// decodes the escapes back, including the drive colon of a Windows path. <paramref name="directorySeparator"/>
+    /// is the platform's unless a test names the other platform's.
     /// </remarks>
-    private static string ImmutableFileUri(string canonicalPath)
+    internal static string ImmutableFileUri(string canonicalPath, char directorySeparator = '\0')
     {
-        string normalized = Path.DirectorySeparatorChar == '/'
+        char separator = directorySeparator == '\0' ? Path.DirectorySeparatorChar : directorySeparator;
+
+        string normalized = separator == '/'
             ? canonicalPath
-            : canonicalPath.Replace(Path.DirectorySeparatorChar, '/');
+            : canonicalPath.Replace(separator, '/');
 
         string encoded = string.Join('/', normalized.Split('/').Select(Uri.EscapeDataString));
 
