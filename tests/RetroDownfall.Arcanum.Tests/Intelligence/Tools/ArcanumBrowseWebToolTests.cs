@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -244,6 +245,137 @@ public sealed class ArcanumBrowseWebToolTests
         Assert.True(
             Encoding.UTF8.GetByteCount(json)
             <= WebToolResultSerializer.MaxUtf8Bytes);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_Redirect_IsFollowedThroughTheGuardOrReportedExplicitly()
+    {
+        List<Uri> requested = [];
+
+        ArcanumBrowseWebTool tool = CreateTool(
+            (request, _) =>
+            {
+                requested.Add(request.RequestUri!);
+
+                return Task.FromResult(
+                    request.RequestUri!.AbsolutePath == "/start"
+                        ? Redirect("https://example.com/final")
+                        : Html("<html><title>Final</title><body><p>Landed</p><a href=\"/next\">Next</a></body></html>"));
+            });
+
+        BrowseWebResult? followed = await InvokeAsync(tool, "https://public.fixture.test/start");
+
+        Assert.NotNull(followed);
+        Assert.Equal("Final", followed.Title);
+        Assert.Contains("Landed", followed.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("HTTP 301", followed.Content, StringComparison.Ordinal);
+
+        // Relative links resolve against the page the redirect landed on.
+        Assert.Contains("https://example.com/next", followed.Links);
+
+        Assert.Equal(
+            ["https://public.fixture.test/start", "https://example.com/final"],
+            requested.Select(static uri => uri.AbsoluteUri));
+
+        // A hop that resolves to a private address is rejected before it is dialed.
+        requested.Clear();
+
+        ArcanumBrowseWebTool toPrivate = CreateTool(
+            (request, _) =>
+            {
+                requested.Add(request.RequestUri!);
+
+                return Task.FromResult(Redirect("https://internal.fixture.test/admin"));
+            });
+
+        BrowseWebResult? blocked = await InvokeAsync(toPrivate, "https://public.fixture.test/start");
+
+        Assert.NotNull(blocked);
+        Assert.Contains(ErrorCodes.WebBrowsing.SsrfBlocked, blocked.Content, StringComparison.Ordinal);
+        Assert.Single(requested);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_RedirectTargetRejectedByTheSanctumEgressWard_IsNotFollowed()
+    {
+        List<Uri> requested = [];
+
+        List<Uri> warded = [];
+
+        ArcanumBrowseWebTool tool = CreateTool(
+            (request, _) =>
+            {
+                requested.Add(request.RequestUri!);
+
+                return Task.FromResult(Redirect("https://example.com/final"));
+            });
+
+        using IDisposable ward = SanctumEgressWardAmbient.Begin(
+            (target, _) =>
+            {
+                warded.Add(target);
+
+                return ValueTask.FromResult(false);
+            });
+
+        BrowseWebResult? dto = await InvokeAsync(tool, "https://public.fixture.test/start");
+
+        Assert.NotNull(dto);
+        Assert.Contains(ErrorCodes.WebBrowsing.SsrfBlocked, dto.Content, StringComparison.Ordinal);
+        Assert.Equal(["https://example.com/final"], warded.Select(static uri => uri.AbsoluteUri));
+        Assert.Single(requested);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_RedirectChain_StopsAtTheLimitAndOnCycles()
+    {
+        int maxRedirects = ArcanumSettingClamps.WebBrowsingMaxRedirects(
+            ArcanumRuntimeDefaults.WebBrowsing.MaxRedirects);
+
+        int requests = 0;
+
+        ArcanumBrowseWebTool endless = CreateTool(
+            (_, _) =>
+            {
+                requests++;
+
+                return Task.FromResult(Redirect($"https://example.com/hop-{requests}"));
+            });
+
+        BrowseWebResult? limited = await InvokeAsync(endless, "https://example.com/hop-0");
+
+        Assert.NotNull(limited);
+        Assert.Contains(ErrorCodes.WebBrowsing.RedirectLimitExceeded, limited.Content, StringComparison.Ordinal);
+        Assert.Equal(maxRedirects + 1, requests);
+
+        int cycleRequests = 0;
+
+        ArcanumBrowseWebTool cycle = CreateTool(
+            (request, _) =>
+            {
+                cycleRequests++;
+
+                return Task.FromResult(
+                    Redirect(request.RequestUri!.AbsolutePath == "/a" ? "https://example.com/b" : "https://example.com/a"));
+            });
+
+        BrowseWebResult? cyclic = await InvokeAsync(cycle, "https://example.com/a");
+
+        Assert.NotNull(cyclic);
+        Assert.Contains(ErrorCodes.WebBrowsing.RedirectLimitExceeded, cyclic.Content, StringComparison.Ordinal);
+        Assert.Equal(2, cycleRequests);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_RedirectWithoutALocation_ReportsAnInvalidUrl()
+    {
+        ArcanumBrowseWebTool tool = CreateTool(
+            (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Found)));
+
+        BrowseWebResult? dto = await InvokeAsync(tool, "https://example.com/start");
+
+        Assert.NotNull(dto);
+        Assert.Contains(ErrorCodes.WebBrowsing.InvalidUrl, dto.Content, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -483,6 +615,27 @@ public sealed class ArcanumBrowseWebToolTests
 
         return new ArcanumBrowseWebTool(factory, options, NullLogger.Instance, timeProvider, dnsResolver ?? FixedDns());
     }
+
+    private static HttpResponseMessage Redirect(string location)
+    {
+        HttpResponseMessage response = new(HttpStatusCode.MovedPermanently);
+
+        response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+
+        return response;
+    }
+
+    private static HttpResponseMessage Html(string html) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(html),
+        };
+
+    private static async Task<BrowseWebResult?> InvokeAsync(ArcanumBrowseWebTool tool, string url) =>
+        Deserialize(
+            await tool.InvokeAsync(
+                new AIFunctionArguments(new Dictionary<string, object?>(StringComparer.Ordinal) { ["url"] = url }),
+                CancellationToken.None));
 
     private static BrowseWebResult? Deserialize(object? result)
     {

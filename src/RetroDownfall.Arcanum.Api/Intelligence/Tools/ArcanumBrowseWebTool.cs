@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
@@ -202,55 +203,93 @@ public sealed class ArcanumBrowseWebTool : AIFunction
             cancellationToken,
             idleDeadline.Token);
 
+        int maxRedirects = ArcanumSettingClamps.WebBrowsingMaxRedirects(settings.MaxRedirects);
+
+        HashSet<string> visited = new(StringComparer.Ordinal) { targetUri.AbsoluteUri };
+
+        Uri current = targetUri;
+
+        int redirectsFollowed = 0;
+
         try
         {
-            using HttpResponseMessage response = await client
-                .GetAsync(targetUri, HttpCompletionOption.ResponseHeadersRead, attempt.Token)
-                .ConfigureAwait(false);
-
-            if (!response.IsSuccessStatusCode)
+            while (true)
             {
-                return WebToolResultSerializer.Serialize(
-                    new BrowseWebResult
-                    {
-                        Title = string.Empty,
-                        Content = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}.",
-                        Links = [],
-                    });
-            }
+                using HttpResponseMessage response = await client
+                    .GetAsync(current, HttpCompletionOption.ResponseHeadersRead, attempt.Token)
+                    .ConfigureAwait(false);
 
-            MediaTypeHeaderValue? contentType = response.Content.Headers.ContentType;
-
-            if (contentType is not null && contentType.MediaType is not null)
-            {
-                string mt = contentType.MediaType;
-
-                if (!mt.Contains("html", StringComparison.OrdinalIgnoreCase)
-                    && !mt.Contains("text", StringComparison.OrdinalIgnoreCase))
+                if (OutboundUrlGuard.IsRedirectStatusCode(response.StatusCode))
                 {
-                    _logger?.LogWarning(
-                        "browse_web fetched a non-HTML content type; attempting to parse as text.");
+                    (Uri? next, string? failure) = await FollowRedirectAsync(
+                            current,
+                            response,
+                            visited,
+                            redirectsFollowed,
+                            maxRedirects,
+                            maxUrlChars,
+                            attempt.Token)
+                        .ConfigureAwait(false);
+
+                    if (next is null)
+                    {
+                        return failure!;
+                    }
+
+                    current = next;
+
+                    redirectsFollowed++;
+
+                    // The hop answered, so the connection is not idle; the next one gets its own interval.
+                    idleDeadline.CancelAfter(idleTimeout);
+
+                    continue;
                 }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return WebToolResultSerializer.Serialize(
+                        new BrowseWebResult
+                        {
+                            Title = string.Empty,
+                            Content = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}.",
+                            Links = [],
+                        });
+                }
+
+                MediaTypeHeaderValue? contentType = response.Content.Headers.ContentType;
+
+                if (contentType is not null && contentType.MediaType is not null)
+                {
+                    string mt = contentType.MediaType;
+
+                    if (!mt.Contains("html", StringComparison.OrdinalIgnoreCase)
+                        && !mt.Contains("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger?.LogWarning(
+                            "browse_web fetched a non-HTML content type; attempting to parse as text.");
+                    }
+                }
+
+                await using Stream stream = await response.Content
+                    .ReadAsStreamAsync(attempt.Token)
+                    .ConfigureAwait(false);
+
+                Encoding encoding = GetEncodingFromContentType(response.Content.Headers.ContentType);
+
+                string html = await ReadCappedStringAsync(
+                        stream,
+                        maxContentBytes,
+                        encoding,
+                        idleDeadline,
+                        idleTimeout,
+                        attempt.Token)
+                    .ConfigureAwait(false);
+
+                BrowseWebResult result = Extract(html, current, maxLinks, cancellationToken);
+
+                return WebToolResultSerializer.Serialize(result);
             }
-
-            await using Stream stream = await response.Content
-                .ReadAsStreamAsync(attempt.Token)
-                .ConfigureAwait(false);
-
-            Encoding encoding = GetEncodingFromContentType(response.Content.Headers.ContentType);
-
-            string html = await ReadCappedStringAsync(
-                    stream,
-                    maxContentBytes,
-                    encoding,
-                    idleDeadline,
-                    idleTimeout,
-                    attempt.Token)
-                .ConfigureAwait(false);
-
-            BrowseWebResult result = Extract(html, targetUri, maxLinks, cancellationToken);
-
-            return WebToolResultSerializer.Serialize(result);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -296,6 +335,76 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 });
         }
     }
+
+    /// <summary>
+    /// Validates one redirect hop the way <c>read_url</c> does before it is dialed: the redirect budget
+    /// and cycle check, the SSRF guard on the resolved target, then the campaign Sanctum egress ward the
+    /// pipeline published for this call. Returns the next URI, or the serialized failure to report.
+    /// </summary>
+    private async Task<(Uri? Next, string? Failure)> FollowRedirectAsync(
+        Uri current,
+        HttpResponseMessage response,
+        HashSet<string> visited,
+        int redirectsFollowed,
+        int maxRedirects,
+        int maxUrlChars,
+        CancellationToken cancellationToken)
+    {
+        if (redirectsFollowed >= maxRedirects)
+        {
+            return (null, Failure(ErrorCodes.WebBrowsing.RedirectLimitExceeded, "The page exceeded the permitted redirect limit."));
+        }
+
+        Result<string> redirect = OutboundUrlGuard.ResolveRedirectLocation(
+            current,
+            response.Headers.Location?.ToString());
+
+        if (redirect.IsFailure
+            || redirect.Value.Length > maxUrlChars
+            || !Uri.TryCreate(redirect.Value, UriKind.Absolute, out Uri? redirected))
+        {
+            return (null, Failure(ErrorCodes.WebBrowsing.InvalidUrl, "The server returned an invalid redirect URL."));
+        }
+
+        if (!visited.Add(redirected.AbsoluteUri))
+        {
+            return (null, Failure(ErrorCodes.WebBrowsing.RedirectLimitExceeded, "The page entered a redirect cycle."));
+        }
+
+        Result outbound = await OutboundUrlGuard
+            .ValidateUntrustedUrlAsync(redirected.AbsoluteUri, _dnsResolver, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (outbound.IsFailure)
+        {
+            _logger?.LogWarning(
+                "browse_web SSRF guard blocked a redirect ({ErrorCode}).",
+                outbound.Error.Code);
+
+            return (null, Failure(ErrorCodes.WebBrowsing.SsrfBlocked, outbound.Error.Message));
+        }
+
+        // OutboundUrlGuard only classifies the resolved address; without the campaign ward one 302 off an
+        // allowlisted host turns a contained Sanctum into arbitrary egress.
+        Func<Uri, CancellationToken, ValueTask<bool>>? ward = SanctumEgressWardAmbient.Current;
+
+        if (ward is not null
+            && !await ward(redirected, cancellationToken).ConfigureAwait(false))
+        {
+            return (null, Failure(ErrorCodes.WebBrowsing.SsrfBlocked, "The redirect target was rejected by the campaign network policy."));
+        }
+
+        return (redirected, null);
+    }
+
+    private static string Failure(string code, string message) =>
+        WebToolResultSerializer.Serialize(
+            new BrowseWebResult
+            {
+                Title = string.Empty,
+                Content = $"[{code}] {message}",
+                Links = [],
+            });
 
     internal static BrowseWebResult Extract(string html, Uri baseUri, int maxLinks, CancellationToken cancellationToken)
     {
