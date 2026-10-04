@@ -486,6 +486,22 @@ public sealed class SpellCommandTests
         Assert.Equal("frontmatter-problem", document.RootElement.GetProperty("errors")[0].GetString());
     }
 
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "update", "greet", "--workspace", "/tmp/ws"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--description", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

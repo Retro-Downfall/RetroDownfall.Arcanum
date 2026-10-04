@@ -306,6 +306,13 @@ public sealed class SpellCommands(
             return (int)CliExitCode.ConfigurationError;
         }
 
+        if (description is null && (tag is null || tag.Length == 0))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Nothing to update; pass --description or --tag.")));
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
         UpdateSpellRequest request = new(
             description,
             tag,

@@ -312,6 +312,13 @@ public sealed class CampaignCommands(
     /// <param name="name">New campaign display name.</param>
     public async Task<int> Update(string? id, string? name = null, CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Nothing to update; pass --name.")));
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
         (bool resolved, bool cancelled, Guid campaignId) = await CampaignCommandSupport.ResolveCampaignIdAsync(id, resourceCatalog, themePalette, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 

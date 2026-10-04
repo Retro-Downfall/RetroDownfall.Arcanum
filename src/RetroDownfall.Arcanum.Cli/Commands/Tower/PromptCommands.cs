@@ -347,6 +347,13 @@ public sealed class PromptCommands(
         string[]? tag = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrEmpty(template) && (tag is null || tag.Length == 0))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Nothing to update; pass --template or --tag.")));
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
         (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
 

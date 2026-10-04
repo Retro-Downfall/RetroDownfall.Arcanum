@@ -305,6 +305,22 @@ public sealed class PromptCommandTests
         Assert.DoesNotContain("--sessionId", result.Error, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["prompt", "update", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--template", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

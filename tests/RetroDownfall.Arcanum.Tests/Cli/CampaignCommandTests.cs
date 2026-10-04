@@ -504,6 +504,24 @@ public sealed class CampaignCommandTests
         Assert.Equal(2, document.RootElement.GetArrayLength());
     }
 
+    /// <summary>
+    /// An update that names nothing to change is not a success: it used to send an empty update and print
+    /// "Campaign updated", so a mistyped or forgotten option looked applied.
+    /// </summary>
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["campaign", "update", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--name", result.Error, StringComparison.Ordinal);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,
