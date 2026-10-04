@@ -565,14 +565,77 @@ verify_rid_symbols() {
 
     win-*)
 
-      # No job in verify-native-sqlcipher.yml runs dumpbin /EXPORTS (or any equivalent) against
-      # the checked-in win-* binary, so this script cannot claim the symbol table was inspected.
-      # The construction-time guarantee is real -- build-native-sqlcipher.ps1 builds the .def
-      # export list from dumpbin /symbols filtered to sqlite3_* and links with /DEF, so a leaked
-      # export is not possible from this build path -- but that is a property of the build script,
-      # not something this verification step checked, so it is reported as such rather than as a
-      # pass.
-      unverified "${rid} symbol table is not inspected by any job (see build-native-sqlcipher.ps1's /DEF export list for the construction-time guarantee)"
+      # dumpbin ships with the MSVC tools, which the Windows job in verify-native-sqlcipher.yml puts on
+      # the path before running this script. A host without it (a macOS or Linux box running --rid
+      # win-x64) cannot inspect the symbol table, and says so rather than passing.
+      if ! command -v dumpbin >/dev/null 2>&1; then
+
+        unverified "${rid} symbol table is not inspected on this host: dumpbin is not on the path (the Windows job in verify-native-sqlcipher.yml runs this check)"
+
+        return
+
+      fi
+
+      local dump dump_status=0 exported
+
+      # -exports, not /exports: Git Bash rewrites an argument that starts with a slash into a path.
+      # dumpbin writes CRLF, which would otherwise ride along on every name.
+      dump="$(dumpbin -exports "${file}" 2>&1 | tr -d '\r')" || dump_status=$?
+
+      if [ "${dump_status}" -ne 0 ]; then
+
+        fail "${rid}: dumpbin -exports exited ${dump_status} against ${file}; cannot verify exported symbols"
+
+        return
+
+      fi
+
+      # Rows read "ordinal hint RVA name", a forwarder reads "name = target", and an export by ordinal
+      # alone has no name. No allow-list by name can vouch for the last kind, so it is reported as a
+      # symbol outside the SQLite C API.
+      exported="$(printf '%s\n' "${dump}" | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9A-Fa-f]+$/ && $3 ~ /^[0-9A-Fa-f]+$/ { if (NF >= 4) { print $4 } else { print "<ordinal " $1 ">" } }')"
+
+      if [ -z "${exported}" ]; then
+
+        fail "${rid}: dumpbin -exports reported no exported symbols; cannot verify the export list"
+
+        return
+
+      fi
+
+      if contains_line "${exported}" "sqlite3_open"; then
+
+        pass "${rid} exports the SQLite C API"
+
+      else
+
+        fail "${rid}: the SQLite C API is not exported"
+
+      fi
+
+      local leaked
+
+      leaked="$(printf '%s\n' "${exported}" | grep -vc "^sqlite3_" || true)"
+
+      if [ "${leaked}" != "0" ]; then
+
+        fail "${rid}: ${leaked} non-SQLite symbol(s) are exported, including statically linked crypto"
+
+      else
+
+        pass "${rid} exports no symbol outside the SQLite C API"
+
+      fi
+
+      if contains_line "${exported}" "sqlite3_load_extension"; then
+
+        fail "${rid}: sqlite3_load_extension is exported despite SQLITE_OMIT_LOAD_EXTENSION"
+
+      else
+
+        pass "${rid} omits the extension loading entry points"
+
+      fi
 
       ;;
 
@@ -594,7 +657,17 @@ verify_rid_compile_options() {
   # even though the option was found.
   local literals
 
-  literals="$(strings -a "${file}")"
+  if command -v strings >/dev/null 2>&1; then
+
+    literals="$(strings -a "${file}")"
+
+  else
+
+    # Git Bash on a Windows runner has no binutils. strings reports printable runs of four or more
+    # characters, and so does this.
+    literals="$(LC_ALL=C grep -a -o -E '[[:print:]]{4,}' "${file}" || true)"
+
+  fi
 
   local option missing=0
 
@@ -703,13 +776,86 @@ verify_rid_dependencies() {
 
     win-*)
 
-      # No job in verify-native-sqlcipher.yml runs dumpbin /DEPENDENTS (or any equivalent) against
-      # the checked-in win-* binary, so nothing compares its import table to the manifest's
-      # declared dynamicDependencies (ADVAPI32.dll, KERNEL32.dll, bcrypt.dll) even though
-      # build-native-sqlcipher.ps1 also links ws2_32.lib, crypt32.lib and user32.lib. Unlike the
-      # symbol table, there is no construction-time guarantee standing in for this check, so an
-      # unlisted import would ship undetected until an import-table step exists in the Windows job.
-      unverified "${rid} import table is not checked by any job; the manifest's dynamicDependencies are unverified against the built binary"
+      if ! command -v dumpbin >/dev/null 2>&1; then
+
+        unverified "${rid} import table is not inspected on this host: dumpbin is not on the path (the Windows job in verify-native-sqlcipher.yml runs this check)"
+
+        return
+
+      fi
+
+      local dump dump_status=0 actual declared declared_lower actual_lower dependency lowered unexpected=0
+
+      # -dependents, not /dependents, for the same Git Bash path-rewriting reason as -exports above.
+      dump="$(dumpbin -dependents "${file}" 2>&1 | tr -d '\r')" || dump_status=$?
+
+      if [ "${dump_status}" -ne 0 ]; then
+
+        fail "${rid}: dumpbin -dependents exited ${dump_status} against ${file}; cannot verify dynamic dependencies"
+
+        return
+
+      fi
+
+      # The names sit between "Image has the following dependencies:" and "Summary". Delay-load
+      # imports get their own heading and are collected the same way: loading late is still loading.
+      actual="$(printf '%s\n' "${dump}" | awk '/following (delay load )?dependencies:/ { section = 1; next } /^[[:space:]]*Summary/ { section = 0 } section && NF == 1 && tolower($1) ~ /\.dll$/ { print $1 }')"
+
+      if [ -z "${actual}" ]; then
+
+        fail "${rid}: dumpbin -dependents reported no imports for ${file}; a PE image always imports at least KERNEL32.dll, so the tool did not run as expected"
+
+        return
+
+      fi
+
+      declared="$(echo "${record}" | jq -r '.dynamicDependencies[]')"
+
+      # DLL names compare case-insensitively: dumpbin prints what the import table holds, and the
+      # manifest records the same spelling only by convention.
+      declared_lower="$(printf '%s\n' "${declared}" | tr '[:upper:]' '[:lower:]')"
+
+      actual_lower="$(printf '%s\n' "${actual}" | tr '[:upper:]' '[:lower:]')"
+
+      while IFS= read -r dependency; do
+
+        [ -z "${dependency}" ] && continue
+
+        lowered="$(printf '%s' "${dependency}" | tr '[:upper:]' '[:lower:]')"
+
+        if ! contains_line "${declared_lower}" "${lowered}"; then
+
+          fail "${rid}: undeclared dynamic dependency ${dependency}"
+
+          unexpected=1
+
+        fi
+
+      done <<< "${actual}"
+
+      # The manifest is the audit record, so an entry the binary no longer imports is as stale as an
+      # import the manifest never heard of.
+      while IFS= read -r dependency; do
+
+        [ -z "${dependency}" ] && continue
+
+        lowered="$(printf '%s' "${dependency}" | tr '[:upper:]' '[:lower:]')"
+
+        if ! contains_line "${actual_lower}" "${lowered}"; then
+
+          fail "${rid}: the manifest declares a dynamic dependency the binary does not import: ${dependency}"
+
+          unexpected=1
+
+        fi
+
+      done <<< "${declared}"
+
+      if [ "${unexpected}" -eq 0 ]; then
+
+        pass "${rid} links only its declared dynamic dependencies"
+
+      fi
 
       ;;
 
