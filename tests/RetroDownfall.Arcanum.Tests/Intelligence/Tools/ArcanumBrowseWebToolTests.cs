@@ -11,13 +11,13 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.Tools;
 
 public sealed class ArcanumBrowseWebToolTests
 {
-
     private const string SampleHtml = """
 
         <!DOCTYPE html>
@@ -133,7 +133,7 @@ public sealed class ArcanumBrowseWebToolTests
 
         AIFunctionArguments args = new(new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["url"] = "https://example.com/",
+            ["url"] = "https://public.fixture.test/",
         });
 
         object? result = await tool.InvokeAsync(args, CancellationToken.None);
@@ -145,6 +145,33 @@ public sealed class ArcanumBrowseWebToolTests
         Assert.Equal("Public", dto.Title);
         Assert.Contains(ArcanumBrowseWebTool.UntrustedPageTextFraming, dto.Content);
         Assert.Contains("OK", dto.Content);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_HostResolvingToAPrivateAddress_ReturnsSsrfBlockedWithoutRequesting()
+    {
+        bool handlerCalled = false;
+
+        ArcanumBrowseWebTool tool = CreateTool(
+            (_, _) =>
+            {
+                handlerCalled = true;
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            });
+
+        object? result = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["url"] = "https://internal.fixture.test/",
+            }),
+            CancellationToken.None);
+
+        BrowseWebResult? dto = Deserialize(result);
+
+        Assert.NotNull(dto);
+        Assert.Contains(ErrorCodes.WebBrowsing.SsrfBlocked, dto.Content, StringComparison.Ordinal);
+        Assert.False(handlerCalled);
     }
 
     [Fact]
@@ -384,10 +411,27 @@ public sealed class ArcanumBrowseWebToolTests
         Assert.Contains(ErrorCodes.WebBrowsing.Timeout, dto.Content, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Fixed answers for every host these tests browse, so no test depends on live DNS: anything not
+    /// listed raises the same <see cref="System.Net.Sockets.SocketException"/> an unknown name does.
+    /// </summary>
+    private static FakeDnsResolver FixedDns()
+    {
+        FakeDnsResolver resolver = new();
+
+        resolver.Add("example.com", IPAddress.Parse("93.184.216.34"));
+        resolver.Add("example.test", IPAddress.Parse("93.184.216.34"));
+        resolver.Add("public.fixture.test", IPAddress.Parse("93.184.216.34"));
+        resolver.Add("internal.fixture.test", IPAddress.Parse("10.0.0.5"));
+
+        return resolver;
+    }
+
     private static ArcanumBrowseWebTool CreateTool(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler,
         ArcanumSettings? settings = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IDnsResolver? dnsResolver = null)
     {
         HttpMessageHandlerStub stub = new(handler);
         FakeHttpClientFactory factory = new(stub);
@@ -396,7 +440,7 @@ public sealed class ArcanumBrowseWebToolTests
             Features = new FeatureSettings { WebBrowsing = true },
         });
 
-        return new ArcanumBrowseWebTool(factory, options, NullLogger.Instance, timeProvider);
+        return new ArcanumBrowseWebTool(factory, options, NullLogger.Instance, timeProvider, dnsResolver ?? FixedDns());
     }
 
     private static BrowseWebResult? Deserialize(object? result)
@@ -417,7 +461,6 @@ public sealed class ArcanumBrowseWebToolTests
     /// </summary>
     private sealed class ManualClock : TimeProvider
     {
-
         private readonly Lock _gate = new();
 
         private readonly List<ManualTimer> _timers = [];
@@ -480,7 +523,6 @@ public sealed class ArcanumBrowseWebToolTests
             object? state,
             TimeSpan dueTime) : ITimer
         {
-
             private readonly Lock _gate = new();
 
             private TimeSpan _remaining = dueTime;
@@ -537,14 +579,11 @@ public sealed class ArcanumBrowseWebToolTests
 
                 return ValueTask.CompletedTask;
             }
-
         }
-
     }
 
     private sealed class HttpMessageHandlerStub : HttpMessageHandler
     {
-
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
 
         public HttpMessageHandlerStub(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
@@ -556,7 +595,5 @@ public sealed class ArcanumBrowseWebToolTests
         {
             return _handler(request, cancellationToken);
         }
-
     }
-
 }

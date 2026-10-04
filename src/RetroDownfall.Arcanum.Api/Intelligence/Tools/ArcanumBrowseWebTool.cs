@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -24,7 +25,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 [ExcludeFromCodeCoverage] // Reason: performs live HTTP egress and HTML parsing; covered via integration and dedicated unit tests with stubbed HttpClient.
 public sealed class ArcanumBrowseWebTool : AIFunction
 {
-
     public const string ToolName = ArcanumBuiltInToolNames.BrowseWeb;
 
     /// <summary>
@@ -85,11 +85,14 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
     private readonly TimeProvider _timeProvider;
 
+    private readonly IDnsResolver _dnsResolver;
+
     public ArcanumBrowseWebTool(
         IHttpClientFactory httpClientFactory,
         IOptionsSnapshot<ArcanumSettings> options,
         ILogger? logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IDnsResolver? dnsResolver = null)
     {
         _httpClientFactory = httpClientFactory;
 
@@ -98,6 +101,8 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         _logger = logger;
 
         _timeProvider = timeProvider ?? TimeProvider.System;
+
+        _dnsResolver = dnsResolver ?? new SystemDnsResolver();
     }
 
     public override string Name => ToolName;
@@ -126,7 +131,7 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         int maxContentBytes = ArcanumSettingClamps.WebBrowsingMaxContentBytes(settings.MaxContentBytes);
 
         Result validation = await OutboundUrlGuard
-            .ValidateUntrustedUrlAsync(url, cancellationToken)
+            .ValidateUntrustedUrlAsync(url, _dnsResolver, cancellationToken)
             .ConfigureAwait(false);
 
         if (validation.IsFailure)
@@ -312,16 +317,12 @@ public sealed class ArcanumBrowseWebTool : AIFunction
     /// </summary>
     internal static string FrameUntrustedPageText(string pageText)
     {
-
         if (string.IsNullOrEmpty(pageText))
         {
-
             return UntrustedPageTextFraming;
-
         }
 
         return UntrustedPageTextFraming + "\n\n" + pageText;
-
     }
 
     /// <summary>
@@ -537,7 +538,6 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         if (totalBytesRead == maxBytes)
         {
-
             // Probe one extra byte to distinguish exact-fit from genuine truncation.
 
             byte[] probe = new byte[1];
@@ -545,7 +545,6 @@ public sealed class ArcanumBrowseWebTool : AIFunction
             int probeRead = await stream.ReadAsync(probe.AsMemory(), cancellationToken).ConfigureAwait(false);
 
             moreAvailable = probeRead > 0;
-
         }
 
         memory.Position = 0;
@@ -653,5 +652,4 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 return raw.ToString();
         }
     }
-
 }

@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ManaPreflightTests
 {
-
     private static ManaPreflight CreatePreflight() =>
         new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
@@ -64,12 +63,10 @@ public sealed class ManaPreflightTests
 
         Assert.Equal(5, count);
     }
-
 }
 
 public sealed class InferenceTokenizerResolverTests
 {
-
     [Fact]
     public void ResolveTokenizer_DefaultEncoding_ReturnsTokenizer()
     {
@@ -105,12 +102,10 @@ public sealed class InferenceTokenizerResolverTests
 
         Assert.True(tokenizer.CountTokens("fallback") > 0);
     }
-
 }
 
 public sealed class ArcanumBuiltInToolsTests
 {
-
     [Fact]
     public async Task LocalTimeTool_ReturnsIsoTimestamp()
     {
@@ -238,13 +233,14 @@ public sealed class ArcanumBuiltInToolsTests
         {
             Features = new FeatureSettings { WebBrowsing = true },
         };
+        // A public IP literal passes the outbound guard without a DNS lookup, so this stays hermetic.
         TestCapturingLogger<ArcanumBrowseWebTool> logger = new();
         BuiltInToolRegistry registry = new(
             new StubHttpClientFactory(new ThrowingHandler(canary)),
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             logger);
         using JsonDocument document = JsonDocument.Parse(
-            """{"url":"https://example.com/private-path"}""");
+            """{"url":"https://93.184.216.34/private-path"}""");
 
         Result<JsonElement> result = await registry.InvokeAsync(
             ArcanumBrowseWebTool.ToolName,
@@ -297,12 +293,10 @@ public sealed class ArcanumBuiltInToolsTests
             Task.FromException<HttpResponseMessage>(
                 new InvalidOperationException(message));
     }
-
 }
 
 public sealed class HumanPromptRegistryTests
 {
-
     [Fact]
     public async Task WaitAndSubmit_ReturnsResponse()
     {
@@ -566,5 +560,4 @@ public sealed class HumanPromptRegistryTests
 
         Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
     }
-
 }
