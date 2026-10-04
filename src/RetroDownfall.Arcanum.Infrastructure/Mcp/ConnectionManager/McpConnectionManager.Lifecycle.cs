@@ -57,17 +57,45 @@ public sealed partial class McpConnectionManager
 
         McpServerConfig cfg = entry.Config;
 
+        // Every start gets a fresh transport generation, so a transport-ended callback from the
+        // client this start replaces is recognised as stale and cannot tear down the new one.
+        long transportGeneration = ++entry.TransportGeneration;
+
+        if (ClientFactoryForTests is { } clientFactory)
+        {
+            return await FinishStartAsync(
+                    entry,
+                    cfg,
+                    clientFactory(entry, transportGeneration),
+                    entry.ScopeWorkingDirectory ?? "global",
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         return entry.Transport switch
         {
-            McpServerTransport.Http => await StartHttpServerCoreAsync(entry, cfg, cancellationToken).ConfigureAwait(false),
+            McpServerTransport.Http => await StartHttpServerCoreAsync(entry, cfg, transportGeneration, cancellationToken).ConfigureAwait(false),
             McpServerTransport.Sse => new Error("Mcp.SseNotSupported", "SSE transport is not yet supported."),
-            _ => await StartStdioServerCoreAsync(entry, cfg, cancellationToken).ConfigureAwait(false),
+            _ => await StartStdioServerCoreAsync(entry, cfg, transportGeneration, cancellationToken).ConfigureAwait(false),
         };
     }
+
+    /// <summary>Builds the client a start would otherwise create from the entry's real transport.</summary>
+    internal delegate IMcpClient ClientFactoryForTestsDelegate(
+        ManagedMcpServerEntry entry,
+        long transportGeneration);
+
+    /// <summary>
+    /// Test seam: when set, every start asks this factory for its client instead of spawning a stdio
+    /// process or opening an HTTP session, so restarts and transport-ended races can be driven through
+    /// the real lifecycle with fake clients. Never set in production.
+    /// </summary>
+    internal ClientFactoryForTestsDelegate? ClientFactoryForTests { get; set; }
 
     private async Task<Result> StartStdioServerCoreAsync(
         ManagedMcpServerEntry entry,
         McpServerConfig cfg,
+        long transportGeneration,
         CancellationToken cancellationToken)
     {
         string? command = cfg.Command;
@@ -82,8 +110,6 @@ public sealed partial class McpConnectionManager
         string logScope = entry.ScopeWorkingDirectory ?? "global";
 
         ManagedMcpServerEntry capturedEntry = entry;
-
-        long transportGeneration = ++entry.TransportGeneration;
 
         bool stripUserEnvironment = ShouldStripUserEnvironment(cfg);
 
@@ -134,6 +160,7 @@ public sealed partial class McpConnectionManager
     private async Task<Result> StartHttpServerCoreAsync(
         ManagedMcpServerEntry entry,
         McpServerConfig cfg,
+        long transportGeneration,
         CancellationToken cancellationToken)
     {
         Result<Uri> endpointResult = await ResolveValidatedHttpEndpointAsync(cfg, cancellationToken).ConfigureAwait(false);
@@ -146,8 +173,6 @@ public sealed partial class McpConnectionManager
         string logScope = entry.ScopeWorkingDirectory ?? "global";
 
         ManagedMcpServerEntry capturedEntry = entry;
-
-        long transportGeneration = ++entry.TransportGeneration;
 
         SdkMcpClientWrapper sdkClient =
             CreateHttpMcpClient(endpointResult.Value);
@@ -505,87 +530,7 @@ public sealed partial class McpConnectionManager
             return;
         }
 
-        Task handlerTask = Task.Run(async () =>
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            if (!ManagedMcpServerEntry.IsTransportGenerationCurrent(transportGeneration, entry.TransportGeneration))
-            {
-                return;
-            }
-
-            McpServerEvent? pendingEvent = null;
-
-            try
-            {
-                await entry.Gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (ObjectDisposedException)
-            {
-                return;
-            }
-
-            try
-            {
-                if (_disposed || entry.State is not McpServerState.Running)
-                {
-                    return;
-                }
-
-                entry.State = McpServerState.Error;
-
-                entry.ErrorMessage = "MCP server process exited unexpectedly.";
-
-                IMcpClient? client = entry.Client;
-
-                entry.Client = null;
-
-                entry.LoadedTools.Clear();
-
-                entry.Tools = [];
-
-                if (client is not null)
-                {
-                    try
-                    {
-                        await client.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex, "Error disposing MCP client after transport exit for server {ServerName}.", entry.Name);
-                    }
-
-                    RemoveClientFromPartition(entry, client);
-                }
-
-                ScheduleRestartBackoff(entry);
-
-                pendingEvent = BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []);
-
-                InvalidateCachesForServer(entry);
-
-                RemoveServerMetadataFromPartition(entry);
-            }
-            finally
-            {
-                try
-                {
-                    entry.Gate.Release();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // Host is shutting down and disposed the per-server gate.
-                }
-            }
-
-            if (pendingEvent is not null)
-            {
-                PublishEvent(pendingEvent);
-            }
-        });
+        Task handlerTask = Task.Run(() => HandleTransportEndedAsync(entry, transportGeneration));
 
         _pendingTransportEndedTasks[handlerTask] = 0;
 
@@ -603,6 +548,100 @@ public sealed partial class McpConnectionManager
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Marks <paramref name="entry"/> failed and tears its client down because the transport started
+    /// under <paramref name="transportGeneration"/> ended on its own. The generation is checked again
+    /// once the entry gate is held: a restart can have completed while this handler waited for the
+    /// gate, and the entry then holds a healthy client of a newer generation that this stale callback
+    /// must leave alone.
+    /// </summary>
+    internal async Task HandleTransportEndedAsync(ManagedMcpServerEntry entry, long transportGeneration)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (!ManagedMcpServerEntry.IsTransportGenerationCurrent(transportGeneration, entry.TransportGeneration))
+        {
+            return;
+        }
+
+        McpServerEvent? pendingEvent = null;
+
+        try
+        {
+            await entry.Gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            // The check before the gate only spares a stale handler the wait. A restart that held the
+            // gate while this handler queued has since moved the entry to a newer generation, and its
+            // healthy client must survive the older transport's late callback.
+            if (_disposed
+                || !ManagedMcpServerEntry.IsTransportGenerationCurrent(transportGeneration, entry.TransportGeneration)
+                || entry.State is not McpServerState.Running)
+            {
+                return;
+            }
+
+            entry.State = McpServerState.Error;
+
+            entry.ErrorMessage = "MCP server process exited unexpectedly.";
+
+            IMcpClient? client = entry.Client;
+
+            entry.Client = null;
+
+            entry.LoadedTools.Clear();
+
+            entry.Tools = [];
+
+            if (client is not null)
+            {
+                try
+                {
+                    await client.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Error disposing MCP client after transport exit for server {ServerName}.", entry.Name);
+                }
+
+                RemoveClientFromPartition(entry, client);
+            }
+
+            ScheduleRestartBackoff(entry);
+
+            pendingEvent = BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []);
+
+            InvalidateCachesForServer(entry);
+
+            RemoveServerMetadataFromPartition(entry);
+        }
+        finally
+        {
+            try
+            {
+                entry.Gate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Host is shutting down and disposed the per-server gate.
+            }
+        }
+
+        if (pendingEvent is not null)
+        {
+            PublishEvent(pendingEvent);
+        }
     }
 
     private int GetListDirectoryPageSize()
