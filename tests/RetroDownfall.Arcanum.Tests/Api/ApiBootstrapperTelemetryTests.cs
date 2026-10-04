@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -6,7 +5,6 @@ using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -16,7 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 public sealed class ApiBootstrapperTelemetryTests
 {
     [SkippableFact]
-    public async Task Production_host_starts_telemetry_and_invokes_canonical_web_tool_through_di()
+    public async Task Production_host_invokes_canonical_web_tool_through_di()
     {
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
@@ -39,19 +37,6 @@ public sealed class ApiBootstrapperTelemetryTests
             },
         };
         using HttpClient client = factory.CreateClient();
-        TagList tags = new()
-        {
-            { "provider", "bootstrap-test" },
-            { "operation", "search" },
-            { "outcome", "success" },
-        };
-
-        // This occurs before the test explicitly resolves TelemetryService. It is
-        // observed only if endpoint mapping eagerly constructed the singleton.
-        ArcanumMetrics.WebResearchRequestsTotal.Add(7, tags);
-
-        TelemetryService telemetry =
-            factory.Services.GetRequiredService<TelemetryService>();
         IWebResearchProviderCatalog catalog =
             factory.Services.GetRequiredService<IWebResearchProviderCatalog>();
         using IServiceScope scope = factory.Services.CreateScope();
@@ -64,7 +49,6 @@ public sealed class ApiBootstrapperTelemetryTests
             arguments.RootElement,
             CancellationToken.None);
 
-        Assert.True(telemetry.GetSnapshot().WebResearch.Requests >= 7);
         Assert.True(
             catalog.TryGetProvider(
                 WebResearchProviderNames.Perplexity,

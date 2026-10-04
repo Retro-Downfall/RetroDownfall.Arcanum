@@ -1,18 +1,15 @@
-using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 internal sealed class SubagentRunner(
     Lazy<ITurnExecutionFacade> turnCoordinator,
     ILongRunningOperationCoordinator operations,
-    ISubagentTelemetrySink telemetry,
     TimeProvider timeProvider,
     ILogger<SubagentRunner> logger) : ISubagentRunner
 {
@@ -40,8 +37,6 @@ internal sealed class SubagentRunner(
         DelegatedManaTracker tracker = new(
             request.MaxTokens,
             request.MaxCostUsd);
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        SubagentRunOutcome outcome = SubagentRunOutcome.Failed;
         LongRunningOperationLeaseResult? operationLease = null;
         long operationRevision = 0;
         string ownerId = $"subagent:{Environment.ProcessId}:{childRunId:N}";
@@ -111,8 +106,6 @@ internal sealed class SubagentRunner(
 
             if (tracker.GetUsage().Exhausted)
             {
-                outcome = SubagentRunOutcome.BudgetExhausted;
-
                 await FailOperationAsync(
                         operationLease,
                         ownerId,
@@ -166,8 +159,6 @@ internal sealed class SubagentRunner(
                     SubagentFailureCodes.ChildFailed);
             }
 
-            outcome = SubagentRunOutcome.Completed;
-
             return new SubagentRunResult(
                 Success: true,
                 Summary: result.Value.Text,
@@ -177,8 +168,6 @@ internal sealed class SubagentRunner(
         }
         catch (BudgetExhaustedException)
         {
-            outcome = SubagentRunOutcome.BudgetExhausted;
-
             if (operationLease is { Acquired: true })
             {
                 await FailOperationAsync(
@@ -196,8 +185,6 @@ internal sealed class SubagentRunner(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            outcome = SubagentRunOutcome.Cancelled;
-
             if (operationLease is { Acquired: true })
             {
                 await FailOperationAsync(
@@ -226,18 +213,6 @@ internal sealed class SubagentRunner(
                 childRunId,
                 tracker,
                 SubagentFailureCodes.ChildFailed);
-        }
-        finally
-        {
-            stopwatch.Stop();
-            DelegatedManaUsage usage = tracker.GetUsage();
-
-            telemetry.RecordSubagentRun(
-                new SubagentTelemetryEvent(
-                    usage.Tokens,
-                    usage.CostUsd,
-                    stopwatch.Elapsed,
-                    outcome));
         }
     }
 

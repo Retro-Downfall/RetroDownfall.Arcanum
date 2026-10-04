@@ -66,11 +66,9 @@ public sealed class SubagentRunnerTests
                     "child summary",
                     new ChatCompletionUsage(10, 5, 15))));
         FakeOperationCoordinator operations = new();
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
         AttachedFileDto explicitFile = new("src/A.cs", "sealed class A {}");
@@ -123,7 +121,6 @@ public sealed class SubagentRunnerTests
         Assert.Equal(result.RunId, operations.StartRequest?.RunId);
         Assert.Equal(1, operations.CompleteCalls);
         Assert.Equal(0, operations.FailCalls);
-        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
     }
 
     [Fact]
@@ -150,11 +147,9 @@ public sealed class SubagentRunnerTests
             },
         };
         FakeOperationCoordinator operations = new();
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
 
@@ -174,8 +169,6 @@ public sealed class SubagentRunnerTests
         Assert.Equal(0, operations.CompleteCalls);
         Assert.Equal(1, operations.FailCalls);
         Assert.Equal(SubagentFailureCodes.BudgetExhausted, operations.FailureCode);
-        Assert.Equal(SubagentRunOutcome.BudgetExhausted, telemetry.Event?.Outcome);
-        Assert.Equal(1_001, telemetry.Event?.Tokens);
     }
 
     /// <summary>
@@ -196,11 +189,9 @@ public sealed class SubagentRunnerTests
             Gate = childGate.Task,
         };
         FakeOperationCoordinator operations = new();
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             time,
             NullLogger<SubagentRunner>.Instance);
 
@@ -241,7 +232,6 @@ public sealed class SubagentRunnerTests
 
         // The heartbeats bumped the stored revision; Complete has to address the current one.
         Assert.Equal(1L + operations.HeartbeatCalls, operations.LastCompleteRevision);
-        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
     }
 
     /// <summary>
@@ -268,12 +258,10 @@ public sealed class SubagentRunnerTests
             HeartbeatFailure = new InvalidOperationException(
                 "A second operation was started on this context instance before a previous operation completed."),
         };
-        CapturingTelemetry telemetry = new();
         TestCapturingLogger<SubagentRunner> logger = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             time,
             logger);
 
@@ -305,7 +293,6 @@ public sealed class SubagentRunnerTests
         // A heartbeat that threw committed nothing, so the row is still on the revision the last
         // accepted transition left it at and the terminal transition must address that one.
         Assert.Equal(1L, operations.LastCompleteRevision);
-        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
 
         // Renewal stopping early is a diagnosable event, not a silent one.
         Assert.Contains(
@@ -335,11 +322,9 @@ public sealed class SubagentRunnerTests
         {
             HeartbeatFailure = new InvalidOperationException("connection is already open"),
         };
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             time,
             NullLogger<SubagentRunner>.Instance);
 
@@ -363,7 +348,6 @@ public sealed class SubagentRunnerTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => run.WaitAsync(TimeSpan.FromSeconds(10)));
 
-        Assert.Equal(SubagentRunOutcome.Cancelled, telemetry.Event?.Outcome);
         Assert.Equal(SubagentFailureCodes.Cancelled, operations.FailureCode);
     }
 
@@ -378,11 +362,9 @@ public sealed class SubagentRunnerTests
             Result<PromptTurnResult>.Success(
                 new PromptTurnResult("child summary", null)));
         FakeOperationCoordinator operations = new() { RefuseComplete = true };
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
 
@@ -435,7 +417,6 @@ public sealed class SubagentRunnerTests
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             new FakeOperationCoordinator(),
-            new CapturingTelemetry(),
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
 
@@ -819,13 +800,5 @@ public sealed class SubagentRunnerTests
                 return ValueTask.CompletedTask;
             }
         }
-    }
-
-    private sealed class CapturingTelemetry : ISubagentTelemetrySink
-    {
-        public SubagentTelemetryEvent? Event { get; private set; }
-
-        public void RecordSubagentRun(SubagentTelemetryEvent telemetryEvent) =>
-            Event = telemetryEvent;
     }
 }

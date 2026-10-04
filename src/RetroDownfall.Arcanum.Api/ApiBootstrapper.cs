@@ -408,11 +408,6 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IManaMeter, ManaMeter>();
 
-        services.AddSingleton<TelemetryService>();
-
-        services.AddSingleton<ISubagentTelemetrySink>(
-            static sp => sp.GetRequiredService<TelemetryService>());
-
         services.AddSingleton<PromptRenderer>();
 
         services.AddSingleton<SessionTurnConcurrencyGate>();
@@ -1054,10 +1049,6 @@ public static class ApiBootstrapper
 
     public static void MapArcanumEndpoints(this WebApplication app)
     {
-        // TelemetryService owns the MeterListener that rolls process metrics
-        // up into pull-read aggregates. Resolve it before any endpoint can emit metrics.
-        _ = app.Services.GetRequiredService<TelemetryService>();
-
         // Must be installed before the endpoints it guards can be reached; see the method's remarks
         // for why the key cannot be checked by an endpoint filter alone.
         app.UseArcanumApiKeyAuthentication();

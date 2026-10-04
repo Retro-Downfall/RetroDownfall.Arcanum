@@ -131,8 +131,6 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IAttachmentRevealLauncher, AttachmentRevealLauncher>();
 
-        services.AddSingleton<TelemetryService>();
-
         services.AddSingleton<MarkdigSpectreRenderer>();
 
         // W6.4: shared secret/grimoire stack (Data Protection + digest cache + secret store +
