@@ -588,6 +588,28 @@ public sealed class ReleasePipelineTests
     }
 
     /// <summary>
+    /// The release workflow's CI report card used to say CI is "dispatch-only" while ci.yml runs on
+    /// every pull request. The operator reading "this is expected unless you ran it" would conclude a
+    /// merged commit had never been tested, when the truth is subtler: CI ran on the pull request's
+    /// head, and a squash or merge commit has no run of its own.
+    /// </summary>
+    [Fact]
+    public void Release_does_not_call_ci_dispatch_only_while_ci_runs_on_pull_requests()
+    {
+        string root = RepositoryRoot();
+
+        string ci = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"));
+
+        Assert.Matches(@"(?m)^  pull_request:\s*$", ci);
+
+        string release = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"));
+
+        Assert.DoesNotContain("dispatch-only", release, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("pull requests", release, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// <c>notarytool submit --wait</c> blocks for as long as Apple takes to answer. With no bound a
     /// stalled submission holds the signing keychain and the macOS runner until the job ceiling, and
     /// reads as a slow release rather than a failed one.
