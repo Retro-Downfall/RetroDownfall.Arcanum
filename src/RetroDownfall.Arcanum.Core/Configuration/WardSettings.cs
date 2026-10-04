@@ -6,8 +6,7 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record WardSettings
 {
-
-    private readonly List<string> _forbiddenArts = [];
+    private List<string> _forbiddenArts = [];
 
     /// <summary>
     /// Operator-configured names removed by <c>ToolPolicy.NoForbiddenArts</c>. This list does not
@@ -15,11 +14,9 @@ public sealed record WardSettings
     /// </summary>
     public IReadOnlyList<string> ForbiddenArts
     {
-
         get => _forbiddenArts;
 
-        init => _forbiddenArts = new List<string>(value);
-
+        set => _forbiddenArts = new List<string>(value);
     }
 
     public int TimeoutSeconds { get; set; } = 120;
@@ -32,5 +29,4 @@ public sealed record WardSettings
     /// always force unattended and ignore this setting.
     /// </summary>
     public bool UnattendedMode { get; set; }
-
 }

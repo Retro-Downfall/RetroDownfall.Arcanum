@@ -7,7 +7,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public sealed record IntelligenceSettings
 {
-
     public int SemanticRouterPreflightTimeoutSeconds { get; set; } = 15;
 
     public int SemanticRouterMaxTokens { get; set; } = 128;
@@ -118,18 +117,8 @@ public sealed record IntelligenceSettings
     /// </summary>
     public int ReservedOutputTokens { get; set; } = 1024;
 
-    /// <summary>Enable structured turn planning with visible plan events.</summary>
-    public bool EnableStructuredTurnPlanning { get; init; } = true;
-
-    /// <summary>Enable repetition detection with clear termination results.</summary>
-    public bool EnableRepetitionDetection { get; init; } = true;
-
-    /// <summary>Enable progressive context maintenance before every provider call.</summary>
-    public bool EnableProgressiveContextMaintenance { get; init; } = true;
-
     /// <summary>
     /// When <c>true</c>, semantic spell-router preflight uses <see cref="ArcanumSettings.FastModel"/> when configured.
     /// </summary>
     public bool UseFastModelForSpellRouting { get; set; }
-
 }

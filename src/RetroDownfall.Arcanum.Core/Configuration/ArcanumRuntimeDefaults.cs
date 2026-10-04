@@ -40,7 +40,7 @@ public static class ArcanumRuntimeDefaults
 
     public const int CliDoctorHealthTimeoutSeconds = 2;
 
-    public static IntelligenceSettings Intelligence => new();
+    public static IntelligenceSettings Intelligence { get; } = new();
 
     public static ReasoningSettings Reasoning => new()
     {

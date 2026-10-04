@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationSurfaceContractTests
 {
-
     private static readonly string[] RetainedRootPropertyNames =
     [
         "Cli",
@@ -66,7 +65,6 @@ public sealed class ConfigurationSurfaceContractTests
     [Fact]
     public void ArcanumSettings_root_properties_match_minimal_taxonomy()
     {
-
         string[] actual = typeof(ArcanumSettings)
             .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
             .Select(static property => property.Name)
@@ -74,7 +72,6 @@ public sealed class ConfigurationSurfaceContractTests
             .ToArray();
 
         Assert.Equal(RetainedRootPropertyNames, actual);
-
     }
 
     [Fact]
@@ -86,7 +83,6 @@ public sealed class ConfigurationSurfaceContractTests
     [Fact]
     public void Retained_configuration_graph_has_only_mutable_properties()
     {
-
         PropertyInfo[] retainedRootProperties = typeof(ArcanumSettings)
             .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
             .Where(static property =>
@@ -112,7 +108,38 @@ public sealed class ConfigurationSurfaceContractTests
         }
 
         Assert.Empty(immutableProperties);
+    }
 
+    /// <summary>
+    /// The walk above only reaches types hanging off <see cref="ArcanumSettings"/>. The runtime
+    /// projections (IntelligenceSettings and the like) are code-owned, but a property on any
+    /// <c>*Settings</c> type that is init-only is either silently dropped the day the type becomes
+    /// bound or is an unreachable member nobody can set, so the scan covers every such type.
+    /// </summary>
+    [Fact]
+    public void Every_Settings_type_has_no_init_only_public_properties()
+    {
+        List<string> initOnly = [];
+
+        foreach (Type type in typeof(ArcanumSettings).Assembly.GetTypes()
+            .Where(static type => type.IsClass
+                && type.Name.EndsWith("Settings", StringComparison.Ordinal)
+                && type.Namespace == typeof(ArcanumSettings).Namespace))
+        {
+            foreach (PropertyInfo property in type.GetProperties(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly))
+            {
+                if (property.SetMethod is { } setter
+                    && setter.ReturnParameter
+                        .GetRequiredCustomModifiers()
+                        .Contains(typeof(IsExternalInit)))
+                {
+                    initOnly.Add($"{type.Name}.{property.Name}");
+                }
+            }
+        }
+
+        Assert.Empty(initOnly);
     }
 
     [Theory]
@@ -130,7 +157,6 @@ public sealed class ConfigurationSurfaceContractTests
         string rootPropertyName,
         string sectionTypeName)
     {
-
         Type? sectionType = typeof(ArcanumSettings).Assembly.GetType(
             $"{typeof(ArcanumSettings).Namespace}.{sectionTypeName}");
         PropertyInfo? rootProperty = typeof(ArcanumSettings).GetProperty(
@@ -149,7 +175,6 @@ public sealed class ConfigurationSurfaceContractTests
 
         Assert.Equal(sectionType, actualSectionType);
         Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(sectionType!));
-
     }
 
     [Theory]
@@ -206,7 +231,6 @@ public sealed class ConfigurationSurfaceContractTests
     [Fact]
     public void RejectObsoleteKeys_reports_removed_root_sections_together()
     {
-
         Dictionary<string, string?> values = ObsoleteRootKeys.ToDictionary(
             static key => $"Arcanum:{key}:configured",
             static _ => (string?)"true",
@@ -227,7 +251,6 @@ public sealed class ConfigurationSurfaceContractTests
             .ToArray();
 
         Assert.Equal(ObsoleteRootKeys, actualPointers);
-
     }
 
     private static void InspectConfigurationType(
@@ -236,7 +259,6 @@ public sealed class ConfigurationSurfaceContractTests
         HashSet<Type> visited,
         List<string> immutableProperties)
     {
-
         if (!visited.Add(type))
         {
             return;
@@ -258,7 +280,6 @@ public sealed class ConfigurationSurfaceContractTests
                     immutableProperties);
             }
         }
-
     }
 
     private static void AddMutabilityIssue(
@@ -266,7 +287,6 @@ public sealed class ConfigurationSurfaceContractTests
         string path,
         List<string> immutableProperties)
     {
-
         if (property.GetMethod is not { IsPublic: true })
         {
             immutableProperties.Add($"{path} has no public getter.");
@@ -287,12 +307,10 @@ public sealed class ConfigurationSurfaceContractTests
         {
             immutableProperties.Add($"{path} has an init-only setter.");
         }
-
     }
 
     private static IEnumerable<Type> GetConfigurationNodeTypes(Type propertyType)
     {
-
         Type type = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
 
         if (type.IsArray)
@@ -337,12 +355,10 @@ public sealed class ConfigurationSurfaceContractTests
         {
             yield return type;
         }
-
     }
 
     private static Type? FindGenericContract(Type type, Type genericTypeDefinition)
     {
-
         if (type.IsGenericType
             && type.GetGenericTypeDefinition() == genericTypeDefinition)
         {
@@ -352,7 +368,5 @@ public sealed class ConfigurationSurfaceContractTests
         return type.GetInterfaces().FirstOrDefault(candidate =>
             candidate.IsGenericType
             && candidate.GetGenericTypeDefinition() == genericTypeDefinition);
-
     }
-
 }
