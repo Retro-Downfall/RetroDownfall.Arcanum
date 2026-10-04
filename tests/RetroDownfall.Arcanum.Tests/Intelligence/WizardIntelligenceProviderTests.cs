@@ -10360,6 +10360,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public void EnqueueUsageThenBlock(UsageDetails usage, TaskCompletionSource? aboutToBlock = null) =>
             _streaming.Enqueue(ct => UsageThenBlock(usage, aboutToBlock, ct));
 
+        /// <summary>Answers the next buffered call with <paramref name="respond"/>, given the call's token.</summary>
+        public void EnqueueBufferedResponder(Func<CancellationToken, Task<ChatResponse>> respond) =>
+            _buffered.Enqueue(respond);
+
         public void EnqueueSlowBuffered(TimeSpan delay, string text) =>
             _buffered.Enqueue(async ct =>
             {
@@ -11112,7 +11116,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         private readonly ConcurrentQueue<BillableOperationRecord> _operations = new();
 
+        private readonly ConcurrentQueue<(Guid RunId, InferenceRunStatus Status)> _completedRuns = new();
+
         public BillableOperationRecord? LastOperation => _operations.LastOrDefault();
+
+        /// <summary>Every run completion, in order, with the status it recorded.</summary>
+        public IReadOnlyList<(Guid RunId, InferenceRunStatus Status)> CompletedRuns => [.. _completedRuns];
 
         public IReadOnlyList<BillableOperationRecord> Operations => [.. _operations];
 
@@ -11128,8 +11137,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task CompleteRunAsync(
             Guid runId,
             InferenceRunStatus status,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            _completedRuns.Enqueue((runId, status));
+
+            return Task.CompletedTask;
+        }
 
         public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);

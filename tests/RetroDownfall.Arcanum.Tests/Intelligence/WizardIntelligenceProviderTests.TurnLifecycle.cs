@@ -1,11 +1,14 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Tests.Support;
+using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -177,5 +180,102 @@ public sealed partial class WizardIntelligenceProviderTests
                 streamedContent: null,
                 CancellationToken.None);
         }
+    }
+
+    /// <summary>
+    /// R-273: a turn that ends on a provider failure records its run as <c>Failed</c>. The status
+    /// started out as <c>Abandoned</c> and only a few exits overwrote it, so most failures read as
+    /// if the caller had walked away.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_ProviderFailure_CompletesRunAsFailed()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueException(new InvalidOperationException("the provider refused the request"));
+
+        RecordingTurnRunWriter runs = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: runs,
+            budgetReservationService: new RecordingBudgetReservationService());
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "fail", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Failed, status);
+    }
+
+    /// <summary>
+    /// R-273: a turn the caller cancels records its run as <c>Abandoned</c>, the one exit that
+    /// status is reserved for.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_Cancelled_CompletesRunAsAbandoned()
+    {
+        using CancellationTokenSource caller = new();
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueBufferedResponder(async token =>
+        {
+            await caller.CancelAsync();
+
+            token.ThrowIfCancellationRequested();
+
+            return new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, "unreachable"));
+        });
+
+        RecordingTurnRunWriter runs = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: runs,
+            budgetReservationService: new RecordingBudgetReservationService());
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
+            caller.Token));
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Abandoned, status);
+    }
+
+    /// <summary>
+    /// R-273: a turn that answers records its run as <c>Completed</c>.
+    /// </summary>
+    [Fact]
+    public async Task ExecutePromptAsync_Success_CompletesRunAsCompleted()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("an answer");
+
+        RecordingTurnRunWriter runs = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: runs,
+            budgetReservationService: new RecordingBudgetReservationService());
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "answer", SkipSpellRouting = true, DisableMcpTools = true },
+            InvocationContexts.AttendedSession(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
+
+        Assert.Equal(InferenceRunStatus.Completed, status);
     }
 }

@@ -1602,7 +1602,10 @@ public sealed partial class WizardIntelligenceProvider(
 
         TurnAccountingHandle? streamAccounting = null;
 
-        InferenceRunStatus streamAccountingStatus = InferenceRunStatus.Abandoned;
+        // Failed until the turn earns better: only the success path sets Completed, and the finally
+        // records Abandoned only when the caller cancelled. Starting at Abandoned made every failure
+        // exit that did not overwrite it read as if the caller had walked away.
+        InferenceRunStatus streamAccountingStatus = InferenceRunStatus.Failed;
 
         bool publishedStreamAmbient = false;
 
@@ -4336,12 +4339,18 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streamAccounting is not null && streamAccounting.OwnsLifecycle)
             {
+                InferenceRunStatus completionStatus =
+                    streamAccountingStatus != InferenceRunStatus.Completed
+                    && (callerToken.IsCancellationRequested || inferenceToken.IsCancellationRequested)
+                        ? InferenceRunStatus.Abandoned
+                        : streamAccountingStatus;
+
                 try
                 {
                     await streamAccounting.CompleteAsync(
                             turnRunWriter,
                             budgetReservationService,
-                            streamAccountingStatus,
+                            completionStatus,
                             CancellationToken.None)
                         .ConfigureAwait(false);
                 }
