@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
@@ -1186,6 +1187,14 @@ internal sealed partial class LexiconService
             originals.Values.Any(static receipt => receipt.Envelope.ProtectedContent));
     }
 
+    /// <summary>The one statement that finds every receipt of one request, as the service runs it.</summary>
+    internal const string ReceiptLookupSql = """
+        SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
+        FROM annal_review_decision_receipts
+        WHERE DecisionId >= @prefix AND DecisionId < @prefixUpper
+        ORDER BY DecisionId
+        """;
+
     private static async Task<List<StoredReceipt>> ReadStoredReceiptsAsync(
         DbConnection connection,
         Guid requestId,
@@ -1193,14 +1202,11 @@ internal sealed partial class LexiconService
     {
         await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText = """
-            SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
-            FROM annal_review_decision_receipts
-            WHERE substr(DecisionId, 1, length(@prefix)) = @prefix
-            ORDER BY DecisionId
-            """;
+        command.CommandText = ReceiptLookupSql;
 
-        AddParameter(command, "@prefix", requestId.ToString("N") + ":");
+        AddParameter(command, "@prefix", MemoryReviewReceiptKeys.Prefix(requestId));
+
+        AddParameter(command, "@prefixUpper", MemoryReviewReceiptKeys.UpperBound(requestId));
 
         List<StoredReceipt> receipts = [];
 

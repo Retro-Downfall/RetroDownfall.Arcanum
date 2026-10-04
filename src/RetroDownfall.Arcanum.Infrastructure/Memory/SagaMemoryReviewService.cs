@@ -1538,6 +1538,15 @@ internal sealed class SagaMemoryReviewService(
                 Replayed: true));
     }
 
+    /// <summary>The one statement that finds every receipt of one request, as the service runs it.</summary>
+    internal const string ReceiptLookupSql =
+        """
+        SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
+        FROM annal_review_decision_receipts
+        WHERE DecisionId >= @prefix AND DecisionId < @prefixUpper
+        ORDER BY DecisionId
+        """;
+
     private static async Task<List<StoredReceipt>> ReadReceiptsAsync(
         DbConnection connection,
         DbTransaction? transaction,
@@ -1548,17 +1557,11 @@ internal sealed class SagaMemoryReviewService(
 
         command.Transaction = transaction;
 
-        command.CommandText =
-            """
-            SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
-            FROM annal_review_decision_receipts
-            WHERE substr(DecisionId, 1, length(@prefix)) = @prefix
-            ORDER BY DecisionId
-            """;
+        command.CommandText = ReceiptLookupSql;
 
-        string prefix = requestId.ToString("N", CultureInfo.InvariantCulture) + ":";
+        AddParameter(command, "@prefix", MemoryReviewReceiptKeys.Prefix(requestId));
 
-        AddParameter(command, "@prefix", prefix);
+        AddParameter(command, "@prefixUpper", MemoryReviewReceiptKeys.UpperBound(requestId));
 
         List<StoredReceipt> receipts = [];
 

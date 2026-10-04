@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -2160,6 +2161,16 @@ internal sealed class CovenantMemoryReviewService(
                 Replayed: true));
     }
 
+    /// <summary>The one statement that finds every receipt of one request, as the service runs it.</summary>
+    internal const string ReceiptLookupSql =
+        """
+        SELECT DecisionId, DatasetGeneration, ReviewEventSequence,
+               RequestIdempotencyDigest, ResponseReceiptDigest
+        FROM covenant_review_decision_receipts
+        WHERE DecisionId >= $prefix AND DecisionId < $prefixUpper
+        ORDER BY DecisionId;
+        """;
+
     private static async ValueTask<List<StoredReceipt>> ReadReceiptsAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
@@ -2168,15 +2179,9 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT DecisionId, DatasetGeneration, ReviewEventSequence,
-                   RequestIdempotencyDigest, ResponseReceiptDigest
-            FROM covenant_review_decision_receipts
-            WHERE substr(DecisionId, 1, length($prefix)) = $prefix
-            ORDER BY DecisionId;
-            """;
-        Bind(command, "$prefix", requestId.ToString("N", CultureInfo.InvariantCulture) + ":");
+        command.CommandText = ReceiptLookupSql;
+        Bind(command, "$prefix", MemoryReviewReceiptKeys.Prefix(requestId));
+        Bind(command, "$prefixUpper", MemoryReviewReceiptKeys.UpperBound(requestId));
 
         List<StoredReceipt> receipts = [];
 
