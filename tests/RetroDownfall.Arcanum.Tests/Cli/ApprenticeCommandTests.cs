@@ -161,6 +161,76 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Cancelling an Apprentice stops work in progress, so like <c>delete</c> it asks first; without
+    /// <c>--yes</c> a run that cannot be asked is refused and nothing is sent.
+    /// </summary>
+    [Fact]
+    public void Cancel_asks_for_confirmation()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<string>("cancelled", true, null),
+            ArcanumJsonContext.Default.ApiResponseString));
+
+        CliTestResult refused = RunCommand(handler, ["apprentice", "cancel", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, refused.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", refused.Error, StringComparison.Ordinal);
+
+        CliTestResult approved = RunCommand(handler, ["--yes", "apprentice", "cancel", SampleId.ToString()]);
+
+        Assert.Equal(0, approved.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Post, request.Method);
+
+        Assert.Equal($"/api/apprentices/{SampleId:D}/cancel", request.RequestUri!.AbsolutePath);
+    }
+
+    /// <summary>
+    /// Reweaving replaces the plan the Apprentice has left to run, so it asks first as well, after the
+    /// plan itself has been validated: a malformed plan is refused before any question is put.
+    /// </summary>
+    [Fact]
+    public void Reweave_asks_for_confirmation_after_the_plan_is_validated()
+    {
+        const string Plan = "[{\"index\":0,\"description\":\"Step one\"}]";
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ApprenticeDetailDto>(
+                new ApprenticeDetailDto(
+                    SampleId, null, null, "Do the thing", "Do the thing", [new PlanStep { Index = 0, Description = "Step one" }], 0, "Idle", null, "/tmp/ws", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult malformed = RunCommand(handler, ["apprentice", "reweave", SampleId.ToString(), "--plan", "not json"]);
+
+        Assert.Equal(1, malformed.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.DoesNotContain("--yes", malformed.Error, StringComparison.Ordinal);
+
+        CliTestResult refused = RunCommand(handler, ["apprentice", "reweave", SampleId.ToString(), "--plan", Plan]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, refused.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", refused.Error, StringComparison.Ordinal);
+
+        CliTestResult approved = RunCommand(handler, ["--yes", "apprentice", "reweave", SampleId.ToString(), "--plan", Plan]);
+
+        Assert.Equal(0, approved.ExitCode);
+
+        Assert.Equal($"/api/apprentices/{SampleId:D}/reweave", Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+    }
+
     [Fact]
     public void List_follows_hasMore_until_exhausted()
     {

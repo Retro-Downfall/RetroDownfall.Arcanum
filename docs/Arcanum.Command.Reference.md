@@ -810,8 +810,8 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 | `arcanum apprentice start [<id>]` | Persist the start and begin plan generation/execution when a host concurrency slot is available. Temporary capacity queues the start instead of rejecting it; Chronicle/status surfaces progress and `cancel` removes queued work. | None beyond global or inherited family options. |
 | `arcanum apprentice pause [<id>]` | Pause at the next step boundary. | None beyond global or inherited family options. |
 | `arcanum apprentice resume [<id>]` | Resume from checkpoint. | None beyond global or inherited family options. |
-| `arcanum apprentice cancel [<id>]` | Cancel execution. | None beyond global or inherited family options. |
-| `arcanum apprentice reweave [<id>]` | Replace the remaining plan steps. | `--plan <plan>` — JSON array of plan steps: inline text, or @filename to read from a file. |
+| `arcanum apprentice cancel [<id>]` | Cancel execution, after confirmation (`--yes` answers it); declining changes nothing and exits `0`, and a run that cannot be asked is refused with exit `2`. | None beyond global or inherited family options. |
+| `arcanum apprentice reweave [<id>]` | Replace the remaining plan steps, after confirmation (`--yes` answers it); the plan is validated first, so a malformed `--plan` is refused before any question is asked. | `--plan <plan>` — JSON array of plan steps: inline text, or @filename to read from a file. |
 | `arcanum apprentice intervene [<id>]` | Provide Divine Intervention guidance to an escalated Apprentice. | `--guidance <guidance>` — Guidance text for the escalated Apprentice. |
 | `arcanum apprentice cast [<id>]` | Delegate a child Apprentice via The Conclave. | `--goal <goal>` — Child Apprentice goal text.<br>`--name <name>` — Display name for the child Apprentice. |
 

@@ -408,16 +408,34 @@ public sealed class ApprenticeCommands(
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
     public Task<int> Cancel(string? id, CancellationToken cancellationToken) =>
-        RunLifecycleActionAsync(id, "cancelled", apiClient.CancelApprenticeAsync, cancellationToken);
+        RunLifecycleActionAsync(
+            id,
+            "cancelled",
+            apiClient.CancelApprenticeAsync,
+            cancellationToken,
+            confirmationQuestion: static apprenticeId => $"Cancel Apprentice {apprenticeId:D}?");
 
     private async Task<int> RunLifecycleActionAsync(
         string? id,
         string actionLabel,
         Func<Guid, CancellationToken, Task<Result<string>>> invoke,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<Guid, string>? confirmationQuestion = null)
     {
         (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
         if (!resolved) return cancelled ? 0 : 1;
+
+        // Stopping work in progress is not undone by starting it again, so like delete it asks first;
+        // --yes answers the question.
+        if (confirmationQuestion is not null
+            && !await confirmationPrompt
+                .PromptForConfirmationAsync(confirmationQuestion(apprenticeId), cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice cancellation declined; nothing was changed.")));
+
+            return 0;
+        }
 
         Result<string> result = await invoke(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -475,6 +493,19 @@ public sealed class ApprenticeCommands(
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan must contain at least one step.")));
 
             return (int)CliExitCode.ConfigurationError;
+        }
+
+        // The remaining plan is replaced, not merged, so the operator is asked once the plan itself is known
+        // to be well formed; --yes answers the question.
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Replace the remaining plan of Apprentice {apprenticeId:D} with {steps.Count} step(s)?",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice reweave declined; the plan was not changed.")));
+
+            return 0;
         }
 
         Result<ApprenticeDetailDto> result = await apiClient.ReweaveApprenticeAsync(apprenticeId, steps, cancellationToken).ConfigureAwait(false);
