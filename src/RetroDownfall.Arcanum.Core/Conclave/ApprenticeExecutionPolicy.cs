@@ -4,7 +4,6 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 public enum StepFailureKind
 {
-
     None,
 
     Retryable,
@@ -14,7 +13,6 @@ public enum StepFailureKind
     EscalationRequested,
 
     PausedOrCancelled,
-
 }
 
 public static class ApprenticeExecutionPolicy
@@ -28,44 +26,32 @@ public static class ApprenticeExecutionPolicy
         bool pauseOrCancelRequested,
         bool isRetryableError)
     {
-
         if (pauseOrCancelRequested)
         {
-
             return StepFailureKind.PausedOrCancelled;
-
         }
 
         if (escalationRequested)
         {
-
             return StepFailureKind.EscalationRequested;
-
         }
 
         if (!stepFailed)
         {
-
             return StepFailureKind.None;
-
         }
 
         if (toolDenied)
         {
-
             return StepFailureKind.Terminal;
-
         }
 
         if (isRetryableError)
         {
-
             return StepFailureKind.Retryable;
-
         }
 
         return StepFailureKind.Terminal;
-
     }
 
     public static bool IsReweavableStatus(string status) =>
@@ -77,28 +63,22 @@ public static class ApprenticeExecutionPolicy
 
     public static string SanitizeOperatorMessage(string? message, int maxLength = 512)
     {
-
         if (string.IsNullOrWhiteSpace(message))
         {
-
             return "An unexpected error occurred during step execution.";
-
         }
 
         string trimmed = message.Trim();
 
         if (trimmed.Length <= maxLength)
         {
-
             return trimmed;
-
         }
 
         // Nudged back one char when the cap would land between the halves of a surrogate pair: this text
         // is persisted to the apprentice row, the plan JSON and the escalation checkpoint, and a lone
         // surrogate becomes U+FFFD in every writer it passes through.
         return trimmed[..Utf8Truncation.SafeCharSliceLength(trimmed, maxLength)] + "…";
-
     }
 
     public static List<PlanStep> MergePlanTail(
@@ -106,7 +86,6 @@ public static class ApprenticeExecutionPolicy
         int currentStepIndex,
         IReadOnlyList<PlanStep> revisedTail)
     {
-
         List<PlanStep> currentPlanSnapshot = [.. currentPlan];
 
         List<PlanStep> revisedTailSnapshot = [.. revisedTail];
@@ -115,14 +94,11 @@ public static class ApprenticeExecutionPolicy
 
         for (int i = 0; i < currentStepIndex && i < currentPlanSnapshot.Count; i++)
         {
-
             merged.Add(currentPlanSnapshot[i]);
-
         }
 
         for (int i = 0; i < revisedTailSnapshot.Count; i++)
         {
-
             PlanStep step = revisedTailSnapshot[i];
 
             merged.Add(step with
@@ -130,37 +106,37 @@ public static class ApprenticeExecutionPolicy
                 Index = step.Index > 0 ? step.Index : currentStepIndex + i + 1,
                 Status = string.IsNullOrWhiteSpace(step.Status) ? "pending" : step.Status,
             });
-
         }
 
         return merged;
-
     }
 
     public static Result<List<PlanStep>> ValidateReweaveSteps(IReadOnlyList<PlanStep>? steps)
     {
-
         if (steps is null || steps.Count == 0)
         {
-
             return Result<List<PlanStep>>.Failure(
                 new Error(ErrorCodes.Apprentice.InvalidPlan, "At least one plan step is required."));
-
         }
 
         List<PlanStep> normalized = new(steps.Count);
 
         for (int i = 0; i < steps.Count; i++)
         {
+            PlanStep? step = steps[i];
 
-            PlanStep step = steps[i];
+            // A JSON `null` element deserializes to a null PlanStep; reading its Description would
+            // surface as an unhandled NullReferenceException rather than the documented InvalidPlan.
+            if (step is null)
+            {
+                return Result<List<PlanStep>>.Failure(
+                    new Error(ErrorCodes.Apprentice.InvalidPlan, "A plan step cannot be null."));
+            }
 
             if (string.IsNullOrWhiteSpace(step.Description))
             {
-
                 return Result<List<PlanStep>>.Failure(
                     new Error(ErrorCodes.Apprentice.InvalidPlan, "Every plan step must include a description."));
-
             }
 
             normalized.Add(step with
@@ -168,11 +144,8 @@ public static class ApprenticeExecutionPolicy
                 Index = step.Index > 0 ? step.Index : i + 1,
                 Status = string.IsNullOrWhiteSpace(step.Status) ? "pending" : step.Status,
             });
-
         }
 
         return Result<List<PlanStep>>.Success(normalized);
-
     }
-
 }

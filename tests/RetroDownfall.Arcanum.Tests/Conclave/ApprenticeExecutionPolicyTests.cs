@@ -10,11 +10,9 @@ namespace RetroDownfall.Arcanum.Tests.Conclave;
 
 public sealed class ApprenticeExecutionPolicyTests
 {
-
     [Fact]
     public void ClassifyStepFailure_NoFailure_ReturnsNone()
     {
-
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: false,
             escalationRequested: false,
@@ -23,13 +21,11 @@ public sealed class ApprenticeExecutionPolicyTests
             isRetryableError: false);
 
         Assert.Equal(StepFailureKind.None, kind);
-
     }
 
     [Fact]
     public void ClassifyStepFailure_PauseRequested_TakesPrecedence()
     {
-
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: true,
@@ -38,13 +34,11 @@ public sealed class ApprenticeExecutionPolicyTests
             isRetryableError: true);
 
         Assert.Equal(StepFailureKind.PausedOrCancelled, kind);
-
     }
 
     [Fact]
     public void ClassifyStepFailure_ReturnsRetryableForTransientErrors()
     {
-
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: false,
@@ -53,13 +47,11 @@ public sealed class ApprenticeExecutionPolicyTests
             isRetryableError: true);
 
         Assert.Equal(StepFailureKind.Retryable, kind);
-
     }
 
     [Fact]
     public void ClassifyStepFailure_ReturnsEscalationWhenPetitioned()
     {
-
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: true,
@@ -68,13 +60,11 @@ public sealed class ApprenticeExecutionPolicyTests
             isRetryableError: false);
 
         Assert.Equal(StepFailureKind.EscalationRequested, kind);
-
     }
 
     [Fact]
     public void ClassifyStepFailure_ToolDenied_ReturnsTerminal()
     {
-
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: false,
@@ -83,13 +73,11 @@ public sealed class ApprenticeExecutionPolicyTests
             isRetryableError: true);
 
         Assert.Equal(StepFailureKind.Terminal, kind);
-
     }
 
     [Fact]
     public void ClassifyStepFailure_NonRetryableFailure_ReturnsTerminal()
     {
-
         StepFailureKind kind = ApprenticeExecutionPolicy.ClassifyStepFailure(
             stepFailed: true,
             escalationRequested: false,
@@ -98,7 +86,6 @@ public sealed class ApprenticeExecutionPolicyTests
             isRetryableError: false);
 
         Assert.Equal(StepFailureKind.Terminal, kind);
-
     }
 
     [Theory]
@@ -109,9 +96,7 @@ public sealed class ApprenticeExecutionPolicyTests
     [InlineData("Failed", false)]
     public void IsReweavableStatus_MatchesExpectedStatuses(string status, bool expected)
     {
-
         Assert.Equal(expected, ApprenticeExecutionPolicy.IsReweavableStatus(status));
-
     }
 
     [Theory]
@@ -120,15 +105,12 @@ public sealed class ApprenticeExecutionPolicyTests
     [InlineData("Paused", false)]
     public void IsEscalatedStatus_MatchesExpectedStatuses(string status, bool expected)
     {
-
         Assert.Equal(expected, ApprenticeExecutionPolicy.IsEscalatedStatus(status));
-
     }
 
     [Fact]
     public void SanitizeOperatorMessage_NullOrWhitespace_ReturnsDefault()
     {
-
         string message = ApprenticeExecutionPolicy.SanitizeOperatorMessage(null);
 
         Assert.Equal("An unexpected error occurred during step execution.", message);
@@ -136,13 +118,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.Equal(
             "An unexpected error occurred during step execution.",
             ApprenticeExecutionPolicy.SanitizeOperatorMessage("   "));
-
     }
 
     [Fact]
     public void SanitizeOperatorMessage_TruncatesLongMessages()
     {
-
         string longMessage = new string('x', 600);
 
         string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(longMessage, maxLength: 10);
@@ -152,13 +132,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.EndsWith("…", sanitized);
 
         Assert.StartsWith("xxxxxxxxxx", sanitized);
-
     }
 
     [Fact]
     public void SanitizeOperatorMessage_does_not_split_a_surrogate_pair_at_the_cap()
     {
-
         // The sanitized text is persisted to Apprentice.ErrorMessage, into the plan's step result, into
         // the escalation checkpoint, and written to the Chronicle SSE stream. A boundary that lands
         // between the halves of an astral character would leave a lone surrogate that every one of those
@@ -174,13 +152,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.DoesNotContain(sanitized, char.IsSurrogate);
 
         Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
-
     }
 
     [Fact]
     public void SanitizeOperatorMessage_keeps_a_whole_surrogate_pair_that_fits_under_the_cap()
     {
-
         string message = new string('x', 510) + "\U0001F600" + new string('y', 40);
 
         string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(message);
@@ -190,13 +166,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.EndsWith("\U0001F600…", sanitized, StringComparison.Ordinal);
 
         Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
-
     }
 
     [Fact]
     public void ValidateReweaveSteps_RejectsNullOrEmpty()
     {
-
         Result<List<PlanStep>> nullResult = ApprenticeExecutionPolicy.ValidateReweaveSteps(null);
 
         Assert.True(nullResult.IsFailure);
@@ -206,7 +180,17 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.True(emptyResult.IsFailure);
 
         Assert.Equal("Apprentice.InvalidPlan", nullResult.Error.Code);
+    }
 
+    [Fact]
+    public void ValidateReweaveSteps_rejects_a_null_step()
+    {
+        Result<List<PlanStep>> result = ApprenticeExecutionPolicy.ValidateReweaveSteps(
+            [new PlanStep { Description = "first" }, null!]);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Apprentice.InvalidPlan", result.Error.Code);
     }
 
     [Fact]
@@ -225,13 +209,11 @@ public sealed class ApprenticeExecutionPolicyTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(stepCount, result.Value.Count);
-
     }
 
     [Fact]
     public void ValidateReweaveSteps_RejectsEmptyDescriptions()
     {
-
         Result<List<PlanStep>> result = ApprenticeExecutionPolicy.ValidateReweaveSteps(
         [
             new PlanStep { Index = 1, Description = "   " },
@@ -240,13 +222,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Apprentice.InvalidPlan", result.Error.Code);
-
     }
 
     [Fact]
     public void ValidateReweaveSteps_NormalizesIndexAndStatus()
     {
-
         Result<List<PlanStep>> result = ApprenticeExecutionPolicy.ValidateReweaveSteps(
         [
             new PlanStep { Description = "First" },
@@ -262,13 +242,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.Equal(5, result.Value[1].Index);
 
         Assert.Equal("running", result.Value[1].Status);
-
     }
 
     [Fact]
     public void MergePlanTail_PreservesCompletedPrefix()
     {
-
         List<PlanStep> plan =
         [
             new() { Index = 1, Description = "Done", Status = "completed" },
@@ -291,13 +269,11 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.Equal(2, merged[1].Index);
 
         Assert.Equal("pending", merged[1].Status);
-
     }
 
     [Fact]
     public void MergePlanTail_NormalizesTailIndexesAndStatuses()
     {
-
         List<PlanStep> plan =
         [
             new() { Index = 1, Description = "Done", Status = "completed" },
@@ -320,7 +296,6 @@ public sealed class ApprenticeExecutionPolicyTests
         Assert.Equal(3, merged[2].Index);
 
         Assert.Equal("pending", merged[2].Status);
-
     }
 
     [Fact]
@@ -383,7 +358,5 @@ public sealed class ApprenticeExecutionPolicyTests
         }
 
         Assert.Empty(violations);
-
     }
-
 }

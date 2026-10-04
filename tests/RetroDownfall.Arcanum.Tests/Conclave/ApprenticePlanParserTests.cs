@@ -4,11 +4,9 @@ namespace RetroDownfall.Arcanum.Tests.Conclave;
 
 public sealed class ApprenticePlanParserTests
 {
-
     [Fact]
     public void ParsePlan_ValidJsonArray_ReturnsNormalizedSteps()
     {
-
         const string json = """
             [
               { "description": "First step" },
@@ -29,13 +27,11 @@ public sealed class ApprenticePlanParserTests
         Assert.Equal(3, steps[1].Index);
 
         Assert.Equal("running", steps[1].Status);
-
     }
 
     [Fact]
     public void ParsePlan_MarkdownFencedJson_StripsFences()
     {
-
         const string fenced = """
             ```json
             [{"description":"Fenced step"}]
@@ -49,41 +45,34 @@ public sealed class ApprenticePlanParserTests
         Assert.Equal("Fenced step", steps[0].Description);
 
         Assert.Equal(1, steps[0].Index);
-
     }
 
     [Fact]
     public void ParsePlan_EmptyArray_Throws()
     {
-
         Assert.Throws<InvalidOperationException>(() => ApprenticePlanParser.ParsePlan("[]"));
-
     }
 
     [Fact]
     public void ParsePlan_InvalidJson_ThrowsInvalidOperationNotJsonException()
     {
-
         // W3.6: malformed plan JSON surfaces as a domain InvalidOperationException (consistent with
         // the empty/oversize cases and TryParseRevisedPlan), not a raw JsonException for callers to catch.
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
             () => ApprenticePlanParser.ParsePlan("not-json"));
 
         Assert.Contains("malformed JSON", ex.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void ParsePlan_OversizedInput_ThrowsBeforeParsing()
     {
-
         string oversized = new('x', ApprenticePlanParser.MaxResponseChars + 1);
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
             () => ApprenticePlanParser.ParsePlan(oversized));
 
         Assert.Contains("maximum allowed", ex.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Theory]
@@ -92,31 +81,26 @@ public sealed class ApprenticePlanParserTests
     [InlineData("   ")]
     public void TryParseRevisedPlan_EmptyInput_ReturnsFalse(string? responseText)
     {
-
         bool parsed = ApprenticePlanParser.TryParseRevisedPlan(responseText!, out List<PlanStep>? steps);
 
         Assert.False(parsed);
 
         Assert.Null(steps);
-
     }
 
     [Fact]
     public void TryParseRevisedPlan_RejectsNoChange()
     {
-
         bool parsed = ApprenticePlanParser.TryParseRevisedPlan("NO_CHANGE", out List<PlanStep>? steps);
 
         Assert.False(parsed);
 
         Assert.Null(steps);
-
     }
 
     [Fact]
     public void TryParseRevisedPlan_ParsesValidArray()
     {
-
         const string json = """[{"index":1,"description":"Revised step"}]""";
 
         bool parsed = ApprenticePlanParser.TryParseRevisedPlan(json, out List<PlanStep>? steps);
@@ -132,13 +116,11 @@ public sealed class ApprenticePlanParserTests
         Assert.Equal(1, steps[0].Index);
 
         Assert.Equal("pending", steps[0].Status);
-
     }
 
     [Fact]
     public void TryParseRevisedPlan_MarkdownFencedJson_ParsesSuccessfully()
     {
-
         const string fenced = """
             ```json
             [{"description":"Revised fenced"}]
@@ -152,31 +134,45 @@ public sealed class ApprenticePlanParserTests
         Assert.NotNull(steps);
 
         Assert.Equal("Revised fenced", steps![0].Description);
-
     }
 
     [Fact]
     public void TryParseRevisedPlan_InvalidJson_ReturnsFalse()
     {
-
         bool parsed = ApprenticePlanParser.TryParseRevisedPlan("{not-valid", out List<PlanStep>? steps);
 
         Assert.False(parsed);
 
         Assert.Null(steps);
+    }
 
+    [Theory]
+    [InlineData("[null]")]
+    [InlineData("[{\"description\":\"a\"},null]")]
+    public void TryParseRevisedPlan_returns_false_for_null_elements(string json)
+    {
+        bool parsed = ApprenticePlanParser.TryParseRevisedPlan(json, out List<PlanStep>? steps);
+
+        Assert.False(parsed);
+
+        Assert.Null(steps);
+    }
+
+    [Fact]
+    public void ParsePlan_a_null_element_is_a_domain_error_not_a_NullReferenceException()
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => ApprenticePlanParser.ParsePlan("[{\"description\":\"a\"},null]"));
     }
 
     [Fact]
     public void TryParseRevisedPlan_EmptyArray_ReturnsFalse()
     {
-
         bool parsed = ApprenticePlanParser.TryParseRevisedPlan("[]", out List<PlanStep>? steps);
 
         Assert.False(parsed);
 
         Assert.Null(steps);
-
     }
 
     [Fact]
@@ -190,7 +186,5 @@ public sealed class ApprenticePlanParserTests
         List<PlanStep> steps = ApprenticePlanParser.ParsePlan(json);
 
         Assert.Equal(stepCount, steps.Count);
-
     }
-
 }
