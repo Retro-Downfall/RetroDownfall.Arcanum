@@ -71,14 +71,9 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
                 }),
             MemoryErasureTestKeys.Isolated());
 
-        ServiceCollection services = new();
-
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
-            new RecordingScopedOrdinaryConnectionFactory());
-
         _resetService = new EmbeddingsResetService(
             _db,
-            services.BuildServiceProvider());
+            Services());
 
         return Task.CompletedTask;
 
@@ -127,13 +122,9 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             purgeEntered,
             allowPurge);
 
-        ServiceCollection services = new();
-
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
-
         EmbeddingsResetService service = new(
             _db,
-            services.BuildServiceProvider(),
+            Services(connections),
             scopedPurger);
 
         using ScopedConsumerPause pause = new("EmbeddingsResetService.PurgeLabeledKindAsync");
@@ -182,6 +173,29 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         }
 
         Assert.Equal(0, connections.LiveLeaseCount);
+
+    }
+
+    /// <summary>
+    /// The provider the service resolves its ordinary-connection factory and its label guard from.
+    /// </summary>
+    /// <remarks>
+    /// The guard defaults to the real one over this fixture's database, so a case that never labels
+    /// anything is unaffected by being handed the genuine article.
+    /// </remarks>
+    private ServiceProvider Services(
+        RecordingScopedOrdinaryConnectionFactory? connections = null,
+        ICovenantLabeledArtifactTransactionGuard? guard = null)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
+            connections ?? new RecordingScopedOrdinaryConnectionFactory());
+
+        services.AddSingleton(guard ?? FixtureLabeledArtifactGuard.For(_db!));
+
+        return services.BuildServiceProvider();
 
     }
 
@@ -269,13 +283,15 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
             await release.Task.WaitAsync(cancellationToken);
 
+            await RemoveLabelsAsync(connection, targets, cancellationToken);
+
             return Result<CovenantSensitivePurgeOutcome>.Success(
                 new CovenantSensitivePurgeOutcome(
                     [
                         .. targets.Select(target => new CovenantSensitivePurgeResult(
                             target.ArtifactId,
                             target.Kind,
-                            CovenantSensitivePurgeDisposition.Unlabeled,
+                            CovenantSensitivePurgeDisposition.Purged,
                             CovenantErasureBlocker.None)),
                     ],
                     CovenantArtifactErasureProgress.Empty));
@@ -318,11 +334,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         CountingPurger purger = new();
 
-        ServiceCollection services = new();
-
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(new RecordingScopedOrdinaryConnectionFactory());
-
-        EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
+        EmbeddingsResetService service = new(_db!, Services(), purger);
 
         LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => service.ResetAsync(scope, CancellationToken.None));
@@ -396,11 +408,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         CountingPurger purger = new();
 
-        ServiceCollection services = new();
-
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(new RecordingScopedOrdinaryConnectionFactory());
-
-        EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
+        EmbeddingsResetService service = new(_db!, Services(), purger);
 
         LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
             () => service.ResetAsync(scope, CancellationToken.None));
@@ -448,22 +456,200 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         }
 
-        CountingPurger purger = new();
+        CountingPurger purger = new(_db);
 
-        ServiceCollection services = new();
-
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(new RecordingScopedOrdinaryConnectionFactory());
-
-        EmbeddingsResetService service = new(_db!, services.BuildServiceProvider(), purger);
+        EmbeddingsResetService service = new(_db!, Services(), purger);
 
         _ = await service.ResetAsync(EmbeddingsResetScope.Saga, CancellationToken.None);
 
         Assert.Equal([128, 2], purger.PageSizes);
 
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+    }
+
+    /// <summary>
+    /// The truncation asks the label guard about every kind it truncates, inside its own transaction, so a
+    /// label written after the walk cannot be removed along with the rows it names.
+    /// </summary>
+    /// <remarks>
+    /// The walk reads the label table in an earlier read, dispatches the purger, and only then opens the
+    /// transaction that runs the set-based deletes, which examine no identity at all. A label committed in
+    /// between was removed with its artifact and left a label naming nothing. A second writer on its own
+    /// connection tries to label an artifact right after each answer, which is where that label would
+    /// land; the transaction holds the write lock from the moment it opens, so that writer is blocked.
+    /// A truncation that asked before its transaction opened, or not at all, would leave it free to commit.
+    /// The Entry scope truncates the embedding kind, the Saga scope the Saga kind, and All both.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(EmbeddingsResetScope.Saga, SensitiveArtifactKind.Saga, "Saga")]
+    [InlineData(EmbeddingsResetScope.Entry, SensitiveArtifactKind.Embedding, "Embedding")]
+    [InlineData(EmbeddingsResetScope.All, SensitiveArtifactKind.Saga, "Embedding,Saga")]
+    public async Task ResetAsync_AsksTheLabelGuardInsideTheTruncatingTransactionForEachKindItTruncates(
+        EmbeddingsResetScope scope,
+        SensitiveArtifactKind intrudingKind,
+        string expectedKinds)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int kindsTruncated = expectedKinds.Split(',').Length;
+
+        await using ArcanumDbContext sibling = _fixture.CreateContext(_dbPath);
+
+        await sibling.Database.OpenConnectionAsync(CancellationToken.None);
+
+        LabelIntruder intruder = new(
+            _ => Task.FromResult((SqliteConnection)sibling.Database.GetDbConnection()),
+            intrudingKind);
+
+        KindRecordingGuard recording = new(
+            new LabelIntrusionGuard(FixtureLabeledArtifactGuard.For(_db!), intruder));
+
+        EmbeddingsResetService service = new(
+            _db!,
+            Services(guard: recording),
+            new CountingPurger());
+
+        _ = await service.ResetAsync(scope, CancellationToken.None);
+
+        Assert.Equal(expectedKinds, string.Join(',', recording.BulkKinds));
+
+        Assert.Equal(kindsTruncated, intruder.Attempts);
+
+        Assert.Equal(kindsTruncated, intruder.Blocked);
+
+        Assert.Equal(kindsTruncated, intruder.AskedInsideTransaction);
+
+        Assert.Equal(0, intruder.AskedOutsideTransaction);
+
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+    }
+
+    /// <summary>
+    /// A labelled artifact still standing when the truncation asks refuses the reset and keeps every row.
+    /// </summary>
+    /// <remarks>
+    /// The purger here removes nothing, which is what a label written after the walk looks like to the
+    /// truncation: it is there when the question is asked. The refusal rolls the transaction back before
+    /// a single table is touched, and it is the guard's own refusal, <c>Covenant.ForbiddenAuthority</c>.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ResetAsync_RefusesWhenALabelSurvivesToTheTruncation_AndKeepsTheSagaRows()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid memoryId = Guid.NewGuid();
+
+        _ = await _sagaStore!.InsertAsync(
+            memoryId.ToString("D"),
+            "a labelled memory the reset must not reach",
+            DateTimeOffset.UtcNow,
+            Guid.NewGuid(),
+            null,
+            "extraction",
+            Vec(1f),
+            CancellationToken.None);
+
+        await SeedLabelAsync(SensitiveArtifactKind.Saga, memoryId, CancellationToken.None);
+
+        CountingPurger purger = new();
+
+        EmbeddingsResetService service = new(_db!, Services(), purger);
+
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
+            () => service.ResetAsync(EmbeddingsResetScope.Saga, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        Assert.Equal(1, purger.Calls);
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+    }
+
+    /// <summary>
+    /// A guard that cannot read the label table at the truncation refuses the reset with
+    /// <c>Covenant.Unavailable</c>, even when the walk before it read the table without trouble.
+    /// </summary>
+    [SkippableFact]
+    public async Task ResetAsync_RefusesWhenTheGuardCannotReadTheLabelsAtTheTruncation_AndKeepsTheSagaRows()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _ = await _sagaStore!.InsertAsync(
+            "mem-kept",
+            "a memory the reset must not reach",
+            DateTimeOffset.UtcNow,
+            Guid.NewGuid(),
+            null,
+            "extraction",
+            Vec(1f),
+            CancellationToken.None);
+
+        UnreadableLabeledArtifactGuard guard = new();
+
+        EmbeddingsResetService service = new(_db!, Services(guard: guard), new CountingPurger());
+
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
+            () => service.ResetAsync(EmbeddingsResetScope.Saga, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
+
+        Assert.Equal(1, guard.Questions);
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memories;"));
+
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
+
+    }
+
+    /// <summary>A guard that records the kind of every bulk question and passes each one on.</summary>
+    private sealed class KindRecordingGuard(ICovenantLabeledArtifactTransactionGuard inner)
+        : ICovenantLabeledArtifactTransactionGuard
+    {
+
+        /// <summary>The kind of each whole-kind question, in the order they were asked.</summary>
+        public List<SensitiveArtifactKind> BulkKinds { get; } = [];
+
+        public ValueTask<Result> EnsureUnlabeledAsync(
+            SensitiveArtifactKind kind,
+            Guid artifactId,
+            CancellationToken cancellationToken = default) =>
+            inner.EnsureUnlabeledAsync(kind, artifactId, cancellationToken);
+
+        public ValueTask<Result> EnsureUnlabeledAsync(
+            SensitiveArtifactKind kind,
+            Guid artifactId,
+            DbConnection connection,
+            DbTransaction transaction,
+            CancellationToken cancellationToken = default) =>
+            inner.EnsureUnlabeledAsync(kind, artifactId, connection, transaction, cancellationToken);
+
+        public ValueTask<Result> EnsureNoneLabeledAsync(
+            SensitiveArtifactKind kind,
+            DbConnection connection,
+            DbTransaction transaction,
+            CancellationToken cancellationToken = default)
+        {
+
+            BulkKinds.Add(kind);
+
+            return inner.EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken);
+
+        }
+
     }
 
     /// <summary>A purger that records how often it was asked, with how many targets, and removes nothing.</summary>
-    private sealed class CountingPurger : ICovenantSensitiveArtifactPurger
+    private sealed class CountingPurger(ArcanumDbContext? removeLabelsFrom = null) : ICovenantSensitiveArtifactPurger
     {
 
         public int Calls { get; private set; }
@@ -471,7 +657,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
         /// <summary>The number of targets each call was handed, in call order.</summary>
         public List<int> PageSizes { get; } = [];
 
-        public ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
+        public async ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
             IReadOnlyList<CovenantSensitivePurgeTarget> targets,
             CancellationToken cancellationToken = default)
         {
@@ -480,9 +666,50 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
             PageSizes.Add(targets.Count);
 
-            return ValueTask.FromResult(
-                Result<CovenantSensitivePurgeOutcome>.Success(
-                    new CovenantSensitivePurgeOutcome([], CovenantArtifactErasureProgress.Empty)));
+            // A purger that removed the labels it was handed, as the real one does for what it erases.
+            // Without it the labels are still there when the truncation asks, and the truncation refuses.
+            if (removeLabelsFrom is not null)
+            {
+
+                await RemoveLabelsAsync(
+                    (SqliteConnection)removeLabelsFrom.Database.GetDbConnection(),
+                    targets,
+                    cancellationToken);
+
+            }
+
+            return Result<CovenantSensitivePurgeOutcome>.Success(
+                new CovenantSensitivePurgeOutcome([], CovenantArtifactErasureProgress.Empty));
+
+        }
+
+    }
+
+    /// <summary>Removes the label row of every target, which is what a purge that erased them leaves.</summary>
+    private static async Task RemoveLabelsAsync(
+        SqliteConnection connection,
+        IReadOnlyList<CovenantSensitivePurgeTarget> targets,
+        CancellationToken cancellationToken)
+    {
+
+        foreach (CovenantSensitivePurgeTarget target in targets)
+        {
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            // The label table refuses a delete from anything but a purge, a retention or a maintenance
+            // scope, which is what keeps a raw delete from erasing a label by accident.
+            using CovenantSqliteAuthorizationScope purge = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                connection,
+                CovenantSqliteAuthorizationKind.SensitivityRetentionPurge);
+
+            command.CommandText = "DELETE FROM artifact_sensitivity WHERE ArtifactKindCode = $kind AND ArtifactId = $artifact;";
+
+            _ = command.Parameters.AddWithValue("$kind", (int)target.Kind);
+
+            _ = command.Parameters.AddWithValue("$artifact", target.ArtifactId.ToString("D").ToUpperInvariant());
+
+            _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
         }
 

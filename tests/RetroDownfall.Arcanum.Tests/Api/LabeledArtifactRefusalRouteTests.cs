@@ -132,6 +132,48 @@ public sealed class LabeledArtifactRefusalRouteTests
     }
 
     /// <summary>
+    /// An embeddings reset whose truncating transaction cannot read the labels answers 503
+    /// <c>Covenant.Unavailable</c> and truncates nothing.
+    /// </summary>
+    /// <remarks>
+    /// The purge walk reads the label table directly and finds nothing labelled, so the reset reaches the
+    /// transaction that runs the set-based deletes; the guard asked there is the one that cannot read.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("saga")]
+    [InlineData("entry")]
+    [InlineData("all")]
+    public async Task An_embeddings_reset_whose_truncation_cannot_read_the_labels_answers_503_and_keeps_the_rows(
+        string scope)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Host(static services =>
+            services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
+                static _ => new UnreadableLabeledArtifactGuard()));
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid memoryId = await InsertSagaAsync(factory);
+
+        using HttpResponseMessage response = await client.PostAsync(
+            $"/api/embeddings/reset?confirm=true&scope={scope}",
+            null);
+
+        ApiResponse<EmbeddingsResetResult> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, body.Error?.Code);
+
+        Assert.Equal(1, await CountAsync(factory, "saga_memories", "Id", memoryId));
+    }
+
+    /// <summary>
     /// An embeddings reset stopped by a refusal from the purge walk answers that refusal's own code and the
     /// status the central mapper gives it, and truncates nothing.
     /// </summary>

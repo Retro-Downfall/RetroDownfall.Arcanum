@@ -29,6 +29,19 @@ public sealed class EmbeddingsResetService(
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
 
+    /// <summary>
+    /// The guard the truncating transaction asks, resolved from the scope the database context is in so
+    /// it reads through the same composition every other raw delete does.
+    /// </summary>
+    /// <remarks>
+    /// Required rather than optional, and resolved here for the reason the connection factory is: this
+    /// class is public and the guard's transaction forms are not, so the constructor cannot name it. A
+    /// composition that does not register it fails when the service is built, not by truncating without
+    /// asking.
+    /// </remarks>
+    private readonly ICovenantLabeledArtifactTransactionGuard _labeledArtifactGuard =
+        serviceProvider.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>();
+
     private static readonly IReadOnlyList<string> EntryTables =
     [
         "entry_embeddings",
@@ -83,6 +96,38 @@ public sealed class EmbeddingsResetService(
     ];
 
     /// <summary>
+    /// The kinds of labelled artifact this scope truncates the rows of.
+    /// </summary>
+    /// <remarks>
+    /// Two of the tables this service clears carry labelled rows — Entry embeddings and Saga memories —
+    /// and every other table it clears is derived data no label names. The purge walk dispatches these
+    /// kinds before the truncation, and the truncating transaction asks the guard about the same ones, so
+    /// the two cannot disagree about which labels this reset is answerable for.
+    /// </remarks>
+    private static List<SensitiveArtifactKind> LabeledKinds(EmbeddingsResetScope scope)
+    {
+
+        List<SensitiveArtifactKind> kinds = [];
+
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
+        {
+
+            kinds.Add(SensitiveArtifactKind.Embedding);
+
+        }
+
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
+        {
+
+            kinds.Add(SensitiveArtifactKind.Saga);
+
+        }
+
+        return kinds;
+
+    }
+
+    /// <summary>
     /// Dispatches every labelled artifact this scope would otherwise truncate, in bounded pages.
     /// </summary>
     /// <remarks>
@@ -118,23 +163,7 @@ public sealed class EmbeddingsResetService(
 
         }
 
-        List<SensitiveArtifactKind> kinds = [];
-
-        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
-        {
-
-            kinds.Add(SensitiveArtifactKind.Embedding);
-
-        }
-
-        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
-        {
-
-            kinds.Add(SensitiveArtifactKind.Saga);
-
-        }
-
-        foreach (SensitiveArtifactKind kind in kinds)
+        foreach (SensitiveArtifactKind kind in LabeledKinds(scope))
         {
 
             Result<CovenantSensitivePurgeOutcome> purgedKind = await PurgeLabeledKindAsync(
@@ -438,6 +467,28 @@ public sealed class EmbeddingsResetService(
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+                // Asked here, in the transaction that deletes, for each kind it truncates. The walk above
+                // read the label table in an earlier read and dispatched the purger, and the statements
+                // below examine no identity at all, so a label committed between the two would be removed
+                // with its rows and leave a label naming nothing. The transaction already holds the write
+                // lock every label writer needs, so the answer and the truncation are one moment. A
+                // refusal throws before the first table is touched and the transaction rolls back.
+                foreach (SensitiveArtifactKind kind in LabeledKinds(scope))
+                {
+
+                    Result none = await _labeledArtifactGuard
+                        .EnsureNoneLabeledAsync(kind, connection, transaction, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (none.IsFailure)
+                    {
+
+                        throw new LabeledArtifactRefusalException(none.Error);
+
+                    }
+
+                }
 
                 foreach (string table in targets)
                 {
