@@ -407,6 +407,42 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
     }
 
     [Fact]
+    public void AddArcanumConfiguration_reads_the_file_once()
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        int reads = 0;
+
+        ConfigurationBootstrapper.PersistedFileReadObserver = _ => reads++;
+
+        try
+        {
+            ConfigurationBuilder builder = new();
+
+            builder.AddArcanumConfiguration();
+
+            // Rewritten before the provider runs: a provider that went back to the file would see this.
+            File.WriteAllText(
+                ArcanumPaths.ConfigurationFile,
+                """{"Arcanum":{"host":{"port":7777}}}""");
+
+            IConfigurationRoot root = builder.Build();
+
+            Assert.Equal(1, reads);
+
+            Assert.Equal("5001", root["Arcanum:Host:Port"]);
+        }
+        finally
+        {
+            ConfigurationBootstrapper.PersistedFileReadObserver = null;
+        }
+    }
+
+    [Fact]
     public void AddArcanumConfiguration_projects_array_overrides_when_file_omits_the_key()
     {
         const string variable = "ARCANUM_Arcanum__Host__CorsAllowedOrigins";

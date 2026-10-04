@@ -8,21 +8,25 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public static class ConfigurationBootstrapper
 {
-
     public const int MaxConfigurationBytes = 10 * 1024 * 1024;
+
+    /// <summary>Test seam: invoked with the path each time the persisted file is opened for reading.</summary>
+    internal static Action<string>? PersistedFileReadObserver { get; set; }
 
     public static IConfigurationBuilder AddArcanumConfiguration(this IConfigurationBuilder builder)
     {
-
         string configPath = ArcanumPaths.GrimoireDirectory;
 
         string jsonPath = Path.Combine(configPath, "arcanum.json");
 
-        ValidateArcanumConfigurationFile(jsonPath);
+        // One read: the same bytes are validated, bound to the settings the environment resolver
+        // consumes, and handed to the JSON provider, so the file cannot change between the three.
+        (ArcanumSettings persisted, byte[]? raw) = ReadPersistedArcanumSettingsFile(jsonPath, fallbackFactory: null);
 
-        builder.AddJsonFile(jsonPath, optional: true, reloadOnChange: false);
-
-        ArcanumSettings persisted = LoadPersistedArcanumSettingsFile(jsonPath);
+        if (raw is not null)
+        {
+            builder.AddJsonStream(new MemoryStream(raw, writable: false));
+        }
 
         ConfigurationEnvironmentSnapshot environment =
             ConfigurationEnvironmentResolver.Resolve(persisted);
@@ -31,12 +35,9 @@ public static class ConfigurationBootstrapper
 
         foreach (ConfigurationEnvironmentOverride item in environment.Overrides)
         {
-
             if (!item.IsEffective)
             {
-
                 continue;
-
             }
 
             string canonical = ConfigurationPathAccessor.GetCanonicalValue(
@@ -48,18 +49,14 @@ public static class ConfigurationBootstrapper
                 $"Arcanum:{item.Path.Replace('.', ':')}",
                 canonical,
                 TryReadPersistedCanonicalValue(persisted, item.Path));
-
         }
 
         if (projected.Count > 0)
         {
-
             builder.AddInMemoryCollection(projected);
-
         }
 
         return builder;
-
     }
 
     public static void ValidateArcanumConfigurationFile(string jsonPath)
@@ -106,28 +103,35 @@ public static class ConfigurationBootstrapper
         string jsonPath,
         Func<ArcanumSettings>? fallbackFactory = null)
     {
-
         ArcanumSettings persisted = LoadPersistedArcanumSettingsFile(
             jsonPath,
             fallbackFactory);
 
         return ConfigurationEnvironmentResolver.Resolve(persisted).EffectiveSettings;
-
     }
 
     internal static ArcanumSettings LoadPersistedArcanumSettingsFile(
         string jsonPath,
-        Func<ArcanumSettings>? fallbackFactory = null)
-    {
+        Func<ArcanumSettings>? fallbackFactory = null) =>
+        ReadPersistedArcanumSettingsFile(jsonPath, fallbackFactory).Settings;
 
+    /// <summary>
+    /// Reads, validates, and binds the persisted file once. The raw bytes are returned beside the
+    /// settings (null when the file is absent) so a caller that also needs the JSON provider can feed
+    /// it the same snapshot rather than reading the file again.
+    /// </summary>
+    private static (ArcanumSettings Settings, byte[]? Raw) ReadPersistedArcanumSettingsFile(
+        string jsonPath,
+        Func<ArcanumSettings>? fallbackFactory)
+    {
         if (!File.Exists(jsonPath))
         {
-            return fallbackFactory?.Invoke() ?? new ArcanumSettings();
-
+            return (fallbackFactory?.Invoke() ?? new ArcanumSettings(), null);
         }
 
         try
         {
+            PersistedFileReadObserver?.Invoke(jsonPath);
 
             using FileStream stream = new(
                 jsonPath,
@@ -137,10 +141,8 @@ public static class ConfigurationBootstrapper
 
             if (stream.Length > MaxConfigurationBytes)
             {
-
                 throw new InvalidOperationException(
                     $"arcanum.json is invalid: configuration exceeds the {MaxConfigurationBytes}-byte limit ({jsonPath})");
-
             }
 
             byte[] raw = new byte[stream.Length];
@@ -169,15 +171,12 @@ public static class ConfigurationBootstrapper
                     ConfigurationJsonContext.Default.ArcanumConfigurationFile)
                 ?? throw new JsonException("Root value must be a JSON object.");
 
-            return configurationFile.Arcanum;
+            return (configurationFile.Arcanum, raw);
         }
         catch (JsonException ex)
         {
-
             throw new InvalidOperationException($"arcanum.json is invalid: {ex.Message} ({jsonPath})", ex);
-
         }
-
     }
 
     /// <summary>
@@ -199,51 +198,37 @@ public static class ConfigurationBootstrapper
         string canonical,
         string? persistedCanonical)
     {
-
         Dictionary<string, string?> effectiveKeys = new(StringComparer.OrdinalIgnoreCase);
 
         using (JsonDocument document = JsonDocument.Parse(canonical))
         {
-
             FlattenConfigurationValue(effectiveKeys, key, document.RootElement);
-
         }
 
         foreach ((string effectiveKey, string? value) in effectiveKeys)
         {
-
             projected[effectiveKey] = value;
-
         }
 
         if (persistedCanonical is null)
         {
-
             return;
-
         }
 
         Dictionary<string, string?> persistedKeys = new(StringComparer.OrdinalIgnoreCase);
 
         using (JsonDocument persistedDocument = JsonDocument.Parse(persistedCanonical))
         {
-
             FlattenConfigurationValue(persistedKeys, key, persistedDocument.RootElement);
-
         }
 
         foreach (string staleKey in persistedKeys.Keys)
         {
-
             if (!effectiveKeys.ContainsKey(staleKey))
             {
-
                 projected[staleKey] = null;
-
             }
-
         }
-
     }
 
     private static void FlattenConfigurationValue(
@@ -251,10 +236,8 @@ public static class ConfigurationBootstrapper
         string key,
         JsonElement element)
     {
-
         switch (element.ValueKind)
         {
-
             case JsonValueKind.String:
 
                 projected[key] = element.GetString();
@@ -273,11 +256,9 @@ public static class ConfigurationBootstrapper
 
                 foreach (JsonElement item in element.EnumerateArray())
                 {
-
                     FlattenConfigurationValue(projected, $"{key}:{index}", item);
 
                     index++;
-
                 }
 
                 return;
@@ -286,9 +267,7 @@ public static class ConfigurationBootstrapper
 
                 foreach (JsonProperty property in element.EnumerateObject())
                 {
-
                     FlattenConfigurationValue(projected, $"{key}:{property.Name}", property.Value);
-
                 }
 
                 return;
@@ -298,27 +277,18 @@ public static class ConfigurationBootstrapper
                 projected[key] = element.GetRawText();
 
                 return;
-
         }
-
     }
 
     private static string? TryReadPersistedCanonicalValue(ArcanumSettings persisted, string path)
     {
-
         try
         {
-
             return ConfigurationPathAccessor.GetCanonicalValue(persisted, path);
-
         }
         catch (ArgumentException)
         {
-
             return null;
-
         }
-
     }
-
 }
