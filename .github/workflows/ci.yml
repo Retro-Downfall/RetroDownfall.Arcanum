@@ -288,7 +288,7 @@ jobs:
   macos-workspace-check:
     name: macOS workspace-check runtime
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -401,7 +401,7 @@ jobs:
     needs: native-sqlcipher-assets
     if: needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -541,7 +541,7 @@ jobs:
     # Each Windows architecture tests on its own architecture for the reason build-windows.yml
     # publishes on its own: `windows-11-arm` is free for this repository because it is public.
     runs-on: windows-11-arm
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true

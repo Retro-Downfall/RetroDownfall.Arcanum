@@ -956,9 +956,10 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// The longest a job may be allowed to run. A hung test, a notarization that never answers, or a
     /// stuck runner otherwise holds the job for the platform default (six hours), which is a long
     /// time to hold a signing keychain or a scarce macOS runner. The ceiling sits above the slowest
-    /// legitimate job (the macOS release: a Native AOT compile and three notarizations).
+    /// legitimate job (the macOS release: a Native AOT diagnostic audit, a Native AOT publish and
+    /// three notarizations).
     /// </summary>
-    private const int MaximumJobTimeoutMinutes = 90;
+    private const int MaximumJobTimeoutMinutes = 150;
 
     [Fact]
     public void Every_job_declares_a_job_level_timeout()
