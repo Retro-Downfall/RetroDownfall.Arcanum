@@ -576,6 +576,152 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.DoesNotContain("owned entry text", missingText, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Attachment_pin_for_another_sessions_attachment_reports_Missing_without_reading_bytes()
+    {
+        Guid ownerSessionId = Guid.NewGuid();
+
+        Guid pinningSessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        const string ownerSecret = "owner-session-secret-bytes";
+
+        SessionAttachmentRecord ownerAttachment = new(
+            attachmentId,
+            ownerSessionId,
+            EntryId: null,
+            PendingTurnId: null,
+            SessionAttachmentState.Bound,
+            LogicalKey: "notes",
+            OriginalFileName: "notes.txt",
+            Version: 1,
+            RelativePath: "session/notes/v1/notes.txt",
+            ContentSha256: new string('b', 64),
+            MimeType: "text/plain",
+            ByteLength: ownerSecret.Length,
+            SessionAttachmentKind.Text,
+            DateTimeOffset.UtcNow);
+
+        int readCount = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            ownerAttachment,
+            readBytes: (_, _) =>
+            {
+                readCount++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes(ownerSecret));
+            });
+
+        // A pin created in session B that carries session A's attachment GUID.
+        SessionContextPinRecord byIdPin = new(
+            Guid.NewGuid(),
+            pinningSessionId,
+            SessionContextPinKind.Attachment,
+            attachmentId.ToString("D"),
+            "stolen",
+            ContentVersion: null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        // The logical-key lookup is scoped to the pinning session by the store itself.
+        SessionContextPinRecord byLogicalKeyPin = byIdPin with
+        {
+            Id = Guid.NewGuid(),
+            TargetIdentifier = "notes",
+        };
+
+        foreach (SessionContextPinRecord pin in new[] { byIdPin, byLogicalKeyPin })
+        {
+            SessionContextPinMaterializer materializer = new(
+                new StaticPinStore(pin),
+                store,
+                CreateSessions());
+
+            SessionContextPinMaterialization result = await materializer.MaterializeAsync(
+                pinningSessionId,
+                _workspace,
+                CancellationToken.None);
+
+            string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+            Assert.Contains("status: Missing", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(ownerSecret, text, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(0, readCount);
+
+        // Control: the owning session can still read the same attachment.
+        SessionContextPinMaterialization owned = await new SessionContextPinMaterializer(
+                new StaticPinStore(byIdPin with { SessionId = ownerSessionId }),
+                store,
+                CreateSessions())
+            .MaterializeAsync(ownerSessionId, _workspace, CancellationToken.None);
+
+        string ownedText = Assert.IsType<TextContent>(Assert.Single(owned.Contents)).Text;
+
+        Assert.Contains(ownerSecret, ownedText, StringComparison.Ordinal);
+
+        Assert.Equal(1, readCount);
+    }
+
+    [SkippableFact]
+    public async Task File_pin_through_directory_symlink_to_outside_workspace_is_Unsafe_and_content_not_read()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlink-escape containment is exercised on Unix hosts.");
+
+        string outside = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-pin-outside-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(outside);
+
+        const string canary = "outside-canary-9f3a";
+
+        await File.WriteAllTextAsync(
+            Path.Combine(outside, "secret.txt"),
+            canary + "\nsecond line\n");
+
+        // An INTERMEDIATE directory link: the no-follow open only guards the final path component, so
+        // the materializer's own containment walk is the only thing between this pin and the file.
+        string link = Path.Combine(_workspace, "link");
+
+        Directory.CreateSymbolicLink(link, outside);
+
+        try
+        {
+            foreach ((SessionContextPinKind kind, string target) in new[]
+            {
+                (SessionContextPinKind.File, "link/secret.txt"),
+                (SessionContextPinKind.SymbolRange, "link/secret.txt:1-1"),
+            })
+            {
+                SessionContextPinRecord pin = Pin(kind, target, "through-link", null);
+
+                SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+                    pin.SessionId,
+                    _workspace,
+                    CancellationToken.None);
+
+                string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+                Assert.Contains("status: Unsafe", text, StringComparison.Ordinal);
+
+                Assert.DoesNotContain(canary, text, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            Directory.Delete(link);
+
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
     private SessionContextPinMaterializer Create(
         params SessionContextPinRecord[] pins) =>
         new(new StaticPinStore(pins), new NoOpSessionAttachmentStore(), CreateSessions());
