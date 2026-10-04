@@ -76,9 +76,20 @@ public sealed class HostHealthComponentsCheck(
 
         // A host that answers 503 is running and unhealthy — the single most informative state this
         // check has. Reporting it as "not running" would hide every component verdict at exactly the
-        // moment they matter, so only a genuine no-answer takes the unavailable path.
+        // moment they matter, so only a genuine no-answer takes the unavailable path. The 503 body is
+        // the full health report, so when it names a failing component the finding relays that verdict
+        // through the same formatter a 200 uses rather than stopping at the status line.
         if (probe.State == HealthProbeState.UnhealthyStatus)
         {
+            if (probe.Components is { Count: > 0 } reported
+                && DescribeComponents(
+                    reported,
+                    $"The host is running but reports itself unhealthy (HTTP {probe.StatusCode}). ",
+                    DoctorOutcome.Unhealthy) is { } named)
+            {
+                return named;
+            }
+
             return new DoctorFinding(
                 DoctorOutcome.Unhealthy,
                 $"The host is running but reports itself unhealthy (HTTP {probe.StatusCode}). "
@@ -134,6 +145,27 @@ public sealed class HostHealthComponentsCheck(
                 "The host is reachable but reported no subsystem components.");
         }
 
+        return DescribeComponents(components, string.Empty, outcomeFloor: null)
+            ?? new DoctorFinding(
+                DoctorOutcome.Healthy,
+                $"All {components.Count} host subsystem(s) report healthy.");
+    }
+
+    /// <summary>
+    /// Names the unhealthy and degraded components, or answers <see langword="null"/> when every
+    /// component reports healthy.
+    /// </summary>
+    /// <param name="components">The host's per-subsystem verdicts.</param>
+    /// <param name="prefix">Text placed before the counts, such as the HTTP status a 503 carried.</param>
+    /// <param name="outcomeFloor">
+    /// The outcome the caller already knows is at least true (a 503 is Unhealthy even when the body
+    /// lists only degraded components), or <see langword="null"/> to derive it from the components.
+    /// </param>
+    private static DoctorFinding? DescribeComponents(
+        IReadOnlyList<HealthComponentDto> components,
+        string prefix,
+        DoctorOutcome? outcomeFloor)
+    {
         IReadOnlyList<HealthComponentDto> unhealthy =
             [.. components.Where(static component => component.Status == HealthStatus.Unhealthy)];
 
@@ -142,9 +174,7 @@ public sealed class HostHealthComponentsCheck(
 
         if (unhealthy.Count == 0 && degraded.Count == 0)
         {
-            return new DoctorFinding(
-                DoctorOutcome.Healthy,
-                $"All {components.Count} host subsystem(s) report healthy.");
+            return null;
         }
 
         string detail = string.Join(
@@ -154,8 +184,8 @@ public sealed class HostHealthComponentsCheck(
                 + (string.IsNullOrWhiteSpace(component.Detail) ? string.Empty : $" ({component.Detail})")));
 
         return new DoctorFinding(
-            unhealthy.Count > 0 ? DoctorOutcome.Unhealthy : DoctorOutcome.Degraded,
-            $"{unhealthy.Count} unhealthy and {degraded.Count} degraded host subsystem(s): {detail}",
+            outcomeFloor ?? (unhealthy.Count > 0 ? DoctorOutcome.Unhealthy : DoctorOutcome.Degraded),
+            $"{prefix}{unhealthy.Count} unhealthy and {degraded.Count} degraded host subsystem(s): {detail}",
             [
                 new DoctorRemedy(
                     "host.inspect_components",
