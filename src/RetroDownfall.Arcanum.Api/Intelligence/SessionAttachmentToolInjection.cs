@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentToolInjection
 {
-
     /// <summary>
     /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
     /// inject-once, Scrying/vision for images, and size limits (images are rejected, never truncated).
@@ -32,7 +31,6 @@ public static class SessionAttachmentToolInjection
         string? requestModel,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -54,7 +52,7 @@ public static class SessionAttachmentToolInjection
 
         if (string.IsNullOrWhiteSpace(record.RelativePath)
             || Path.IsPathRooted(record.RelativePath)
-            || record.RelativePath.Contains("..", StringComparison.Ordinal))
+            || HasParentSegment(record.RelativePath))
         {
             return null;
         }
@@ -64,9 +62,7 @@ public static class SessionAttachmentToolInjection
             and not SessionAttachmentKind.Image)
 
         {
-
             return null;
-
         }
 
         ReadOnlyMemory<byte> bytes = await store
@@ -92,15 +88,11 @@ public static class SessionAttachmentToolInjection
             [
                 new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label))
                 {
-
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
-
                 },
                 new DataContent(bytes, mime)
                 {
-
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
-
                 },
             ];
         }
@@ -127,9 +119,7 @@ public static class SessionAttachmentToolInjection
             [
                 new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
                 {
-
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
-
                 },
             ];
         }
@@ -142,7 +132,6 @@ public static class SessionAttachmentToolInjection
         }
 
         return contents;
-
     }
 
     public static async Task<IReadOnlyList<AIContent>?> TryBuildRefreshedContentsAsync(
@@ -160,7 +149,7 @@ public static class SessionAttachmentToolInjection
             || record.SessionId is null
             || string.IsNullOrWhiteSpace(record.RelativePath)
             || Path.IsPathRooted(record.RelativePath)
-            || record.RelativePath.Contains("..", StringComparison.Ordinal))
+            || HasParentSegment(record.RelativePath))
         {
             return null;
         }
@@ -170,9 +159,7 @@ public static class SessionAttachmentToolInjection
             and not SessionAttachmentKind.Image)
 
         {
-
             return null;
-
         }
 
         ReadOnlyMemory<byte> bytes = await store.ReadBytesAsync(record, cancellationToken)
@@ -191,15 +178,11 @@ public static class SessionAttachmentToolInjection
             [
                 new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label))
                 {
-
                     AdditionalProperties = RefreshedContextProperties(),
-
                 },
                 new DataContent(bytes, record.MimeType)
                 {
-
                     AdditionalProperties = RefreshedContextProperties(),
-
                 },
             ];
         }
@@ -213,9 +196,7 @@ public static class SessionAttachmentToolInjection
             [
                 new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
                 {
-
                     AdditionalProperties = RefreshedContextProperties(),
-
                 },
             ];
         }
@@ -227,20 +208,34 @@ public static class SessionAttachmentToolInjection
             : null;
     }
 
+    /// <summary>
+    /// True when a whole path segment is <c>..</c>. A name that merely contains or starts with two dots
+    /// (<c>notes..v2.txt</c>, <c>..cache</c>) is an ordinary child and must not be refused.
+    /// </summary>
+    private static bool HasParentSegment(string relativePath)
+    {
+        foreach (string segment in relativePath.Split('/', '\\'))
+        {
+            if (segment == "..")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool TryAcceptToolMaterialization(
         SessionAttachmentRecord record,
         ContextMaterializationSourceKind sourceKind)
     {
-
         ContextMaterializationLedger? ledger = ContextMaterializationLedgerAmbient.Ledger;
 
         if (ledger is null)
         {
-
             return SessionAttachmentTurnBudget.TryMarkInjected(
                 record.LogicalKey,
                 record.Version);
-
         }
 
         ContextMaterializationEntry entry = ledger.Accept(
@@ -273,28 +268,21 @@ public static class SessionAttachmentToolInjection
         if (!entry.Accepted ||
             !SessionAttachmentTurnBudget.TryMarkInjected(record.LogicalKey, record.Version))
         {
-
             return false;
-
         }
 
         if (record.Source is
             {
-
                 Kind: AttachmentSourceKind.WorkspaceFile,
                 WorkspaceRelativePath: { Length: > 0 } workspaceRelativePath,
-
             })
         {
-
             ledger.RegisterExplicitWorkspaceSource(workspaceRelativePath);
-
         }
 
         return ledger.TryMarkInjected(
             entry.Identity,
             ContextMaterializationLedgerAmbient.ProviderRound);
-
     }
 
     private static int EstimateTokens(long materializedBytes) =>
@@ -303,22 +291,17 @@ public static class SessionAttachmentToolInjection
     private static AdditionalPropertiesDictionary RefreshedContextProperties() =>
         new()
         {
-
             ["arcanum.context_source"] = "refreshedFile",
-
         };
 
     private static AdditionalPropertiesDictionary ExplicitAttachmentContextProperties() =>
         new()
         {
-
             ["arcanum.context_source"] = "explicitAttachment",
-
         };
 
     private static string FrameLabel(SessionAttachmentRecord record)
     {
-
         string hardened = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
 
         if (hardened.Length == 0)
@@ -332,7 +315,6 @@ public static class SessionAttachmentToolInjection
         }
 
         return hardened;
-
     }
 
     private static string RefreshedFrameLabel(SessionAttachmentRecord record)
@@ -351,7 +333,6 @@ public static class SessionAttachmentToolInjection
         ArcanumSettings settings,
         string? requestModel)
     {
-
         ScryingSettings scrying = settings.ResolveScrying();
 
         if (!scrying.Enabled)
@@ -372,7 +353,6 @@ public static class SessionAttachmentToolInjection
         }
 
         return null;
-
     }
 
     public static bool TryParseAttachArguments(
@@ -380,7 +360,6 @@ public static class SessionAttachmentToolInjection
         out string logicalName,
         out int? version)
     {
-
         logicalName = string.Empty;
 
         version = null;
@@ -406,7 +385,6 @@ public static class SessionAttachmentToolInjection
         }
 
         return true;
-
     }
 
     private static bool TryGetArgumentValue(
@@ -414,7 +392,6 @@ public static class SessionAttachmentToolInjection
         string name,
         out object? value)
     {
-
         if (arguments.TryGetValue(name, out value))
         {
             return true;
@@ -433,12 +410,10 @@ public static class SessionAttachmentToolInjection
         value = null;
 
         return false;
-
     }
 
     private static bool TryCoerceString(object? raw, out string? value)
     {
-
         switch (raw)
         {
             case null:
@@ -457,12 +432,10 @@ public static class SessionAttachmentToolInjection
                 value = raw.ToString();
                 return !string.IsNullOrWhiteSpace(value);
         }
-
     }
 
     private static bool TryCoerceInt(object? raw, out int value)
     {
-
         switch (raw)
         {
             case null:
@@ -489,12 +462,10 @@ public static class SessionAttachmentToolInjection
                 value = 0;
                 return false;
         }
-
     }
 
     private static string DecodeTextWithByteBound(ReadOnlyMemory<byte> bytes, long maxTextBytes)
     {
-
         ReadOnlySpan<byte> span = bytes.Span;
 
         if (span.Length > maxTextBytes && maxTextBytes > 0)
@@ -504,7 +475,5 @@ public static class SessionAttachmentToolInjection
         }
 
         return Encoding.UTF8.GetString(span);
-
     }
-
 }
