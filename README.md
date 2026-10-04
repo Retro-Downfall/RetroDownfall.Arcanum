@@ -5,7 +5,7 @@
 [![CI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml/badge.svg)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Retro-Downfall/RetroDownfall.Arcanum?include_prereleases&sort=semver&label=release)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
-[![Native AOT](https://img.shields.io/badge/Native%20AOT-yes-2ea44f)](#functions)
+[![Native AOT](https://img.shields.io/badge/Native%20AOT-yes-2ea44f)](#one-executable-no-runtime)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20arm64%20%C2%B7%20Windows%20x64%2Farm64-blue)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
 
 Arcanum runs a long-lived HTTP host (`arcanum serve`) with a set of thin CLI clients over that same API. It exposes an **OpenAI-compatible API** — so existing OpenAI clients and scripts talk to Arcanum unchanged — and routes inference across **any OpenAI-compatible provider**: hosted services, your own local Ollama or other model server, or the `Claude Code` and `Codex` CLIs you already have installed and signed in. Everything it learns lives in a **SQLCipher-encrypted** store on your disk, and the executable runs on **macOS and Windows**.
