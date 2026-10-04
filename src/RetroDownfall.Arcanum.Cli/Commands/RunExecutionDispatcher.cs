@@ -161,12 +161,9 @@ internal sealed class RunExecutionDispatcher(
 
         return askCommand.Ask(
             cancellationToken,
-            model: request.Context.Model.Value,
+            preparedContext: request.Context,
             @new: options.NewSession,
             unattended: options.Unattended,
-            campaign: FormatGuid(request.Context.Campaign.Value),
-            workspace: request.Context.Workspace.Value,
-            sessionIdOption: FormatGuid(request.Context.Session.Value),
             temperature: options.Temperature,
             topP: options.TopP,
             maxTokens: options.MaxTokens,
@@ -175,12 +172,10 @@ internal sealed class RunExecutionDispatcher(
             responseFormat: options.ResponseFormat,
             presencePenalty: options.PresencePenalty,
             frequencyPenalty: options.FrequencyPenalty,
-            image: [],
             attachment: options.Attachment,
             attachedFiles: request.AttachedFiles,
             preparedScryingFoci: request.ScryingFoci,
             overrideSpellName: spellName,
-            preparedContext: request.Context,
             prompt: [request.Prompt]);
     }
 

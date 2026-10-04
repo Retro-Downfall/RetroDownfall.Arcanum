@@ -65,8 +65,21 @@ public sealed class AskCommandReasoningTests
         await using ServiceProvider provider = services.BuildServiceProvider();
         AskCommand command = provider.GetRequiredService<AskCommand>();
 
+        // The run route resolves the context before it calls Ask; the test supplies the same thing.
         int exitCode = await command.Ask(
             CancellationToken.None,
+            preparedContext: CliContextPrecedence.Resolve(
+                new CliContextResolutionRequest(
+                    null,
+                    null,
+                    null,
+                    null,
+                    CliContextDocument.Empty,
+                    null,
+                    null,
+                    null,
+                    null,
+                    NoContext: false)),
             prompt: ["question"]);
 
         Assert.Equal((int)CliExitCode.NetworkError, exitCode);
