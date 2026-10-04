@@ -331,20 +331,18 @@ internal static partial class MacOsCredentialStore
 
     private static OsCredentialStoreResult TryGetItemRef(byte[] serviceBytes, byte[] accountBytes, out nint itemRef)
     {
-        int status = SecKeychainFindGenericPassword(
+        // Metadata lookup: null password pointers, so the secret is never read to obtain a reference.
+        // An update or a delete needs only the item, and reading the password for it would make the
+        // operation depend on an authorization prompt (or fail outright when headless or denied).
+        int status = SecKeychainFindGenericPasswordMetadata(
             nint.Zero,
             (uint)serviceBytes.Length,
             serviceBytes,
             (uint)accountBytes.Length,
             accountBytes,
-            out _,
-            out nint passwordData,
+            nint.Zero,
+            nint.Zero,
             out itemRef);
-
-        if (passwordData != nint.Zero)
-        {
-            SecKeychainItemFreeContent(nint.Zero, passwordData);
-        }
 
         if (status == ErrSecItemNotFound)
         {
@@ -357,7 +355,7 @@ internal static partial class MacOsCredentialStore
         {
             itemRef = nint.Zero;
 
-            return OsCredentialStoreResult.Failed($"SecKeychainFindGenericPassword failed with status {status}.");
+            return OsCredentialStoreResult.Failed($"SecKeychainFindGenericPasswordMetadata failed with status {status}.");
         }
 
         return OsCredentialStoreResult.Ok(string.Empty);
