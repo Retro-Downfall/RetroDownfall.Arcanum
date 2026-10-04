@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -9,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -268,6 +270,53 @@ public sealed class CovenantSensitivePurgeRouteDispositionTests
     }
 
     /// <summary>
+    /// Compaction whose ordinary Entry delete meets a label written after the purge's dispatch answers the
+    /// status the guard's own error maps to, not an opaque 500.
+    /// </summary>
+    /// <remarks>
+    /// The purge dispatch reads no label for any Entry, so every one is handed to the ordinary delete, and
+    /// the delete asks the labelled-artifact guard again inside its own transaction. The guard here
+    /// answers as it would for a label committed in between, and the repository raises its typed refusal.
+    /// The compact route has no catch of its own for it, so the central exception handler is what maps it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Compacting_when_a_label_appears_inside_the_ordinary_Entry_delete_answers_the_mapped_refusal()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Host(new LabelReadArm());
+
+        factory.ServiceOverrides += static services =>
+        {
+            services.RemoveAll<ICovenantLabeledArtifactGuard>();
+
+            services.RemoveAll<ICovenantLabeledArtifactTransactionGuard>();
+
+            services.AddScoped<ICovenantLabeledArtifactTransactionGuard, LateLabelGuard>();
+
+            services.AddScoped<ICovenantLabeledArtifactGuard>(static sp => sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>());
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        _ = await AppendEntriesAsync(client, sessionId, 8);
+
+        using HttpResponseMessage response = await client.PostAsync($"/api/sessions/{sessionId:D}/compact", null);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        Assert.Contains(ErrorCodes.Covenant.ForbiddenAuthority, body, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ErrorCodes.Hub.Unhandled, body, StringComparison.Ordinal);
+
+        Assert.Equal(8, await CountAsync(factory, "Entries", "SessionId", sessionId));
+    }
+
+    /// <summary>
     /// A host with the Covenant, Saga and memory management on, an in-memory credential store, and the
     /// armed ledger in front of the real one.
     /// </summary>
@@ -496,6 +545,46 @@ public sealed class CovenantSensitivePurgeRouteDispositionTests
         _ = command.Parameters.AddWithValue("$id", id.ToString("N"));
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(CancellationToken.None), CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// A guard that answers every Entry delete's in-transaction question as it would for a label that
+    /// committed after the purge dispatch, and clears everything else.
+    /// </summary>
+    private sealed class LateLabelGuard : ICovenantLabeledArtifactTransactionGuard
+    {
+        private static readonly Error Refusal = new(
+            ErrorCodes.Covenant.ForbiddenAuthority,
+            "A labelled artifact has to leave through the sensitive-artifact purge.");
+
+        public ValueTask<Result> EnsureUnlabeledAsync(
+            SensitiveArtifactKind kind,
+            Guid artifactId,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> EnsureUnlabeledAsync(
+            SensitiveArtifactKind kind,
+            Guid artifactId,
+            DbConnection connection,
+            DbTransaction transaction,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(kind == SensitiveArtifactKind.AssistantEntry ? Result.Failure(Refusal) : Result.Success());
+
+        public ValueTask<Result> EnsureAllUnlabeledAsync(
+            SensitiveArtifactKind kind,
+            IReadOnlyCollection<Guid> artifactIds,
+            DbConnection connection,
+            DbTransaction transaction,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> EnsureNoneLabeledAsync(
+            SensitiveArtifactKind kind,
+            DbConnection connection,
+            DbTransaction transaction,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Result.Success());
     }
 
     /// <summary>

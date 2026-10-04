@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -88,6 +90,41 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             // pair this arm exists to avoid, and it would happen on exactly the requests that had
             // already begun a response when admission closed under them. A response whose first byte
             // has left is finished by its own writer; there is nothing further to say about it.
+            return true;
+
+        }
+
+        if (exception is LabeledArtifactRefusalException refusal
+            && !httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+
+            // Expected control flow, not a fault. A raw delete that returns no Result of its own asked the
+            // labelled-artifact guard inside its own transaction and was refused: the artifact is labelled,
+            // or the label table cannot be read. The refusal carries the guard's own Error, so the status
+            // follows its code (403 for a labelled artifact, 503 for an unreadable table) wherever the
+            // delete was reached, a route that dispatched the purge first or one that never could.
+            //
+            // The line is Debug and carries only the code: the guard's message names the boundary and never
+            // the artifact, and a refusal is the answer the installation chose, not an error to page on.
+            logger.LogDebug("A raw delete was refused by the labelled-artifact guard ({Code}).", refusal.Error.Code);
+
+            if (httpContext.Response.HasStarted)
+            {
+
+                return false;
+
+            }
+
+            httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(refusal.Error.Code);
+
+            httpContext.Response.ContentType = "application/json";
+
+            ApiResponse<string> refused = ApiResponse<string>.FromResult(Result<string>.Failure(refusal.Error), traceId);
+
+            await httpContext.Response
+                .WriteAsJsonAsync(refused, ArcanumJsonContext.Default.ApiResponseString, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
             return true;
 
         }

@@ -1863,20 +1863,12 @@ internal static class SessionEndpoints
 
                 if (purged.Value.RequiresOrdinaryDelete(entryId))
                 {
-                    try
-                    {
-                        await grimoire.DeleteEntryAsync(id, entryId, ctx.RequestAborted).ConfigureAwait(false);
-                    }
-                    catch (LabeledArtifactRefusalException refused)
-                    {
-                        // The repository asks again inside its own transaction, after the purge dispatch
-                        // above, and answers with the guard's own error: a label that cannot be read is a
-                        // 503 and one written since the dispatch is a 403, not an opaque 500.
-                        return Results.Json(
-                            ApiResponse<bool>.FromResult(Result<bool>.Failure(refused.Error), traceId),
-                            ArcanumJsonContext.Default.ApiResponseBoolean,
-                            statusCode: ArcanumErrorMapper.ResolveStatusCode(refused.Error.Code));
-                    }
+                    // The repository asks the labelled-artifact guard again inside its own transaction,
+                    // after the purge dispatch above, and raises LabeledArtifactRefusalException when a
+                    // label has been written since. The central exception handler answers it with the
+                    // guard's own error: a label that cannot be read is a 503 and one written since the
+                    // dispatch is a 403.
+                    await grimoire.DeleteEntryAsync(id, entryId, ctx.RequestAborted).ConfigureAwait(false);
                 }
 
                 return Results.NoContent();

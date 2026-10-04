@@ -283,23 +283,11 @@ internal static class SagaEndpoints
 
                 }
 
-                bool deleted;
-
-                try
-                {
-
-                    deleted = await store.DeleteAsync(id, ctx.RequestAborted).ConfigureAwait(false);
-
-                }
-                catch (LabeledArtifactRefusalException refused)
-                {
-
-                    // The store asks again inside its own transaction, after the purge dispatch above, and
-                    // answers with the guard's own error: a label that cannot be read is a 503 and one
-                    // written since the dispatch is a 403, not an opaque 500.
-                    return SagaPurgeRefusal(ctx, refused.Error);
-
-                }
+                // The store asks the labelled-artifact guard again inside its own transaction, after the
+                // purge dispatch above, and raises LabeledArtifactRefusalException when a label has been
+                // written since. The central exception handler answers it with the guard's own error, so a
+                // label that cannot be read is a 503 and one written since the dispatch is a 403.
+                bool deleted = await store.DeleteAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (!deleted)
                 {
@@ -369,18 +357,9 @@ internal static class SagaEndpoints
 
                 }
 
-                try
-                {
-
-                    await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
-
-                }
-                catch (LabeledArtifactRefusalException refused)
-                {
-
-                    return SagaPurgeRefusal(ctx, refused.Error);
-
-                }
+                // A label written since the dispatch above is refused inside the store's own transaction,
+                // and the central exception handler answers it with the guard's own error.
+                await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.NoContent();
 
