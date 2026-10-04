@@ -20,7 +20,6 @@ internal readonly record struct InstallationResetMaintenanceLockAttempt(
     ArcanumMaintenanceLockAcquisitionDisposition Disposition,
     ArcanumMaintenanceLock? Lock)
 {
-
     internal static InstallationResetMaintenanceLockAttempt From(
         ArcanumMaintenanceLockAcquisitionResult acquisition) =>
         acquisition.Disposition switch
@@ -47,14 +46,11 @@ internal readonly record struct InstallationResetMaintenanceLockAttempt(
         new(
             ArcanumMaintenanceLockAcquisitionDisposition.Unsafe,
             Lock: null);
-
 }
 
 internal interface IInstallationResetClientCoordinationLease : IAsyncDisposable
 {
-
     Task<Result> RemoveBlockerIfSafeAsync(CancellationToken cancellationToken);
-
 }
 
 internal delegate Task<Result<IInstallationResetClientCoordinationLease>>
@@ -68,7 +64,6 @@ internal sealed class InstallationResetClientCoordinationLease(
     InstallationMaintenanceCoordinationLease lease)
     : IInstallationResetClientCoordinationLease
 {
-
     private readonly InstallationMaintenanceCoordinationLease _lease =
         lease ?? throw new ArgumentNullException(nameof(lease));
 
@@ -77,12 +72,10 @@ internal sealed class InstallationResetClientCoordinationLease(
         _lease.RemoveBlockerIfSafeAsync(cancellationToken);
 
     public ValueTask DisposeAsync() => _lease.DisposeAsync();
-
 }
 
 internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBoundary
 {
-
     private static readonly TimeSpan LockRetryBudget = TimeSpan.FromSeconds(5);
 
     private static readonly TimeSpan InitialLockRetryDelay = TimeSpan.FromMilliseconds(100);
@@ -140,7 +133,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             onlineDataHandoff.CreateHostHandoff,
             pairReader.ReadAsync)
     {
-
     }
 
     internal InstallationResetApplyBoundary(
@@ -161,7 +153,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             CancellationToken,
             Task<Result<HostProcessToolsMarkerPairJoinResult>>> readPair)
     {
-
         _quitServer = quitServer;
 
         _applyFactoryReset = applyFactoryReset;
@@ -180,7 +171,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         _readPair = readPair
             ?? throw new ArgumentNullException(nameof(readPair));
-
     }
 
     private static async Task<Result<IInstallationResetClientCoordinationLease>>
@@ -191,7 +181,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             Guid? operationId,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(maintenanceCoordination);
 
         InstallationMaintenanceCoordinationResult acquired =
@@ -210,14 +199,12 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                     acquired.BorrowAcquiredLease()))
             : Result<IInstallationResetClientCoordinationLease>.Failure(
                 acquired.Error);
-
     }
 
     public async Task<Result<InstallationResetResult>> ApplyFullAsync(
         FullInstallationResetRequest request,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (request is null
@@ -229,11 +216,9 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             || request.OperationId == Guid.Empty
             || request.OperationId != request.ExternalRemediation.OperationId)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ExternalRemediationInvalid,
                 "The external remediation attestation could not be verified."));
-
         }
 
         Result<bool> shutdown = await _quitServer(cancellationToken)
@@ -249,9 +234,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 ErrorCodes.Security.MissingApiKey,
                 StringComparison.Ordinal))
         {
-
             return Result<InstallationResetResult>.Failure(shutdown.Error);
-
         }
 
         InstallationResetMaintenanceLockAttempt acquisition =
@@ -263,20 +246,16 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         if (acquisition.Disposition
             is ArcanumMaintenanceLockAcquisitionDisposition.Unsafe)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The Arcanum maintenance lock could not be acquired safely because its topology, identity, or owner-only permissions could not be validated."));
-
         }
 
         if (maintenanceLock is null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.FileLocked,
                 "The Arcanum maintenance lock remained unavailable after the shutdown handoff."));
-
         }
 
         return await _resetService
@@ -285,7 +264,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 maintenanceLock,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public async Task<Result<InstallationResetResult>> ApplyAsync(
@@ -304,30 +282,24 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         bool onlineCompletionDurable,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         if (request.Request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
-
             Result cleanPair = await RequireCleanPairAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (cleanPair.IsFailure)
             {
-
                 return Result<InstallationResetResult>.Failure(cleanPair.Error);
-
             }
 
             if (hostHandoff is { } handoff)
             {
-
                 Result online = onlineCompletionDurable
                     ? Result.Success()
                     : await CompleteOnlineDataResetAsync(
                         handoff,
-                        coordinationLease: null,
                         cancellationToken).ConfigureAwait(false);
 
                 return online.IsFailure
@@ -337,13 +309,11 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                         handoff,
                         confirmedPlan: null,
                         cancellationToken).ConfigureAwait(false);
-
             }
 
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ResetInProgress,
                 "The authenticated installation reset host handoff is unavailable."));
-
         }
 
         return await ApplyOfflineAsync(
@@ -352,7 +322,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 confirmedPlan: null,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public async Task<Result<InstallationResetResult>> ApplyFreshAsync(
@@ -360,7 +329,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         StoppedHostInstallationResetPlan confirmedPlan,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(confirmedPlan);
@@ -375,11 +343,9 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             || (request.Scope is InstallationResetScope.Global or InstallationResetScope.All
                 && confirmedPlan.CovenantDisclosure is null))
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.PlanChanged,
                 "The stopped-host installation reset plan changed after confirmation."));
-
         }
 
         return await ApplyOfflineAsync(
@@ -388,15 +354,12 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 confirmedPlan: confirmedPlan,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async Task<Result> CompleteOnlineDataResetAsync(
         InstallationResetHostHandoff handoff,
-        IInstallationResetClientCoordinationLease? coordinationLease,
         CancellationToken cancellationToken)
     {
-
         string dataPlanId = handoff.AcceptedBinding.DataPlanIds.Single();
 
         Result<DataRetentionApplyResult> applied = await _applyFactoryReset(
@@ -407,41 +370,16 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 handoff),
             cancellationToken).ConfigureAwait(false);
 
-        if (applied.IsFailure)
-        {
-
-            if (string.Equals(
-                    applied.Error.Code,
-                    ErrorCodes.Data.PlanChanged,
-                    StringComparison.Ordinal)
-                && coordinationLease is not null)
-            {
-
-                Result removed = await coordinationLease
-                    .RemoveBlockerIfSafeAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (removed.IsFailure)
-                {
-
-                    return Result.Failure(removed.Error);
-
-                }
-
-            }
-
-            return Result.Failure(applied.Error);
-
-        }
-
-        return Result.Success();
-
+        // No client coordination lease exists yet: it is acquired after the host has been stopped, in
+        // ApplyOfflineAsync, so a rejected online step has no blocker of its own to retire here.
+        return applied.IsFailure
+            ? Result.Failure(applied.Error)
+            : Result.Success();
     }
 
     private async Task<Result> RequireCleanPairAsync(
         CancellationToken cancellationToken)
     {
-
         Result<HostProcessToolsMarkerPairJoinResult> pair = await _readPair(
                 cancellationToken)
             .ConfigureAwait(false);
@@ -452,7 +390,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 : Result.Failure(new Error(
                     ErrorCodes.Data.ExternalRemediationRequired,
                     "The host-process-tools marker pair requires external remediation."));
-
     }
 
     private async Task<Result<InstallationResetResult>> ApplyOfflineAsync(
@@ -461,7 +398,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         StoppedHostInstallationResetPlan? confirmedPlan,
         CancellationToken cancellationToken)
     {
-
         Result<bool> shutdown = await _quitServer(cancellationToken)
             .ConfigureAwait(false);
 
@@ -475,9 +411,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 ErrorCodes.Security.MissingApiKey,
                 StringComparison.Ordinal))
         {
-
             return Result<InstallationResetResult>.Failure(shutdown.Error);
-
         }
 
         InstallationResetMaintenanceLockAttempt acquisition =
@@ -489,25 +423,20 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         if (acquisition.Disposition
             is ArcanumMaintenanceLockAcquisitionDisposition.Unsafe)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The Arcanum maintenance lock could not be acquired safely because its topology, identity, or owner-only permissions could not be validated."));
-
         }
 
         if (maintenanceLock is null)
         {
-
             return Result<InstallationResetResult>.Failure(new Error(
                 ErrorCodes.Data.FileLocked,
                 "The Arcanum maintenance lock remained unavailable after the shutdown handoff."));
-
         }
 
         if (request.Request.Scope is InstallationResetScope.Workspace)
         {
-
             return confirmedPlan is null
                 ? await _resetService.ApplyUnderMaintenanceLockAsync(
                         request,
@@ -520,7 +449,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                         maintenanceLock,
                         cancellationToken)
                     .ConfigureAwait(false);
-
         }
 
         Result<IInstallationResetClientCoordinationLease> coordinated =
@@ -533,9 +461,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         if (coordinated.IsFailure)
         {
-
             return Result<InstallationResetResult>.Failure(coordinated.Error);
-
         }
 
         await using IInstallationResetClientCoordinationLease coordinationLease =
@@ -545,7 +471,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         try
         {
-
             applied = confirmedPlan is null
                 ? await _resetService.ApplyUnderMaintenanceLockAsync(
                         request,
@@ -558,68 +483,56 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                         maintenanceLock,
                         cancellationToken)
                     .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (confirmedPlan is not null)
         {
-
             _ = await coordinationLease
                 .RemoveBlockerIfSafeAsync(CancellationToken.None)
                 .ConfigureAwait(false);
 
             throw;
-
         }
 
         if (applied.IsFailure)
         {
-
             if (confirmedPlan is not null)
             {
-
                 Result removedAfterFreshFailure = await coordinationLease
                     .RemoveBlockerIfSafeAsync(CancellationToken.None)
                     .ConfigureAwait(false);
 
                 if (removedAfterFreshFailure.IsFailure)
                 {
-
                     return Result<InstallationResetResult>.Failure(
                         removedAfterFreshFailure.Error);
-
                 }
-
             }
 
             return applied;
-
         }
 
+        // The reset has completed, so retiring the client blocker is bookkeeping after the point of no
+        // return for a resumed apply as much as for a fresh one: a cancellation that lands now must not
+        // leave it behind for the next host start to clean up.
         Result removed = await coordinationLease
-            .RemoveBlockerIfSafeAsync(
-                confirmedPlan is null
-                    ? cancellationToken
-                    : CancellationToken.None)
+            .RemoveBlockerIfSafeAsync(CancellationToken.None)
             .ConfigureAwait(false);
 
         return removed.IsSuccess
             ? applied
             : Result<InstallationResetResult>.Failure(removed.Error);
-
     }
 
     private async Task<InstallationResetMaintenanceLockAttempt>
         AcquireMaintenanceLockAsync(
         CancellationToken cancellationToken)
     {
-
         long startedAt = _timeProvider.GetTimestamp();
 
         TimeSpan retryDelay = InitialLockRetryDelay;
 
         while (true)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             InstallationResetMaintenanceLockAttempt acquisition =
@@ -629,9 +542,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             if (acquisition.Disposition
                 is not ArcanumMaintenanceLockAcquisitionDisposition.Contended)
             {
-
                 return acquisition;
-
             }
 
             TimeSpan remaining = LockRetryBudget
@@ -639,9 +550,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
             if (remaining <= TimeSpan.Zero)
             {
-
                 return InstallationResetMaintenanceLockAttempt.Contended();
-
             }
 
             TimeSpan boundedDelay = retryDelay <= remaining
@@ -657,9 +566,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 Math.Min(
                     retryDelay.Ticks * 2,
                     MaximumLockRetryDelay.Ticks));
-
         }
-
     }
-
 }
