@@ -78,14 +78,15 @@ internal static class CliSuggestionEngine
 
         string matched = MatchedPath(parseResult);
 
-        // `key set` used to take the master key as an argument. A leftover value is a credential, so
-        // the refusal names the supported routes and never repeats the token: the generic
-        // "unrecognized argument" line would print the secret back into terminal scrollback and CI logs.
-        if (matched == "key set")
+        // The credential verbs never take their value as an argument (`key set` once did). A leftover
+        // value is a credential, so the refusal names the supported routes and never repeats the token:
+        // the generic "unrecognized argument" line would print the secret back into terminal scrollback
+        // and CI logs.
+        if (matched is "key set" or "key provider set")
         {
-            return "`arcanum key set` does not take the key as an argument, because a command-line "
-                + "value is recorded in shell history and visible in the process list. Pipe the key "
-                + "on stdin or run it in a terminal for the hidden prompt.";
+            return $"`arcanum {matched}` does not take the credential as an argument, because a "
+                + "command-line value is recorded in shell history and visible in the process list. "
+                + "Pipe the value on stdin or run it in a terminal for the hidden prompt.";
         }
 
         string typed = matched.Length == 0

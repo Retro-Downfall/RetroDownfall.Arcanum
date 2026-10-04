@@ -158,6 +158,26 @@ public sealed class KeyCommandTests
     }
 
     [Fact]
+    public async Task Provider_set_rejects_a_credential_supplied_as_an_argument_without_echoing_it()
+    {
+        const string CommandLineKey = "sk_on_the_command_line_0123456789";
+
+        FakeProviderCredentialStore providers = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateServices(providers),
+            ["key", "provider", "set", "alpha", CommandLineKey]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, providers.WriteCount);
+
+        Assert.DoesNotContain(CommandLineKey, result.Output + result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("stdin", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Set_still_stores_a_key_read_from_redirected_stdin()
     {
         FakeSecretStore secrets = new();
