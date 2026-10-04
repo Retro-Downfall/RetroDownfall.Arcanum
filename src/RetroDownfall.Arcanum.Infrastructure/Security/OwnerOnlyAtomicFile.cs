@@ -73,11 +73,15 @@ internal static class OwnerOnlyAtomicFile
 
     private static string TempPathFor(string path) => path + ".tmp." + Guid.NewGuid().ToString("N");
 
+    /// <summary>
+    /// Replaces the target, then requires its owner-only posture: a secret-bearing file whose posture
+    /// cannot be verified fails the write instead of logging a warning after it.
+    /// </summary>
     private static void Publish(string tempPath, string path)
     {
         File.Move(tempPath, path, overwrite: true);
 
-        SecureFilePermissions.ApplyOwnerOnlyFile(path);
+        SecureFilePermissions.RequireOwnerOnlyFile(path);
     }
 
     private static void DeleteTempFile(string tempPath)

@@ -215,6 +215,40 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         Assert.Contains("remove both", result.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A secret must never be written into a directory whose owner-only posture could not be
+    /// established: the hardening is a precondition of the save, not a warning after it.
+    /// </summary>
+    [Fact]
+    public async Task Save_fails_when_the_secret_directory_cannot_be_made_owner_only()
+    {
+        using DataProtectionSecretStore store = CreateStore();
+
+        string secretDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(ArcanumPaths.SecretStoreDirectory));
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = (path, isDirectory) =>
+            isDirectory
+            && string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)),
+                secretDirectory,
+                StringComparison.Ordinal)
+                ? false
+                : null;
+
+        try
+        {
+            _ = await Assert.ThrowsAsync<UnauthorizedAccessException>(
+                () => store.SaveApiKeyAsync("must-not-be-written"));
+
+            Assert.False(File.Exists(ArcanumPaths.ApiKeyStoreFile));
+        }
+        finally
+        {
+            SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+        }
+    }
+
     private static bool CanOpenForRead(string path)
     {
         try

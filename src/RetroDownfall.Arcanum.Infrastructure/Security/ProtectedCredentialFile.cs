@@ -104,7 +104,7 @@ internal static class ProtectedCredentialFile
         string directory = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException("Invalid secret store path.");
 
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
+        SecureFilePermissions.RequireOwnerOnlyDirectory(directory);
 
         byte[] plain = Encoding.UTF8.GetBytes(plainText);
 

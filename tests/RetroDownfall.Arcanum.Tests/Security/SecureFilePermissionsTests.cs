@@ -86,47 +86,18 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         Assert.Equal(expected, actual);
     }
 
-    [SkippableFact]
-    public void ApplyOwnerOnlyToSensitivePaths_restricts_configuration_preset_sidecars()
+    /// <summary>
+    /// The owner-only inventory is what <c>permissions.apply_owner_only</c> plans from, so the preset
+    /// sidecars are hardened only if they are in it.
+    /// </summary>
+    [Fact]
+    public void Owner_only_inventory_includes_configuration_preset_sidecars()
     {
-        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
+        IReadOnlyList<string> inventory = SecureFilePermissions.EnumerateOwnerOnlyPaths();
 
-        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
-        // recognizes the guard clause protecting the Unix-only calls below.
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
-
-        string[] paths =
-        [
-            ArcanumPaths.ConfigurationPresetStateFile,
-            ArcanumPaths.ConfigurationPresetRollbackFile,
-            ArcanumPaths.ConfigurationPresetJournalFile,
-        ];
-
-        foreach (string path in paths)
-        {
-            File.WriteAllText(path, "{}");
-
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead
-                | UnixFileMode.UserWrite
-                | UnixFileMode.GroupRead
-                | UnixFileMode.OtherRead);
-        }
-
-        SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths();
-
-        foreach (string path in paths)
-        {
-            Assert.Equal(
-                UnixFileMode.UserRead | UnixFileMode.UserWrite,
-                File.GetUnixFileMode(path));
-        }
+        Assert.Contains(ArcanumPaths.ConfigurationPresetStateFile, inventory);
+        Assert.Contains(ArcanumPaths.ConfigurationPresetRollbackFile, inventory);
+        Assert.Contains(ArcanumPaths.ConfigurationPresetJournalFile, inventory);
     }
 
     [SkippableFact]

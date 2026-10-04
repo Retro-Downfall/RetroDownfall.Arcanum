@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 /// </summary>
 public static class ManagedDirectories
 {
-
     /// <summary>Directories Arcanum creates on demand and can safely re-create when missing.</summary>
     public static IReadOnlyList<string> All =>
         [
@@ -26,7 +25,6 @@ public static class ManagedDirectories
 
     internal static IReadOnlyList<string> Missing() =>
         [.. All.Distinct(StringComparer.Ordinal).Where(static path => !Directory.Exists(path))];
-
 }
 
 /// <summary>
@@ -37,7 +35,6 @@ public static class ManagedDirectories
 /// </summary>
 public sealed class ManagedDirectoriesCheck : IDoctorCheck
 {
-
     public const string CheckId = "paths.managed_directories";
 
     public string Id => CheckId;
@@ -50,16 +47,13 @@ public sealed class ManagedDirectoriesCheck : IDoctorCheck
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         IReadOnlyList<string> missing = ManagedDirectories.Missing();
 
         if (missing.Count == 0)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Healthy,
                 $"All {ManagedDirectories.All.Distinct(StringComparer.Ordinal).Count()} managed directories are present."));
-
         }
 
         return Task.FromResult(new DoctorFinding(
@@ -73,9 +67,7 @@ public sealed class ManagedDirectoriesCheck : IDoctorCheck
                     DoctorRemedyCommands.RepairManagedDirectories,
                     "Re-create the missing directories with owner-only permissions. No file is written or removed."),
             ]));
-
     }
-
 }
 
 /// <summary>
@@ -85,7 +77,6 @@ public sealed class ManagedDirectoriesCheck : IDoctorCheck
 /// </summary>
 public sealed class ManagedDirectoriesRepair : IDoctorRepair
 {
-
     public const string RepairId = "paths.create_managed_directories";
 
     public string Id => RepairId;
@@ -99,7 +90,6 @@ public sealed class ManagedDirectoriesRepair : IDoctorRepair
 
     public Task<DoctorRepairResult> PlanAsync(CancellationToken cancellationToken)
     {
-
         IReadOnlyList<string> missing = ManagedDirectories.Missing();
 
         return Task.FromResult(missing.Count == 0
@@ -110,19 +100,15 @@ public sealed class ManagedDirectoriesRepair : IDoctorRepair
                 $"Would create {missing.Count} missing directory/directories. Re-run with --apply to perform it.",
                 [.. missing.Select(static path => new DoctorRepairStep(path, "missing", "created, owner-only"))],
                 null));
-
     }
 
     public Task<DoctorRepairResult> ApplyAsync(CancellationToken cancellationToken)
     {
-
         IReadOnlyList<string> missing = ManagedDirectories.Missing();
 
         if (missing.Count == 0)
         {
-
             return Task.FromResult(Converged());
-
         }
 
         List<DoctorRepairStep> steps = [];
@@ -131,25 +117,22 @@ public sealed class ManagedDirectoriesRepair : IDoctorRepair
 
         foreach (string path in missing)
         {
-
-            try
+            // "Owner-only" is reported only when the posture was verified, not merely attempted.
+            if (SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict(path))
             {
-
-                SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(path);
-
                 steps.Add(new DoctorRepairStep(path, "missing", "created, owner-only"));
 
-            }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException)
-            {
-
-                failures.Add(Path.GetFileName(path));
-
-                steps.Add(new DoctorRepairStep(path, "missing", "could not be created"));
-
+                continue;
             }
 
+            failures.Add(Path.GetFileName(path));
+
+            steps.Add(new DoctorRepairStep(
+                path,
+                "missing",
+                Directory.Exists(path)
+                    ? "created, but could not be restricted to the current user"
+                    : "could not be created"));
         }
 
         return Task.FromResult(failures.Count == 0
@@ -162,10 +145,9 @@ public sealed class ManagedDirectoriesRepair : IDoctorRepair
             : new DoctorRepairResult(
                 RepairId,
                 DoctorRepairState.Failed,
-                $"{failures.Count} directory/directories could not be created.",
+                $"{failures.Count} directory/directories could not be created owner-only.",
                 steps,
                 "The filesystem refused the change. Check ownership of the Arcanum installation root."));
-
     }
 
     private static DoctorRepairResult Converged() =>
@@ -175,5 +157,4 @@ public sealed class ManagedDirectoriesRepair : IDoctorRepair
             "Every managed directory already exists; nothing to do.",
             [],
             null);
-
 }

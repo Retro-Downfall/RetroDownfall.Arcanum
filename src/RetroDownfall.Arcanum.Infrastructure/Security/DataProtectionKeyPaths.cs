@@ -19,15 +19,18 @@ internal static class DataProtectionKeyPaths
     /// </summary>
     public static string Directory => System.IO.Path.Combine(ArcanumPaths.GrimoireDirectory, "keys");
 
+    /// <summary>
+    /// Creates the key ring owner-only and verifies it. The ring wraps every encrypted mirror, so a
+    /// ring whose posture cannot be established fails Data Protection closed rather than warning.
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">The posture could not be established.</exception>
     public static DirectoryInfo EnsureDirectory()
     {
         string path = Directory;
 
-        DirectoryInfo directory = System.IO.Directory.CreateDirectory(path);
+        SecureFilePermissions.RequireOwnerOnlyDirectory(path);
 
-        SecureFilePermissions.ApplyOwnerOnlyDirectory(directory.FullName);
-
-        return directory;
+        return new DirectoryInfo(path);
     }
 
     /// <summary>

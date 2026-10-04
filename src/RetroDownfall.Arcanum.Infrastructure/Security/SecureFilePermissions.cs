@@ -160,6 +160,38 @@ public static partial class SecureFilePermissions
         new DirectoryInfo(path).Create(security);
     }
 
+    /// <summary>
+    /// Creates <paramref name="directoryPath"/> when missing and requires a verified owner-only
+    /// posture. Secret-bearing directories use this rather than the warn-only
+    /// <see cref="EnsureOwnerOnlyDirectoryExists"/>: nothing secret is written into a directory whose
+    /// posture could not be established.
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">The posture could not be established.</exception>
+    internal static void RequireOwnerOnlyDirectory(string directoryPath)
+    {
+        if (!TryEnsureOwnerOnlyDirectoryExistsStrict(directoryPath))
+        {
+            throw new UnauthorizedAccessException(
+                $"The directory '{Path.GetFileName(Path.TrimEndingDirectorySeparator(directoryPath))}' could not be "
+                + "restricted to the current user, so no secret was written into it. Check its ownership "
+                + "and permissions.");
+        }
+    }
+
+    /// <summary>
+    /// Requires a verified owner-only posture on an existing secret-bearing file.
+    /// </summary>
+    /// <exception cref="UnauthorizedAccessException">The posture could not be established.</exception>
+    internal static void RequireOwnerOnlyFile(string path)
+    {
+        if (!TryApplyOwnerOnlyFileStrict(path))
+        {
+            throw new UnauthorizedAccessException(
+                $"'{Path.GetFileName(path)}' could not be restricted to the current user. Check its "
+                + "ownership and permissions before relying on it.");
+        }
+    }
+
     internal static bool TryEnsureOwnerOnlyDirectoryExistsStrict(
         string directoryPath,
         bool logFailure = true)
@@ -481,49 +513,6 @@ public static partial class SecureFilePermissions
     }
 
     /// <summary>
-    /// Applies owner-only permissions to all sensitive Arcanum paths.
-    /// </summary>
-    public static void ApplyOwnerOnlyToSensitivePaths()
-    {
-        EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
-
-        foreach (string sensitiveFile in DefaultSensitiveFilePaths())
-        {
-            if (File.Exists(sensitiveFile))
-            {
-                ApplyOwnerOnlyFile(sensitiveFile);
-            }
-        }
-
-        foreach (string secretFile in DefaultSecretFilePaths())
-        {
-            if (File.Exists(secretFile))
-            {
-                ApplyOwnerOnlyFile(secretFile);
-            }
-        }
-
-        string logDirectory = ArcanumPaths.LogDirectory;
-
-        if (Directory.Exists(logDirectory))
-        {
-            EnsureOwnerOnlyDirectoryExists(logDirectory);
-
-            try
-            {
-                foreach (string logFile in Directory.EnumerateFiles(logDirectory))
-                {
-                    ApplyOwnerOnlyFile(logFile);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Best effort — individual files may be locked by the running host.
-            }
-        }
-    }
-
-    /// <summary>
     /// Warns (does not fail startup) when sensitive paths are readable by group or other principals.
     /// </summary>
     public static void RunStartupPermissionSelfCheck(ILogger logger) =>
@@ -571,7 +560,7 @@ public static partial class SecureFilePermissions
     }
 
     /// <summary>
-    /// Every file <see cref="ApplyOwnerOnlyToSensitivePaths()"/> would harden, optionally widened to
+    /// Every sensitive and secret file Arcanum keeps owner-only, optionally widened to
     /// the per-provider credential mirrors for <paramref name="providerNames"/>. Those mirrors are
     /// installation-specific, so the caller supplies the configured provider names rather than this
     /// class guessing them.

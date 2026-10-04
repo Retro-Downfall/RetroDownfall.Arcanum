@@ -810,7 +810,6 @@ internal static class HostedGrimoireProducerInventory
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyOwnerOnlyFileStrict"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.CreateOwnerOnlyTempFile"] = HostedProducerSiteKind.FileSystemEffect,
-        ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyUnixFileMode"] = HostedProducerSiteKind.FileSystemEffect,
     };
 
@@ -5725,7 +5724,6 @@ internal static class HostedGrimoireProducerInventory
                 coordinator.recoveryMatrix = matrixOwner.recoveryMatrix;
 
                 coordinator.recoveryMatrixResolved = true;
-
             }
 
             coordinator.progressOccurrence = ++nextOccurrence;
@@ -25815,7 +25813,6 @@ internal static class HostedGrimoireProducerInventory
                     {
                         Caller = stableCaller,
                     };
-
                 }
             }
 
@@ -25955,7 +25952,6 @@ internal static class HostedGrimoireProducerInventory
                     {
                         pending.Push((target, target.Syntax, current.Depth + 1));
                     }
-
                 }
 
                 foreach (InvocationExpressionSyntax call in current.Scope
@@ -35800,7 +35796,6 @@ internal static class HostedGrimoireProducerInventory
                             ? MergeValueContext(assignmentMember, member)
                             : assignmentMember,
                         assignment.Right));
-
                 }
             }
 
@@ -37062,7 +37057,6 @@ internal static class HostedGrimoireProducerInventory
                     member,
                     expression,
                     context);
-
             }
             finally
             {
@@ -39646,7 +39640,6 @@ internal static class HostedGrimoireProducerInventory
                         bound.Expression,
                         contract,
                         path);
-
                 }
 
                 if (symbol is IParameterSymbol parameter)
@@ -40795,7 +40788,6 @@ internal static class HostedGrimoireProducerInventory
             Compilation consumingCompilation,
             int depth)
         {
-
             if (depth >= ReceiverCleanupForwardingMaximumDepth
                 || ResolveConstructorContextTarget(activationConstructor, consumingCompilation) is not { } activation
                 || !SameBoundType(activation.Symbol.ContainingType, activation.Model.Compilation, assignedConstructor.ContainingType, consumingCompilation))
