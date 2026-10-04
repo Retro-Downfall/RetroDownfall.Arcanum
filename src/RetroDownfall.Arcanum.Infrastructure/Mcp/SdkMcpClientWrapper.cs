@@ -247,11 +247,11 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                     continue;
                 }
 
-                string description = McpSecurityLimits.BoundToolDescription(tool.Description ?? string.Empty);
+                string description = McpSecurityLimits.BoundToolDescription(tool.Name, tool.Description ?? string.Empty);
 
                 System.Text.Json.JsonElement inputSchema = McpSecurityLimits.BoundToolInputSchema(
-                    tool.InputSchema,
-                    McpJsonSerializerContext.Default);
+                    tool.Name,
+                    tool.InputSchema);
 
                 long toolBytes = Encoding.UTF8.GetByteCount(description) + Encoding.UTF8.GetByteCount(inputSchema.GetRawText());
 

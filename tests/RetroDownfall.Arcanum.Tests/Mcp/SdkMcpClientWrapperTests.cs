@@ -141,6 +141,29 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetToolsAsync_oversized_tool_description_error_names_the_tool_and_size()
+    {
+        // 9,000 bytes is over the 8 KiB per-description bound but far under the catalog budget.
+        PagingToolsListServer server = new(descriptionBytes: 9_000, maxPages: 1);
+
+        using CancellationTokenSource serverLifetime = new();
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(
+            server,
+            maxToolsTotalBytes: 1_048_576,
+            serverLifetime.Token);
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(() => client.GetToolsAsync());
+
+        await serverLifetime.CancelAsync();
+
+        // The operator sees one start failure for the whole server; it has to say which tool tripped it.
+        Assert.Contains("paged_tool_1_0", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("9000", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetToolsAsync_stops_paging_once_a_server_keeps_handing_back_pages_that_carry_no_tools()
     {
         PagingToolsListServer server = new(descriptionBytes: 2000, maxPages: 5000, toolsPerPage: 0);

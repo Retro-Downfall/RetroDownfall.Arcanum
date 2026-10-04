@@ -33,7 +33,7 @@ internal static class McpSecurityLimits
         return Encoding.UTF8.GetByteCount(line) > maxJsonRpcLineBytes;
     }
 
-    public static string BoundToolDescription(string description)
+    public static string BoundToolDescription(string toolName, string description)
     {
         if (string.IsNullOrEmpty(description))
         {
@@ -45,23 +45,50 @@ internal static class McpSecurityLimits
         if (bytes > MaxMcpToolDescriptionUtf8Bytes)
         {
             throw new InvalidDataException(
-                $"The MCP tool description exceeded the physical metadata allocation boundary of {MaxMcpToolDescriptionUtf8Bytes} UTF-8 bytes; the server must publish a smaller description.");
+                $"The description of MCP tool '{ToolLabel(toolName)}' is {bytes} UTF-8 bytes, over the physical metadata allocation boundary of {MaxMcpToolDescriptionUtf8Bytes} bytes; the server must publish a smaller description.");
         }
 
         return description;
     }
 
-    public static JsonElement BoundToolInputSchema(JsonElement schema, McpJsonSerializerContext json)
+    public static JsonElement BoundToolInputSchema(string toolName, JsonElement schema)
     {
         string raw = schema.GetRawText();
 
-        if (Encoding.UTF8.GetByteCount(raw) <= MaxMcpToolInputSchemaUtf8Bytes)
+        int bytes = Encoding.UTF8.GetByteCount(raw);
+
+        if (bytes <= MaxMcpToolInputSchemaUtf8Bytes)
         {
             return schema.Clone();
         }
 
         throw new InvalidDataException(
-            $"The MCP tool input schema exceeded the physical metadata allocation boundary of {MaxMcpToolInputSchemaUtf8Bytes} UTF-8 bytes; the server must publish a smaller or externally referenced schema.");
+            $"The input schema of MCP tool '{ToolLabel(toolName)}' is {bytes} UTF-8 bytes, over the physical metadata allocation boundary of {MaxMcpToolInputSchemaUtf8Bytes} bytes; the server must publish a smaller or externally referenced schema.");
+    }
+
+    /// <summary>
+    /// A tool name as an external server chose it, made safe to quote in an error: control characters
+    /// are replaced and an over-long name is cut, so a hostile server cannot inject lines or bulk into
+    /// the operator-facing message.
+    /// </summary>
+    private static string ToolLabel(string toolName)
+    {
+        const int MaxLabelChars = 80;
+
+        string name = toolName ?? string.Empty;
+
+        string shown = name.Length > MaxLabelChars ? name[..MaxLabelChars] + "..." : name;
+
+        return string.Create(
+            shown.Length,
+            shown,
+            static (span, source) =>
+            {
+                for (int index = 0; index < span.Length; index++)
+                {
+                    span[index] = char.IsControl(source[index]) ? '?' : source[index];
+                }
+            });
     }
 
     public static string TruncateUtf8(string text, long maxUtf8Bytes)
