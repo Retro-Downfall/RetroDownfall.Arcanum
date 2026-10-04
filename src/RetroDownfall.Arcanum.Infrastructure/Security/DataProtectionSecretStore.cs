@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -175,60 +173,13 @@ public sealed class DataProtectionSecretStore(
     internal static Task WriteProtectedForTestsAsync(string path, string plainText, IDataProtector protector) =>
         WriteProtectedAsync(path, plainText, protector);
 
-    private static async Task WriteProtectedAsync(string path, string plainText, IDataProtector protector)
-    {
-        string directory = Path.GetDirectoryName(path)
-            ?? throw new InvalidOperationException("Invalid secret store path.");
-
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
-
-        byte[] plain = Encoding.UTF8.GetBytes(plainText);
-
-        byte[] cipher = protector.Protect(plain);
-
-        CryptographicOperations.ZeroMemory(plain);
-
-        string tempPath = path + ".tmp." + Guid.NewGuid().ToString("N");
-
-        try
-        {
-            await using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-            {
-                await stream.WriteAsync(cipher).ConfigureAwait(false);
-
-                await stream.FlushAsync().ConfigureAwait(false);
-
-                // FlushAsync only drains the managed buffer to the OS. grimoire-key.dat has no
-                // OS-credential copy, so the rename must not be able to outrun the data: fsync
-                // before the atomic replace, matching GrimoireKdfSidecarFile.Write.
-                stream.Flush(flushToDisk: true);
-            }
-
-            File.Move(tempPath, path, overwrite: true);
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(path);
-        }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch (Exception cleanupFailure)
-                    when (cleanupFailure is IOException or UnauthorizedAccessException)
-                {
-                    // Best effort cleanup of temp file. UnauthorizedAccessException belongs here as
-                    // much as IOException: Windows raises it for a delete the filesystem refuses, and
-                    // an uncaught throw from a finally does not merely fail to clean up -- it replaces
-                    // the exception that explains why the save failed with one about the tidying
-                    // afterwards. TheForge's OpenAiCompatApiClient already catches the pair for the
-                    // same reason.
-                }
-            }
-        }
-    }
+    /// <summary>
+    /// grimoire-key.dat has no OS-credential copy, so the rename must not be able to outrun the data:
+    /// the shared writer fsyncs the owner-only temp file before the atomic replace, exactly as the
+    /// Grimoire <c>.kdf</c> sidecar and every other credential mirror do.
+    /// </summary>
+    private static Task WriteProtectedAsync(string path, string plainText, IDataProtector protector) =>
+        ProtectedCredentialFile.WriteAsync(path, plainText, protector, CancellationToken.None);
 
     internal static bool GrimoireDatabaseExists() => File.Exists(ArcanumPaths.GrimoireDatabaseFile);
 }

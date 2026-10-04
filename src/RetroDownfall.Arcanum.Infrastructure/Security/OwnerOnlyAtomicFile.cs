@@ -91,9 +91,13 @@ internal static class OwnerOnlyAtomicFile
         {
             (TempFileDeleteForTests ?? File.Delete)(tempPath);
         }
-        catch (IOException)
+        catch (Exception cleanupFailure)
+            when (cleanupFailure is IOException or UnauthorizedAccessException)
         {
-            // Best-effort cleanup of an owner-only temporary file.
+            // Best-effort cleanup of an owner-only temporary file. UnauthorizedAccessException belongs
+            // here as much as IOException: Windows raises it for a delete the filesystem refuses, and
+            // an uncaught throw from this finally would replace the exception that explains why the
+            // write failed with one about tidying up afterwards.
         }
     }
 }
