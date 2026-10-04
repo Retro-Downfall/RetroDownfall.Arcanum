@@ -79,6 +79,23 @@ internal sealed class TurnAccountingHandle
         }
     }
 
+    /// <summary>
+    /// True once the run this handle ledgers against has frozen its completion: its status and its
+    /// reservation disposition are decided, and nothing recorded from here on is part of either.
+    /// </summary>
+    public bool IsSettled
+    {
+        get
+        {
+            TurnAccountingHandle root = AccountingRoot;
+
+            lock (root._costGate)
+            {
+                return root._completionSnapshotFrozen;
+            }
+        }
+    }
+
     public bool AccountingFailed
     {
         get

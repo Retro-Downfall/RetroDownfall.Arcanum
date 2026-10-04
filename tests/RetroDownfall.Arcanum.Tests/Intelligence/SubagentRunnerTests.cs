@@ -389,8 +389,14 @@ public sealed class SubagentRunnerTests
     /// turn's accounting is now re-established. The child must not see it: a child that adopted the
     /// parent's handle would settle the parent's run and reservation when it completed.
     /// </summary>
+    /// <remarks>
+    /// Restoration is not asserted here. <see cref="SubagentRunner.RunAsync"/> is an async method, and
+    /// an <c>AsyncLocal</c> it writes never flows back to its caller, so the caller sees the parent's
+    /// handle afterwards whether or not the suspension was undone. The restore is pinned where it is
+    /// observable, in one flow: <c>TurnAccountingHandleTests.AmbientSuspend_HidesTheHandleAndWriterThenRestoresThem</c>.
+    /// </remarks>
     [Fact]
-    public async Task RunAsync_HidesTheParentTurnsAccountingFromTheChildAndRestoresItAfter()
+    public async Task RunAsync_HidesTheParentTurnsAccountingFromTheChild()
     {
         TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
                 turnRunWriter: null,
@@ -427,8 +433,6 @@ public sealed class SubagentRunnerTests
                 CancellationToken.None);
 
             Assert.True(result.Success);
-
-            Assert.Same(parent, TurnAccountingAmbient.Current);
         }
 
         Assert.False(childSawAccounting);

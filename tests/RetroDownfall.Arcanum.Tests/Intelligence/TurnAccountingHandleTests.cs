@@ -59,6 +59,91 @@ public sealed class TurnAccountingHandleTests
         }
     }
 
+    /// <summary>
+    /// A delegated child hides the parent turn's accounting while it runs and gets it back after.
+    /// Observed in one synchronous flow, because an <c>AsyncLocal</c> written inside an awaited async
+    /// method never flows back to its caller and so cannot prove a restoration from outside.
+    /// </summary>
+    [Fact]
+    public async Task AmbientSuspend_HidesTheHandleAndWriterThenRestoresThem()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "suspend",
+            requestId: "suspend",
+            cancellationToken: CancellationToken.None)).Value;
+
+        try
+        {
+            using (TurnAccountingAmbient.Push(parent, writer))
+            {
+                using (TurnAccountingAmbient.Suspend())
+                {
+                    Assert.Null(TurnAccountingAmbient.Current);
+                    Assert.Null(TurnAccountingAmbient.Writer);
+                }
+
+                Assert.Same(parent, TurnAccountingAmbient.Current);
+                Assert.Same(writer, TurnAccountingAmbient.Writer);
+            }
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    /// <summary>
+    /// A tool task abandoned past the grace keeps running in a flow that still holds the turn's
+    /// accounting. Once that run has settled (its status written and its reservation reconciled or
+    /// released), nested work there must not ledger against it: it no longer sees the settled turn's
+    /// handle or writer, and accounts for itself instead.
+    /// </summary>
+    [Fact]
+    public async Task Ambient_HidesTheHandleAndWriterOfARunThatHasSettled()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        TurnAccountingHandle turn = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "settled",
+            requestId: "settled",
+            cancellationToken: CancellationToken.None)).Value;
+        TurnAccountingHandle nested = turn.CreateNestedOperationHandle();
+
+        try
+        {
+            TurnAccountingAmbient.Publish(nested, writer);
+
+            Assert.Same(nested, TurnAccountingAmbient.Current);
+
+            await turn.CompleteAsync(
+                writer,
+                budgetReservations: null,
+                InferenceRunStatus.Completed,
+                CancellationToken.None);
+
+            Assert.Null(TurnAccountingAmbient.Current);
+            Assert.Null(TurnAccountingAmbient.Writer);
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
     [Fact]
     public async Task BeginAsync_ReservesTypedOutputAndReasoningHeadroom()
     {

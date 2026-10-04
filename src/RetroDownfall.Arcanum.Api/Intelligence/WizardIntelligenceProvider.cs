@@ -3055,6 +3055,18 @@ public sealed partial class WizardIntelligenceProvider(
 
                         streamTurnAmbients.CovenantStaging = stagingContext;
                     }
+                    else
+                    {
+                        // A round that earned no admission receipt has nothing to stage under. The
+                        // captured set outlives the round, so without this the previous round's
+                        // receipt would ride into this round's tool calls and authorize staging
+                        // against a dispatch it does not describe.
+                        streamCovenantStaging?.Dispose();
+
+                        streamCovenantStaging = null;
+
+                        streamTurnAmbients.CovenantStaging = null;
+                    }
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
                         ? streamToolCompatibilityRetry
