@@ -1352,19 +1352,14 @@ internal sealed partial class DataRetentionService(
 
         DateTimeOffset now = timeProvider.GetUtcNow();
 
-        string operationKind = request.Request.Operation switch
-        {
-            DataRetentionOperation.Prune => LongRunningOperationKinds.DataRetentionPrune,
-
-            DataRetentionOperation.FactoryReset =>
-                LongRunningOperationKinds.DataRetentionFactoryReset,
-
-            _ => LongRunningOperationKinds.DataRetentionMutation,
-        };
+        // A factory reset never reaches this path: ApplyAsync routes it to its own, which owns the lease
+        // maintainer and the launch checkpoint this path has neither of.
+        string operationKind = request.Request.Operation == DataRetentionOperation.Prune
+            ? LongRunningOperationKinds.DataRetentionPrune
+            : LongRunningOperationKinds.DataRetentionMutation;
 
         LongRunningOperationRecoveryPolicy recoveryPolicy =
-            request.Request.Operation is DataRetentionOperation.Prune
-                or DataRetentionOperation.FactoryReset
+            request.Request.Operation == DataRetentionOperation.Prune
                 ? LongRunningOperationRecoveryPolicy.RestartIdempotently
                 : LongRunningOperationRecoveryPolicy.ReconcileAndComplete;
 
@@ -1437,43 +1432,6 @@ internal sealed partial class DataRetentionService(
     {
         LongRunningOperationLeaseResult lease = new(true, operation);
 
-        if (request.Request.Operation == DataRetentionOperation.FactoryReset)
-        {
-            DataRetentionConflict[] boundaryConflicts = await ReadGlobalConflictsAsync(
-                cancellationToken,
-                operation.Id).ConfigureAwait(false);
-
-            if (boundaryConflicts.Length > 0)
-            {
-                LongRunningOperation latest = await operations.GetAsync(
-                    operation.Id,
-                    cancellationToken).ConfigureAwait(false)
-                    ?? lease.Operation;
-
-                bool terminalized = await operations.TryTransitionAsync(
-                    operation.Id,
-                    latest.Revision,
-                    ownerId,
-                    LongRunningOperationState.Failed,
-                    timeProvider.GetUtcNow(),
-                    ErrorCodes.Data.Conflict,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (!terminalized)
-                {
-                    return Result<DataRetentionApplyResult>.Failure(
-                        new Error(
-                            ErrorCodes.Data.ReconciliationFailed,
-                            "A factory-reset conflict appeared, but its durable marker could not be finalized."));
-                }
-
-                return Result<DataRetentionApplyResult>.Failure(
-                    new Error(
-                        ErrorCodes.Data.Conflict,
-                        boundaryConflicts[0].Message));
-            }
-        }
-
         try
         {
             RetentionMutationJournal? mutationJournal =
@@ -1533,13 +1491,6 @@ internal sealed partial class DataRetentionService(
                         operation.Id,
                         current,
                         request.Request.Workspace!,
-                        cancellationToken).ConfigureAwait(false),
-
-                DataRetentionOperation.FactoryReset =>
-                    await ApplyFactoryResetAsync(
-                        operation.Id,
-                        ownerId,
-                        current,
                         cancellationToken).ConfigureAwait(false),
 
                 _ => throw new InvalidOperationException("Unsupported data-retention operation."),
