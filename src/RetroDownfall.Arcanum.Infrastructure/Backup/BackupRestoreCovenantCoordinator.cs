@@ -51,7 +51,6 @@ internal sealed record BackupRestoreCovenantTopology(
 /// </remarks>
 internal sealed class BackupRestoreCovenantSession
 {
-
     internal BackupRestoreCovenantSession(
         CovenantExclusiveRecoveryOwner owner,
         CovenantExclusiveLease lease,
@@ -60,7 +59,6 @@ internal sealed class BackupRestoreCovenantSession
         BackupRestoreJournalPublication publication,
         BackupRestoreJournalPayloadV2 payload)
     {
-
         Owner = owner;
 
         Lease = lease;
@@ -72,7 +70,6 @@ internal sealed class BackupRestoreCovenantSession
         Publication = publication;
 
         Payload = payload;
-
     }
 
     internal CovenantExclusiveRecoveryOwner Owner { get; }
@@ -94,17 +91,14 @@ internal sealed class BackupRestoreCovenantSession
 
     internal void Publish(BackupRestoreJournalPublication publication, BackupRestoreJournalPayloadV2 payload)
     {
-
         Publication = publication;
 
         Payload = payload;
 
         Checkpoint = payload.MarkerCleanup ?? Checkpoint;
-
     }
 
     internal void MarkDispositioned() => Dispositioned = true;
-
 }
 
 /// <summary>
@@ -124,7 +118,6 @@ internal sealed class BackupRestoreCovenantSession
 /// </remarks>
 internal sealed class BackupRestoreCovenantCoordinator
 {
-
     /// <summary>
     /// The domain the restore-request digest is computed under.
     /// </summary>
@@ -147,13 +140,11 @@ internal sealed class BackupRestoreCovenantCoordinator
         CovenantSqliteConnectionInitializer initializer,
         TimeProvider timeProvider)
     {
-
         _services = services ?? throw new ArgumentNullException(nameof(services));
 
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-
     }
 
     /// <summary>
@@ -175,7 +166,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         Guid destinationInstallationId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(request);
@@ -189,9 +179,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (profile.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(profile.Error);
-
         }
 
         // The one place a journal key may be generated: a caller-held lock, before any restore work.
@@ -205,9 +193,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (key.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(key.Error);
-
         }
 
         key.Value.Dispose();
@@ -221,9 +207,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (installation.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(installation.Error);
-
         }
 
         Result<CovenantDigest> effect = ComputeEffectDigest(
@@ -235,9 +219,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (effect.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(effect.Error);
-
         }
 
         CovenantExclusiveRecoveryOwner owner = new(
@@ -254,9 +236,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (payload.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(payload.Error);
-
         }
 
         Result<BackupRestoreJournalLocation> location = _services.Anchors.ResolveLocation(
@@ -267,9 +247,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (location.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(location.Error);
-
         }
 
         // Admission closes before the journal exists, because the journal is a record of an operation
@@ -280,9 +258,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (acquired.IsFailure)
         {
-
             return Result<BackupRestoreCovenantSession>.Failure(acquired.Error);
-
         }
 
         Result<BackupRestoreJournalPublication> published = _services.Anchors.Begin(
@@ -294,7 +270,6 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (published.IsFailure)
         {
-
             // Nothing durable happened, so the lease may reopen. This is the one abort that is proven
             // pre-swap by construction rather than by re-reading the tree.
             _ = await acquired.Value
@@ -307,7 +282,6 @@ internal sealed class BackupRestoreCovenantCoordinator
             await acquired.Value.DisposeAsync().ConfigureAwait(false);
 
             return Result<BackupRestoreCovenantSession>.Failure(published.Error);
-
         }
 
         return new BackupRestoreCovenantSession(
@@ -317,7 +291,6 @@ internal sealed class BackupRestoreCovenantCoordinator
             installation.Value,
             published.Value,
             payload.Value);
-
     }
 
     /// <summary>
@@ -347,7 +320,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(session);
 
         ArgumentNullException.ThrowIfNull(staged);
@@ -358,9 +330,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (inventory.IsFailure)
         {
-
             return inventory.Error;
-
         }
 
         Result<CampaignPathRestoreCleanupPreparationReceipt> receipt = await CommitStagedAsync(
@@ -373,9 +343,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (receipt.IsFailure)
         {
-
             return receipt.Error;
-
         }
 
         BackupRestoreMarkerCleanupCheckpointV1 checkpoint = new(
@@ -395,7 +363,6 @@ internal sealed class BackupRestoreCovenantCoordinator
             BackupRestorePhase.SafetyPoint,
             topology,
             checkpoint);
-
     }
 
     /// <summary>
@@ -410,7 +377,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         BackupRestoreCovenantTopology topology,
         BackupRestoreMarkerCleanupCheckpointV1? checkpoint = null)
     {
-
         ArgumentNullException.ThrowIfNull(session);
 
         Result<BackupRestoreJournalPayloadV2> payload = BuildPayload(
@@ -422,9 +388,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (payload.IsFailure)
         {
-
             return payload.Error;
-
         }
 
         Result<BackupRestoreJournalPublication> published = _services.Anchors.Advance(
@@ -436,15 +400,12 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (published.IsFailure)
         {
-
             return published.Error;
-
         }
 
         session.Publish(published.Value, payload.Value);
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -462,16 +423,13 @@ internal sealed class BackupRestoreCovenantCoordinator
         string guardedDirectory,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(session);
 
         if (session.Checkpoint is not { } checkpoint)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "A restore that displaced the installation carries no marker cleanup checkpoint.");
-
         }
 
         Result<CampaignPathMarkerGateCompletion> completion = await _services.Markers
@@ -486,32 +444,29 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (completion.IsFailure)
         {
-
             return completion.Error;
-
         }
 
         if (completion.Value.Outcome is not CampaignPathMarkerAggregateOutcome.Committed
             || completion.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "This restore's marker children did not reach a committed disposition.");
-
         }
 
         // The sole general-admission reopen. It runs only after every child has been proven, and the
-        // finalizer only after the disposition itself succeeded.
+        // finalizer only after the disposition itself succeeded. Both are the point of no return: the
+        // children are proven and the replacement is in place, so the caller's token has done its work
+        // (it stopped the reconcile above, or it did not) and a cancel from here on must neither strand
+        // admission shut nor leave the marker children uncompleted.
         Result committed = await session.Lease
-            .CompleteAsync(completion.Value.Disposition, completion.Value.Finalizer, cancellationToken)
+            .CompleteAsync(completion.Value.Disposition, completion.Value.Finalizer, CancellationToken.None)
             .ConfigureAwait(false);
 
         if (committed.IsFailure)
         {
-
             return committed.Error;
-
         }
 
         session.MarkDispositioned();
@@ -523,7 +478,6 @@ internal sealed class BackupRestoreCovenantCoordinator
             guardedDirectory,
             session.Profile,
             session.Publication);
-
     }
 
     /// <summary>
@@ -543,40 +497,34 @@ internal sealed class BackupRestoreCovenantCoordinator
         bool provenPreSwap,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(session);
 
         if (session.Dispositioned)
         {
-
             return Result.Success();
-
         }
 
         if (!provenPreSwap)
         {
-
             await session.Lease.DisposeAsync().ConfigureAwait(false);
 
             await _services.Markers.ReleaseRetainedRootsAsync(session.Owner.OperationId)
                 .ConfigureAwait(false);
 
             return Result.Success();
-
         }
 
+        // A rollback runs because the restore is ending, often because the token fired, so it takes none.
         Result reopened = await session.Lease
             .CompleteAsync(
                 CovenantExclusiveLeaseDisposition.RollbackAndReopen,
                 CovenantNoOpPostDispositionFinalizer.Instance,
-                cancellationToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         if (reopened.IsFailure)
         {
-
             return reopened.Error;
-
         }
 
         session.MarkDispositioned();
@@ -588,7 +536,6 @@ internal sealed class BackupRestoreCovenantCoordinator
             guardedDirectory,
             session.Profile,
             session.Publication);
-
     }
 
     /// <summary>The version every checkpoint this build produces carries.</summary>
@@ -605,7 +552,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         bool purgeProtectedState,
         CancellationToken cancellationToken)
     {
-
         Result<RestoreStagingManagedAuthoritySanitizationCapability> capability =
             RestoreStagingManagedAuthoritySanitizationCapability.Mint(
                 _initializer,
@@ -617,24 +563,18 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (capability.IsFailure)
         {
-
             return capability.Error;
-
         }
 
         await using (capability.Value.ConfigureAwait(false))
         {
-
             Result<BackupRestoreManagedAuthoritySanitizationReceipt> sanitized =
                 await capability.Value.RunImmediateAsync(cancellationToken).ConfigureAwait(false);
 
             if (sanitized.IsFailure)
             {
-
                 return sanitized.Error;
-
             }
-
         }
 
         await using SqliteTransaction transaction =
@@ -652,14 +592,12 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (reconciled.IsFailure)
         {
-
             // Compensation, so it runs on no token. RollbackAsync issued on a cancelled one returns a
             // cancelled task without rolling anything back, and the line below - the one that carries
             // the reason this restore stopped - never runs, leaving the operator a bare cancellation.
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return reconciled.Error;
-
         }
 
         Result<CampaignPathRestoreCleanupPreparationReceipt> prepared = await _services.Markers
@@ -672,17 +610,14 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (prepared.IsFailure)
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             return prepared.Error;
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return prepared;
-
     }
 
     /// <summary>
@@ -703,14 +638,11 @@ internal sealed class BackupRestoreCovenantCoordinator
         SqliteConnection staged,
         CancellationToken cancellationToken)
     {
-
         if (!await BackupRestoreDatabaseWorker
                 .TableExistsAsync(staged, "covenant_state", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             return session.Owner.OperationId;
-
         }
 
         await using SqliteCommand command = staged.CreateCommand();
@@ -722,9 +654,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(0))
         {
-
             return session.Owner.OperationId;
-
         }
 
         using Stream stream = reader.GetStream(0);
@@ -736,7 +666,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         return buffer.Length == 16
             ? new Guid(buffer.ToArray(), bigEndian: true)
             : session.Owner.OperationId;
-
     }
 
     private Result<Guid> ResolveInstallationIdentity(
@@ -746,24 +675,19 @@ internal sealed class BackupRestoreCovenantCoordinator
         BackupRestoreConflictMode conflictMode,
         Guid destinationInstallationId)
     {
-
         if (conflictMode is BackupRestoreConflictMode.NewProfileRoot)
         {
-
             return _services.Identities.CreateForNewProfileRoot(
                 heldInstallationLock,
                 guardedDirectory,
                 profile);
-
         }
 
         if (destinationInstallationId == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "This installation's authority row names no identity to bind the restore journal to.");
-
         }
 
         // Seeds when absent and compares when present, which is the same call: the restore is the first
@@ -773,7 +697,6 @@ internal sealed class BackupRestoreCovenantCoordinator
             guardedDirectory,
             profile,
             destinationInstallationId);
-
     }
 
     private Result<CovenantDigest> ComputeEffectDigest(
@@ -783,14 +706,11 @@ internal sealed class BackupRestoreCovenantCoordinator
         CovenantDigest archiveManifestDigest,
         BackupRestoreCovenantTopology topology)
     {
-
         Result<CovenantDigest> archive = NodeIdentity(topology.ArchivePath);
 
         if (archive.IsFailure)
         {
-
             return archive;
-
         }
 
         Result<CovenantDigest> mappings = BackupRestoreEffectDigestCalculator.PathMappingVector(
@@ -798,9 +718,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (mappings.IsFailure)
         {
-
             return mappings;
-
         }
 
         string destinationRoot = request.ConflictMode is BackupRestoreConflictMode.NewProfileRoot
@@ -811,9 +729,7 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (destination.IsFailure)
         {
-
             return destination;
-
         }
 
         return _services.EffectDigests.Compute(
@@ -828,7 +744,6 @@ internal sealed class BackupRestoreCovenantCoordinator
                 mappings.Value,
                 request.RestoreMasterApiKey,
                 request.CreateSafetyBackup));
-
     }
 
     /// <summary>
@@ -841,41 +756,32 @@ internal sealed class BackupRestoreCovenantCoordinator
         BackupRestoreCovenantTopology topology,
         BackupRestoreMarkerCleanupCheckpointV1? markerCleanup)
     {
-
         Result<BackupRestoreDurableNodeIdentityV1> live = CaptureDirectory(topology.LiveRoot);
 
         if (live.IsFailure)
         {
-
             return Result<BackupRestoreJournalPayloadV2>.Failure(live.Error);
-
         }
 
         Result<BackupRestoreDurableNodeIdentityV1> staged = CaptureDirectory(topology.StagedRoot);
 
         if (staged.IsFailure)
         {
-
             return Result<BackupRestoreJournalPayloadV2>.Failure(staged.Error);
-
         }
 
         Result<BackupRestoreDurableNodeIdentityV1> displaced = CaptureDirectory(topology.DisplacedRoot);
 
         if (displaced.IsFailure)
         {
-
             return Result<BackupRestoreJournalPayloadV2>.Failure(displaced.Error);
-
         }
 
         Result<BackupRestoreDurableNodeIdentityV1> archive = CaptureFile(topology.ArchivePath);
 
         if (archive.IsFailure)
         {
-
             return Result<BackupRestoreJournalPayloadV2>.Failure(archive.Error);
-
         }
 
         BackupRestoreJournalPayloadV2 payload = new(
@@ -897,7 +803,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         return validated.IsFailure
             ? Result<BackupRestoreJournalPayloadV2>.Failure(validated.Error)
             : payload;
-
     }
 
     /// <summary>
@@ -905,7 +810,6 @@ internal sealed class BackupRestoreCovenantCoordinator
     /// </summary>
     private static CovenantDigest RequestDigest(BackupRestoreRequest request)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         hash.AppendData(Encoding.ASCII.GetBytes(RequestDigestDomain));
@@ -927,7 +831,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         hash.AppendData(count);
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
 
     private static string StagingRootOf(BackupRestoreCovenantTopology topology) =>
@@ -953,7 +856,6 @@ internal sealed class BackupRestoreCovenantCoordinator
         string path,
         BackupRestoreNodeKind kind)
     {
-
         string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
         string? parent = Path.GetDirectoryName(full);
@@ -962,21 +864,17 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         if (string.IsNullOrEmpty(parent) || leaf.Length == 0)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A journalled restore node requires a parent directory and a bounded child leaf.");
-
         }
 
         if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(parent, out FileHandleMetadata metadata)
             || metadata.Kind is not FileSystemObjectKind.Directory)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "A journalled restore node's parent directory could not be identified.");
-
         }
 
         CovenantDigest parentIdentity = BackupRestoreJournalAuthenticator.PhysicalIdentity(
@@ -1002,7 +900,6 @@ internal sealed class BackupRestoreCovenantCoordinator
                     child.Identity.FileId)
                 : null,
             null);
-
     }
 
     private static Result<CovenantDigest> NodeIdentity(string path) =>
@@ -1019,14 +916,11 @@ internal sealed class BackupRestoreCovenantCoordinator
     /// </summary>
     private static Result<CovenantDigest> DestinationRootIdentity(string destinationRoot)
     {
-
         if (string.IsNullOrWhiteSpace(destinationRoot))
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A restore effect digest requires the destination root it authorizes.");
-
         }
 
         string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destinationRoot));
@@ -1038,11 +932,9 @@ internal sealed class BackupRestoreCovenantCoordinator
                 parent,
                 out FileHandleMetadata metadata))
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The destination root's parent could not be identified through its own handle.");
-
         }
 
         return BackupRestoreEffectDigestCalculator.DestinationRootIdentity(
@@ -1051,7 +943,5 @@ internal sealed class BackupRestoreCovenantCoordinator
                 metadata.Identity.FileId),
             Path.GetFileName(full),
             Directory.Exists(full));
-
     }
-
 }

@@ -727,6 +727,92 @@ public sealed class CovenantOperationGateTests
         Assert.Equal(CovenantScope.Global, afterwards.Snapshot.Scope!.Value.Kind);
     }
 
+    /// <summary>
+    /// R-167: the lease claimed its one disposition and only then asked the gate to complete under the
+    /// caller's token, which checks it first. A token already cancelled burned the claim without completing
+    /// anything: the scope stayed closed and every later attempt answered "already used its disposition".
+    /// The token is now checked before anything is claimed, so cancelling before the start spends nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_completion_cancelled_before_it_starts_leaves_the_disposition_unspent()
+    {
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveLease exclusive = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            Token)).Value;
+
+        using CancellationTokenSource cancelled = new();
+
+        await cancelled.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await exclusive.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, cancelled.Token));
+
+        // Nothing was spent, so the one disposition is still there to be used.
+        Result completed = await exclusive.CompleteAsync(CovenantExclusiveLeaseDisposition.CommitAndReopen, Token);
+
+        Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : string.Empty);
+
+        await exclusive.DisposeAsync();
+
+        await using CovenantReadLease reopened =
+            (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Assert.Equal(CovenantScope.Global, reopened.Snapshot.Scope!.Value.Kind);
+    }
+
+    /// <summary>
+    /// R-167: once the disposition is spent, the journal finalizer is the rest of the same decision. It
+    /// used to receive the caller's token, so a cancel landing after the gate had reopened made the
+    /// finalizer throw and left the journal behind a disposition that had already happened. It now runs on
+    /// no token at all.
+    /// </summary>
+    [Fact]
+    public async Task The_post_disposition_finalizer_never_sees_the_callers_token()
+    {
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantExclusiveLease exclusive = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset),
+            Token)).Value;
+
+        using CancellationTokenSource caller = new();
+
+        TokenRecordingFinalizer finalizer = new();
+
+        Result completed = await exclusive.CompleteAsync(
+            CovenantExclusiveLeaseDisposition.CommitAndReopen,
+            finalizer,
+            caller.Token);
+
+        Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : string.Empty);
+
+        Assert.True(finalizer.Ran);
+
+        Assert.False(finalizer.ReceivedToken.CanBeCanceled);
+
+        await exclusive.DisposeAsync();
+    }
+
+    private sealed class TokenRecordingFinalizer : ICovenantExclusivePostDispositionFinalizer
+    {
+        internal bool Ran { get; private set; }
+
+        internal CancellationToken ReceivedToken { get; private set; }
+
+        public ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
+            CovenantExclusiveLeaseDisposition disposition,
+            CancellationToken cancellationToken)
+        {
+            Ran = true;
+
+            ReceivedToken = cancellationToken;
+
+            return ValueTask.FromResult(Result.Success());
+        }
+    }
+
     [Fact]
     public async Task Commit_and_reopen_clears_the_recovery_owner()
     {
