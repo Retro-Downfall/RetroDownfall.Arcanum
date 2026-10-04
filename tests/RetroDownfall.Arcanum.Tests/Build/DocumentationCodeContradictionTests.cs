@@ -29,6 +29,31 @@ public sealed class DocumentationCodeContradictionTests
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(5));
 
+    private static readonly Regex InlineCodeSpan = new(
+        @"(`+)(?<code>.+?)\1",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    private static readonly Regex PascalCaseIdentifier = new(
+        @"^[A-Z][A-Za-z0-9]+$",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    private static readonly Regex Word = new(
+        @"[A-Za-z_][A-Za-z0-9_]*",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(30));
+
+    /// <summary>
+    /// Identifiers the testing chapter names that are not declared in the repository, each with the
+    /// reason it is nonetheless the right word.
+    /// </summary>
+    private static readonly Dictionary<string, string> NamedButNotDeclared = new(StringComparer.Ordinal)
+    {
+        ["HostFactoryResolver"] = "Microsoft.Extensions.Hosting's internal entry-point resolver, named for the deadlock it explains",
+        ["HostProcessToolsMarkerSlot"] = "the shared suffix of the three platform marker slot types, which the coverage run settings exclude by pattern",
+    };
+
     [Fact]
     public void A_committed_entry_erase_is_documented_as_republishing_canonical_mutation()
     {
@@ -441,6 +466,140 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("`Arcanum:Features:ScalarUi`", scalarRoute, StringComparison.Ordinal);
 
         Assert.Contains("default false", scalarRoute, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The testing chapter names only identifiers that occur in the code, tests, scripts or workflows.
+    /// </summary>
+    /// <remarks>
+    /// <para>The chapter is where a contributor learns how the CLI is tested, and it kept naming a
+    /// command-application type the CLI stopped using when it moved to System.CommandLine and a test
+    /// class that was never written. Both read as established vocabulary, so a reader searched for them
+    /// and concluded the harness was missing rather than the sentence stale.</para>
+    /// <para>The check is deliberately a word-occurrence one: an identifier a reader can search for has
+    /// to occur somewhere a search finds it. It cannot tell a type from a method or an enum member, and
+    /// it does not need to, because the failure it prevents is a name that matches nothing at all. This
+    /// file is left out of the corpus, since it would otherwise supply every name it tests for.</para>
+    /// </remarks>
+    [Fact]
+    public void Design_names_only_types_that_exist()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string chapter = DocumentSection(design, "## 13. Testing strategy", "\n## 14. ");
+
+        HashSet<string> named = new(StringComparer.Ordinal);
+
+        bool fenced = false;
+
+        foreach (string line in chapter.Split('\n'))
+        {
+            if (line.TrimStart().StartsWith("```", StringComparison.Ordinal))
+            {
+                fenced = !fenced;
+
+                continue;
+            }
+
+            if (fenced)
+            {
+                continue;
+            }
+
+            foreach (Match span in InlineCodeSpan.Matches(line))
+            {
+                string code = span.Groups["code"].Value.Trim();
+
+                if (PascalCaseIdentifier.IsMatch(code))
+                {
+                    named.Add(code);
+                }
+            }
+        }
+
+        Assert.True(named.Count > 100, $"Only {named.Count} identifiers were read from the testing chapter.");
+
+        foreach (string allowed in NamedButNotDeclared.Keys)
+        {
+            Assert.Contains(allowed, named);
+        }
+
+        HashSet<string> missing = new(named, StringComparer.Ordinal);
+
+        missing.ExceptWith(NamedButNotDeclared.Keys);
+
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        string self = Path.GetFullPath(Path.Combine(root, "tests", "RetroDownfall.Arcanum.Tests", "Build", "DocumentationCodeContradictionTests.cs"));
+
+        HashSet<string>.AlternateLookup<ReadOnlySpan<char>> lookup = missing.GetAlternateLookup<ReadOnlySpan<char>>();
+
+        foreach (string path in CorpusFiles(root))
+        {
+            if (missing.Count == 0)
+            {
+                break;
+            }
+
+            if (string.Equals(Path.GetFullPath(path), self, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string text = File.ReadAllText(path);
+
+            foreach (ValueMatch match in Word.EnumerateMatches(text))
+            {
+                _ = lookup.Remove(text.AsSpan(match.Index, match.Length));
+            }
+        }
+
+        Assert.True(
+            missing.Count == 0,
+            "The testing chapter of docs/Arcanum.DESIGN.md names identifiers that occur nowhere in the repository:\n"
+                + string.Join('\n', missing.Order(StringComparer.Ordinal)));
+    }
+
+    private static IEnumerable<string> CorpusFiles(string root)
+    {
+        string[] extensions = [".cs", ".csproj", ".props", ".targets", ".runsettings", ".sh", ".py", ".yml", ".yaml"];
+
+        string[] directories = ["src", "tests", "scripts", ".github"];
+
+        foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly))
+        {
+            if (extensions.Contains(Path.GetExtension(file), StringComparer.Ordinal))
+            {
+                yield return file;
+            }
+        }
+
+        foreach (string directory in directories)
+        {
+            string path = Path.Combine(root, directory);
+
+            if (!Directory.Exists(path))
+            {
+                continue;
+            }
+
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                string relative = Path.GetRelativePath(root, file);
+
+                string[] segments = relative.Split(Path.DirectorySeparatorChar);
+
+                if (segments.Contains("bin", StringComparer.Ordinal)
+                    || segments.Contains("obj", StringComparer.Ordinal)
+                    || segments.Contains("node_modules", StringComparer.Ordinal)
+                    || !extensions.Contains(Path.GetExtension(file), StringComparer.Ordinal))
+                {
+                    continue;
+                }
+
+                yield return file;
+            }
+        }
     }
 
     private static string ReadDocument(string fileName) =>
